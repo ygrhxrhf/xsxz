@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { NButton, NCard, NEmpty, NIcon, NSpace, NTag, NPopconfirm } from 'naive-ui'
-import { onMounted, ref } from 'vue'
-import type { BookListItem } from '@shared/types'
+import { onMounted, onUnmounted, ref } from 'vue'
+import type { BookListItem, DownloadProgress } from '@shared/types'
 
 const emit = defineEmits<{
   (e: 'open-book', bookId: string): void
@@ -9,6 +9,8 @@ const emit = defineEmits<{
 
 const books = ref<BookListItem[]>([])
 const loading = ref(false)
+const retryingId = ref<string | null>(null)
+let unsubProgress: (() => void) | null = null
 
 async function refresh() {
   loading.value = true
@@ -37,12 +39,37 @@ async function handleDelete(bookId: string) {
   await refresh()
 }
 
+async function handleRetry(bookId: string) {
+  retryingId.value = bookId
+  const res = await window.api.download.retryFailed(bookId)
+  if (!res.ok) {
+    window.alert(res.message || '重试失败')
+    retryingId.value = null
+  }
+}
+
+function hasFailed(b: BookListItem): boolean {
+  return b.status === 'partial' && b.readyCount < b.chapterCount
+}
+
 function fmtProgress(b: BookListItem): string {
   if (!b.progress) return `${b.readyCount}/${b.chapterCount} 章`
   return `${b.progress.chapterId} · ${b.readyCount}/${b.chapterCount} 章`
 }
 
-onMounted(refresh)
+onMounted(() => {
+  refresh()
+  unsubProgress = window.api.download.onProgress((p: DownloadProgress) => {
+    if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
+      retryingId.value = null
+      refresh()
+    }
+  })
+})
+
+onUnmounted(() => {
+  unsubProgress?.()
+})
 </script>
 
 <template>
@@ -70,6 +97,15 @@ onMounted(refresh)
         </div>
         <div class="book-progress">{{ fmtProgress(b) }}</div>
         <n-space justify="end" style="margin-top:8px">
+          <n-button
+            v-if="hasFailed(b)"
+            size="tiny"
+            type="warning"
+            :loading="retryingId === b.id"
+            @click.stop="handleRetry(b.id)"
+          >
+            重试失败章
+          </n-button>
           <n-popconfirm @positive-click="handleDelete(b.id)">
             <template #trigger>
               <n-button size="tiny" quaternary @click.stop>删除</n-button>

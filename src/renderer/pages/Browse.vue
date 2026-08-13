@@ -131,6 +131,9 @@ onUnmounted(() => {
           <div v-if="downloadProgress.currentTitle" class="dl-current">
             正在下载：{{ downloadProgress.currentTitle }}
           </div>
+          <div v-if="downloadProgress.lastError" class="dl-error">
+            错误：{{ downloadProgress.lastError }}
+          </div>
           <n-button
             v-if="downloading"
             size="small"
@@ -171,6 +174,12 @@ onUnmounted(() => {
 .dl-current {
   font-size: 12px;
   color: #999;
+  margin-top: 4px;
+}
+
+.dl-error {
+  font-size: 12px;
+  color: #e88080;
   margin-top: 4px;
 }
 </style>
