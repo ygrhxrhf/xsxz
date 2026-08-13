@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AiChatMessage, BrowseState, DownloadProgress, Settings, SettingsUpdate } from '../shared/types'
+import type { AiChatMessage, BookListItem, BrowseState, ChapterFile, DownloadProgress, ReadingProgress, Settings, SettingsUpdate } from '../shared/types'
 
 type Unsub = () => void
 
@@ -10,6 +10,9 @@ function on<T>(channel: string, handler: (payload: T) => void): Unsub {
 }
 
 const api = {
+  dialog: {
+    openFile: () => ipcRenderer.invoke('dialog.openFile') as Promise<{ filePaths: string[] }>,
+  },
   browse: {
     load: (url: string) => ipcRenderer.invoke('browse.load', { url }),
     back: () => ipcRenderer.invoke('browse.back'),
@@ -23,13 +26,13 @@ const api = {
     onState: (handler: (payload: BrowseState) => void) => on('browse.state', handler),
   },
   library: {
-    list: () => ipcRenderer.invoke('library.list'),
-    get: (bookId: string) => ipcRenderer.invoke('library.get', { bookId }),
+    list: () => ipcRenderer.invoke('library.list') as Promise<{ books: BookListItem[] }>,
+    get: (bookId: string) => ipcRenderer.invoke('library.get', { bookId }) as Promise<{ book?: import('../shared/types').Book; ok?: false; message?: string }>,
     readChapter: (bookId: string, chapterId: string) =>
-      ipcRenderer.invoke('library.readChapter', { bookId, chapterId }),
+      ipcRenderer.invoke('library.readChapter', { bookId, chapterId }) as Promise<{ chapter?: ChapterFile; ok?: false; message?: string }>,
     delete: (bookId: string) => ipcRenderer.invoke('library.delete', { bookId }),
-    import: (filePath: string) => ipcRenderer.invoke('library.import', { filePath }),
-    setProgress: (bookId: string, progress: unknown) =>
+    import: (filePath: string) => ipcRenderer.invoke('library.import', { filePath }) as Promise<{ ok: boolean; bookId?: string; message?: string }>,
+    setProgress: (bookId: string, progress: ReadingProgress) =>
       ipcRenderer.invoke('library.setProgress', { bookId, progress }),
     updateChapterBody: (bookId: string, chapterId: string, body: string, restoreRaw?: boolean) =>
       ipcRenderer.invoke('library.updateChapterBody', { bookId, chapterId, body, restoreRaw }),

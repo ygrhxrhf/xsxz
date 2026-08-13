@@ -19,6 +19,16 @@
 
 ---
 
+## 对话框
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `dialog.openFile` | invoke | 无 | `{ filePaths: string[] }` |
+
+用于导入文件，主进程打开原生选择对话框。
+
+---
+
 ## 浏览
 
 | 频道 | 方向 | 请求 | 响应 |
@@ -98,6 +108,7 @@
 
 ```ts
 window.api = {
+  dialog: { openFile },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, onUrl, onState },
   library: { list, get, readChapter, delete, import, setProgress, updateChapterBody },
   download: { start, cancel, retryFailed, onProgress },

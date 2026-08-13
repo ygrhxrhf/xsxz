@@ -1,6 +1,10 @@
-import { app, BrowserWindow, ipcMain, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { BrowseState } from '../shared/types'
+import type { BrowseState, SettingsUpdate } from '../shared/types'
+import { ensureLibrary, listBooks, getBook, readChapter, deleteBook, setProgress, updateChapterBody } from './library'
+import { importTxt } from './importTxt'
+import { importEpub } from './importEpub'
+import { getSettings, updateSettings } from './settings'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -150,42 +154,96 @@ function registerIpc(): void {
     return { ok: true }
   })
 
-  const notReady = () => ({ ok: false, message: '尚未实现（P1+）' })
-  ipcMain.handle('library.list', async () => ({ books: [] }))
-  ipcMain.handle('library.get', async () => notReady())
-  ipcMain.handle('library.readChapter', async () => notReady())
-  ipcMain.handle('library.delete', async () => notReady())
-  ipcMain.handle('library.import', async () => notReady())
-  ipcMain.handle('library.setProgress', async () => ({ ok: true }))
-  ipcMain.handle('library.updateChapterBody', async () => notReady())
+  const notReady = () => ({ ok: false, message: '尚未实现（P2+）' })
+
+  // dialog
+  ipcMain.handle('dialog.openFile', async () => {
+    if (!mainWindow) return { filePaths: [] }
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择要导入的文件',
+      filters: [{ name: '小说文件', extensions: ['txt', 'epub'] }],
+      properties: ['openFile'],
+    })
+    return { filePaths: result.filePaths }
+  })
+
+  // library
+  ipcMain.handle('library.list', async () => {
+    const books = await listBooks()
+    return { books }
+  })
+  ipcMain.handle('library.get', async (_e, { bookId }: { bookId: string }) => {
+    try {
+      const book = await getBook(bookId)
+      return { book }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
+  ipcMain.handle('library.readChapter', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {
+    try {
+      const chapter = await readChapter(bookId, chapterId)
+      return { chapter }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
+  ipcMain.handle('library.delete', async (_e, { bookId }: { bookId: string }) => {
+    try {
+      await deleteBook(bookId)
+      return { ok: true }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
+  ipcMain.handle('library.import', async (_e, { filePath }: { filePath: string }) => {
+    try {
+      const ext = filePath.toLowerCase().split('.').pop()
+      const result = ext === 'epub' ? await importEpub(filePath) : await importTxt(filePath)
+      return { ok: true, bookId: result.bookId }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
+  ipcMain.handle('library.setProgress', async (_e, { bookId, progress }: { bookId: string; progress: unknown }) => {
+    try {
+      await setProgress(bookId, progress as import('../shared/types').ReadingProgress)
+      return { ok: true }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
+  ipcMain.handle('library.updateChapterBody', async (_e, args: { bookId: string; chapterId: string; body: string; restoreRaw?: boolean }) => {
+    try {
+      await updateChapterBody(args.bookId, args.chapterId, args.body, args.restoreRaw)
+      return { ok: true }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
+
+  // download (P2 stubs)
   ipcMain.handle('download.start', async () => ({
     ok: false,
     code: 'UnknownPage',
-    message: '下载将在后续版本提供',
+    message: '下载将在 P2 版本提供',
   }))
   ipcMain.handle('download.cancel', async () => ({ ok: true }))
   ipcMain.handle('download.retryFailed', async () => notReady())
-  ipcMain.handle('settings.get', async () => ({
-    libraryPath: 'D:\\spbf\\library',
-    baseUrl: 'https://api.deepseek.com/v1',
-    model: 'deepseek-chat',
-    apiKeyConfigured: false,
-    reader: { fontSize: 18, lineHeight: 1.8, nightMode: false },
-  }))
-  ipcMain.handle('settings.set', async (_e, update: Record<string, unknown>) => ({
-    libraryPath: 'D:\\spbf\\library',
-    baseUrl: typeof update?.baseUrl === 'string' ? update.baseUrl : 'https://api.deepseek.com/v1',
-    model: typeof update?.model === 'string' ? update.model : 'deepseek-chat',
-    apiKeyConfigured: false,
-    reader: { fontSize: 18, lineHeight: 1.8, nightMode: false },
-  }))
+
+  // settings
+  ipcMain.handle('settings.get', async () => getSettings())
+  ipcMain.handle('settings.set', async (_e, update: SettingsUpdate) => updateSettings(update))
+
+  // AI (P3 stubs)
   ipcMain.handle('ai.clean', async () => ({ ok: false, message: '请先在设置中配置 API Key（P3）' }))
   ipcMain.handle('ai.summarize', async () => ({ ok: false, message: '请先在设置中配置 API Key（P3）' }))
   ipcMain.handle('ai.translate', async () => ({ ok: false, message: '请先在设置中配置 API Key（P3）' }))
   ipcMain.handle('ai.chat', async () => ({ ok: false, message: '请先在设置中配置 API Key（P3）' }))
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await ensureLibrary()
   registerIpc()
   createWindow()
   app.on('activate', () => {
