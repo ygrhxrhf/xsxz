@@ -4,8 +4,9 @@ import type { BrowseState, SettingsUpdate } from '../shared/types'
 import { ensureLibrary, listBooks, getBook, readChapter, deleteBook, setProgress, updateChapterBody } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
-import { getSettings, updateSettings } from './settings'
+import { getSettings, updateSettings, getApiKey } from './settings'
 import { startDownload, cancelDownload, retryFailed, setOwnerWindow } from './download'
+import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook } from './ai'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -237,11 +238,68 @@ function registerIpc(): void {
   ipcMain.handle('settings.get', async () => getSettings())
   ipcMain.handle('settings.set', async (_e, update: SettingsUpdate) => updateSettings(update))
 
-  // AI (P3 stubs)
-  ipcMain.handle('ai.clean', async () => ({ ok: false, message: '请先在设置中配置 API Key（P3）' }))
-  ipcMain.handle('ai.summarize', async () => ({ ok: false, message: '请先在设置中配置 API Key（P3）' }))
-  ipcMain.handle('ai.translate', async () => ({ ok: false, message: '请先在设置中配置 API Key（P3）' }))
-  ipcMain.handle('ai.chat', async () => ({ ok: false, message: '请先在设置中配置 API Key（P3）' }))
+  // AI
+  ipcMain.handle('ai.clean', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {
+    try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const ch = await readChapter(bookId, chapterId)
+      const result = await cleanChapterBody({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, ch.title, ch.body)
+      return { ok: true, result }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
+  ipcMain.handle('ai.summarize', async (_e, { bookId, uptoChapterId }: { bookId: string; uptoChapterId: string }) => {
+    try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const book = await getBook(bookId)
+      const uptoIdx = book.chapters.findIndex((c) => c.id === uptoChapterId)
+      const readChapters = book.chapters.slice(0, uptoIdx + 1).filter((c) => c.status === 'ready')
+      const summaries: { title: string; body: string }[] = []
+      for (const ch of readChapters.slice(-10)) {
+        try {
+          const file = await readChapter(bookId, ch.id)
+          summaries.push({ title: ch.title, body: file.body })
+        } catch { /* skip */ }
+      }
+      const text = await summarizeUpTo({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, book.title, summaries)
+      return { ok: true, text }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
+  ipcMain.handle('ai.translate', async (_e, { text }: { text: string }) => {
+    try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const result = await translateText({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, text)
+      return { ok: true, text: result }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
+  ipcMain.handle('ai.chat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
+    try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const book = await getBook(args.bookId)
+      const ch = await readChapter(args.bookId, args.chapterId)
+      const catalogSummary = book.chapters.map((c) => c.title).join('、')
+      const text = await chatAboutBook(
+        { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+        book.title, ch.title, ch.body, catalogSummary, '', args.messages,
+      )
+      return { ok: true, text }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
 }
 
 app.whenReady().then(async () => {

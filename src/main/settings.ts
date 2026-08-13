@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, safeStorage } from 'electron'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ReaderPrefs, Settings } from '../shared/types'
@@ -26,6 +26,16 @@ async function saveRaw(raw: Record<string, unknown>): Promise<void> {
   cache = raw
 }
 
+export async function getApiKey(): Promise<string> {
+  const raw = await loadRaw()
+  if (typeof raw.apiKeyEnc !== 'string' || !raw.apiKeyEnc) return ''
+  try {
+    return safeStorage.decryptString(Buffer.from(raw.apiKeyEnc, 'base64'))
+  } catch {
+    return ''
+  }
+}
+
 export async function getSettings(): Promise<Settings> {
   const raw = await loadRaw()
   const reader = (raw.reader as Partial<ReaderPrefs>) || {}
@@ -48,8 +58,11 @@ export async function updateSettings(update: Partial<Settings> & { apiKey?: stri
   if (typeof update.baseUrl === 'string') raw.baseUrl = update.baseUrl
   if (typeof update.model === 'string') raw.model = update.model
   if (typeof update.apiKey === 'string') {
-    // P3 will add safeStorage encryption; for now store as-is (dev only)
-    raw.apiKeyEnc = update.apiKey || undefined
+    if (update.apiKey) {
+      raw.apiKeyEnc = safeStorage.encryptString(update.apiKey).toString('base64')
+    } else {
+      delete raw.apiKeyEnc
+    }
   }
   if (update.reader) {
     const prev = (raw.reader as Record<string, unknown>) || {}

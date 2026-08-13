@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NEmpty } from 'naive-ui'
-import type { Book, ChapterFile, ChapterMeta, ReaderPrefs } from '@shared/types'
+import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace, NPopover } from 'naive-ui'
+import type { Book, ChapterFile, ChapterMeta, AiChatMessage, ReaderPrefs } from '@shared/types'
 
 const props = defineProps<{ bookId?: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
@@ -18,6 +18,16 @@ const showDrawer = ref(false)
 const fontSize = ref(18)
 const lineHeight = ref(1.8)
 const nightMode = ref(false)
+
+// AI state
+const aiLoading = ref(false)
+const aiResult = ref('')
+const aiResultTitle = ref('')
+const showAiResult = ref(false)
+const showChat = ref(false)
+const chatMessages = ref<AiChatMessage[]>([])
+const chatInput = ref('')
+const chatLoading = ref(false)
 
 // Debounced scroll save
 let scrollTimer: ReturnType<typeof setTimeout> | null = null
@@ -114,6 +124,92 @@ async function loadPrefs() {
   nightMode.value = s.reader.nightMode
 }
 
+// AI actions
+async function aiCleanBody() {
+  if (!book.value || !currentChapter.value) return
+  aiLoading.value = true
+  aiResultTitle.value = '清正文'
+  try {
+    const res = await window.api.ai.clean(book.value.id, currentChapter.value.id)
+    if (res.ok && res.result) {
+      aiResult.value = res.result.cleaned
+      showAiResult.value = true
+    } else {
+      window.alert(res.message || '清正文失败')
+    }
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+async function applyCleanedBody() {
+  if (!book.value || !currentChapter.value || !aiResult.value) return
+  await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, aiResult.value)
+  chapterBody.value = aiResult.value
+  showAiResult.value = false
+}
+
+async function aiSummarize() {
+  if (!book.value || !currentChapter.value) return
+  aiLoading.value = true
+  aiResultTitle.value = '前情摘要'
+  try {
+    const res = await window.api.ai.summarize(book.value.id, currentChapter.value.id)
+    if (res.ok) {
+      aiResult.value = res.text
+      showAiResult.value = true
+    } else {
+      window.alert(res.message || '摘要失败')
+    }
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+function getSelectedText(): string {
+  const sel = window.getSelection()
+  return sel ? sel.toString().trim() : ''
+}
+
+async function aiTranslate() {
+  const text = getSelectedText()
+  if (!text) {
+    window.alert('请先在正文中选中要翻译的文字')
+    return
+  }
+  aiLoading.value = true
+  aiResultTitle.value = '翻译'
+  try {
+    const res = await window.api.ai.translate(text)
+    if (res.ok) {
+      aiResult.value = res.text
+      showAiResult.value = true
+    } else {
+      window.alert(res.message || '翻译失败')
+    }
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+async function sendChat() {
+  if (!book.value || !currentChapter.value || !chatInput.value.trim()) return
+  const userMsg = chatInput.value.trim()
+  chatMessages.value.push({ role: 'user', content: userMsg })
+  chatInput.value = ''
+  chatLoading.value = true
+  try {
+    const res = await window.api.ai.chat(book.value.id, currentChapter.value.id, chatMessages.value)
+    if (res.ok) {
+      chatMessages.value.push({ role: 'assistant', content: res.text })
+    } else {
+      chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
+    }
+  } finally {
+    chatLoading.value = false
+  }
+}
+
 watch([fontSize, lineHeight, nightMode], () => {
   void window.api.settings.set({
     reader: { fontSize: fontSize.value, lineHeight: lineHeight.value, nightMode: nightMode.value },
@@ -161,6 +257,15 @@ onUnmounted(() => {
           <div class="control-label" style="margin-top:8px">
             <n-switch v-model:value="nightMode" /> 夜间
           </div>
+          <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+            <div class="control-label" style="margin-bottom:6px;font-weight:600">AI 助手</div>
+            <n-space vertical :size="6">
+              <n-button size="tiny" block :loading="aiLoading" @click="aiCleanBody">清正文</n-button>
+              <n-button size="tiny" block :loading="aiLoading" @click="aiSummarize">前情摘要</n-button>
+              <n-button size="tiny" block :loading="aiLoading" @click="aiTranslate">翻译选中</n-button>
+              <n-button size="tiny" block @click="showChat = true">聊书</n-button>
+            </n-space>
+          </div>
         </div>
 
         <!-- Text area -->
@@ -201,6 +306,49 @@ onUnmounted(() => {
               </div>
             </n-list-item>
           </n-list>
+        </n-drawer-content>
+      </n-drawer>
+
+      <!-- AI result drawer -->
+      <n-drawer v-model:show="showAiResult" placement="right" :width="420">
+        <n-drawer-content :title="aiResultTitle" closable>
+          <div class="ai-result">{{ aiResult }}</div>
+          <template #footer>
+            <n-space v-if="aiResultTitle === '清正文'">
+              <n-button type="primary" size="small" @click="applyCleanedBody">应用到正文</n-button>
+              <n-button size="small" @click="showAiResult = false">取消</n-button>
+            </n-space>
+          </template>
+        </n-drawer-content>
+      </n-drawer>
+
+      <!-- Chat drawer -->
+      <n-drawer v-model:show="showChat" placement="right" :width="420">
+        <n-drawer-content title="聊书" closable>
+          <div class="chat-messages">
+            <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
+              <div class="chat-bubble">{{ msg.content }}</div>
+            </div>
+            <div v-if="chatLoading" class="chat-msg assistant">
+              <div class="chat-bubble">思考中…</div>
+            </div>
+            <div v-if="chatMessages.length === 0 && !chatLoading" class="chat-empty">
+              问点什么吧，比如「这章讲了什么」「主角是谁」「推荐类似小说」
+            </div>
+          </div>
+          <template #footer>
+            <div class="chat-input-row">
+              <n-input
+                v-model:value="chatInput"
+                placeholder="输入问题…"
+                :disabled="chatLoading"
+                @keyup.enter="sendChat"
+              />
+              <n-button type="primary" :loading="chatLoading" :disabled="!chatInput.trim()" @click="sendChat">
+                发送
+              </n-button>
+            </div>
+          </template>
         </n-drawer-content>
       </n-drawer>
     </template>
@@ -320,5 +468,67 @@ onUnmounted(() => {
 .ch-item.active {
   color: #7c9cff;
   font-weight: 600;
+}
+
+.ai-result {
+  white-space: pre-wrap;
+  line-height: 1.8;
+  font-size: 14px;
+  padding: 0 4px;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-msg {
+  display: flex;
+  padding: 0 12px;
+}
+
+.chat-msg.user {
+  justify-content: flex-end;
+}
+
+.chat-msg.assistant {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.chat-msg.user .chat-bubble {
+  background: #3a5ba0;
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-msg.assistant .chat-bubble {
+  background: #2a2a2a;
+  color: #e0e0e0;
+  border-bottom-left-radius: 4px;
+}
+
+.chat-empty {
+  text-align: center;
+  color: #666;
+  padding: 40px 20px;
+  font-size: 13px;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 8px;
 }
 </style>
