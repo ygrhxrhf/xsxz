@@ -50,6 +50,7 @@ async function loadBook(bookId: string) {
 
 async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
   if (!book.value) return
+  saveProgress()
   chapterLoading.value = true
   try {
     const res = await window.api.library.readChapter(book.value.id, ch.id)
@@ -208,18 +209,23 @@ onUnmounted(() => {
 
 <style scoped>
 .reader-wrap {
+  --bg: #161616;
+  --text: #f2f2f2;
+  --line: #2c2c2c;
+  --ctrl-bg: #1e1e1e;
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg, #161616);
+  background: var(--bg);
+  color: var(--text);
+  transition: background .2s, color .2s;
 }
 
 .reader-wrap.night {
   --bg: #0e0e0e;
   --text: #d4d4d4;
   --line: #222;
-  background: var(--bg);
-  color: var(--text);
+  --ctrl-bg: #151515;
 }
 
 .reader-bar {
@@ -228,7 +234,8 @@ onUnmounted(() => {
   justify-content: space-between;
   padding: 0 16px;
   height: 44px;
-  border-bottom: 1px solid var(--line, #2c2c2c);
+  border-bottom: 1px solid var(--line);
+  background: var(--ctrl-bg);
   flex-shrink: 0;
 }
 
@@ -252,7 +259,8 @@ onUnmounted(() => {
 .reader-controls {
   width: 160px;
   padding: 16px;
-  border-right: 1px solid var(--line, #2c2c2c);
+  border-right: 1px solid var(--line);
+  background: var(--ctrl-bg);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -296,7 +304,8 @@ onUnmounted(() => {
   justify-content: center;
   gap: 16px;
   padding: 8px 16px;
-  border-top: 1px solid var(--line, #2c2c2c);
+  border-top: 1px solid var(--line);
+  background: var(--ctrl-bg);
   flex-shrink: 0;
 }
 
