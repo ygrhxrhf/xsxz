@@ -1,4 +1,4 @@
-import { BrowserWindow, WebContentsView, ipcMain, session } from 'electron'
+import { BrowserWindow, WebContentsView, session } from 'electron'
 import { extractPage, extractCatalog, extractBody } from './extract'
 import {
   createBookFromBootstrap,
@@ -7,7 +7,6 @@ import {
   markChapterReady,
   saveBook,
   bookIdFromUrl,
-  getLibraryPath,
 } from './library'
 import type { DownloadProgress, ExtractBootstrap, FailCode, ChapterFile } from '../shared/types'
 
@@ -105,6 +104,10 @@ function extractBodyFromHtml(html: string, url: string): { body: string; ok: boo
 // ---------------------------------------------------------------------------
 
 export async function startDownload(): Promise<{ ok: boolean; bookId?: string; code?: FailCode; message?: string }> {
+  if (active.size > 0) {
+    return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
+  }
+
   const view = getHiddenView()
   const currentUrl = ownerWindow?.webContents.getURL() || ''
 
