@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
-import type { BrowseState } from '@shared/types'
+import { NButton, NDrawer, NDrawerContent, NProgress, NTag } from 'naive-ui'
+import type { BrowseState, DownloadProgress } from '@shared/types'
 
 const address = ref('')
 const state = ref<BrowseState>({
@@ -13,6 +14,11 @@ const state = ref<BrowseState>({
 const slot = ref<HTMLElement | null>(null)
 let ro: ResizeObserver | null = null
 const unsubs: Array<() => void> = []
+
+// Download state
+const downloading = ref(false)
+const downloadProgress = ref<DownloadProgress | null>(null)
+const showProgress = ref(false)
 
 function reportBounds() {
   const el = slot.value
@@ -33,6 +39,22 @@ async function go() {
   }
 }
 
+async function startDownload() {
+  downloading.value = true
+  showProgress.value = true
+  const res = await window.api.download.start()
+  if (!res.ok) {
+    window.alert(res.message || '下载失败')
+    downloading.value = false
+    return
+  }
+  // Progress will come via IPC
+}
+
+async function cancelDownload() {
+  await window.api.download.cancel()
+}
+
 function onSubmit(e: Event) {
   e.preventDefault()
   void go()
@@ -50,6 +72,12 @@ onMounted(async () => {
   }))
   unsubs.push(window.api.browse.onUrl(({ url }) => {
     if (url && url !== 'about:blank') address.value = url
+  }))
+  unsubs.push(window.api.download.onProgress((p) => {
+    downloadProgress.value = p
+    if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
+      downloading.value = false
+    }
   }))
 })
 
@@ -70,7 +98,79 @@ onUnmounted(() => {
       </button>
       <input v-model="address" placeholder="粘贴或输入网址，回车打开" spellcheck="false" />
       <button type="submit">打开</button>
+      <n-button
+        type="primary"
+        size="small"
+        :disabled="downloading || !address"
+        :loading="downloading"
+        @click.prevent="startDownload"
+      >
+        下载本书
+      </n-button>
     </form>
     <div ref="slot" class="browse-slot" />
+
+    <!-- Download progress drawer -->
+    <n-drawer v-model:show="showProgress" placement="bottom" :height="200">
+      <n-drawer-content title="下载进度" closable>
+        <div v-if="downloadProgress" class="dl-progress">
+          <div class="dl-title">{{ downloadProgress.title }}</div>
+          <n-progress
+            type="line"
+            :percentage="downloadProgress.total > 0 ? Math.round((downloadProgress.done + downloadProgress.failed) / downloadProgress.total * 100) : 0"
+            :status="downloadProgress.status === 'error' ? 'error' : downloadProgress.status === 'done' ? 'success' : 'default'"
+          />
+          <div class="dl-stats">
+            <span>已下 {{ downloadProgress.done }} / {{ downloadProgress.total }} 章</span>
+            <n-tag v-if="downloadProgress.failed > 0" size="small" type="warning">
+              {{ downloadProgress.failed }} 失败
+            </n-tag>
+            <n-tag v-if="downloadProgress.status === 'done'" size="small" type="success">完成</n-tag>
+            <n-tag v-if="downloadProgress.status === 'error'" size="small" type="error">有失败</n-tag>
+          </div>
+          <div v-if="downloadProgress.currentTitle" class="dl-current">
+            正在下载：{{ downloadProgress.currentTitle }}
+          </div>
+          <n-button
+            v-if="downloading"
+            size="small"
+            quaternary
+            type="error"
+            @click="cancelDownload"
+            style="margin-top:8px"
+          >
+            取消下载
+          </n-button>
+        </div>
+        <div v-else style="color:#888;text-align:center;padding:24px">等待下载开始…</div>
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
+
+<style scoped>
+.dl-progress {
+  padding: 8px 0;
+}
+
+.dl-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.dl-stats {
+  font-size: 13px;
+  color: #888;
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dl-current {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
+}
+</style>

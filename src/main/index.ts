@@ -5,6 +5,7 @@ import { ensureLibrary, listBooks, getBook, readChapter, deleteBook, setProgress
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { getSettings, updateSettings } from './settings'
+import { startDownload, cancelDownload, retryFailed, setOwnerWindow } from './download'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -106,6 +107,8 @@ function createWindow(): void {
     mainWindow = null
     browseView = null
   })
+
+  setOwnerWindow(mainWindow)
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -222,14 +225,13 @@ function registerIpc(): void {
     }
   })
 
-  // download (P2 stubs)
-  ipcMain.handle('download.start', async () => ({
-    ok: false,
-    code: 'UnknownPage',
-    message: '下载将在 P2 版本提供',
-  }))
-  ipcMain.handle('download.cancel', async () => ({ ok: true }))
-  ipcMain.handle('download.retryFailed', async () => notReady())
+  // download
+  ipcMain.handle('download.start', async () => startDownload())
+  ipcMain.handle('download.cancel', async (_e, { bookId }: { bookId?: string }) => {
+    cancelDownload(bookId)
+    return { ok: true }
+  })
+  ipcMain.handle('download.retryFailed', async (_e, { bookId }: { bookId: string }) => retryFailed(bookId))
 
   // settings
   ipcMain.handle('settings.get', async () => getSettings())
