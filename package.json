@@ -14,13 +14,17 @@
     "jszip": "^3.10.1"
   },
   "devDependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^26.2.0",
     "@vitejs/plugin-vue": "^6.0.8",
     "electron": "^43.4.0",
     "electron-vite": "^5.0.0",
+    "jsdom": "^30.0.1",
     "naive-ui": "^2.44.1",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
+    "vitest": "^4.1.10",
     "vue": "^3.5.41"
   },
   "allowScripts": {
