@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace, NPopover } from 'naive-ui'
-import type { Book, ChapterFile, ChapterMeta, AiChatMessage, ReaderPrefs } from '@shared/types'
+import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace } from 'naive-ui'
+import { FAIL_CODE_ZH } from '@shared/types'
+import type { Book, ChapterMeta, AiChatMessage } from '@shared/types'
 
 const props = defineProps<{ bookId?: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
@@ -10,6 +11,8 @@ const book = ref<Book | null>(null)
 const chapters = ref<ChapterMeta[]>([])
 const currentChapter = ref<ChapterMeta | null>(null)
 const chapterBody = ref('')
+const chapterError = ref('')
+const hasBodyRaw = ref(false)
 const chapterLoading = ref(false)
 const contentRef = ref<HTMLElement | null>(null)
 const showDrawer = ref(false)
@@ -29,6 +32,8 @@ const chatMessages = ref<AiChatMessage[]>([])
 const chatInput = ref('')
 const chatLoading = ref(false)
 
+const prefsReady = ref(false)
+
 // Debounced scroll save
 let scrollTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -37,12 +42,15 @@ const contentStyle = computed(() => ({
   fontSize: fontSize.value + 'px',
   lineHeight: lineHeight.value,
 }))
+const chapterReady = computed(() => Boolean(currentChapter.value && currentChapter.value.status === 'ready' && chapterBody.value))
 
 async function loadBook(bookId: string) {
+  saveProgress()
   const res = await window.api.library.get(bookId)
   if (res.book) {
     book.value = res.book
     chapters.value = res.book.chapters
+    currentChapter.value = null
     // Restore progress
     if (res.book.progress) {
       const ch = chapters.value.find((c) => c.id === res.book!.progress!.chapterId)
@@ -60,16 +68,28 @@ async function loadBook(bookId: string) {
 
 async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
   if (!book.value) return
-  saveProgress()
+  if (currentChapter.value && currentChapter.value.id !== ch.id) saveProgress()
   chapterLoading.value = true
   try {
     const res = await window.api.library.readChapter(book.value.id, ch.id)
     if (res.chapter) {
-      currentChapter.value = ch
-      chapterBody.value = res.chapter.body
+      currentChapter.value = { ...ch, status: res.chapter.status, failCode: res.chapter.failCode }
+      chapterBody.value = res.chapter.body || ''
+      hasBodyRaw.value = Boolean(res.chapter.bodyRaw) && res.chapter.bodyRaw !== res.chapter.body
+      const failText = res.chapter.failCode ? FAIL_CODE_ZH[res.chapter.failCode] : ''
+      if (res.chapter.status !== 'ready' || !res.chapter.body) {
+        chapterError.value = failText || (res.chapter.status === 'pending' ? '这一章还没下载' : '这一章没有正文')
+      } else {
+        chapterError.value = ''
+      }
       showDrawer.value = false
       await nextTick()
       scrollToRatio(scrollRatio)
+    } else {
+      currentChapter.value = ch
+      chapterBody.value = ''
+      hasBodyRaw.value = false
+      chapterError.value = res.message || '无法打开这一章'
     }
   } finally {
     chapterLoading.value = false
@@ -146,7 +166,22 @@ async function applyCleanedBody() {
   if (!book.value || !currentChapter.value || !aiResult.value) return
   await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, aiResult.value)
   chapterBody.value = aiResult.value
+  hasBodyRaw.value = true
   showAiResult.value = false
+}
+
+async function restoreCleanedBody() {
+  if (!book.value || !currentChapter.value) return
+  const res = await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, '', true)
+  if (res && 'ok' in res && res.ok === false) {
+    window.alert((res as { message?: string }).message || '撤销失败')
+    return
+  }
+  const ch = await window.api.library.readChapter(book.value.id, currentChapter.value.id)
+  if (ch.chapter) {
+    chapterBody.value = ch.chapter.body
+    hasBodyRaw.value = false
+  }
 }
 
 async function aiSummarize() {
@@ -211,6 +246,7 @@ async function sendChat() {
 }
 
 watch([fontSize, lineHeight, nightMode], () => {
+  if (!prefsReady.value) return
   void window.api.settings.set({
     reader: { fontSize: fontSize.value, lineHeight: lineHeight.value, nightMode: nightMode.value },
   })
@@ -218,9 +254,10 @@ watch([fontSize, lineHeight, nightMode], () => {
 
 watch(() => props.bookId, (id) => { if (id) loadBook(id) })
 
-onMounted(() => {
-  loadPrefs()
-  if (props.bookId) loadBook(props.bookId)
+onMounted(async () => {
+  await loadPrefs()
+  prefsReady.value = true
+  if (props.bookId) await loadBook(props.bookId)
 })
 
 onUnmounted(() => {
@@ -260,20 +297,22 @@ onUnmounted(() => {
           <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
             <div class="control-label" style="margin-bottom:6px;font-weight:600">AI 助手</div>
             <n-space vertical :size="6">
-              <n-button size="tiny" block :loading="aiLoading" @click="aiCleanBody">清正文</n-button>
-              <n-button size="tiny" block :loading="aiLoading" @click="aiSummarize">前情摘要</n-button>
-              <n-button size="tiny" block :loading="aiLoading" @click="aiTranslate">翻译选中</n-button>
-              <n-button size="tiny" block @click="showChat = true">聊书</n-button>
+              <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCleanBody">清正文</n-button>
+              <n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button>
+              <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiSummarize">前情摘要</n-button>
+              <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiTranslate">翻译选中</n-button>
+              <n-button size="tiny" block :disabled="!chapterReady" @click="showChat = true">聊书</n-button>
             </n-space>
           </div>
         </div>
 
         <!-- Text area -->
-        <div class="reader-content" :style="contentStyle" ref="contentRef" @scroll="onScroll">
+        <div class="reader-content reader-pane" :style="contentStyle" ref="contentRef" @scroll="onScroll">
           <div v-if="chapterLoading" class="loading-hint">加载中…</div>
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>
-            <p v-for="(para, i) in chapterBody.split(/\n{2,}/)" :key="i" class="para">{{ para }}</p>
+            <p v-if="chapterError" class="chapter-error">{{ chapterError }}</p>
+            <p v-for="(para, i) in chapterBody.split(/\n{2,}/).filter(Boolean)" :key="i" class="para">{{ para }}</p>
           </template>
         </div>
       </div>
@@ -302,7 +341,9 @@ onUnmounted(() => {
             >
               <div :class="['ch-item', { active: ch.id === currentChapter?.id }]">
                 <span>{{ ch.title }}</span>
-                <n-tag v-if="ch.status === 'failed'" size="tiny" type="error">失败</n-tag>
+                <n-tag v-if="ch.status === 'failed'" size="tiny" type="error">{{ ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败' }}</n-tag>
+                <n-tag v-else-if="ch.status === 'pending'" size="tiny">未下</n-tag>
+                <n-tag v-else-if="ch.status === 'empty'" size="tiny" type="warning">空</n-tag>
               </div>
             </n-list-item>
           </n-list>
@@ -370,10 +411,10 @@ onUnmounted(() => {
 }
 
 .reader-wrap.night {
-  --bg: #0e0e0e;
-  --text: #d4d4d4;
-  --line: #222;
-  --ctrl-bg: #151515;
+  --bg: #050505;
+  --text: #e6d5a2;
+  --line: #1a1a1a;
+  --ctrl-bg: #121212;
 }
 
 .reader-bar {
@@ -426,6 +467,13 @@ onUnmounted(() => {
   padding: 24px 32px;
   max-width: 800px;
   margin: 0 auto;
+  background: #2c2c30;
+  color: #f5f5f5;
+}
+
+.reader-wrap.night .reader-content {
+  background: #000000;
+  color: #e6d5a2;
 }
 
 .ch-title {
@@ -444,6 +492,12 @@ onUnmounted(() => {
   text-align: center;
   color: #888;
   padding: 40px;
+}
+
+.chapter-error {
+  text-align: center;
+  color: #e88080;
+  padding: 16px 8px 24px;
 }
 
 .reader-nav {

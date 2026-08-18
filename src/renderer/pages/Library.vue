@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { NButton, NCard, NEmpty, NIcon, NSpace, NTag, NPopconfirm } from 'naive-ui'
-import { onMounted, onUnmounted, ref } from 'vue'
+import { NButton, NCard, NEmpty, NSpace, NTag, NPopconfirm } from 'naive-ui'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, DownloadProgress } from '@shared/types'
+
+const props = defineProps<{ active?: boolean }>()
 
 const emit = defineEmits<{
   (e: 'open-book', bookId: string): void
@@ -52,17 +54,44 @@ function hasFailed(b: BookListItem): boolean {
   return b.status === 'partial' && b.readyCount < b.chapterCount
 }
 
+function statusLabel(status: BookListItem['status']): string {
+  if (status === 'downloading') return '下载中'
+  if (status === 'ready') return '完整'
+  return '部分'
+}
+
+function statusType(status: BookListItem['status']): 'info' | 'success' | 'warning' {
+  if (status === 'downloading') return 'info'
+  if (status === 'ready') return 'success'
+  return 'warning'
+}
+
 function fmtProgress(b: BookListItem): string {
   if (!b.progress) return `${b.readyCount}/${b.chapterCount} 章`
   return `${b.progress.chapterId} · ${b.readyCount}/${b.chapterCount} 章`
 }
 
+watch(
+  () => props.active,
+  (active) => {
+    if (active) void refresh()
+  },
+)
+
 onMounted(() => {
   refresh()
   unsubProgress = window.api.download.onProgress((p: DownloadProgress) => {
+    if (p.status === 'running' && p.bookId) {
+      const i = books.value.findIndex((b) => b.id === p.bookId)
+      if (i < 0) {
+        void refresh()
+      } else if (books.value[i].status !== 'downloading') {
+        books.value[i] = { ...books.value[i], status: 'downloading' }
+      }
+    }
     if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
       retryingId.value = null
-      refresh()
+      void refresh()
     }
   })
 })
@@ -91,8 +120,8 @@ onUnmounted(() => {
         <div class="book-title">{{ b.title }}</div>
         <div class="book-meta">
           <span v-if="b.author">{{ b.author }}</span>
-          <n-tag size="small" :type="b.status === 'ready' ? 'success' : 'warning'">
-            {{ b.status === 'ready' ? '完整' : '部分' }}
+          <n-tag size="small" :type="statusType(b.status)">
+            {{ statusLabel(b.status) }}
           </n-tag>
         </div>
         <div class="book-progress">{{ fmtProgress(b) }}</div>

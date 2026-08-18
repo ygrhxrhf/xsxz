@@ -17,6 +17,11 @@ body,
   font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
 }
 
+.n-config-provider {
+  display: block;
+  height: 100%;
+}
+
 * {
   box-sizing: border-box;
 }

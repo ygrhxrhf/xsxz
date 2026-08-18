@@ -7,6 +7,7 @@ const settings = ref<Settings | null>(null)
 const baseUrl = ref('')
 const model = ref('')
 const apiKey = ref('')
+const libraryPath = ref('')
 const saving = ref(false)
 const msg = ref('')
 const msgType = ref<'success' | 'error' | 'info'>('info')
@@ -15,6 +16,12 @@ async function load() {
   settings.value = await window.api.settings.get()
   baseUrl.value = settings.value.baseUrl
   model.value = settings.value.model
+  libraryPath.value = settings.value.libraryPath
+}
+
+async function pickLibrary() {
+  const { filePaths } = await window.api.dialog.openDirectory()
+  if (filePaths?.[0]) libraryPath.value = filePaths[0]
 }
 
 async function save() {
@@ -24,13 +31,15 @@ async function save() {
     const update: Record<string, unknown> = {
       baseUrl: baseUrl.value,
       model: model.value,
+      libraryPath: libraryPath.value,
     }
     if (apiKey.value) {
       update.apiKey = apiKey.value
     }
     settings.value = await window.api.settings.set(update as import('@shared/types').SettingsUpdate)
     apiKey.value = ''
-    msg.value = '设置已保存' + (settings.value.apiKeyConfigured ? '（API Key 已加密存储）' : '')
+    libraryPath.value = settings.value.libraryPath
+    msg.value = '设置已保存。书库路径立即生效，不会迁移旧目录里的书。' + (settings.value.apiKeyConfigured ? ' API Key 已加密存储。' : '')
     msgType.value = 'success'
   } catch (e: unknown) {
     msg.value = String(e)
@@ -53,6 +62,20 @@ onMounted(load)
 <template>
   <div class="page" style="max-width:600px">
     <h2>设置</h2>
+
+    <n-card title="书库" style="margin-bottom:16px">
+      <n-space vertical :size="12">
+        <n-input-group>
+          <n-input-group-label style="width:80px">书库路径</n-input-group-label>
+          <n-input v-model:value="libraryPath" placeholder="D:\spbf\library" />
+          <n-button @click="pickLibrary">选择目录</n-button>
+        </n-input-group>
+        <p style="color:#888;font-size:13px;margin:0">
+          保存后立即使用新路径，不会把旧书拷过去。旧目录里的文件仍留在原处。
+        </p>
+        <n-button type="primary" :loading="saving" @click="save">保存路径</n-button>
+      </n-space>
+    </n-card>
 
     <n-card title="AI 配置" style="margin-bottom:16px">
       <n-alert v-if="settings?.apiKeyConfigured" type="success" style="margin-bottom:12px">
@@ -97,7 +120,7 @@ onMounted(load)
 
     <n-card title="关于">
       <p style="color:#888;font-size:13px">
-        小说浏览器 v0.1.0 · 书库路径：{{ settings?.libraryPath }}<br>
+        小说浏览器 v0.1.0 · 当前书库：{{ settings?.libraryPath }}<br>
         技术栈：Electron + Vue 3 + Naive UI
       </p>
     </n-card>
