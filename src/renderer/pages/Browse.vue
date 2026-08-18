@@ -40,6 +40,8 @@ function reportBounds() {
   const el = slot.value
   if (!el) return
   const r = el.getBoundingClientRect()
+  // v-show hide (display:none) yields 0×0; do not overwrite lastBounds with 1×1.
+  if (r.width < 8 || r.height < 8) return
   void window.api.browse.setBounds({
     x: Math.round(r.x),
     y: Math.round(r.y),
