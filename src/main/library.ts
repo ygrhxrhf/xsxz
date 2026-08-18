@@ -1,13 +1,15 @@
 import { mkdir, readFile, writeFile, readdir, rm, stat, cp } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import type {
+  AiSummaries,
   Book,
   BookListItem,
+  CatalogChapter,
   ChapterFile,
   ChapterMeta,
   ChapterStatus,
-  ExtractBootstrap,
+  FailCode,
   ImportType,
   ReadingProgress,
 } from '../shared/types'
@@ -17,15 +19,23 @@ import { DEFAULT_LIBRARY_PATH } from '../shared/types'
 // helpers
 // ---------------------------------------------------------------------------
 
+let currentLibraryPath = DEFAULT_LIBRARY_PATH
+
 export function getLibraryPath(): string {
-  return DEFAULT_LIBRARY_PATH
+  return currentLibraryPath
+}
+
+export async function setLibraryPath(next: string): Promise<void> {
+  const trimmed = (next || '').trim() || DEFAULT_LIBRARY_PATH
+  currentLibraryPath = trimmed
+  await ensureLibrary()
 }
 
 export function bookDir(bookId: string): string {
   return join(getLibraryPath(), bookId)
 }
 
-function chapterFile(bookId: string, file: string): string {
+function chapterPath(bookId: string, file: string): string {
   return join(bookDir(bookId), file)
 }
 
@@ -36,12 +46,42 @@ function indexFile(): string {
 export function bookIdFromUrl(host: string, catalogUrl: string): string {
   const u = new URL(catalogUrl)
   u.hash = ''
-  const clean = (host + '\n' + u.toString().replace(/[?&](page|utm_[^=]*)=[^&]*/gi, '').replace(/\/+$/, '')).toLowerCase()
+  for (const key of [...u.searchParams.keys()]) {
+    const lower = key.toLowerCase()
+    if (lower === 'page' || lower.startsWith('utm_')) u.searchParams.delete(key)
+  }
+  let href = u.toString()
+  href = href.replace(/[?&]+$/g, '')
+  href = href.replace(/\/+$/, '')
+  const clean = `${host}\n${href}`.toLowerCase()
   return 'd_' + createHash('sha256').update(clean).digest('hex').slice(0, 16)
+}
+
+export function assertImportable(
+  filePath: string,
+): { ok: true } | { ok: false; message: string } {
+  const ext = extname(filePath || '').toLowerCase()
+  if (ext === '.txt' || ext === '.epub') return { ok: true }
+  const typeLabel = ext ? ext.slice(1) : '无后缀'
+  return {
+    ok: false,
+    message: `不支持的文件类型「${typeLabel}」，仅接受 txt / epub`,
+  }
 }
 
 export function bookIdFromBytes(bytes: Uint8Array): string {
   return 'i_' + createHash('sha256').update(Buffer.from(bytes)).digest('hex').slice(0, 16)
+}
+
+export function normalizeChapterUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    u.hash = ''
+    u.hostname = u.hostname.toLowerCase()
+    return u.toString().replace(/\/+$/, '')
+  } catch {
+    return url
+  }
 }
 
 function now(): string {
@@ -50,6 +90,50 @@ function now(): string {
 
 function pad4(n: number): string {
   return String(n).padStart(4, '0')
+}
+
+function applyOverallStatus(book: Book): void {
+  const allReady = book.chapters.length > 0 && book.chapters.every((c) => c.status === 'ready' || c.status === 'empty')
+  book.status = allReady ? 'ready' : 'partial'
+}
+
+/** Merge catalog entries into an existing book. Ready chapters stay; new ones append. Does not persist. */
+export function mergeIncomingChapters(book: Book, incoming: CatalogChapter[]): { added: number } {
+  const byUrl = new Map<string, ChapterMeta>()
+  const byTitle = new Map<string, ChapterMeta>()
+  for (const ch of book.chapters) {
+    if (ch.url) byUrl.set(normalizeChapterUrl(ch.url), ch)
+    const titleKey = ch.title.trim()
+    if (titleKey && !byTitle.has(titleKey)) byTitle.set(titleKey, ch)
+  }
+
+  let nextIndex = book.chapters.length ? Math.max(...book.chapters.map((c) => c.index)) : 0
+  let added = 0
+
+  for (const inc of incoming) {
+    const nurl = inc.url ? normalizeChapterUrl(inc.url) : ''
+    const titleKey = inc.title.trim()
+    const existing = (nurl && byUrl.get(nurl)) || (titleKey ? byTitle.get(titleKey) : undefined)
+    if (existing) {
+      if (inc.url && !existing.url) existing.url = inc.url
+      if (nurl) byUrl.set(nurl, existing)
+      continue
+    }
+    nextIndex++
+    const meta: ChapterMeta = {
+      id: `c${pad4(nextIndex)}`,
+      index: nextIndex,
+      title: inc.title,
+      url: inc.url,
+      file: `chapters/${pad4(nextIndex)}.json`,
+      status: 'pending',
+    }
+    book.chapters.push(meta)
+    if (nurl) byUrl.set(nurl, meta)
+    if (titleKey && !byTitle.has(titleKey)) byTitle.set(titleKey, meta)
+    added++
+  }
+  return { added }
 }
 
 // ---------------------------------------------------------------------------
@@ -70,23 +154,17 @@ interface IndexData {
   books: BookListItem[]
 }
 
-async function readIndex(): Promise<IndexData> {
-  try {
-    return JSON.parse(await readFile(indexFile(), 'utf-8'))
-  } catch {
-    return { version: 1, books: [] }
-  }
-}
-
 async function writeIndex(data: IndexData): Promise<void> {
   await writeFile(indexFile(), JSON.stringify(data, null, 2), 'utf-8')
 }
 
-async function rebuildIndex(): Promise<BookListItem[]> {
+export async function rebuildIndex(): Promise<BookListItem[]> {
   const lib = getLibraryPath()
   let entries: string[]
   try {
-    entries = (await readdir(lib, { withFileTypes: true })).filter((d) => d.isDirectory() && !d.name.startsWith('__')).map((d) => d.name)
+    entries = (await readdir(lib, { withFileTypes: true }))
+      .filter((d) => d.isDirectory() && !d.name.startsWith('__'))
+      .map((d) => d.name)
   } catch {
     return []
   }
@@ -95,7 +173,9 @@ async function rebuildIndex(): Promise<BookListItem[]> {
     try {
       const book = await loadBook(id)
       items.push(bookToList(book))
-    } catch { /* skip corrupt */ }
+    } catch {
+      /* skip corrupt */
+    }
   }
   items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   await writeIndex({ version: 1, books: items })
@@ -121,6 +201,15 @@ function bookToList(b: Book): BookListItem {
 // CRUD
 // ---------------------------------------------------------------------------
 
+export async function bookExists(bookId: string): Promise<boolean> {
+  try {
+    await stat(join(bookDir(bookId), 'book.json'))
+    return true
+  } catch {
+    return false
+  }
+}
+
 export async function loadBook(bookId: string): Promise<Book> {
   const raw = await readFile(join(bookDir(bookId), 'book.json'), 'utf-8')
   return JSON.parse(raw)
@@ -128,21 +217,11 @@ export async function loadBook(bookId: string): Promise<Book> {
 
 export async function saveBook(book: Book): Promise<void> {
   book.updatedAt = now()
+  await mkdir(bookDir(book.id), { recursive: true })
   await writeFile(join(bookDir(book.id), 'book.json'), JSON.stringify(book, null, 2), 'utf-8')
-  // update index silently
-  try {
-    const idx = await readIndex()
-    const i = idx.books.findIndex((b) => b.id === book.id)
-    const item = bookToList(book)
-    if (i >= 0) idx.books[i] = item
-    else idx.books.unshift(item)
-    await writeIndex(idx)
-  } catch { /* best effort */ }
 }
 
 export async function listBooks(): Promise<BookListItem[]> {
-  const idx = await readIndex()
-  if (idx.books.length > 0) return idx.books
   return rebuildIndex()
 }
 
@@ -152,36 +231,68 @@ export async function getBook(bookId: string): Promise<Book> {
 
 export async function deleteBook(bookId: string): Promise<void> {
   await rm(bookDir(bookId), { recursive: true, force: true })
-  const idx = await readIndex()
-  idx.books = idx.books.filter((b) => b.id !== bookId)
-  await writeIndex(idx)
+  await rebuildIndex()
 }
 
 export async function readChapter(bookId: string, chapterId: string): Promise<ChapterFile> {
   const book = await loadBook(bookId)
   const meta = book.chapters.find((c) => c.id === chapterId)
   if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
-  const raw = await readFile(chapterFile(bookId, meta.file), 'utf-8')
-  return JSON.parse(raw)
+  try {
+    const raw = await readFile(chapterPath(bookId, meta.file), 'utf-8')
+    return JSON.parse(raw)
+  } catch {
+    const file: ChapterFile = {
+      title: meta.title,
+      url: meta.url,
+      body: '',
+      status: meta.status,
+      failCode: meta.failCode,
+    }
+    return file
+  }
 }
 
 export async function updateChapterBody(bookId: string, chapterId: string, body: string, restoreRaw?: boolean): Promise<void> {
   const book = await loadBook(bookId)
   const meta = book.chapters.find((c) => c.id === chapterId)
   if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
-  const file: ChapterFile = JSON.parse(await readFile(chapterFile(bookId, meta.file), 'utf-8'))
-  if (restoreRaw && file.bodyRaw) {
-    file.body = file.bodyRaw
+  const file: ChapterFile = JSON.parse(await readFile(chapterPath(bookId, meta.file), 'utf-8'))
+  if (restoreRaw) {
+    if (file.bodyRaw) file.body = file.bodyRaw
   } else {
+    if (file.bodyRaw === undefined) file.bodyRaw = file.body
     file.body = body
   }
-  await writeFile(chapterFile(bookId, meta.file), JSON.stringify(file, null, 2), 'utf-8')
+  await writeFile(chapterPath(bookId, meta.file), JSON.stringify(file, null, 2), 'utf-8')
 }
 
 export async function setProgress(bookId: string, progress: ReadingProgress): Promise<void> {
   const book = await loadBook(bookId)
   book.progress = { ...progress, updatedAt: now() }
   await saveBook(book)
+}
+
+export async function copyOriginFile(bookId: string, sourcePath: string): Promise<void> {
+  const destDir = join(bookDir(bookId), 'origin')
+  await mkdir(destDir, { recursive: true })
+  await cp(sourcePath, join(destDir, basename(sourcePath)))
+}
+
+export async function readSummaries(bookId: string): Promise<AiSummaries> {
+  try {
+    return JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'summaries.json'), 'utf-8'))
+  } catch {
+    return { byChapter: {}, updatedAt: now() }
+  }
+}
+
+export async function writeChapterSummary(bookId: string, chapterId: string, text: string): Promise<void> {
+  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+  const data = await readSummaries(bookId)
+  data.byChapter[chapterId] = text
+  data.updatedAt = now()
+  await writeFile(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), 'utf-8')
 }
 
 // ---------------------------------------------------------------------------
@@ -196,19 +307,25 @@ export async function createBookFromBootstrap(opts: {
   sourceHost?: string
   importType: ImportType
   chapterTitles: string[]
+  chapterUrls?: (string | undefined)[]
   coverUrl?: string
 }): Promise<Book> {
   const dir = bookDir(opts.bookId)
   await mkdir(join(dir, 'chapters'), { recursive: true })
   await mkdir(join(dir, 'ai'), { recursive: true })
 
-  const chapters: ChapterMeta[] = opts.chapterTitles.map((title, i) => ({
-    id: `c${pad4(i + 1)}`,
-    index: i + 1,
-    title,
-    file: `chapters/${pad4(i + 1)}.json`,
-    status: 'pending' as ChapterStatus,
-  }))
+  const chapters: ChapterMeta[] = opts.chapterTitles.map((title, i) => {
+    const url = opts.chapterUrls?.[i]
+    const meta: ChapterMeta = {
+      id: `c${pad4(i + 1)}`,
+      index: i + 1,
+      title,
+      file: `chapters/${pad4(i + 1)}.json`,
+      status: 'pending' as ChapterStatus,
+    }
+    if (url) meta.url = url
+    return meta
+  })
 
   const book: Book = {
     id: opts.bookId,
@@ -231,16 +348,38 @@ export async function writeChapterFile(bookId: string, chapterId: string, data: 
   const book = await loadBook(bookId)
   const meta = book.chapters.find((c) => c.id === chapterId)
   if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
-  await writeFile(chapterFile(bookId, meta.file), JSON.stringify(data, null, 2), 'utf-8')
+  await mkdir(join(bookDir(bookId), 'chapters'), { recursive: true })
+  await writeFile(chapterPath(bookId, meta.file), JSON.stringify(data, null, 2), 'utf-8')
 }
 
 export async function markChapterReady(bookId: string, chapterId: string, status: ChapterStatus): Promise<void> {
+  await markChapterStatus(bookId, chapterId, status)
+}
+
+export async function markChapterStatus(
+  bookId: string,
+  chapterId: string,
+  status: ChapterStatus,
+  extra?: { failCode?: FailCode; failMessage?: string; url?: string },
+): Promise<void> {
   const book = await loadBook(bookId)
   const meta = book.chapters.find((c) => c.id === chapterId)
-  if (meta) meta.status = status
-  // update overall status
-  const allReady = book.chapters.every((c) => c.status === 'ready' || c.status === 'empty')
-  const anyReady = book.chapters.some((c) => c.status === 'ready')
-  book.status = allReady ? 'ready' : anyReady ? 'partial' : book.status
+  if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
+  meta.status = status
+  if (extra?.url) meta.url = extra.url
+  if (status === 'ready') {
+    delete meta.failCode
+    delete meta.failMessage
+  } else if (extra?.failCode) {
+    meta.failCode = extra.failCode
+    meta.failMessage = extra.failMessage
+  }
+  await saveBook(book)
+}
+
+export async function refreshBookStatus(bookId: string, status?: Book['status']): Promise<void> {
+  const book = await loadBook(bookId)
+  if (status) book.status = status
+  else applyOverallStatus(book)
   await saveBook(book)
 }
