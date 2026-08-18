@@ -73,9 +73,12 @@
 | `download.start` | invoke | 无（以当前浏览页为起点） | `{ ok: true; bookId: string } \| { ok: false; code: FailCode; message: string }` |
 | `download.cancel` | invoke | `{ bookId?: string }` | `{ ok: true }` |
 | `download.retryFailed` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
+| `download.checkUpdate` | invoke | `{ bookId: string }` | `{ ok: true; bookId: string; added: number } \| { ok: false; code?: FailCode; message: string }` |
 | `download.progress` | 主→渲染 | — | `DownloadProgress` |
 
 禁止用裸 `fetch(chapterUrl)` 作为下书主路径。必须走同一 `persist:novel` 的隐藏 webContents。
+
+`download.checkUpdate` 只补该书已存 `sourceUrl` 的新目录项；`added` 只计新追加的目录行（重试已有 `failed` / `empty` 不加 `added`）。与 `start` / `retryFailed` 共用单任务锁。导入书或无 `sourceUrl` 时返回 `{ ok: false, message: '无原始目录地址，无法检查更新' }`。本频道只追加，不改 `start` / `retryFailed` 含义。
 
 ---
 
@@ -86,7 +89,23 @@
 | `settings.get` | invoke | 无 | `Settings`（不含 apiKey 明文） |
 | `settings.set` | invoke | `SettingsUpdate` | `Settings` |
 
-`apiKey` 仅在 `settings.set` 时由渲染提交；落盘经 `safeStorage`。`settings.get` 只给 `apiKeyConfigured: boolean`。
+`apiKey` 仅在 `settings.set` 时由渲染提交；落盘经 `safeStorage`。`settings.get` 只给 `apiKeyConfigured: boolean`。站点规则**不**经 `settings.*`，也**不**写入 `settings.json`。
+
+---
+
+## 站点规则
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `siteRules.list` | invoke | 无 | `{ rules: SiteRule[] }` |
+| `siteRules.upsert` | invoke | `SiteRule` | `{ ok: true; rule: SiteRule } \| { ok: false; message: string }` |
+| `siteRules.remove` | invoke | `{ host: string }` | `{ ok: true } \| { ok: false; message: string }` |
+
+- `host` 经 `normalizeHost`：trim、小写、去掉一层前导 `www.`；URL 形态（如 `https://www.Foo.com/path`）先取 hostname 再规范化。空 / 纯空白 host 拒绝。
+- 同一规范化 host 只留一条；`upsert` 整条替换。
+- 选择器字段均可空。空选择器 = 该字段走通用提取。非法 CSS 保存不拒，提取时当未命中。
+- 落盘 `%APPDATA%/spbf/site-rules.json`（与 `settings.json` 同目录），不是 `settings.json`。
+- `siteRules.*` 不返回 API Key；文件内不得存 Key。
 
 ---
 
@@ -112,8 +131,9 @@ window.api = {
   dialog: { openFile, openDirectory },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, onUrl, onState },
   library: { list, get, readChapter, delete, import, setProgress, updateChapterBody },
-  download: { start, cancel, retryFailed, onProgress },
+  download: { start, cancel, retryFailed, checkUpdate, onProgress },
   settings: { get, set },
+  siteRules: { list, upsert, remove },
   ai: { clean, summarize, translate, chat },
 }
 ```

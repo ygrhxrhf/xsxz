@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { BrowseState, Settings, SettingsUpdate } from '../shared/types'
+import type { BrowseState, Settings, SettingsUpdate, SiteRule } from '../shared/types'
 import {
   listBooks,
   getBook,
@@ -17,6 +17,7 @@ import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { getSettings, updateSettings, getApiKey } from './settings'
 import { startDownload, cancelDownload, retryFailed, setOwnerWindow, setBrowseView } from './download'
+import { listSiteRules, upsertSiteRule, removeSiteRule } from './siteRules'
 import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters } from './ai'
 
 const PARTITION = 'persist:novel'
@@ -250,6 +251,27 @@ function registerIpc(): void {
     return { ok: true }
   })
   ipcMain.handle('download.retryFailed', async (_e, { bookId }: { bookId: string }) => retryFailed(bookId))
+
+  ipcMain.handle('siteRules.list', async () => {
+    const rules = await listSiteRules()
+    return { rules }
+  })
+  ipcMain.handle('siteRules.upsert', async (_e, rule: SiteRule) => {
+    try {
+      const saved = await upsertSiteRule(rule)
+      return { ok: true, rule: saved }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('siteRules.remove', async (_e, payload: { host: string }) => {
+    try {
+      await removeSiteRule(payload?.host ?? '')
+      return { ok: true }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
 
   ipcMain.handle('settings.get', async () => getSettings())
   ipcMain.handle('settings.set', async (_e, update: SettingsUpdate) => {

@@ -137,6 +137,15 @@ export interface SettingsUpdate {
   reader?: Partial<ReaderPrefs>
 }
 
+/** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */
+export interface SiteRule {
+  host: string
+  title?: string
+  author?: string
+  catalog?: string
+  body?: string
+}
+
 export interface AiCleanResult {
   original: string
   cleaned: string

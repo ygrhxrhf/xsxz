@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AiChatMessage, BookListItem, BrowseState, ChapterFile, DownloadProgress, ReadingProgress, Settings, SettingsUpdate } from '../shared/types'
+import type {
+  AiChatMessage,
+  BookListItem,
+  BrowseState,
+  ChapterFile,
+  DownloadProgress,
+  ReadingProgress,
+  Settings,
+  SettingsUpdate,
+  SiteRule,
+} from '../shared/types'
 
 type Unsub = () => void
 
@@ -12,6 +22,7 @@ function on<T>(channel: string, handler: (payload: T) => void): Unsub {
 const api = {
   dialog: {
     openFile: () => ipcRenderer.invoke('dialog.openFile') as Promise<{ filePaths: string[] }>,
+    openDirectory: () => ipcRenderer.invoke('dialog.openDirectory') as Promise<{ filePaths: string[] }>,
   },
   browse: {
     load: (url: string) => ipcRenderer.invoke('browse.load', { url }),
@@ -41,11 +52,21 @@ const api = {
     start: () => ipcRenderer.invoke('download.start'),
     cancel: (bookId?: string) => ipcRenderer.invoke('download.cancel', { bookId }),
     retryFailed: (bookId: string) => ipcRenderer.invoke('download.retryFailed', { bookId }),
+    checkUpdate: (bookId: string) => ipcRenderer.invoke('download.checkUpdate', { bookId }),
     onProgress: (handler: (payload: DownloadProgress) => void) => on('download.progress', handler),
   },
   settings: {
     get: () => ipcRenderer.invoke('settings.get') as Promise<Settings>,
     set: (update: SettingsUpdate) => ipcRenderer.invoke('settings.set', update) as Promise<Settings>,
+  },
+  siteRules: {
+    list: () => ipcRenderer.invoke('siteRules.list') as Promise<{ rules: SiteRule[] }>,
+    upsert: (rule: SiteRule) =>
+      ipcRenderer.invoke('siteRules.upsert', rule) as Promise<
+        { ok: true; rule: SiteRule } | { ok: false; message: string }
+      >,
+    remove: (host: string) =>
+      ipcRenderer.invoke('siteRules.remove', { host }) as Promise<{ ok: true } | { ok: false; message: string }>,
   },
   ai: {
     clean: (bookId: string, chapterId: string) => ipcRenderer.invoke('ai.clean', { bookId, chapterId }),
