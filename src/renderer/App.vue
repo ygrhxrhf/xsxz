@@ -73,7 +73,7 @@ onUnmounted(() => {
         <BrowsePage v-show="tab === 'browse'" @open-book="openBook" />
         <LibraryPage v-show="tab === 'library'" :active="libraryActive" @open-book="openBook" />
         <ReaderPage v-show="tab === 'reader'" :book-id="currentBookId" @back="backToLibrary" />
-        <SettingsPage v-show="tab === 'settings'" />
+        <SettingsPage v-show="tab === 'settings'" :active="tab === 'settings'" />
       </section>
     </div>
   </n-config-provider>
