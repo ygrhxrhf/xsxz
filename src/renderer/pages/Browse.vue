@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NProgress, NTag } from 'naive-ui'
 import type { BrowseState, DownloadProgress } from '@shared/types'
 
@@ -42,13 +42,19 @@ function reportBounds() {
   const r = el.getBoundingClientRect()
   // v-show hide (display:none) yields 0×0; do not overwrite lastBounds with 1×1.
   if (r.width < 8 || r.height < 8) return
+  const slotHeight = Math.round(r.height)
+  // Native persist:novel view sits above Vue; inset by the 240px drawer so
+  // 打开这本书 / 取消下载 receive the real pointer. ResizeObserver will not fire.
+  const height = showProgress.value ? Math.max(1, slotHeight - 240) : Math.max(1, slotHeight)
   void window.api.browse.setBounds({
     x: Math.round(r.x),
     y: Math.round(r.y),
     width: Math.max(1, Math.round(r.width)),
-    height: Math.max(1, Math.round(r.height)),
+    height,
   })
 }
+
+watch(showProgress, reportBounds)
 
 async function go() {
   const res = await window.api.browse.load(address.value)
