@@ -63,6 +63,22 @@ async function go() {
   }
 }
 
+function back() {
+  void window.api.browse.back()
+}
+
+function forward() {
+  void window.api.browse.forward()
+}
+
+function reload() {
+  void window.api.browse.reload()
+}
+
+function stop() {
+  void window.api.browse.stop()
+}
+
 async function startDownload() {
   downloading.value = true
   downloadProgress.value = null
@@ -119,9 +135,9 @@ onUnmounted(() => {
 <template>
   <div class="page browse-page">
     <form class="chrome" @submit="onSubmit">
-      <button type="button" :disabled="!state.canGoBack" @click="window.api.browse.back()">后退</button>
-      <button type="button" :disabled="!state.canGoForward" @click="window.api.browse.forward()">前进</button>
-      <button type="button" @click="state.loading ? window.api.browse.stop() : window.api.browse.reload()">
+      <button type="button" :disabled="!state.canGoBack" @click="back">后退</button>
+      <button type="button" :disabled="!state.canGoForward" @click="forward">前进</button>
+      <button type="button" @click="state.loading ? stop() : reload()">
         {{ state.loading ? '停止' : '刷新' }}
       </button>
       <input v-model="address" placeholder="粘贴或输入网址，回车打开" spellcheck="false" />
