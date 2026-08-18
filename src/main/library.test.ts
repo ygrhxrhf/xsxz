@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -12,8 +12,12 @@ import {
   loadBook,
   listBooks,
   markChapterStatus,
+  readChapter,
   refreshBookStatus,
+  rebuildIndex,
   saveBook,
+  setProgress,
+  writeChapterFile,
 } from './library'
 import type { Book, CatalogChapter } from '../shared/types'
 
@@ -216,5 +220,129 @@ describe('setLibraryPath + createBookFromBootstrap', () => {
     await refreshBookStatus('d_dl')
     const done = await loadBook('d_dl')
     expect(done.status).toBe('ready')
+  })
+
+  it('writeChapterFile with status ready persists that status onto book.json meta', async () => {
+    await createBookFromBootstrap({
+      bookId: 'd_ready_file',
+      title: '落盘',
+      author: '',
+      sourceUrl: 'https://example.com/book/',
+      sourceHost: 'example.com',
+      importType: 'download',
+      chapterTitles: ['第一章'],
+      chapterUrls: ['https://example.com/book/1.html'],
+    })
+
+    await writeChapterFile('d_ready_file', 'c0001', {
+      title: '第一章',
+      url: 'https://example.com/book/1.html',
+      body: '这是一段足够长的纯文本正文，用来确认章节文件和目录元数据一起标成 ready。',
+      bodyRaw: '这是一段足够长的纯文本正文，用来确认章节文件和目录元数据一起标成 ready。',
+      status: 'ready',
+    })
+
+    const book = await loadBook('d_ready_file')
+    expect(book.chapters[0].status).toBe('ready')
+    const raw = await readFile(join(dir, 'd_ready_file', 'chapters', '0001.json'), 'utf-8')
+    expect(JSON.parse(raw).status).toBe('ready')
+  })
+
+  it('readChapter treats a pending file that already has a body as ready', async () => {
+    const created = await createBookFromBootstrap({
+      bookId: 'd_heal',
+      title: '修复',
+      author: '',
+      sourceUrl: 'https://example.com/book/',
+      sourceHost: 'example.com',
+      importType: 'download',
+      chapterTitles: ['第一章', '第二章'],
+      chapterUrls: ['https://example.com/book/1.html', 'https://example.com/book/2.html'],
+    })
+    created.status = 'partial'
+    await saveBook(created)
+
+    await mkdir(join(dir, 'd_heal', 'chapters'), { recursive: true })
+    await writeFile(
+      join(dir, 'd_heal', 'chapters', '0001.json'),
+      JSON.stringify({
+        title: '第一章',
+        url: 'https://example.com/book/1.html',
+        body: '已下载的纯文本正文，但文件和 book.json 仍标 pending。',
+        bodyRaw: '已下载的纯文本正文，但文件和 book.json 仍标 pending。',
+        status: 'pending',
+      }, null, 2),
+      'utf-8',
+    )
+
+    const opened = await readChapter('d_heal', 'c0001')
+    expect(opened.status).toBe('ready')
+    expect(opened.body.length).toBeGreaterThan(10)
+
+    const book = await loadBook('d_heal')
+    expect(book.chapters[0].status).toBe('ready')
+    const disk = JSON.parse(await readFile(join(dir, 'd_heal', 'chapters', '0001.json'), 'utf-8')) as {
+      status: string
+    }
+    expect(disk.status).toBe('ready')
+  })
+
+  it('listBooks readyCount matches book.json after ready promotion', async () => {
+    await createBookFromBootstrap({
+      bookId: 'd_idx',
+      title: '索引',
+      author: '',
+      importType: 'download',
+      chapterTitles: ['一', '二'],
+      chapterUrls: ['https://example.com/a.html', 'https://example.com/b.html'],
+    })
+    await writeChapterFile('d_idx', 'c0001', {
+      title: '一',
+      url: 'https://example.com/a.html',
+      body: '第一章正文足够长，用来确认索引 readyCount。',
+      status: 'ready',
+    })
+    await writeChapterFile('d_idx', 'c0002', {
+      title: '二',
+      url: 'https://example.com/b.html',
+      body: '第二章正文足够长，用来确认索引 readyCount。',
+      status: 'ready',
+    })
+    await refreshBookStatus('d_idx')
+
+    const items = await rebuildIndex()
+    const item = items.find((b) => b.id === 'd_idx')
+    expect(item?.readyCount).toBe(2)
+    expect(item?.chapterCount).toBe(2)
+    expect(item?.status).toBe('ready')
+    const listed = await listBooks()
+    expect(listed.find((b) => b.id === 'd_idx')?.readyCount).toBe(2)
+  })
+
+  it('setProgress does not revert chapter status back to pending', async () => {
+    const created = await createBookFromBootstrap({
+      bookId: 'd_prog',
+      title: '进度',
+      author: '',
+      importType: 'download',
+      chapterTitles: ['一'],
+      chapterUrls: ['https://example.com/a.html'],
+    })
+    created.chapters[0].status = 'ready'
+    await saveBook(created)
+    await writeFile(
+      join(dir, 'd_prog', 'chapters', '0001.json'),
+      JSON.stringify({ title: '一', url: 'https://example.com/a.html', body: '正文', status: 'ready' }, null, 2),
+      'utf-8',
+    )
+
+    await setProgress('d_prog', {
+      chapterId: 'c0001',
+      scrollRatio: 0.2,
+      updatedAt: new Date().toISOString(),
+    })
+    const after = await loadBook('d_prog')
+    expect(after.chapters[0].status).toBe('ready')
+    expect(after.progress?.chapterId).toBe('c0001')
   })
 })

@@ -357,6 +357,7 @@ export async function downloadChapters(bookId: string): Promise<void> {
           bodyRaw: bodyResult.body,
           status: 'ready',
         })
+        ch.status = 'ready'
         await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl })
         dl.done++
       } else {

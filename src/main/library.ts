@@ -97,6 +97,96 @@ function applyOverallStatus(book: Book): void {
   book.status = allReady ? 'ready' : 'partial'
 }
 
+/** Serialize load-modify-save so setProgress cannot revert ready promotion. */
+const bookLocks = new Map<string, Promise<unknown>>()
+
+async function withBookLock<T>(bookId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = bookLocks.get(bookId) ?? Promise.resolve()
+  let release!: () => void
+  const mine = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const tail = prev.then(() => mine)
+  bookLocks.set(bookId, tail)
+  await prev.catch(() => {})
+  try {
+    return await fn()
+  } finally {
+    release()
+    if (bookLocks.get(bookId) === tail) bookLocks.delete(bookId)
+  }
+}
+
+function chapterBodyText(file: Pick<ChapterFile, 'body'>): string {
+  return typeof file.body === 'string' ? file.body.trim() : ''
+}
+
+function shouldPromoteReady(file: Pick<ChapterFile, 'body' | 'status'>): boolean {
+  if (file.status === 'failed') return false
+  if (file.status === 'ready') return true
+  return chapterBodyText(file).length > 0 && (file.status === 'pending' || file.status === 'empty' || !file.status)
+}
+
+function applyChapterStatus(
+  meta: ChapterMeta,
+  status: ChapterStatus,
+  extra?: { failCode?: FailCode; failMessage?: string; url?: string },
+): void {
+  meta.status = status
+  if (extra?.url) meta.url = extra.url
+  if (status === 'ready') {
+    delete meta.failCode
+    delete meta.failMessage
+  } else if (extra?.failCode) {
+    meta.failCode = extra.failCode
+    meta.failMessage = extra.failMessage
+  }
+}
+
+async function loadBookUnlocked(bookId: string): Promise<Book> {
+  const raw = await readFile(join(bookDir(bookId), 'book.json'), 'utf-8')
+  return JSON.parse(raw)
+}
+
+async function saveBookUnlocked(book: Book): Promise<void> {
+  book.updatedAt = now()
+  await mkdir(bookDir(book.id), { recursive: true })
+  await writeFile(join(bookDir(book.id), 'book.json'), JSON.stringify(book, null, 2), 'utf-8')
+}
+
+async function persistChapterJson(bookId: string, relFile: string, data: ChapterFile): Promise<void> {
+  await mkdir(join(bookDir(bookId), 'chapters'), { recursive: true })
+  await writeFile(chapterPath(bookId, relFile), JSON.stringify(data, null, 2), 'utf-8')
+}
+
+async function reconcilePendingChapters(bookId: string): Promise<void> {
+  await withBookLock(bookId, async () => {
+    const book = await loadBookUnlocked(bookId)
+    let dirty = false
+    for (const meta of book.chapters) {
+      try {
+        const file = JSON.parse(await readFile(chapterPath(bookId, meta.file), 'utf-8')) as ChapterFile
+        if (!shouldPromoteReady(file)) continue
+        if (file.status !== 'ready') {
+          file.status = 'ready'
+          delete file.failCode
+          await persistChapterJson(bookId, meta.file, file)
+        }
+        if (meta.status !== 'ready') {
+          applyChapterStatus(meta, 'ready', { url: file.url })
+          dirty = true
+        }
+      } catch {
+        /* missing or corrupt chapter file */
+      }
+    }
+    if (dirty) {
+      if (book.status !== 'downloading') applyOverallStatus(book)
+      await saveBookUnlocked(book)
+    }
+  })
+}
+
 /** Merge catalog entries into an existing book. Ready chapters stay; new ones append. Does not persist. */
 export function mergeIncomingChapters(book: Book, incoming: CatalogChapter[]): { added: number } {
   const byUrl = new Map<string, ChapterMeta>()
@@ -171,6 +261,7 @@ export async function rebuildIndex(): Promise<BookListItem[]> {
   const items: BookListItem[] = []
   for (const id of entries) {
     try {
+      await reconcilePendingChapters(id)
       const book = await loadBook(id)
       items.push(bookToList(book))
     } catch {
@@ -211,14 +302,13 @@ export async function bookExists(bookId: string): Promise<boolean> {
 }
 
 export async function loadBook(bookId: string): Promise<Book> {
-  const raw = await readFile(join(bookDir(bookId), 'book.json'), 'utf-8')
-  return JSON.parse(raw)
+  return loadBookUnlocked(bookId)
 }
 
 export async function saveBook(book: Book): Promise<void> {
-  book.updatedAt = now()
-  await mkdir(bookDir(book.id), { recursive: true })
-  await writeFile(join(bookDir(book.id), 'book.json'), JSON.stringify(book, null, 2), 'utf-8')
+  await withBookLock(book.id, async () => {
+    await saveBookUnlocked(book)
+  })
 }
 
 export async function listBooks(): Promise<BookListItem[]> {
@@ -226,6 +316,7 @@ export async function listBooks(): Promise<BookListItem[]> {
 }
 
 export async function getBook(bookId: string): Promise<Book> {
+  await reconcilePendingChapters(bookId)
   return loadBook(bookId)
 }
 
@@ -240,7 +331,19 @@ export async function readChapter(bookId: string, chapterId: string): Promise<Ch
   if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
   try {
     const raw = await readFile(chapterPath(bookId, meta.file), 'utf-8')
-    return JSON.parse(raw)
+    const file = JSON.parse(raw) as ChapterFile
+    if (shouldPromoteReady(file) && file.status !== 'ready') {
+      await writeChapterFile(bookId, chapterId, { ...file, status: 'ready' })
+      const latest = await loadBook(bookId)
+      if (latest.status !== 'downloading') await refreshBookStatus(bookId)
+      return { ...file, status: 'ready' }
+    }
+    if (file.status === 'ready' && meta.status !== 'ready') {
+      await markChapterStatus(bookId, chapterId, 'ready', { url: file.url })
+      const latest = await loadBook(bookId)
+      if (latest.status !== 'downloading') await refreshBookStatus(bookId)
+    }
+    return file
   } catch {
     const file: ChapterFile = {
       title: meta.title,
@@ -268,9 +371,11 @@ export async function updateChapterBody(bookId: string, chapterId: string, body:
 }
 
 export async function setProgress(bookId: string, progress: ReadingProgress): Promise<void> {
-  const book = await loadBook(bookId)
-  book.progress = { ...progress, updatedAt: now() }
-  await saveBook(book)
+  await withBookLock(bookId, async () => {
+    const book = await loadBookUnlocked(bookId)
+    book.progress = { ...progress, updatedAt: now() }
+    await saveBookUnlocked(book)
+  })
 }
 
 export async function copyOriginFile(bookId: string, sourcePath: string): Promise<void> {
@@ -345,11 +450,30 @@ export async function createBookFromBootstrap(opts: {
 }
 
 export async function writeChapterFile(bookId: string, chapterId: string, data: ChapterFile): Promise<void> {
-  const book = await loadBook(bookId)
-  const meta = book.chapters.find((c) => c.id === chapterId)
-  if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
-  await mkdir(join(bookDir(bookId), 'chapters'), { recursive: true })
-  await writeFile(chapterPath(bookId, meta.file), JSON.stringify(data, null, 2), 'utf-8')
+  await withBookLock(bookId, async () => {
+    const book = await loadBookUnlocked(bookId)
+    const meta = book.chapters.find((c) => c.id === chapterId)
+    if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
+    const toWrite: ChapterFile = { ...data }
+    if (shouldPromoteReady(toWrite)) {
+      toWrite.status = 'ready'
+      delete toWrite.failCode
+    }
+    await persistChapterJson(bookId, meta.file, toWrite)
+    const nextStatus = toWrite.status
+    let dirty = false
+    if (nextStatus && meta.status !== nextStatus) {
+      applyChapterStatus(meta, nextStatus, { failCode: toWrite.failCode, url: toWrite.url })
+      dirty = true
+    } else if (toWrite.url && meta.url !== toWrite.url) {
+      meta.url = toWrite.url
+      dirty = true
+    } else if (nextStatus === 'ready' && (meta.failCode || meta.failMessage)) {
+      applyChapterStatus(meta, 'ready')
+      dirty = true
+    }
+    if (dirty) await saveBookUnlocked(book)
+  })
 }
 
 export async function markChapterReady(bookId: string, chapterId: string, status: ChapterStatus): Promise<void> {
@@ -362,24 +486,20 @@ export async function markChapterStatus(
   status: ChapterStatus,
   extra?: { failCode?: FailCode; failMessage?: string; url?: string },
 ): Promise<void> {
-  const book = await loadBook(bookId)
-  const meta = book.chapters.find((c) => c.id === chapterId)
-  if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
-  meta.status = status
-  if (extra?.url) meta.url = extra.url
-  if (status === 'ready') {
-    delete meta.failCode
-    delete meta.failMessage
-  } else if (extra?.failCode) {
-    meta.failCode = extra.failCode
-    meta.failMessage = extra.failMessage
-  }
-  await saveBook(book)
+  await withBookLock(bookId, async () => {
+    const book = await loadBookUnlocked(bookId)
+    const meta = book.chapters.find((c) => c.id === chapterId)
+    if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
+    applyChapterStatus(meta, status, extra)
+    await saveBookUnlocked(book)
+  })
 }
 
 export async function refreshBookStatus(bookId: string, status?: Book['status']): Promise<void> {
-  const book = await loadBook(bookId)
-  if (status) book.status = status
-  else applyOverallStatus(book)
-  await saveBook(book)
+  await withBookLock(bookId, async () => {
+    const book = await loadBookUnlocked(bookId)
+    if (status) book.status = status
+    else applyOverallStatus(book)
+    await saveBookUnlocked(book)
+  })
 }

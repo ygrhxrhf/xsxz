@@ -47,7 +47,7 @@ import {
   startDownloadFromPage,
   waitForIdle,
 } from './download'
-import { bookIdFromUrl, loadBook, readChapter, setLibraryPath } from './library'
+import { bookIdFromUrl, listBooks, loadBook, readChapter, setLibraryPath } from './library'
 import { extractPage } from './extract'
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, '../../fixtures', name), 'utf-8')
@@ -207,6 +207,44 @@ describe('startDownloadFromPage', () => {
 
     const again = await loadBook(first.bookId)
     expect(again.chapters).toHaveLength(6)
+  })
+
+  it('promotes every extractable chapter to ready on disk and in the library index', async () => {
+    loadedUrls.length = 0
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+
+    const result = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    await waitForIdle()
+
+    const book = await loadBook(result.bookId)
+    expect(book.chapters).toHaveLength(6)
+    expect(book.status).toBe('ready')
+    const readyCount = book.chapters.filter((c) => c.status === 'ready').length
+    expect(readyCount).toBe(book.chapters.length)
+    expect(book.chapters.every((c) => c.status === 'ready')).toBe(true)
+
+    for (const ch of book.chapters) {
+      const raw = await readFile(join(dir, book.id, ch.file), 'utf-8')
+      const file = JSON.parse(raw) as { status: string; body: string }
+      expect(file.status).toBe('ready')
+      expect(file.body.length).toBeGreaterThan(20)
+      const opened = await readChapter(book.id, ch.id)
+      expect(opened.status).toBe('ready')
+      expect(opened.body.length).toBeGreaterThan(20)
+    }
+
+    const listed = await listBooks()
+    const item = listed.find((b) => b.id === book.id)
+    expect(item?.chapterCount).toBe(6)
+    expect(item?.readyCount).toBe(6)
+    expect(item?.status).toBe('ready')
+    expect(loadedUrls.filter((u) => /\d\.html$/.test(u)).length).toBe(6)
   })
 })
 
