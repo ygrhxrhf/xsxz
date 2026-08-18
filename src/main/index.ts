@@ -1,12 +1,23 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { BrowseState, SettingsUpdate } from '../shared/types'
-import { ensureLibrary, listBooks, getBook, readChapter, deleteBook, setProgress, updateChapterBody } from './library'
+import type { BrowseState, Settings, SettingsUpdate } from '../shared/types'
+import {
+  listBooks,
+  getBook,
+  readChapter,
+  deleteBook,
+  setProgress,
+  updateChapterBody,
+  setLibraryPath,
+  readSummaries,
+  writeChapterSummary,
+  assertImportable,
+} from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { getSettings, updateSettings, getApiKey } from './settings'
-import { startDownload, cancelDownload, retryFailed, setOwnerWindow } from './download'
-import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook } from './ai'
+import { startDownload, cancelDownload, retryFailed, setOwnerWindow, setBrowseView } from './download'
+import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters } from './ai'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -101,6 +112,7 @@ function createWindow(): void {
   mainWindow.contentView.addChildView(browseView)
   browseView.setVisible(false)
   attachBrowseListeners(browseView)
+  setBrowseView(browseView)
   void browseView.webContents.loadURL('about:blank')
 
   mainWindow.on('resize', () => applyBrowseBounds())
@@ -158,9 +170,6 @@ function registerIpc(): void {
     return { ok: true }
   })
 
-  const notReady = () => ({ ok: false, message: '尚未实现（P2+）' })
-
-  // dialog
   ipcMain.handle('dialog.openFile', async () => {
     if (!mainWindow) return { filePaths: [] }
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -170,8 +179,15 @@ function registerIpc(): void {
     })
     return { filePaths: result.filePaths }
   })
+  ipcMain.handle('dialog.openDirectory', async () => {
+    if (!mainWindow) return { filePaths: [] }
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择书库目录',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    return { filePaths: result.filePaths }
+  })
 
-  // library
   ipcMain.handle('library.list', async () => {
     const books = await listBooks()
     return { books }
@@ -202,6 +218,8 @@ function registerIpc(): void {
   })
   ipcMain.handle('library.import', async (_e, { filePath }: { filePath: string }) => {
     try {
+      const guard = assertImportable(filePath)
+      if (!guard.ok) return guard
       const ext = filePath.toLowerCase().split('.').pop()
       const result = ext === 'epub' ? await importEpub(filePath) : await importTxt(filePath)
       return { ok: true, bookId: result.bookId }
@@ -226,7 +244,6 @@ function registerIpc(): void {
     }
   })
 
-  // download
   ipcMain.handle('download.start', async () => startDownload())
   ipcMain.handle('download.cancel', async (_e, { bookId }: { bookId?: string }) => {
     cancelDownload(bookId)
@@ -234,17 +251,23 @@ function registerIpc(): void {
   })
   ipcMain.handle('download.retryFailed', async (_e, { bookId }: { bookId: string }) => retryFailed(bookId))
 
-  // settings
   ipcMain.handle('settings.get', async () => getSettings())
-  ipcMain.handle('settings.set', async (_e, update: SettingsUpdate) => updateSettings(update))
+  ipcMain.handle('settings.set', async (_e, update: SettingsUpdate) => {
+    // SettingsUpdate.reader is Partial<ReaderPrefs>; updateSettings's param type is stricter.
+    const next = await updateSettings(update as Partial<Settings> & { apiKey?: string })
+    if (typeof update.libraryPath === 'string') {
+      await setLibraryPath(next.libraryPath)
+    }
+    return next
+  })
 
-  // AI
   ipcMain.handle('ai.clean', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {
     try {
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const ch = await readChapter(bookId, chapterId)
+      if (!ch.body) return { ok: false, message: '当前章节没有可清理的正文' }
       const result = await cleanChapterBody({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, ch.title, ch.body)
       return { ok: true, result }
     } catch (e: unknown) {
@@ -257,16 +280,27 @@ function registerIpc(): void {
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const book = await getBook(bookId)
-      const uptoIdx = book.chapters.findIndex((c) => c.id === uptoChapterId)
-      const readChapters = book.chapters.slice(0, uptoIdx + 1).filter((c) => c.status === 'ready')
-      const summaries: { title: string; body: string }[] = []
-      for (const ch of readChapters.slice(-10)) {
+      if (!book.chapters.some((c) => c.id === uptoChapterId)) {
+        return { ok: false, message: '章节不存在' }
+      }
+      const progressChapterId = book.progress?.chapterId ?? null
+      const cutoff = clampSummarizeChapters(book.chapters, uptoChapterId, progressChapterId)
+      const summaries: Array<(typeof cutoff)[number] & { body: string }> = []
+      for (const ch of cutoff) {
         try {
           const file = await readChapter(bookId, ch.id)
-          summaries.push({ title: ch.title, body: file.body })
-        } catch { /* skip */ }
+          summaries.push({ ...ch, body: file.body })
+        } catch {
+          /* skip */
+        }
       }
-      const text = await summarizeUpTo({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, book.title, summaries)
+      const text = await summarizeUpTo(
+        { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+        book.title,
+        summaries,
+        { uptoChapterId, progressChapterId },
+      )
+      await writeChapterSummary(bookId, uptoChapterId, text)
       return { ok: true, text }
     } catch (e: unknown) {
       return { ok: false, message: String(e) }
@@ -290,10 +324,25 @@ function registerIpc(): void {
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const book = await getBook(args.bookId)
       const ch = await readChapter(args.bookId, args.chapterId)
-      const catalogSummary = book.chapters.map((c) => c.title).join('、')
+      const uptoIdx = book.chapters.findIndex((c) => c.id === args.chapterId)
+      const catalogSummary = book.chapters
+        .slice(0, uptoIdx + 1)
+        .map((c) => c.title)
+        .join('、')
+      const stored = await readSummaries(args.bookId)
+      const readSummary = book.chapters
+        .slice(0, uptoIdx + 1)
+        .map((c) => stored.byChapter[c.id])
+        .filter(Boolean)
+        .join('\n\n')
       const text = await chatAboutBook(
         { baseUrl: settings.baseUrl, model: settings.model, apiKey },
-        book.title, ch.title, ch.body, catalogSummary, '', args.messages,
+        book.title,
+        ch.title,
+        ch.body,
+        catalogSummary,
+        readSummary,
+        args.messages,
       )
       return { ok: true, text }
     } catch (e: unknown) {
@@ -302,8 +351,11 @@ function registerIpc(): void {
   })
 }
 
+app.setName('spbf')
+
 app.whenReady().then(async () => {
-  await ensureLibrary()
+  const settings = await getSettings()
+  await setLibraryPath(settings.libraryPath)
   registerIpc()
   createWindow()
   app.on('activate', () => {

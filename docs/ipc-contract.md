@@ -24,8 +24,9 @@
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
 | `dialog.openFile` | invoke | 无 | `{ filePaths: string[] }` |
+| `dialog.openDirectory` | invoke | 无 | `{ filePaths: string[] }` |
 
-用于导入文件，主进程打开原生选择对话框。
+`openFile` 用于导入 txt / epub。`openDirectory` 用于选择书库根目录。主进程打开原生对话框。
 
 ---
 
@@ -59,7 +60,7 @@
 | `library.setProgress` | invoke | `{ bookId: string; progress: ReadingProgress }` | `{ ok: true }` |
 | `library.updateChapterBody` | invoke | `{ bookId: string; chapterId: string; body: string; restoreRaw?: boolean }` | `{ ok: true } \| { ok: false; message: string }` |
 
-`library.import` 的路径由主进程 `dialog.showOpenDialog` 选出后传入，或设置页先选文件再 invoke。后缀 `.txt` / `.epub`。
+`library.import` 的路径由主进程 `dialog.showOpenDialog` 选出后传入，或设置页先选文件再 invoke。只接受 `.txt` / `.epub`（大小写不敏感）；其它后缀或不带后缀返回 `{ ok: false, message }`（中文，说明不支持的类型）。不得把 `.docx` 等当 txt 硬读。
 
 `restoreRaw: true` 时用 `bodyRaw` 覆盖 `body`（清正文撤销）。
 
@@ -100,7 +101,7 @@
 
 未配置 Key 或网络失败：返回 `{ ok: false; message }`，不得影响浏览/下载/阅读。
 
-`ai.summarize` 只允许已读章（`uptoChapterId` 及之前），不得把未读章送进模型。
+`ai.summarize` 把截止夹紧到已存阅读进度 `book.progress.chapterId`（若有）：只读该截止内 `ready` 章正文，再取其中最近 10 章。不得把进度之后的未读章送进模型。无进度时以请求的 `uptoChapterId` 为截止。
 
 ---
 
@@ -108,7 +109,7 @@
 
 ```ts
 window.api = {
-  dialog: { openFile },
+  dialog: { openFile, openDirectory },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, onUrl, onState },
   library: { list, get, readChapter, delete, import, setProgress, updateChapterBody },
   download: { start, cancel, retryFailed, onProgress },

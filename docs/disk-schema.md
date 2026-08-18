@@ -103,7 +103,7 @@
 **下载**
 
 1. 取目录页 URL（章节页则先解析出目录 URL）。
-2. 规范化：小写 host；去掉 hash；去掉常见分页/追踪查询参数（`page`、`utm_*` 等）；去掉末尾 `/`。
+2. 规范化：小写 host + URL；去掉 hash；去掉 `page` / `utm_*` 查询参数；再去掉残留的 `?`、末尾 `&`、空 search；去掉末尾 `/`。**不**去掉 `www.`（那是站点规则 `normalizeHost` 的事）。
 3. `bookId = "d_" + sha256(host + "\n" + normalizedUrl).slice(0, 16)`
 
 同一 `bookId` 再次「下载本书」= 合并目录、只补 `pending` / `failed` / `empty` 章，**不建第二本**。
@@ -118,7 +118,7 @@
 
 ## 设置
 
-路径：`%APPDATA%/spbf/settings.json`（Electron `app.getPath('userData')` 若产品名定为 spbf，即此目录）。
+路径：`%APPDATA%/spbf/settings.json`。主进程在读取设置 / `userData` 之前调用 `app.setName('spbf')`，因此 `app.getPath('userData')` 即此目录。不从 `%APPDATA%/小说浏览器` 迁移。
 
 ```json
 {
@@ -136,3 +136,22 @@
 
 - API Key **不得**明文写入书库或 git。
 - `settings.get` IPC 不返回明文，只返回 `apiKeyConfigured`。
+- `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
+
+---
+
+## 站点规则
+
+路径：`%APPDATA%/spbf/site-rules.json`（与 `settings.json` 同目录）。
+
+```json
+{
+  "version": 1,
+  "rules": [
+    { "host": "example.com", "title": "h1", "author": ".author", "catalog": "#list", "body": "#content" }
+  ]
+}
+```
+
+- 缺省文件视为 `{ version: 1, rules: [] }`。
+- 文件内不得存 API Key。
