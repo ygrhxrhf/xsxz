@@ -34,6 +34,18 @@ describe('extractPage — chapter page', () => {
     const result = extractPage(html, 'https://example.com/book/2.html')
     expect(result.ok).toBe(false)
     expect(result.failCode).toBe('NeedLogin')
+    expect(result.failCode).not.toBe('UnknownPage')
+    expect(result.failMessage).toMatch(/需要登录/)
+  })
+
+  it('recovers catalog URL from a chapter page without treating it as a one-chapter book', () => {
+    const html = fixture('chapter.html')
+    const result = extractPage(html, 'https://example.com/book/1.html')
+    expect(result.ok).toBe(true)
+    expect(result.pageKind).toBe('chapter')
+    expect(result.bootstrap!.chapters).toEqual([])
+    expect(result.bootstrap!.catalogUrl).toMatch(/\/book\/?$/)
+    expect(result.bootstrap!.catalogUrl).not.toContain('1.html')
   })
 
   it('returns BodyEmpty when body is too short', () => {

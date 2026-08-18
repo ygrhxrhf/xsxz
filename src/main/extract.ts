@@ -7,6 +7,7 @@
 import { Readability } from '@mozilla/readability'
 import { JSDOM } from 'jsdom'
 import type { CatalogChapter, ExtractBootstrap, FailCode, PageKind } from '../shared/types'
+import { FAIL_CODE_ZH } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -282,7 +283,7 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string)
   const { body, ok: bodyOk, partialText } = tryExtractBody(doc)
   if (bodyOk) {
     if (isLoginWall(doc, body)) {
-      return { ok: false, pageKind: 'chapter', failCode: 'NeedLogin', failMessage: '需要登录后才能看正文' }
+      return { ok: false, pageKind: 'chapter', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
     }
     // This looks like a chapter page - try to find catalog link
     const catalogUrl = findCatalogLink(doc, pageUrl)
@@ -303,14 +304,14 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string)
   // Body too short / empty — check login wall on partial text
   if (partialText.length > 0) {
     if (isLoginWall(doc, partialText)) {
-      return { ok: false, pageKind: 'unknown', failCode: 'NeedLogin', failMessage: '需要登录后才能看正文' }
+      return { ok: false, pageKind: 'unknown', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
     }
     return { ok: false, pageKind: 'unknown', failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
 
   // No body found at all — check login wall on full page text
   if (isLoginWall(doc, '')) {
-    return { ok: false, pageKind: 'unknown', failCode: 'NeedLogin', failMessage: '需要登录后才能看正文' }
+    return { ok: false, pageKind: 'unknown', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
   }
 
   return { ok: false, pageKind: 'unknown', failCode: 'UnknownPage', failMessage: '无法识别为书' }
@@ -335,12 +336,12 @@ export function extractBody(html: string, pageUrl: string): { body: string; ok: 
   const { body, ok, partialText } = tryExtractBody(doc)
   if (!ok) {
     if (isLoginWall(doc, partialText)) {
-      return { body: '', ok: false, failCode: 'NeedLogin', failMessage: '需要登录后才能看正文' }
+      return { body: '', ok: false, failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
     }
     return { body: '', ok: false, failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
   if (isLoginWall(doc, body)) {
-    return { body: '', ok: false, failCode: 'NeedLogin', failMessage: '需要登录后才能看正文' }
+    return { body: '', ok: false, failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
   }
   return { body, ok: true }
 }
