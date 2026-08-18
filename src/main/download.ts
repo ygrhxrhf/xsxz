@@ -1,5 +1,6 @@
 import { BrowserWindow, WebContentsView, session } from 'electron'
 import { extractPage, extractCatalog, extractBody } from './extract'
+import { findSiteRuleForUrl } from './siteRules'
 import {
   bookExists,
   bookIdFromUrl,
@@ -11,7 +12,7 @@ import {
   saveBook,
   writeChapterFile,
 } from './library'
-import type { CatalogChapter, ChapterStatus, DownloadProgress, ExtractBootstrap, FailCode } from '../shared/types'
+import type { CatalogChapter, ChapterStatus, DownloadProgress, ExtractBootstrap, FailCode, SiteRule } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 
 export const DOWNLOAD_SESSION_PARTITION = 'persist:novel'
@@ -172,6 +173,14 @@ async function loadPageHtml(url: string): Promise<string> {
   return loadAndGetHtml(getHiddenView(), url)
 }
 
+async function ruleForPage(pageUrl: string): Promise<SiteRule | undefined> {
+  try {
+    return await findSiteRuleForUrl(pageUrl)
+  } catch {
+    return undefined
+  }
+}
+
 function failMessage(code?: FailCode, extra?: string): string {
   const base = code ? FAIL_CODE_ZH[code] : extra || '下载失败'
   return extra && extra !== base ? `${base}：${extra}` : base
@@ -193,7 +202,8 @@ export async function followCatalogIfNeeded(
   if (bs.pageKind === 'chapter' && bs.catalogUrl && bs.chapters.length === 0) {
     try {
       const catHtml = await loadHtml(bs.catalogUrl)
-      const catPage = extractPage(catHtml, bs.catalogUrl)
+      const catRule = await ruleForPage(bs.catalogUrl)
+      const catPage = extractPage(catHtml, bs.catalogUrl, undefined, catRule)
       if (catPage.failCode === 'NeedLogin') {
         return {
           ok: false,
@@ -204,7 +214,7 @@ export async function followCatalogIfNeeded(
       const chapters =
         catPage.ok && catPage.bootstrap && catPage.bootstrap.chapters.length >= 2
           ? catPage.bootstrap.chapters
-          : extractCatalog(catHtml, bs.catalogUrl)
+          : extractCatalog(catHtml, bs.catalogUrl, catRule)
       if (chapters.length < 2) {
         return { ok: false, code: 'CatalogNotFound', message: '从章节目录未找到足够的章节链接' }
       }
@@ -240,7 +250,8 @@ export async function startDownloadFromPage(
     return { ok: false, code: 'UnknownPage', message: '请先打开一本书的目录页或章节页' }
   }
 
-  const result = extractPage(pageHtml, pageUrl)
+  const rule = await ruleForPage(pageUrl)
+  const result = extractPage(pageHtml, pageUrl, undefined, rule)
   if (!result.ok || !result.bootstrap) {
     return { ok: false, code: result.failCode || 'UnknownPage', message: result.failMessage || '无法识别为书' }
   }
@@ -346,7 +357,8 @@ export async function downloadChapters(bookId: string): Promise<void> {
     try {
       const html = await loadPageHtml(chapterUrl)
       if (dl.cancelled) break
-      const bodyResult = extractBody(html, chapterUrl)
+      const bodyRule = await ruleForPage(chapterUrl)
+      const bodyResult = extractBody(html, chapterUrl, bodyRule)
       if (bodyResult.ok) {
         await writeChapterFile(bookId, ch.id, {
           title: ch.title,
@@ -423,7 +435,8 @@ export async function retryFailed(bookId: string): Promise<{ ok: boolean; messag
     }
 
     const catHtml = await loadPageHtml(book.sourceUrl)
-    const chapters: CatalogChapter[] = extractCatalog(catHtml, book.sourceUrl)
+    const catRule = await ruleForPage(book.sourceUrl)
+    const chapters: CatalogChapter[] = extractCatalog(catHtml, book.sourceUrl, catRule)
     if (chapters.length === 0) {
       return { ok: false, message: '目录页无法访问或内容变化' }
     }

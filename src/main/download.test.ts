@@ -42,6 +42,11 @@ vi.mock('electron', () => {
     BrowserWindow: class {},
     WebContentsView,
     session: { fromPartition: (partition: string) => ({ partition }) },
+    app: {
+      getPath(): string {
+        throw new Error('download tests must inject setSiteRulesDir when they need rules')
+      },
+    },
   }
 })
 
@@ -55,6 +60,7 @@ import {
   resetDownloadStateForTests,
   setOwnerWindow,
   setTestHtmlLoader,
+  retryFailed,
   startDownload,
   startDownloadFromPage,
   waitForIdle,
@@ -93,6 +99,7 @@ function trackingWindow(): {
 }
 import { bookIdFromUrl, listBooks, loadBook, readChapter, setLibraryPath } from './library'
 import { extractPage } from './extract'
+import { setSiteRulesDir, upsertSiteRule } from './siteRules'
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, '../../fixtures', name), 'utf-8')
 
@@ -358,5 +365,103 @@ describe('startDownload reads the displayed guest view', () => {
     expect(guest.webContents.getURL()).toBe('https://example.com/book/index.html')
     getHiddenView()
     expect(attached).toEqual([])
+  })
+})
+
+describe('download resolves site rules per URL', () => {
+  let dir: string
+  let rulesDir: string
+  const ruleFixture = (name: string) =>
+    readFileSync(join(import.meta.dirname, '../../fixtures/rule-site', name), 'utf-8')
+  const catalogUrl = 'http://127.0.0.1:5176/catalog.html'
+  const matching = {
+    host: '127.0.0.1',
+    title: '#spbf-title',
+    author: '#spbf-author',
+    catalog: '#spbf-toc',
+    body: '#spbf-body',
+  }
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-dl-rule-'))
+    rulesDir = await mkdtemp(join(tmpdir(), 'spbf-rules-dl-'))
+    await setLibraryPath(dir)
+    setSiteRulesDir(rulesDir)
+    resetDownloadStateForTests()
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('c1.html')) return ruleFixture('c1.html')
+      if (url.includes('c2.html')) return ruleFixture('c2.html')
+      return ruleFixture('catalog.html')
+    })
+  })
+
+  afterEach(async () => {
+    resetDownloadStateForTests()
+    setSiteRulesDir(null)
+    await rm(dir, { recursive: true, force: true })
+    await rm(rulesDir, { recursive: true, force: true })
+  })
+
+  it('fails rule-site catalog without a stored rule', async () => {
+    const result = await startDownloadFromPage(ruleFixture('catalog.html'), catalogUrl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(['UnknownPage', 'CatalogNotFound', 'BodyEmpty']).toContain(result.code)
+    expect(await listBooks()).toEqual([])
+  })
+
+  it('start and chapter-page follow use the matching rule for Alpha/Beta bodies', async () => {
+    await upsertSiteRule(matching)
+    const fromCatalog = await startDownloadFromPage(ruleFixture('catalog.html'), catalogUrl)
+    expect(fromCatalog.ok).toBe(true)
+    if (!fromCatalog.ok) return
+    await waitForIdle()
+    const book = await loadBook(fromCatalog.bookId)
+    expect(book.chapters.map((c) => c.title)).toEqual(expect.arrayContaining(['Alpha', 'Beta']))
+    expect(book.chapters).toHaveLength(2)
+    const bodies = await Promise.all(book.chapters.map((c) => readChapter(book.id, c.id)))
+    expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_ALPHA'))).toBe(true)
+    expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_BETA'))).toBe(true)
+    expect(bodies.every((b) => !b.body.includes('DECOY_BANNER_CLICK'))).toBe(true)
+  })
+
+  it('start from a chapter page still follows the catalog via the matching rule', async () => {
+    await upsertSiteRule(matching)
+    const fromChapter = await startDownloadFromPage(ruleFixture('c1.html'), 'http://127.0.0.1:5176/c1.html')
+    expect(fromChapter.ok).toBe(true)
+    if (!fromChapter.ok) return
+    await waitForIdle()
+    const book = await loadBook(fromChapter.bookId)
+    expect(book.chapters.map((c) => c.title)).toEqual(expect.arrayContaining(['Alpha', 'Beta']))
+    expect(book.chapters).toHaveLength(2)
+    const bodies = await Promise.all(book.chapters.map((c) => readChapter(book.id, c.id)))
+    expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_ALPHA'))).toBe(true)
+    expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_BETA'))).toBe(true)
+  })
+
+  it('retryFailed re-extracts failed chapters with the current host rule', async () => {
+    await upsertSiteRule({
+      host: '127.0.0.1',
+      title: '#spbf-title',
+      author: '#spbf-author',
+      catalog: '#spbf-toc',
+    })
+    const started = await startDownloadFromPage(ruleFixture('catalog.html'), catalogUrl)
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    const before = await loadBook(started.bookId)
+    expect(before.chapters).toHaveLength(2)
+    expect(before.chapters.every((c) => c.status === 'failed' || c.status === 'empty')).toBe(true)
+
+    await upsertSiteRule(matching)
+    const retried = await retryFailed(started.bookId)
+    expect(retried.ok).toBe(true)
+    await waitForIdle()
+    const after = await loadBook(started.bookId)
+    expect(after.chapters.every((c) => c.status === 'ready')).toBe(true)
+    const bodies = await Promise.all(after.chapters.map((c) => readChapter(after.id, c.id)))
+    expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_ALPHA'))).toBe(true)
+    expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_BETA'))).toBe(true)
   })
 })

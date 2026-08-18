@@ -6,7 +6,7 @@
  */
 import { Readability } from '@mozilla/readability'
 import { JSDOM } from 'jsdom'
-import type { CatalogChapter, ExtractBootstrap, FailCode, PageKind } from '../shared/types'
+import type { CatalogChapter, ExtractBootstrap, FailCode, PageKind, SiteRule } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -66,6 +66,85 @@ function extractAuthor(doc: Document): string {
   return el ? visibleText(el) : ''
 }
 
+function ruleSelector(value?: string): string | undefined {
+  const s = (value ?? '').trim()
+  return s || undefined
+}
+
+function querySafe(doc: Document, selector: string): Element | null {
+  try {
+    return doc.querySelector(selector)
+  } catch {
+    return null
+  }
+}
+
+function textFromRuleSelector(doc: Document, selector?: string): string {
+  const sel = ruleSelector(selector)
+  if (!sel) return ''
+  const el = querySafe(doc, sel)
+  return el ? visibleText(el) : ''
+}
+
+function bookTitleWithRule(doc: Document, rule?: SiteRule): string {
+  return textFromRuleSelector(doc, rule?.title) || extractBookTitle(doc)
+}
+
+function authorWithRule(doc: Document, rule?: SiteRule): string {
+  return textFromRuleSelector(doc, rule?.author) || extractAuthor(doc)
+}
+
+interface CatalogHit {
+  bookTitle: string
+  author: string
+  coverUrl?: string
+  chapters: CatalogChapter[]
+}
+
+function tryCatalogFromRule(doc: Document, pageUrl: string, rule?: SiteRule): CatalogHit | null {
+  const sel = ruleSelector(rule?.catalog)
+  if (!sel) return null
+  const container = querySafe(doc, sel)
+  if (!container) return null
+  let anchors: HTMLAnchorElement[] = []
+  try {
+    anchors = [...container.querySelectorAll('a[href]')] as HTMLAnchorElement[]
+  } catch {
+    return null
+  }
+  const seen = new Set<string>()
+  const chapters: CatalogChapter[] = []
+  let index = 0
+  for (const a of anchors) {
+    const rawHref = (a.getAttribute('href') || '').trim()
+    if (!rawHref || rawHref.startsWith('#') || /^javascript:/i.test(rawHref)) continue
+    if (!sameDomain(a.href, pageUrl)) continue
+    const text = visibleText(a)
+    if (text.length < 1 || text.length > 100) continue
+    const href = stripQuery(a.href)
+    if (seen.has(href)) continue
+    seen.add(href)
+    index++
+    chapters.push({ title: text, url: a.href, index })
+  }
+  if (chapters.length < 2) return null
+  return {
+    bookTitle: bookTitleWithRule(doc, rule),
+    author: authorWithRule(doc, rule),
+    chapters,
+  }
+}
+
+function tryBodyFromRule(doc: Document, rule?: SiteRule): string | null {
+  const sel = ruleSelector(rule?.body)
+  if (!sel) return null
+  const el = querySafe(doc, sel)
+  if (!el) return null
+  const text = cleanBodyText(visibleText(el))
+  if (effectiveLength(text) >= 80) return text
+  return null
+}
+
 // ---------------------------------------------------------------------------
 // catalog detection
 // ---------------------------------------------------------------------------
@@ -77,13 +156,6 @@ function isChapterLink(a: HTMLAnchorElement): boolean {
   const text = visibleText(a)
   if (text.length < 2 || text.length > 100) return false
   return CHAPTER_RE.test(text) || SEQ_RE.test(text)
-}
-
-interface CatalogHit {
-  bookTitle: string
-  author: string
-  coverUrl?: string
-  chapters: CatalogChapter[]
 }
 
 function tryCatalogFromDoc(doc: Document, pageUrl: string): CatalogHit | null {
@@ -258,10 +330,26 @@ export interface ExtractResult {
  * @param html 当前页 HTML 字符串
  * @param pageUrl 当前页 URL
  * @param catalogHint 若已知目录页 URL，传入以跳过目录发现
+ * @param rule 可选站点规则；0 命中 / 非法 CSS / 短正文回退通用路径
  */
-export function extractPage(html: string, pageUrl: string, catalogHint?: string): ExtractResult {
+export function extractPage(html: string, pageUrl: string, catalogHint?: string, rule?: SiteRule): ExtractResult {
   const dom = new JSDOM(html, { url: pageUrl })
   const doc = dom.window.document
+
+  const ruledCatalog = tryCatalogFromRule(doc, pageUrl, rule)
+  if (ruledCatalog && ruledCatalog.chapters.length >= 2) {
+    return {
+      ok: true,
+      pageKind: 'catalog',
+      bootstrap: {
+        pageKind: 'catalog',
+        bookTitle: ruledCatalog.bookTitle,
+        author: ruledCatalog.author,
+        coverUrl: ruledCatalog.coverUrl,
+        chapters: ruledCatalog.chapters,
+      },
+    }
+  }
 
   // Try catalog first
   const catalog = tryCatalogFromDoc(doc, pageUrl)
@@ -271,11 +359,31 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string)
       pageKind: 'catalog',
       bootstrap: {
         pageKind: 'catalog',
-        bookTitle: catalog.bookTitle,
-        author: catalog.author,
+        bookTitle: bookTitleWithRule(doc, rule) || catalog.bookTitle,
+        author: authorWithRule(doc, rule) || catalog.author,
         coverUrl: catalog.coverUrl,
         chapters: catalog.chapters,
       },
+    }
+  }
+
+  const ruledBody = tryBodyFromRule(doc, rule)
+  if (ruledBody) {
+    if (isLoginWall(doc, ruledBody)) {
+      return { ok: false, pageKind: 'chapter', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
+    }
+    const catalogUrl = findCatalogLink(doc, pageUrl)
+    return {
+      ok: true,
+      pageKind: 'chapter',
+      bootstrap: {
+        pageKind: 'chapter',
+        bookTitle: bookTitleWithRule(doc, rule),
+        author: authorWithRule(doc, rule),
+        catalogUrl: catalogUrl || catalogHint || undefined,
+        chapters: [],
+      },
+      body: ruledBody,
     }
   }
 
@@ -292,8 +400,8 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string)
       pageKind: 'chapter',
       bootstrap: {
         pageKind: 'chapter',
-        bookTitle: extractBookTitle(doc),
-        author: extractAuthor(doc),
+        bookTitle: bookTitleWithRule(doc, rule),
+        author: authorWithRule(doc, rule),
         catalogUrl: catalogUrl || catalogHint || undefined,
         chapters: [], // will be filled after fetching catalog
       },
@@ -320,9 +428,11 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string)
 /**
  * 从目录页 HTML 提取章节列表。
  */
-export function extractCatalog(html: string, catalogUrl: string): CatalogChapter[] {
+export function extractCatalog(html: string, catalogUrl: string, rule?: SiteRule): CatalogChapter[] {
   const dom = new JSDOM(html, { url: catalogUrl })
   const doc = dom.window.document
+  const ruled = tryCatalogFromRule(doc, catalogUrl, rule)
+  if (ruled && ruled.chapters.length >= 2) return ruled.chapters
   const hit = tryCatalogFromDoc(doc, catalogUrl)
   return hit?.chapters ?? []
 }
@@ -330,9 +440,20 @@ export function extractCatalog(html: string, catalogUrl: string): CatalogChapter
 /**
  * 从章页 HTML 提取正文。
  */
-export function extractBody(html: string, pageUrl: string): { body: string; ok: boolean; failCode?: FailCode; failMessage?: string } {
+export function extractBody(
+  html: string,
+  pageUrl: string,
+  rule?: SiteRule,
+): { body: string; ok: boolean; failCode?: FailCode; failMessage?: string } {
   const dom = new JSDOM(html, { url: pageUrl })
   const doc = dom.window.document
+  const ruledBody = tryBodyFromRule(doc, rule)
+  if (ruledBody) {
+    if (isLoginWall(doc, ruledBody)) {
+      return { body: '', ok: false, failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
+    }
+    return { body: ruledBody, ok: true }
+  }
   const { body, ok, partialText } = tryExtractBody(doc)
   if (!ok) {
     if (isLoginWall(doc, partialText)) {

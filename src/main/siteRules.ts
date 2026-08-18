@@ -10,8 +10,16 @@ interface SiteRulesFile {
   rules: SiteRule[]
 }
 
+/** Injected userData dir for unit tests. Null = real `app.getPath('userData')`. */
+let overrideDir: string | null = null
+
+export function setSiteRulesDir(dir: string | null): void {
+  overrideDir = dir
+}
+
 function rulesPath(): string {
-  return join(app.getPath('userData'), 'site-rules.json')
+  const root = overrideDir ?? app.getPath('userData')
+  return join(root, 'site-rules.json')
 }
 
 /** trim → lowercase → optional hostname from URL → strip one leading www. */
@@ -60,8 +68,14 @@ function parseFile(raw: unknown): SiteRulesFile {
   const rules: SiteRule[] = []
   for (const item of rulesIn) {
     if (!item || typeof item !== 'object') continue
-    const host = typeof (item as SiteRule).host === 'string' ? (item as SiteRule).host : ''
-    if (!host) continue
+    const rawHost = typeof (item as SiteRule).host === 'string' ? (item as SiteRule).host : ''
+    if (!rawHost) continue
+    let host = rawHost
+    try {
+      host = normalizeHost(rawHost)
+    } catch {
+      continue
+    }
     rules.push({
       host,
       title: asSelector((item as SiteRule).title),
