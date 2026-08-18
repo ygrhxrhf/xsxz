@@ -77,26 +77,24 @@ export async function waitForIdle(timeoutMs = 15_000): Promise<void> {
   }
 }
 
-function getHiddenView(): WebContentsView {
-  if (hiddenView && !hiddenView.webContents.isDestroyed()) {
-    hiddenView.setVisible(false)
-    hiddenView.setBounds(HIDDEN_VIEW_BOUNDS)
-    return hiddenView
+export function getHiddenView(): WebContentsView {
+  if (!hiddenView || hiddenView.webContents.isDestroyed()) {
+    hiddenView = new WebContentsView({
+      webPreferences: {
+        session: session.fromPartition(DOWNLOAD_SESSION_PARTITION),
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
   }
-  hiddenView = new WebContentsView({
-    webPreferences: {
-      session: session.fromPartition(DOWNLOAD_SESSION_PARTITION),
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
+  // Detached on purpose: attaching to the window makes CDP list this as t1
+  // and the crawler can steal focus from the visible browse guest.
   try {
     ownerWindow?.contentView.removeChildView(hiddenView)
   } catch {
-    /* not attached */
+    /* never attached, or already detached */
   }
-  ownerWindow?.contentView.addChildView(hiddenView)
   hiddenView.setVisible(false)
   hiddenView.setBounds(HIDDEN_VIEW_BOUNDS)
   return hiddenView

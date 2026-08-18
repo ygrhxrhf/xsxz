@@ -25,8 +25,18 @@ vi.mock('electron', () => {
   }
   class WebContentsView {
     webContents = new FakeWebContents()
-    setVisible(): void {}
-    setBounds(): void {}
+    webPreferences: { session?: { partition?: string } }
+    visible = true
+    bounds: { x: number; y: number; width: number; height: number } | null = null
+    constructor(opts: { webPreferences?: { session?: { partition?: string } } } = {}) {
+      this.webPreferences = opts.webPreferences ?? {}
+    }
+    setVisible(visible: boolean): void {
+      this.visible = visible
+    }
+    setBounds(bounds: { x: number; y: number; width: number; height: number }): void {
+      this.bounds = bounds
+    }
   }
   return {
     BrowserWindow: class {},
@@ -39,14 +49,48 @@ import {
   chapterNeedsDownload,
   DOWNLOAD_SESSION_PARTITION,
   followCatalogIfNeeded,
+  getHiddenView,
   HIDDEN_VIEW_BOUNDS,
   identityFromPage,
   resetDownloadStateForTests,
+  setOwnerWindow,
   setTestHtmlLoader,
   startDownload,
   startDownloadFromPage,
   waitForIdle,
 } from './download'
+
+type MockHiddenView = {
+  webPreferences: { session?: { partition?: string } }
+  visible: boolean
+  bounds: { x: number; y: number; width: number; height: number } | null
+  webContents: {
+    loadURL: (url: string) => Promise<void>
+    executeJavaScript: (script: string) => Promise<string>
+  }
+}
+
+function trackingWindow(): {
+  attached: unknown[]
+  win: { contentView: { addChildView: (view: unknown) => void; removeChildView: (view: unknown) => void }; webContents: { send: () => void } }
+} {
+  const attached: unknown[] = []
+  return {
+    attached,
+    win: {
+      contentView: {
+        addChildView(view: unknown) {
+          attached.push(view)
+        },
+        removeChildView(view: unknown) {
+          const i = attached.indexOf(view)
+          if (i >= 0) attached.splice(i, 1)
+        },
+      },
+      webContents: { send(): void {} },
+    },
+  }
+}
 import { bookIdFromUrl, listBooks, loadBook, readChapter, setLibraryPath } from './library'
 import { extractPage } from './extract'
 
@@ -89,12 +133,32 @@ describe('chapterNeedsDownload', () => {
 })
 
 describe('hidden persist:novel crawl placement', () => {
+  afterEach(() => {
+    resetDownloadStateForTests()
+  })
+
   it('uses persist:novel and keeps the hidden view off the visible chrome', () => {
     expect(DOWNLOAD_SESSION_PARTITION).toBe('persist:novel')
     expect(HIDDEN_VIEW_BOUNDS.x).toBeLessThan(0)
     expect(HIDDEN_VIEW_BOUNDS.y).toBeLessThan(0)
     expect(HIDDEN_VIEW_BOUNDS.width).toBeGreaterThan(1)
     expect(HIDDEN_VIEW_BOUNDS.height).toBeGreaterThan(1)
+  })
+
+  it('does not addChildView the crawler; loadURL/executeJavaScript still work detached', async () => {
+    const { attached, win } = trackingWindow()
+    setOwnerWindow(win as never)
+    const view = getHiddenView() as unknown as MockHiddenView
+    expect(attached).toEqual([])
+    expect(view.webPreferences.session?.partition).toBe('persist:novel')
+    expect(view.visible).toBe(false)
+    expect(view.bounds).toEqual(HIDDEN_VIEW_BOUNDS)
+    expect(view.webContents.loadURL).toBeTypeOf('function')
+    expect(view.webContents.executeJavaScript).toBeTypeOf('function')
+    await expect(view.webContents.loadURL('https://example.com/book/1.html')).resolves.toBeUndefined()
+    await expect(view.webContents.executeJavaScript('document.documentElement.outerHTML')).resolves.toBeTypeOf('string')
+    expect(getHiddenView()).toBe(view)
+    expect(attached).toEqual([])
   })
 })
 
@@ -263,6 +327,7 @@ describe('startDownload reads the displayed guest view', () => {
   })
 
   it('does not navigate the visible guest when crawling chapters', async () => {
+    const { attached, win } = trackingWindow()
     const guest = {
       navigated: [] as string[],
       webContents: {
@@ -278,6 +343,7 @@ describe('startDownload reads the displayed guest view', () => {
       },
     }
     const { setBrowseView } = await import('./download')
+    setOwnerWindow(win as never)
     setBrowseView(guest as never)
     setTestHtmlLoader(async (url) => {
       if (url.includes('2.html')) return fixture('chapter-empty.html')
@@ -290,5 +356,7 @@ describe('startDownload reads the displayed guest view', () => {
     await waitForIdle()
     expect(guest.navigated).toEqual([])
     expect(guest.webContents.getURL()).toBe('https://example.com/book/index.html')
+    getHiddenView()
+    expect(attached).toEqual([])
   })
 })
