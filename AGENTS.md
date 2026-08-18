@@ -1,0 +1,63 @@
+# 小说浏览器（spbf）
+
+Windows 单机：内置浏览 → 下载本书 → 书库 + 阅读器 → 自备 API Key 的 AI。
+
+需求：`docs/requirements.md`  
+IPC：`docs/ipc-contract.md`  
+磁盘：`docs/disk-schema.md`  
+类型：`src/shared/types.ts`
+
+界面语言：**中文**。
+
+## 技术钉死
+
+- Electron + electron-vite + Vue 3 + TypeScript + Naive UI
+- 浏览与下载共用 `session.fromPartition('persist:novel')`
+- 下载用隐藏 `webContents` 逐章 `loadURL`，禁止裸 `fetch` 当下书主路径
+- 无 native 模块（本机无 VS2022）
+- 章节正文只渲染纯文本，禁止 `v-html`
+
+## 可以做
+
+- 内置浏览、下载本书、书库 / 阅读、自备 API Key 的 AI
+- 本机按域名配置站点 CSS 规则；导入 txt / epub
+
+## 不要做
+
+- 整站镜像、站点 CSS 选择器市场、打码、IP 池、破解付费墙
+- 账号 / 云同步
+- 工人私自改 `src/preload/index.ts` 或给 `types.ts` 加字段（走协调者补丁）
+- 工人改不属于自己的文件
+
+## 文件所有权
+
+| 路径 | 写者 |
+|---|---|
+| `src/shared/types.ts` | 契约官；之后协调者补丁 |
+| `docs/ipc-contract.md` `docs/disk-schema.md` | 同上 |
+| `src/main/index.ts` | 脚手架工；之后协调者按 IPC 补丁追加 |
+| `src/preload/index.ts` | 契约阶段定白名单；各阶段协调者合并 |
+| `src/main/session.ts` 浏览 View | 脚手架 / 浏览 |
+| `src/main/library.ts` `importTxt.ts` `importEpub.ts` | 书库工 |
+| `src/main/extract.ts` `download.ts` | 下载工 |
+| `src/main/ai.ts` `settings.ts` | AI 工 |
+| `src/renderer/App.vue` | 脚手架工 |
+| `src/renderer/pages/Browse.vue` | 浏览 |
+| `src/renderer/pages/Library.vue` | 书库工 |
+| `src/renderer/pages/Reader.vue` | 阅读工 |
+| `src/renderer/pages/Settings.vue` | AI 工（书库路径经协调者并入） |
+
+需要改非己文件：先问协调者，禁止直接改。
+
+## 工人交付
+
+```
+结果: succeeded | failed
+做了: （3～8 条）
+文件: 逗号分隔路径
+怎么验: 命令或手测步骤
+风险: 未测的站/边界
+需要协调者: 要挂的 IPC 名 / 要求补的类型
+```
+
+失败必须明确 failed。产品范围不清就问，不要猜。

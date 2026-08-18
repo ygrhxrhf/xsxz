@@ -17,6 +17,11 @@ IPC：`docs/ipc-contract.md`
 - 无 native 模块（本机无 VS2022）
 - 章节正文只渲染纯文本，禁止 `v-html`
 
+## 可以做
+
+- 内置浏览、下载本书、书库 / 阅读、自备 API Key 的 AI
+- 本机按域名配置站点 CSS 规则；导入 txt / epub
+
 ## 不要做
 
 - 整站镜像、站点 CSS 选择器市场、打码、IP 池、破解付费墙
