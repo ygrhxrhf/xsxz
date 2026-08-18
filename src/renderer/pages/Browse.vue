@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NProgress, NTag } from 'naive-ui'
 import type { BrowseState, DownloadProgress } from '@shared/types'
+
+const emit = defineEmits<{
+  (e: 'open-book', bookId: string): void
+}>()
 
 const address = ref('')
 const state = ref<BrowseState>({
@@ -19,6 +23,18 @@ const unsubs: Array<() => void> = []
 const downloading = ref(false)
 const downloadProgress = ref<DownloadProgress | null>(null)
 const showProgress = ref(false)
+
+const canOpenDownloadedBook = computed(() => {
+  const p = downloadProgress.value
+  return Boolean(p?.bookId) && (p!.status === 'done' || p!.status === 'error')
+})
+
+function openThisBook() {
+  const p = downloadProgress.value
+  if (!p?.bookId || !canOpenDownloadedBook.value) return
+  emit('open-book', p.bookId)
+  showProgress.value = false
+}
 
 function reportBounds() {
   const el = slot.value
@@ -41,14 +57,16 @@ async function go() {
 
 async function startDownload() {
   downloading.value = true
+  downloadProgress.value = null
   showProgress.value = true
   const res = await window.api.download.start()
   if (!res.ok) {
     window.alert(res.message || '下载失败')
     downloading.value = false
+    showProgress.value = false
+    downloadProgress.value = null
     return
   }
-  // Progress will come via IPC
 }
 
 async function cancelDownload() {
@@ -77,6 +95,8 @@ onMounted(async () => {
     downloadProgress.value = p
     if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
       downloading.value = false
+      // Closed mid-run must not cancel; surface the terminal tag + open button.
+      showProgress.value = true
     }
   }))
 })
@@ -111,7 +131,7 @@ onUnmounted(() => {
     <div ref="slot" class="browse-slot" />
 
     <!-- Download progress drawer -->
-    <n-drawer v-model:show="showProgress" placement="bottom" :height="200">
+    <n-drawer v-model:show="showProgress" placement="bottom" :height="240">
       <n-drawer-content title="下载进度" closable>
         <div v-if="downloadProgress" class="dl-progress">
           <div class="dl-title">{{ downloadProgress.title }}</div>
@@ -127,6 +147,7 @@ onUnmounted(() => {
             </n-tag>
             <n-tag v-if="downloadProgress.status === 'done'" size="small" type="success">完成</n-tag>
             <n-tag v-if="downloadProgress.status === 'error'" size="small" type="error">有失败</n-tag>
+            <n-tag v-if="downloadProgress.status === 'cancelled'" size="small" type="warning">已取消</n-tag>
           </div>
           <div v-if="downloadProgress.currentTitle" class="dl-current">
             正在下载：{{ downloadProgress.currentTitle }}
@@ -134,16 +155,25 @@ onUnmounted(() => {
           <div v-if="downloadProgress.lastError" class="dl-error">
             错误：{{ downloadProgress.lastError }}
           </div>
-          <n-button
-            v-if="downloading"
-            size="small"
-            quaternary
-            type="error"
-            @click="cancelDownload"
-            style="margin-top:8px"
-          >
-            取消下载
-          </n-button>
+          <div class="dl-actions">
+            <n-button
+              v-if="downloading"
+              size="small"
+              quaternary
+              type="error"
+              @click="cancelDownload"
+            >
+              取消下载
+            </n-button>
+            <n-button
+              v-if="canOpenDownloadedBook"
+              type="primary"
+              size="small"
+              @click="openThisBook"
+            >
+              打开这本书
+            </n-button>
+          </div>
         </div>
         <div v-else style="color:#888;text-align:center;padding:24px">等待下载开始…</div>
       </n-drawer-content>
@@ -181,5 +211,12 @@ onUnmounted(() => {
   font-size: 12px;
   color: #e88080;
   margin-top: 4px;
+}
+
+.dl-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 </style>
