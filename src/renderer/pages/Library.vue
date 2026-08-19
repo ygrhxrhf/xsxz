@@ -2,6 +2,12 @@
 import { NButton, NCard, NEmpty, NSpace, NTag, NPopconfirm } from 'naive-ui'
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, DownloadProgress } from '@shared/types'
+import {
+  applyAddedChapterCount,
+  checkUpdateMessage,
+  hasFailedChapters,
+  isDownloadBook,
+} from './libraryCard'
 
 const props = defineProps<{ active?: boolean }>()
 
@@ -12,6 +18,8 @@ const emit = defineEmits<{
 const books = ref<BookListItem[]>([])
 const loading = ref(false)
 const retryingId = ref<string | null>(null)
+const checkingId = ref<string | null>(null)
+const checkMsg = ref<Record<string, string>>({})
 let unsubProgress: (() => void) | null = null
 
 async function refresh() {
@@ -50,8 +58,29 @@ async function handleRetry(bookId: string) {
   }
 }
 
-function hasFailed(b: BookListItem): boolean {
-  return b.status === 'partial' && b.readyCount < b.chapterCount
+async function handleCheckUpdate(bookId: string) {
+  checkingId.value = bookId
+  try {
+    const res = await window.api.download.checkUpdate(bookId)
+    checkingId.value = null
+    if (res.ok && res.added > 0) {
+      const i = books.value.findIndex((b) => b.id === bookId)
+      if (i >= 0) {
+        const cur = books.value[i]
+        books.value[i] = {
+          ...cur,
+          chapterCount: applyAddedChapterCount(cur.chapterCount, res.added),
+        }
+      }
+    }
+    checkMsg.value = { ...checkMsg.value, [bookId]: checkUpdateMessage(res) }
+    if (res.ok && res.added > 0) await refresh()
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e)
+    checkMsg.value = { ...checkMsg.value, [bookId]: message || '检查更新失败' }
+  } finally {
+    checkingId.value = null
+  }
 }
 
 function statusLabel(status: BookListItem['status']): string {
@@ -85,12 +114,19 @@ onMounted(() => {
       const i = books.value.findIndex((b) => b.id === p.bookId)
       if (i < 0) {
         void refresh()
-      } else if (books.value[i].status !== 'downloading') {
-        books.value[i] = { ...books.value[i], status: 'downloading' }
+      } else {
+        const cur = books.value[i]
+        books.value[i] = {
+          ...cur,
+          status: 'downloading',
+          chapterCount: p.total > 0 ? p.total : cur.chapterCount,
+          readyCount: p.done,
+        }
       }
     }
     if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
       retryingId.value = null
+      checkingId.value = null
       void refresh()
     }
   })
@@ -125,9 +161,18 @@ onUnmounted(() => {
           </n-tag>
         </div>
         <div class="book-progress">{{ fmtProgress(b) }}</div>
+        <div v-if="checkMsg[b.id]" class="check-msg">{{ checkMsg[b.id] }}</div>
         <n-space justify="end" style="margin-top:8px">
           <n-button
-            v-if="hasFailed(b)"
+            v-if="isDownloadBook(b)"
+            size="tiny"
+            :loading="checkingId === b.id"
+            @click.stop="handleCheckUpdate(b.id)"
+          >
+            检查更新
+          </n-button>
+          <n-button
+            v-if="hasFailedChapters(b)"
             size="tiny"
             type="warning"
             :loading="retryingId === b.id"
@@ -187,5 +232,12 @@ onUnmounted(() => {
   font-size: 12px;
   color: #888;
   margin-top: 4px;
+}
+
+.check-msg {
+  font-size: 12px;
+  color: #63e2b7;
+  margin-top: 6px;
+  line-height: 1.4;
 }
 </style>
