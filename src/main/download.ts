@@ -426,9 +426,46 @@ export function cancelDownload(bookId?: string): void {
 export async function checkUpdate(
   bookId: string,
 ): Promise<{ ok: true; bookId: string; added: number } | { ok: false; code?: FailCode; message: string }> {
-  // Stub for ipcMain.handle('download.checkUpdate'). Download worker fills this in.
-  void bookId
-  return { ok: false, message: '未实现检查更新' }
+  if (active.size > 0) {
+    return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
+  }
+
+  try {
+    const book = await loadBook(bookId)
+    const sourceUrl = (book.sourceUrl || '').trim()
+    if (book.importType !== 'download' || !sourceUrl) {
+      return { ok: false, message: '无原始目录地址，无法检查更新' }
+    }
+
+    const catHtml = await loadPageHtml(sourceUrl)
+    const catRule = await ruleForPage(sourceUrl)
+    const chapters: CatalogChapter[] = extractCatalog(catHtml, sourceUrl, catRule)
+    if (chapters.length === 0) {
+      return { ok: false, message: '目录页无法访问或内容变化' }
+    }
+
+    const { added } = mergeIncomingChapters(book, chapters)
+    book.status = 'downloading'
+    await saveBook(book)
+
+    const dl: ActiveDownload = {
+      bookId,
+      title: book.title,
+      total: book.chapters.length,
+      done: book.chapters.filter((c) => c.status === 'ready').length,
+      failed: 0,
+      cancelled: false,
+    }
+    active.set(bookId, dl)
+    emitProgress(bookId)
+    const job = downloadChapters(bookId).catch(() => {})
+    runningJobs.add(job)
+    void job.finally(() => runningJobs.delete(job))
+    return { ok: true, bookId, added }
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e)
+    return { ok: false, message: message || '检查更新失败' }
+  }
 }
 
 export async function retryFailed(bookId: string): Promise<{ ok: boolean; message?: string }> {

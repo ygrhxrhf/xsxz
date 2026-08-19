@@ -311,6 +311,21 @@ function isLoginWall(doc: Document, bodyText: string): boolean {
   return false
 }
 
+const INTERCEPT_TITLE = ['安全验证', '人机验证', 'Access Denied', 'Just a moment', 'Attention Required']
+const INTERCEPT_TEXT = ['请完成人机验证', '检测到异常访问', '点击按钮继续', 'Cloudflare', 'Access Denied']
+
+function isInterceptedPage(doc: Document, bodyText: string): boolean {
+  if (isLoginWall(doc, bodyText)) return false
+  const title = doc.title || ''
+  if (INTERCEPT_TITLE.some((w) => title.includes(w))) return true
+  const pageText = `${bodyText} ${doc.body ? visibleText(doc.body) : ''}`
+  return INTERCEPT_TEXT.some((w) => pageText.includes(w))
+}
+
+function interceptedFail(): { ok: false; pageKind: 'chapter'; failCode: 'Intercepted'; failMessage: string } {
+  return { ok: false, pageKind: 'chapter', failCode: 'Intercepted', failMessage: FAIL_CODE_ZH.Intercepted }
+}
+
 // ---------------------------------------------------------------------------
 // public API
 // ---------------------------------------------------------------------------
@@ -372,6 +387,7 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
     if (isLoginWall(doc, ruledBody)) {
       return { ok: false, pageKind: 'chapter', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
     }
+    if (isInterceptedPage(doc, ruledBody)) return interceptedFail()
     const catalogUrl = findCatalogLink(doc, pageUrl)
     return {
       ok: true,
@@ -393,6 +409,7 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
     if (isLoginWall(doc, body)) {
       return { ok: false, pageKind: 'chapter', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
     }
+    if (isInterceptedPage(doc, body)) return interceptedFail()
     // This looks like a chapter page - try to find catalog link
     const catalogUrl = findCatalogLink(doc, pageUrl)
     return {
@@ -452,6 +469,9 @@ export function extractBody(
     if (isLoginWall(doc, ruledBody)) {
       return { body: '', ok: false, failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
     }
+    if (isInterceptedPage(doc, ruledBody)) {
+      return { body: '', ok: false, failCode: 'Intercepted', failMessage: FAIL_CODE_ZH.Intercepted }
+    }
     return { body: ruledBody, ok: true }
   }
   const { body, ok, partialText } = tryExtractBody(doc)
@@ -463,6 +483,9 @@ export function extractBody(
   }
   if (isLoginWall(doc, body)) {
     return { body: '', ok: false, failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
+  }
+  if (isInterceptedPage(doc, body)) {
+    return { body: '', ok: false, failCode: 'Intercepted', failMessage: FAIL_CODE_ZH.Intercepted }
   }
   return { body, ok: true }
 }

@@ -51,13 +51,16 @@ vi.mock('electron', () => {
 })
 
 import {
+  cancelDownload,
   chapterNeedsDownload,
+  checkUpdate,
   DOWNLOAD_SESSION_PARTITION,
   followCatalogIfNeeded,
   getHiddenView,
   HIDDEN_VIEW_BOUNDS,
   identityFromPage,
   resetDownloadStateForTests,
+  setBrowseView,
   setOwnerWindow,
   setTestHtmlLoader,
   retryFailed,
@@ -97,9 +100,18 @@ function trackingWindow(): {
     },
   }
 }
-import { bookIdFromUrl, listBooks, loadBook, readChapter, setLibraryPath } from './library'
+import {
+  bookIdFromUrl,
+  createBookFromBootstrap,
+  listBooks,
+  loadBook,
+  readChapter,
+  saveBook,
+  setLibraryPath,
+} from './library'
 import { extractPage } from './extract'
 import { setSiteRulesDir, upsertSiteRule } from './siteRules'
+import { FAIL_CODE_ZH } from '../shared/types'
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, '../../fixtures', name), 'utf-8')
 
@@ -463,5 +475,590 @@ describe('download resolves site rules per URL', () => {
     const bodies = await Promise.all(after.chapters.map((c) => readChapter(after.id, c.id)))
     expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_ALPHA'))).toBe(true)
     expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_BETA'))).toBe(true)
+  })
+})
+
+const LOCK_MSG = '已有下载任务在进行中，请等待完成或取消后再试'
+const NO_SOURCE_CHECK = '无原始目录地址，无法检查更新'
+const NO_SOURCE_RETRY = '无原始目录地址，无法重试'
+
+function catalogWithSeventh(): string {
+  return fixture('catalog.html').replace(
+    '<dd><a href="https://example.com/book/6.html">第六章 师兄</a></dd>',
+    '<dd><a href="https://example.com/book/6.html">第六章 师兄</a></dd>\n<dd><a href="https://example.com/book/7.html">第七章 新篇</a></dd>',
+  )
+}
+
+function shortCatalogThree(): string {
+  return `<!DOCTYPE html>
+<html>
+<head><title>某小说网 - 万古神帝 目录</title>
+<meta property="og:title" content="万古神帝">
+<meta property="og:novel:author" content="飞天鱼">
+</head>
+<body>
+<h1>万古神帝</h1>
+<div class="bookinfo"><span class="author">飞天鱼</span></div>
+<div id="list">
+<dl>
+<dt>正文</dt>
+<dd><a href="https://example.com/book/1.html">第一章 前世记忆</a></dd>
+<dd><a href="https://example.com/book/2.html">第二章 苏醒</a></dd>
+<dd><a href="https://example.com/book/3.html">第三章 入门</a></dd>
+</dl>
+</div>
+</body>
+</html>`
+}
+
+function emptyCatalogHtml(): string {
+  return `<!DOCTYPE html>
+<html>
+<head><title>某小说网 - 万古神帝 目录</title>
+<meta property="og:title" content="万古神帝">
+</head>
+<body>
+<h1>万古神帝</h1>
+<p>暂无章节</p>
+</body>
+</html>`
+}
+
+function interceptedHtml(): string {
+  return `<!DOCTYPE html>
+<html>
+<head><title>安全验证</title></head>
+<body>
+<div id="content">
+请完成人机验证 检测到异常访问 点击按钮继续 Cloudflare Access Denied
+页面不像正文拦截套话填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充
+再补一长段汉字以确保有效长度远超八十字阈值星河倒转灯火通明山河远阔江水东流春去秋来
+</div>
+</body>
+</html>`
+}
+
+function progressWindow(events: unknown[]): {
+  contentView: { addChildView: () => void; removeChildView: () => void }
+  webContents: { send: (channel: string, payload: unknown) => void }
+} {
+  return {
+    contentView: {
+      addChildView(): void {},
+      removeChildView(): void {},
+    },
+    webContents: {
+      send(channel: string, payload: unknown): void {
+        if (channel === 'download.progress') events.push(payload)
+      },
+    },
+  }
+}
+
+describe('checkUpdate', () => {
+  let dir: string
+  const loadedUrls: string[] = []
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-dl-upd-'))
+    await setLibraryPath(dir)
+    loadedUrls.length = 0
+    resetDownloadStateForTests()
+  })
+
+  afterEach(async () => {
+    resetDownloadStateForTests()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function seedSixChapterBook(opts?: { failSixth?: boolean }): Promise<{
+    bookId: string
+    readySnapshots: Array<{ id: string; body: string; url?: string }>
+  }> {
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) throw new Error('seed start failed')
+    await waitForIdle()
+    const book = await loadBook(started.bookId)
+    expect(book.chapters).toHaveLength(6)
+    if (opts?.failSixth) {
+      const sixth = book.chapters[5]
+      await writeFile(
+        join(dir, book.id, sixth.file),
+        JSON.stringify({
+          title: sixth.title,
+          url: sixth.url,
+          body: '',
+          status: 'failed',
+          failCode: 'NavFailed',
+        }),
+        'utf-8',
+      )
+      sixth.status = 'failed'
+      sixth.failCode = 'NavFailed'
+      await saveBook(book)
+    }
+    const readySnapshots = []
+    for (const ch of (await loadBook(started.bookId)).chapters.filter((c) => c.status === 'ready')) {
+      const file = await readChapter(started.bookId, ch.id)
+      readySnapshots.push({ id: ch.id, body: file.body, url: ch.url })
+    }
+    loadedUrls.length = 0
+    return { bookId: started.bookId, readySnapshots }
+  }
+
+  it('adds only a new catalog row and downloads it without rewriting ready bodies (VAL-DL-001/002/019)', async () => {
+    const { bookId, readySnapshots } = await seedSixChapterBook()
+    expect(readySnapshots).toHaveLength(6)
+    const marker = 'READY_BODY_MUST_NOT_CHANGE'
+    for (const snap of readySnapshots) {
+      const book = await loadBook(bookId)
+      const meta = book.chapters.find((c) => c.id === snap.id)!
+      const raw = JSON.parse(await readFile(join(dir, bookId, meta.file), 'utf-8')) as { body: string }
+      raw.body = `${marker}:${snap.id}`
+      await writeFile(join(dir, bookId, meta.file), JSON.stringify(raw), 'utf-8')
+    }
+
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return catalogWithSeventh()
+      return fixture('chapter.html')
+    })
+    const result = await checkUpdate(bookId)
+    expect(result).toMatchObject({ ok: true, bookId, added: 1 })
+    await waitForIdle()
+
+    const listed = await listBooks()
+    expect(listed.map((b) => b.id)).toEqual([bookId])
+    const after = await loadBook(bookId)
+    expect(after.chapters).toHaveLength(7)
+    expect(after.importType).toBe('download')
+    expect(after.sourceUrl).toBe('https://example.com/book/index.html')
+    const seventh = after.chapters.find((c) => c.url?.includes('7.html'))
+    expect(seventh).toBeTruthy()
+    expect(loadedUrls.filter((u) => u.includes('7.html')).length).toBeGreaterThanOrEqual(1)
+    expect(loadedUrls.filter((u) => /\/book\/[1-6]\.html$/.test(u))).toEqual([])
+
+    for (const snap of readySnapshots) {
+      const file = await readChapter(bookId, snap.id)
+      expect(file.body).toBe(`${marker}:${snap.id}`)
+      const still = after.chapters.find((c) => c.id === snap.id)
+      expect(still?.id).toBe(snap.id)
+    }
+    const seventhFile = await readChapter(bookId, seventh!.id)
+    expect(['ready', 'failed', 'empty'].includes(seventhFile.status) || seventhFile.failCode === 'Intercepted').toBe(
+      true,
+    )
+  })
+
+  it('retries a failed chapter without counting added (VAL-DL-003)', async () => {
+    const { bookId } = await seedSixChapterBook({ failSixth: true })
+    const before = await loadBook(bookId)
+    const failed = before.chapters.find((c) => c.status === 'failed')
+    expect(failed?.url).toContain('6.html')
+    const failedId = failed!.id
+    const chapterCount = before.chapters.length
+
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const result = await checkUpdate(bookId)
+    expect(result).toEqual({ ok: true, bookId, added: 0 })
+    await waitForIdle()
+
+    const after = await loadBook(bookId)
+    expect(after.chapters).toHaveLength(chapterCount)
+    expect(after.chapters.filter((c) => c.url === failed!.url)).toHaveLength(1)
+    expect(after.chapters.find((c) => c.id === failedId)?.id).toBe(failedId)
+    expect(loadedUrls.filter((u) => u.includes('6.html')).length).toBeGreaterThanOrEqual(1)
+    const retried = await readChapter(bookId, failedId)
+    expect(retried.status).toBe('ready')
+  })
+
+  it('rejects imported or sourceless books with the exact checkUpdate sentence (VAL-DL-004)', async () => {
+    const imported = await createBookFromBootstrap({
+      bookId: 'i_txtbook00000001',
+      title: '导入书',
+      author: '甲',
+      importType: 'txt',
+      chapterTitles: ['第一章'],
+    })
+    const events: unknown[] = []
+    setOwnerWindow(progressWindow(events) as never)
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      return fixture('catalog.html')
+    })
+    const noSource = await checkUpdate(imported.id)
+    expect(noSource).toEqual({ ok: false, message: NO_SOURCE_CHECK })
+    expect(loadedUrls).toEqual([])
+    expect(events).toEqual([])
+
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    const dl = await loadBook(started.bookId)
+    delete dl.sourceUrl
+    await saveBook(dl)
+    loadedUrls.length = 0
+    events.length = 0
+    const emptySource = await checkUpdate(dl.id)
+    expect(emptySource).toEqual({ ok: false, message: NO_SOURCE_CHECK })
+    expect(loadedUrls).toEqual([])
+    expect(events).toEqual([])
+  })
+
+  it('keeps retryFailed sourceless wording unchanged (VAL-DL-008)', async () => {
+    const imported = await createBookFromBootstrap({
+      bookId: 'i_txtbook00000002',
+      title: '导入书',
+      author: '甲',
+      importType: 'txt',
+      chapterTitles: ['第一章'],
+    })
+    const retried = await retryFailed(imported.id)
+    expect(retried).toEqual({ ok: false, message: NO_SOURCE_RETRY })
+  })
+
+  it('refuses when another download already holds the lock (VAL-DL-005)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('1.html')) await gate
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) {
+      release()
+      return
+    }
+    await vi.waitFor(() => {
+      expect(loadedUrls.some((u) => u.includes('1.html'))).toBe(true)
+    })
+    const blocked = await checkUpdate(started.bookId)
+    expect(blocked).toEqual({ ok: false, message: LOCK_MSG })
+    release()
+    await waitForIdle()
+  })
+
+  it('refuses while startDownloadFromPage is running (VAL-DL-006)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('2.html')) await gate
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const startP = startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    const started = await startP
+    expect(started.ok).toBe(true)
+    if (!started.ok) {
+      release()
+      return
+    }
+    const blocked = await checkUpdate(started.bookId)
+    expect(blocked).toEqual({ ok: false, message: LOCK_MSG })
+    release()
+    await waitForIdle()
+  })
+
+  it('refuses while retryFailed holds the lock (VAL-DL-007)', async () => {
+    const { bookId } = await seedSixChapterBook({ failSixth: true })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('6.html')) await gate
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const retryP = retryFailed(bookId)
+    await vi.waitFor(() => {
+      expect(loadedUrls.some((u) => u.includes('6.html'))).toBe(true)
+    })
+    const blocked = await checkUpdate(bookId)
+    expect(blocked).toEqual({ ok: false, message: LOCK_MSG })
+    release()
+    expect((await retryP).ok).toBe(true)
+    await waitForIdle()
+  })
+
+  it('fails with Chinese when the catalog has zero chapter links (VAL-DL-009)', async () => {
+    const { bookId, readySnapshots } = await seedSixChapterBook()
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return emptyCatalogHtml()
+      return fixture('chapter.html')
+    })
+    const result = await checkUpdate(bookId)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.message).toMatch(/[\u4e00-\u9fff]/)
+    expect(result.message.length).toBeGreaterThan(0)
+    expect(result.message).not.toContain('没有更新')
+    const after = await loadBook(bookId)
+    expect(after.id).toBe(bookId)
+    expect(after.chapters).toHaveLength(6)
+    for (const snap of readySnapshots) {
+      const file = await readChapter(bookId, snap.id)
+      expect(file.body).toBe(snap.body)
+    }
+    expect(await listBooks()).toHaveLength(1)
+  })
+
+  it('start still identities a download book from the current page (VAL-DL-014)', async () => {
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const first = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    expect(first.bookId.startsWith('d_')).toBe(true)
+    await waitForIdle()
+    const second = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(second.ok).toBe(true)
+    if (!second.ok) return
+    expect(second.bookId).toBe(first.bookId)
+    await waitForIdle()
+    const listed = await listBooks()
+    expect(listed.filter((b) => b.importType === 'download')).toHaveLength(1)
+    expect(listed[0].id).toBe(first.bookId)
+  })
+
+  it('emits progress, cancel releases the lock, and ready chapters remain (VAL-DL-015)', async () => {
+    const { bookId, readySnapshots } = await seedSixChapterBook()
+    const events: Array<{ status?: string; bookId?: string }> = []
+    setOwnerWindow(progressWindow(events) as never)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('7.html')) await gate
+      if (url.includes('index.html') || url.endsWith('/book/')) return catalogWithSeventh()
+      return fixture('chapter.html')
+    })
+    const updating = checkUpdate(bookId)
+    await vi.waitFor(() => {
+      expect(events.length).toBeGreaterThan(0)
+    })
+    cancelDownload(bookId)
+    release()
+    const accepted = await updating
+    expect(accepted.ok).toBe(true)
+    await waitForIdle()
+    expect(cancelDownload).toBeTypeOf('function')
+    const listed = await listBooks()
+    expect(listed[0].id).toBe(bookId)
+    for (const snap of readySnapshots) {
+      const file = await readChapter(bookId, snap.id)
+      expect(file.body).toBe(snap.body)
+    }
+    loadedUrls.length = 0
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return catalogWithSeventh()
+      return fixture('chapter.html')
+    })
+    const again = await checkUpdate(bookId)
+    expect(again.ok === false && again.message === LOCK_MSG).toBe(false)
+    if (again.ok) expect(again.added).toBeGreaterThanOrEqual(0)
+    await waitForIdle()
+  })
+
+  it('counts only the new row when an old failed chapter is retried at the same time (VAL-DL-016)', async () => {
+    const { bookId, readySnapshots } = await seedSixChapterBook({ failSixth: true })
+    expect(readySnapshots).toHaveLength(5)
+    const before = await loadBook(bookId)
+    const sixthId = before.chapters[5].id
+    const readyIds = readySnapshots.map((s) => s.id)
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return catalogWithSeventh()
+      return fixture('chapter.html')
+    })
+    const result = await checkUpdate(bookId)
+    expect(result).toEqual({ ok: true, bookId, added: 1 })
+    await waitForIdle()
+    const after = await loadBook(bookId)
+    expect(after.chapters).toHaveLength(7)
+    expect(after.chapters[5].id).toBe(sixthId)
+    expect(loadedUrls.filter((u) => u.includes('6.html')).length).toBeGreaterThanOrEqual(1)
+    const seventh = after.chapters.find((c) => c.url?.includes('7.html'))
+    expect(seventh).toBeTruthy()
+    expect(seventh!.id).not.toBe(sixthId)
+    expect(readyIds).not.toContain(seventh!.id)
+    expect(loadedUrls.filter((u) => /\/book\/[1-5]\.html$/.test(u))).toEqual([])
+    for (const snap of readySnapshots) {
+      const file = await readChapter(bookId, snap.id)
+      expect(file.body).toBe(snap.body)
+    }
+  })
+
+  it('still reports added=1 when the new row is Intercepted (VAL-DL-017)', async () => {
+    const { bookId } = await seedSixChapterBook()
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return catalogWithSeventh()
+      if (url.includes('7.html')) return interceptedHtml()
+      return fixture('chapter.html')
+    })
+    const result = await checkUpdate(bookId)
+    expect(result).toEqual({ ok: true, bookId, added: 1 })
+    await waitForIdle()
+    const after = await loadBook(bookId)
+    const seventh = after.chapters.find((c) => c.url?.includes('7.html'))
+    expect(seventh).toBeTruthy()
+    expect(seventh!.status).not.toBe('ready')
+    expect(seventh!.failCode).toBe('Intercepted')
+    expect(seventh!.failMessage).toBe(FAIL_CODE_ZH.Intercepted)
+    expect(loadedUrls.filter((u) => u.includes('7.html')).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('loads only the stored sourceUrl even if the browse page is another book (VAL-DL-018)', async () => {
+    const { bookId } = await seedSixChapterBook()
+    const guest = {
+      webContents: {
+        isDestroyed: () => false,
+        getURL: () => 'https://other.example/catalog-b.html',
+        executeJavaScript: async () => fixture('catalog.html'),
+      },
+    }
+    setBrowseView(guest as never)
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('catalog-b')) throw new Error('must not load browse page B')
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const result = await checkUpdate(bookId)
+    expect(result).toEqual({ ok: true, bookId, added: 0 })
+    await waitForIdle()
+    expect(loadedUrls.every((u) => !u.includes('catalog-b') && !u.includes('other.example'))).toBe(true)
+    expect(loadedUrls.some((u) => u.includes('https://example.com/book/index.html'))).toBe(true)
+    const listed = await listBooks()
+    expect(listed.map((b) => b.id)).toEqual([bookId])
+    const after = await loadBook(bookId)
+    expect(after.sourceUrl).toBe('https://example.com/book/index.html')
+    expect(after.importType).toBe('download')
+  })
+
+  it('does not delete existing rows when the catalog shrinks (VAL-DL-020)', async () => {
+    const { bookId, readySnapshots } = await seedSixChapterBook()
+    const omitted = readySnapshots.find((s) => s.url?.includes('6.html'))
+    expect(omitted).toBeTruthy()
+    const rulesDir = await mkdtemp(join(tmpdir(), 'spbf-rules-short-'))
+    setSiteRulesDir(rulesDir)
+    try {
+      await upsertSiteRule({ host: 'example.com', catalog: '#list' })
+      setTestHtmlLoader(async (url) => {
+        loadedUrls.push(url)
+        if (url.includes('index.html') || url.endsWith('/book/')) return shortCatalogThree()
+        return fixture('chapter.html')
+      })
+      const result = await checkUpdate(bookId)
+      expect(result.ok).toBe(true)
+      if (result.ok) expect(result.added).toBe(0)
+      await waitForIdle()
+      const after = await loadBook(bookId)
+      expect(after.id).toBe(bookId)
+      expect(after.chapters).toHaveLength(6)
+      const omittedFile = await readChapter(bookId, omitted!.id)
+      expect(omittedFile.body).toBe(omitted!.body)
+    } finally {
+      setSiteRulesDir(null)
+      await rm(rulesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('applies isolated host rules when checking updates (VAL-DL-021)', async () => {
+    const rulesDir = await mkdtemp(join(tmpdir(), 'spbf-rules-upd-'))
+    setSiteRulesDir(rulesDir)
+    try {
+      const catalogUrl = 'http://127.0.0.1:5176/catalog.html'
+      const ruleFixture = (name: string) =>
+        readFileSync(join(import.meta.dirname, '../../fixtures/rule-site', name), 'utf-8')
+      setTestHtmlLoader(async (url) => {
+        loadedUrls.push(url)
+        if (url.includes('c1.html')) return ruleFixture('c1.html')
+        if (url.includes('c2.html')) return ruleFixture('c2.html')
+        return ruleFixture('catalog.html')
+      })
+      const noRule = await startDownloadFromPage(ruleFixture('catalog.html'), catalogUrl)
+      expect(noRule.ok).toBe(false)
+
+      await upsertSiteRule({
+        host: '127.0.0.1',
+        title: '#spbf-title',
+        author: '#spbf-author',
+        catalog: '#spbf-toc',
+        body: '#spbf-body',
+      })
+      const started = await startDownloadFromPage(ruleFixture('catalog.html'), catalogUrl)
+      expect(started.ok).toBe(true)
+      if (!started.ok) return
+      await waitForIdle()
+      loadedUrls.length = 0
+      const result = await checkUpdate(started.bookId)
+      expect(result.ok).toBe(true)
+      if (result.ok) expect(result.added).toBe(0)
+      await waitForIdle()
+      const isolatedRules = join(rulesDir, 'site-rules.json')
+      expect(JSON.parse(await readFile(isolatedRules, 'utf-8')).rules[0].host).toBe('127.0.0.1')
+      const userRules = join(process.env.APPDATA || '', 'spbf', 'site-rules.json')
+      expect(isolatedRules.toLowerCase()).not.toBe(userRules.toLowerCase())
+    } finally {
+      setSiteRulesDir(null)
+      await rm(rulesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a second checkUpdate / start / retryFailed while one is running (VAL-DL-022/023/024)', async () => {
+    const { bookId } = await seedSixChapterBook({ failSixth: true })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('7.html') || url.includes('6.html')) await gate
+      if (url.includes('index.html') || url.endsWith('/book/')) return catalogWithSeventh()
+      return fixture('chapter.html')
+    })
+    const first = checkUpdate(bookId)
+    await vi.waitFor(() => {
+      expect(loadedUrls.some((u) => u.includes('6.html') || u.includes('7.html'))).toBe(true)
+    })
+    const second = await checkUpdate(bookId)
+    expect(second).toEqual({ ok: false, message: LOCK_MSG })
+    const startBlocked = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(startBlocked).toMatchObject({ ok: false, message: LOCK_MSG })
+    const retryBlocked = await retryFailed(bookId)
+    expect(retryBlocked).toEqual({ ok: false, message: LOCK_MSG })
+    release()
+    const accepted = await first
+    expect(accepted.ok).toBe(true)
+    await waitForIdle()
   })
 })

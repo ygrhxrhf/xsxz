@@ -75,6 +75,14 @@ describe('extractPage — chapter page', () => {
     expect(result.ok).toBe(false)
     expect(result.failCode).toBe('BodyEmpty')
   })
+
+  it('returns Intercepted for a long captcha-like page, not NeedLogin or BodyEmpty', () => {
+    const html = fixture('intercepted.html')
+    const result = extractPage(html, 'https://example.com/book/7.html')
+    expect(result.ok).toBe(false)
+    expect(result.failCode).toBe('Intercepted')
+    expect(result.failMessage).toBe('页面不像正文（拦截或残页）')
+  })
 })
 
 describe('extractCatalog', () => {
@@ -102,6 +110,14 @@ describe('extractBody', () => {
     const result = extractBody(html, 'https://example.com/book/2.html')
     expect(result.ok).toBe(false)
     expect(result.failCode).toBe('BodyEmpty')
+  })
+
+  it('returns Intercepted for intercepted.html', () => {
+    const html = fixture('intercepted.html')
+    const result = extractBody(html, 'https://example.com/book/7.html')
+    expect(result.ok).toBe(false)
+    expect(result.failCode).toBe('Intercepted')
+    expect(result.failMessage).toBe('页面不像正文（拦截或残页）')
   })
 })
 
