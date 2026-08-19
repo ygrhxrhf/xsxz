@@ -16,7 +16,7 @@ import {
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { getSettings, updateSettings, getApiKey } from './settings'
-import { startDownload, cancelDownload, retryFailed, setOwnerWindow, setBrowseView } from './download'
+import { startDownload, cancelDownload, retryFailed, checkUpdate, setOwnerWindow, setBrowseView } from './download'
 import { listSiteRules, upsertSiteRule, removeSiteRule } from './siteRules'
 import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters } from './ai'
 
@@ -251,6 +251,7 @@ function registerIpc(): void {
     return { ok: true }
   })
   ipcMain.handle('download.retryFailed', async (_e, { bookId }: { bookId: string }) => retryFailed(bookId))
+  ipcMain.handle('download.checkUpdate', (_e, { bookId }: { bookId: string }) => checkUpdate(bookId))
 
   ipcMain.handle('siteRules.list', async () => {
     const rules = await listSiteRules()

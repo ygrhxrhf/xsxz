@@ -423,6 +423,14 @@ export function cancelDownload(bookId?: string): void {
   }
 }
 
+export async function checkUpdate(
+  bookId: string,
+): Promise<{ ok: true; bookId: string; added: number } | { ok: false; code?: FailCode; message: string }> {
+  // Stub for ipcMain.handle('download.checkUpdate'). Download worker fills this in.
+  void bookId
+  return { ok: false, message: '未实现检查更新' }
+}
+
 export async function retryFailed(bookId: string): Promise<{ ok: boolean; message?: string }> {
   if (active.size > 0) {
     return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
