@@ -5,6 +5,8 @@ import { extractPage, extractCatalog, extractBody } from './extract'
 import type { SiteRule } from '../shared/types'
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, '../../fixtures', name), 'utf-8')
+const publicVal = (name: string) =>
+  readFileSync(join(import.meta.dirname, '../renderer/public/spbf-val', name), 'utf-8')
 const ruleSite = (name: string) =>
   readFileSync(join(import.meta.dirname, '../../fixtures/rule-site', name), 'utf-8')
 
@@ -56,7 +58,7 @@ describe('extractPage — chapter page', () => {
     expect(result.ok).toBe(false)
     expect(result.failCode).toBe('NeedLogin')
     expect(result.failCode).not.toBe('UnknownPage')
-    expect(result.failMessage).toMatch(/需要登录/)
+    expect(result.failMessage).toBe('需要登录后才能看')
   })
 
   it('recovers catalog URL from a chapter page without treating it as a one-chapter book', () => {
@@ -118,6 +120,40 @@ describe('extractBody', () => {
     expect(result.ok).toBe(false)
     expect(result.failCode).toBe('Intercepted')
     expect(result.failMessage).toBe('页面不像正文（拦截或残页）')
+  })
+})
+
+describe('public spbf-val fixtures (VAL-DL-010 / VAL-CROSS-002 / VAL-CROSS-009)', () => {
+  it('public intercepted.html classifies the same as fixtures/intercepted.html', () => {
+    const disk = extractPage(fixture('intercepted.html'), 'https://example.com/book/7.html')
+    const pub = extractPage(publicVal('intercepted.html'), 'http://127.0.0.1:5175/spbf-val/intercepted.html')
+    const pubBody = extractBody(publicVal('intercepted.html'), 'http://127.0.0.1:5175/spbf-val/intercepted.html')
+    expect(disk.failCode).toBe('Intercepted')
+    expect(pub.ok).toBe(false)
+    expect(pub.failCode).toBe('Intercepted')
+    expect(pub.failMessage).toBe('页面不像正文（拦截或残页）')
+    expect(pub.failCode).toBe(disk.failCode)
+    expect(pub.failMessage).toBe(disk.failMessage)
+    expect(pubBody.ok).toBe(false)
+    expect(pubBody.failCode).toBe('Intercepted')
+    expect(pubBody.failMessage).toBe('页面不像正文（拦截或残页）')
+  })
+
+  it('mixed-catalog.html has an intercepted chapter and a 第x章 link to c1.html', () => {
+    const url = 'http://127.0.0.1:5175/spbf-val/mixed-catalog.html'
+    const page = extractPage(publicVal('mixed-catalog.html'), url)
+    expect(page.ok).toBe(true)
+    expect(page.pageKind).toBe('catalog')
+    const chapters = extractCatalog(publicVal('mixed-catalog.html'), url)
+    expect(chapters.length).toBeGreaterThanOrEqual(2)
+    expect(chapters.some((c) => /intercepted\.html(?:[?#].*)?$/.test(c.url))).toBe(true)
+    expect(chapters.some((c) => /c1\.html(?:[?#].*)?$/.test(c.url) && /第[0-9一二三四五六七八九十]+章/.test(c.title))).toBe(
+      true,
+    )
+  })
+
+  it('nav.html has a same-site link to ok-catalog.html', () => {
+    expect(publicVal('nav.html')).toMatch(/href=["']ok-catalog\.html["']/)
   })
 })
 
