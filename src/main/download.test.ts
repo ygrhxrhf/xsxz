@@ -221,8 +221,9 @@ describe('startDownloadFromPage', () => {
     const result = await startDownloadFromPage(fixture('chapter.html'), 'https://example.com/book/1.html')
     expect(result.ok).toBe(true)
     if (!result.ok) return
+    expect(result.bookId).toBeDefined()
     await waitForIdle()
-    const book = await loadBook(result.bookId)
+    const book = await loadBook(result.bookId!)
     expect(book.importType).toBe('download')
     expect(book.chapters).toHaveLength(6)
     expect(book.chapters.some((c) => c.url === 'https://example.com/book/1.html' && book.chapters.length === 1)).toBe(
@@ -249,15 +250,16 @@ describe('startDownloadFromPage', () => {
     const first = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(first.ok).toBe(true)
     if (!first.ok) return
+    expect(first.bookId).toBeDefined()
     await waitForIdle()
 
-    const book = await loadBook(first.bookId)
+    const book = await loadBook(first.bookId!)
     const readyMeta = book.chapters.find((c) => c.url?.includes('1.html'))
     const gapMeta = book.chapters.find((c) => c.url?.includes('2.html'))
     expect(readyMeta?.status).toBe('ready')
     expect(gapMeta?.status).toBe('failed')
 
-    const readyFile = join(dir, first.bookId, readyMeta!.file)
+    const readyFile = join(dir, first.bookId!, readyMeta!.file)
     const beforeBytes = await readFile(readyFile)
     const beforeJson = JSON.parse(beforeBytes.toString('utf-8')) as { body: string }
     expect(beforeJson.body.length).toBeGreaterThan(20)
@@ -284,11 +286,11 @@ describe('startDownloadFromPage', () => {
     expect(afterJson.body).toBe(marker)
     expect(loadedUrls.some((u) => u.includes('1.html'))).toBe(false)
 
-    const gap = await readChapter(first.bookId, gapMeta!.id)
+    const gap = await readChapter(first.bookId!, gapMeta!.id)
     expect(gap.status).toBe('ready')
     expect(gap.body).toContain('张若尘')
 
-    const again = await loadBook(first.bookId)
+    const again = await loadBook(first.bookId!)
     expect(again.chapters).toHaveLength(6)
   })
 
@@ -303,9 +305,10 @@ describe('startDownloadFromPage', () => {
     const result = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(result.ok).toBe(true)
     if (!result.ok) return
+    expect(result.bookId).toBeDefined()
     await waitForIdle()
 
-    const book = await loadBook(result.bookId)
+    const book = await loadBook(result.bookId!)
     expect(book.chapters).toHaveLength(6)
     expect(book.status).toBe('ready')
     const readyCount = book.chapters.filter((c) => c.status === 'ready').length
@@ -427,8 +430,9 @@ describe('download resolves site rules per URL', () => {
     const fromCatalog = await startDownloadFromPage(ruleFixture('catalog.html'), catalogUrl)
     expect(fromCatalog.ok).toBe(true)
     if (!fromCatalog.ok) return
+    expect(fromCatalog.bookId).toBeDefined()
     await waitForIdle()
-    const book = await loadBook(fromCatalog.bookId)
+    const book = await loadBook(fromCatalog.bookId!)
     expect(book.chapters.map((c) => c.title)).toEqual(expect.arrayContaining(['Alpha', 'Beta']))
     expect(book.chapters).toHaveLength(2)
     const bodies = await Promise.all(book.chapters.map((c) => readChapter(book.id, c.id)))
@@ -442,8 +446,9 @@ describe('download resolves site rules per URL', () => {
     const fromChapter = await startDownloadFromPage(ruleFixture('c1.html'), 'http://127.0.0.1:5176/c1.html')
     expect(fromChapter.ok).toBe(true)
     if (!fromChapter.ok) return
+    expect(fromChapter.bookId).toBeDefined()
     await waitForIdle()
-    const book = await loadBook(fromChapter.bookId)
+    const book = await loadBook(fromChapter.bookId!)
     expect(book.chapters.map((c) => c.title)).toEqual(expect.arrayContaining(['Alpha', 'Beta']))
     expect(book.chapters).toHaveLength(2)
     const bodies = await Promise.all(book.chapters.map((c) => readChapter(book.id, c.id)))
@@ -461,16 +466,17 @@ describe('download resolves site rules per URL', () => {
     const started = await startDownloadFromPage(ruleFixture('catalog.html'), catalogUrl)
     expect(started.ok).toBe(true)
     if (!started.ok) return
+    expect(started.bookId).toBeDefined()
     await waitForIdle()
-    const before = await loadBook(started.bookId)
+    const before = await loadBook(started.bookId!)
     expect(before.chapters).toHaveLength(2)
     expect(before.chapters.every((c) => c.status === 'failed' || c.status === 'empty')).toBe(true)
 
     await upsertSiteRule(matching)
-    const retried = await retryFailed(started.bookId)
+    const retried = await retryFailed(started.bookId!)
     expect(retried.ok).toBe(true)
     await waitForIdle()
-    const after = await loadBook(started.bookId)
+    const after = await loadBook(started.bookId!)
     expect(after.chapters.every((c) => c.status === 'ready')).toBe(true)
     const bodies = await Promise.all(after.chapters.map((c) => readChapter(after.id, c.id)))
     expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_ALPHA'))).toBe(true)
@@ -583,9 +589,9 @@ describe('checkUpdate', () => {
     const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(started.ok).toBe(true)
     if (!started.ok) throw new Error('seed start failed')
+    expect(started.bookId).toBeDefined()
     await waitForIdle()
-    const book = await loadBook(started.bookId)
-    expect(book.chapters).toHaveLength(6)
+    const book = await loadBook(started.bookId!)
     if (opts?.failSixth) {
       const sixth = book.chapters[5]
       await writeFile(
@@ -604,12 +610,12 @@ describe('checkUpdate', () => {
       await saveBook(book)
     }
     const readySnapshots = []
-    for (const ch of (await loadBook(started.bookId)).chapters.filter((c) => c.status === 'ready')) {
-      const file = await readChapter(started.bookId, ch.id)
+    for (const ch of (await loadBook(started.bookId!)).chapters.filter((c) => c.status === 'ready')) {
+      const file = await readChapter(started.bookId!, ch.id)
       readySnapshots.push({ id: ch.id, body: file.body, url: ch.url })
     }
     loadedUrls.length = 0
-    return { bookId: started.bookId, readySnapshots }
+    return { bookId: started.bookId!, readySnapshots }
   }
 
   it('adds only a new catalog row and downloads it without rewriting ready bodies (VAL-DL-001/002/019)', async () => {
@@ -704,8 +710,9 @@ describe('checkUpdate', () => {
     const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(started.ok).toBe(true)
     if (!started.ok) return
+    expect(started.bookId).toBeDefined()
     await waitForIdle()
-    const dl = await loadBook(started.bookId)
+    const dl = await loadBook(started.bookId!)
     delete dl.sourceUrl
     await saveBook(dl)
     loadedUrls.length = 0
@@ -745,10 +752,11 @@ describe('checkUpdate', () => {
       release()
       return
     }
+    expect(started.bookId).toBeDefined()
     await vi.waitFor(() => {
       expect(loadedUrls.some((u) => u.includes('1.html'))).toBe(true)
     })
-    const blocked = await checkUpdate(started.bookId)
+    const blocked = await checkUpdate(started.bookId!)
     expect(blocked).toEqual({ ok: false, message: LOCK_MSG })
     release()
     await waitForIdle()
@@ -772,7 +780,8 @@ describe('checkUpdate', () => {
       release()
       return
     }
-    const blocked = await checkUpdate(started.bookId)
+    expect(started.bookId).toBeDefined()
+    const blocked = await checkUpdate(started.bookId!)
     expect(blocked).toEqual({ ok: false, message: LOCK_MSG })
     release()
     await waitForIdle()
@@ -833,7 +842,8 @@ describe('checkUpdate', () => {
     const first = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(first.ok).toBe(true)
     if (!first.ok) return
-    expect(first.bookId.startsWith('d_')).toBe(true)
+    expect(first.bookId).toBeDefined()
+    expect(first.bookId!.startsWith('d_')).toBe(true)
     await waitForIdle()
     const second = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(second.ok).toBe(true)
@@ -1018,9 +1028,10 @@ describe('checkUpdate', () => {
       const started = await startDownloadFromPage(ruleFixture('catalog.html'), catalogUrl)
       expect(started.ok).toBe(true)
       if (!started.ok) return
+      expect(started.bookId).toBeDefined()
       await waitForIdle()
       loadedUrls.length = 0
-      const result = await checkUpdate(started.bookId)
+      const result = await checkUpdate(started.bookId!)
       expect(result.ok).toBe(true)
       if (result.ok) expect(result.added).toBe(0)
       await waitForIdle()

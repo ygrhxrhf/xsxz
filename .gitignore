@@ -5,4 +5,6 @@ library/
 .env
 *.local
 release/
+*.tsbuildinfo
+.mission-planning/
 

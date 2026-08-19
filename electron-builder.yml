@@ -14,14 +14,10 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  icon: build/icon.ico
 nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  installerIcon: build/icon.ico
-  uninstallerIcon: build/icon.ico
-  installerHeaderIcon: build/icon.ico
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: 小说浏览器

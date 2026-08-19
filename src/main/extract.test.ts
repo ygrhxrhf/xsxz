@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { JSDOM } from 'jsdom'
 import { extractPage, extractCatalog, extractBody } from './extract'
 import type { SiteRule } from '../shared/types'
 
@@ -252,5 +253,94 @@ describe('site-rule extract — empty / miss / illegal / short fall through (VAL
     const body = extractBody(fixture('chapter.html'), goldenChapterUrl, rule)
     expect(body.ok).toBe(true)
     expect(body.body).toContain('张若尘')
+  })
+})
+
+describe('public growable-catalog fixture (VAL-LIB-017)', () => {
+  const catalogFile = 'growable-catalog.html'
+  const base = 'http://127.0.0.1:5175/spbf-val/growable-catalog.html'
+
+  function snapshotStorage(storage: Storage): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i)
+      if (key) out[key] = storage.getItem(key) ?? ''
+    }
+    return out
+  }
+
+  function renderCatalog(search: string, prior: Record<string, string> = {}) {
+    const url = `${base}${search}`
+    const html = publicVal(catalogFile)
+    const dom = new JSDOM(html, {
+      url,
+      runScripts: 'dangerously',
+      beforeParse(window) {
+        for (const [key, value] of Object.entries(prior)) {
+          window.localStorage.setItem(key, value)
+        }
+      },
+    })
+    const serialized = `<!DOCTYPE html>${dom.window.document.documentElement.outerHTML}`
+    return {
+      serialized,
+      storage: snapshotStorage(dom.window.localStorage),
+      chapters: extractCatalog(serialized, url),
+    }
+  }
+
+  it('c7.html is extractable plain text of at least 80 effective characters', () => {
+    const url = 'http://127.0.0.1:5175/spbf-val/c7.html'
+    const html = publicVal('c7.html')
+    const page = extractPage(html, url)
+    const body = extractBody(html, url)
+    expect(page.ok).toBe(true)
+    expect(page.pageKind).toBe('chapter')
+    expect(body.ok).toBe(true)
+    expect(body.body).toBeTruthy()
+    expect(effectiveLength(body.body!)).toBeGreaterThanOrEqual(80)
+    expect(body.body!).not.toMatch(/<(?:html|p|div|script)\b/i)
+  })
+
+  it('derives a unique localStorage key from location.search', () => {
+    const src = publicVal(catalogFile)
+    expect(src).toMatch(/location\.search/)
+    expect(src).toMatch(/localStorage/)
+  })
+
+  it('static catalog HTML without running scripts only lists c1-c6', () => {
+    const url = `${base}?case=static-check`
+    const chapters = extractCatalog(publicVal(catalogFile), url)
+    expect(chapters).toHaveLength(6)
+    expect(chapters.every((c) => /c[1-6]\.html(?:[?#].*)?$/.test(c.url))).toBe(true)
+    expect(chapters.some((c) => /c7\.html(?:[?#].*)?$/.test(c.url))).toBe(false)
+  })
+
+  it('same ?case first render is 6 chapters and second render appends only c7', () => {
+    const search = '?case=11111111-2222-3333-4444-555555555555'
+    const first = renderCatalog(search)
+    expect(first.chapters).toHaveLength(6)
+    expect(first.chapters.some((c) => /c7\.html(?:[?#].*)?$/.test(c.url))).toBe(false)
+
+    const second = renderCatalog(search, first.storage)
+    expect(second.chapters).toHaveLength(7)
+    expect(second.chapters.filter((c) => /c7\.html(?:[?#].*)?$/.test(c.url))).toHaveLength(1)
+    expect(second.chapters[6].title).toMatch(/第七章/)
+
+    const third = renderCatalog(search, second.storage)
+    expect(third.chapters).toHaveLength(7)
+    expect(third.chapters.filter((c) => /c7\.html(?:[?#].*)?$/.test(c.url))).toHaveLength(1)
+  })
+
+  it('a different query does not inherit another case growth', () => {
+    const a = '?case=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    const b = '?case=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    const a1 = renderCatalog(a)
+    const a2 = renderCatalog(a, a1.storage)
+    expect(a2.chapters).toHaveLength(7)
+
+    const b1 = renderCatalog(b, a2.storage)
+    expect(b1.chapters).toHaveLength(6)
+    expect(b1.chapters.some((c) => /c7\.html(?:[?#].*)?$/.test(c.url))).toBe(false)
   })
 })

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head><title>某小说网 - 可增长目录 目录</title>
+<meta property="og:title" content="可增长目录">
+<meta property="og:novel:author" content="飞天鱼">
+</head>
+<body>
+<h1>可增长目录</h1>
+<div class="bookinfo"><span class="author">飞天鱼</span></div>
+<div id="list"><dl id="toc"><dt>正文</dt>
+<dd><a href="c1.html">第一章 前世记忆</a></dd>
+<dd><a href="c2.html">第二章 苏醒</a></dd>
+<dd><a href="c3.html">第三章 入门</a></dd>
+<dd><a href="c4.html">第四章 初战</a></dd>
+<dd><a href="c5.html">第五章 选拔</a></dd>
+<dd><a href="c6.html">第六章 师兄</a></dd>
+</dl></div>
+<div class="footer">本站所有小说为转载作品</div>
+<script>
+(function () {
+  var key = 'spbf-val-growable:' + String(location.search || '')
+  var seen = null
+  try {
+    seen = localStorage.getItem(key)
+  } catch (e) {
+    seen = null
+  }
+  if (seen) {
+    var dl = document.getElementById('toc')
+    if (dl && !dl.querySelector('a[href="c7.html"]')) {
+      var dd = document.createElement('dd')
+      var a = document.createElement('a')
+      a.setAttribute('href', 'c7.html')
+      a.textContent = '第七章 夜雨新章'
+      dd.appendChild(a)
+      dl.appendChild(dd)
+    }
+  } else {
+    try {
+      localStorage.setItem(key, '1')
+    } catch (e) {}
+  }
+})()
+</script>
+</body>
+</html>

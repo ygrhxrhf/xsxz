@@ -40,7 +40,10 @@ export async function getSettings(): Promise<Settings> {
   const raw = await loadRaw()
   const reader = (raw.reader as Partial<ReaderPrefs>) || {}
   return {
-    libraryPath: typeof raw.libraryPath === 'string' ? raw.libraryPath : DEFAULT_LIBRARY_PATH,
+    libraryPath:
+      typeof raw.libraryPath === 'string' && raw.libraryPath.trim()
+        ? raw.libraryPath.trim()
+        : DEFAULT_LIBRARY_PATH,
     baseUrl: typeof raw.baseUrl === 'string' ? raw.baseUrl : DEFAULT_AI_PLACEHOLDER.baseUrl,
     model: typeof raw.model === 'string' ? raw.model : DEFAULT_AI_PLACEHOLDER.model,
     apiKeyConfigured: typeof raw.apiKeyEnc === 'string' && raw.apiKeyEnc.length > 0,
@@ -54,7 +57,9 @@ export async function getSettings(): Promise<Settings> {
 
 export async function updateSettings(update: Partial<Settings> & { apiKey?: string }): Promise<Settings> {
   const raw = await loadRaw()
-  if (typeof update.libraryPath === 'string') raw.libraryPath = update.libraryPath
+  if (typeof update.libraryPath === 'string') {
+    raw.libraryPath = update.libraryPath.trim() || DEFAULT_LIBRARY_PATH
+  }
   if (typeof update.baseUrl === 'string') raw.baseUrl = update.baseUrl
   if (typeof update.model === 'string') raw.model = update.model
   if (typeof update.apiKey === 'string') {
