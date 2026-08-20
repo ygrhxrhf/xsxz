@@ -14,6 +14,7 @@ import {
 } from './library'
 import type { CatalogChapter, ChapterStatus, DownloadProgress, ExtractBootstrap, FailCode, SiteRule } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
+import { isPathLikeHash } from '../shared/urlHash'
 
 export const DOWNLOAD_SESSION_PARTITION = 'persist:novel'
 /** Off the visible chrome so chapter crawl cannot flash over the guest slot. */
@@ -22,6 +23,10 @@ export const HIDDEN_VIEW_BOUNDS = { x: -2400, y: -2400, width: 800, height: 600 
 const DELAY_MIN = 400
 const DELAY_MAX = 800
 const LOAD_TIMEOUT_MS = 25_000
+/** Poll interval after navigation settles. Classic HTML should pass the first tick. */
+export const HYDRATE_POLL_MS = 300
+/** Cap for catalog/body ready wait (10–15s). Hash SPA hydration, not an extra sleep on HTML. */
+export const HYDRATE_TIMEOUT_MS = 12_000
 
 interface ActiveDownload {
   bookId: string
@@ -42,9 +47,31 @@ let browseView: WebContentsView | null = null
 const active = new Map<string, ActiveDownload>()
 let testHtmlLoader: HtmlLoader | null = null
 const runningJobs = new Set<Promise<void>>()
+const cancelWaiters = new Set<() => void>()
 
 export function chapterNeedsDownload(status: ChapterStatus): boolean {
   return status === 'pending' || status === 'failed' || status === 'empty'
+}
+
+function anyActiveCancelled(): boolean {
+  for (const dl of active.values()) {
+    if (dl.cancelled) return true
+  }
+  return false
+}
+
+function abortHiddenLoad(): void {
+  if (!hiddenView || hiddenView.webContents.isDestroyed()) return
+  try {
+    hiddenView.webContents.stop()
+  } catch {
+    /* view already gone */
+  }
+}
+
+function notifyLoadCancelled(): void {
+  abortHiddenLoad()
+  for (const wait of cancelWaiters) wait()
 }
 
 export function setOwnerWindow(win: BrowserWindow): void {
@@ -62,6 +89,7 @@ export function setTestHtmlLoader(loader: HtmlLoader | null): void {
 export function resetDownloadStateForTests(): void {
   active.clear()
   runningJobs.clear()
+  cancelWaiters.clear()
   testHtmlLoader = null
   hiddenView = null
   browseView = null
@@ -129,18 +157,107 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+function interruptibleDelay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    if (anyActiveCancelled()) {
+      reject(new Error('已取消'))
+      return
+    }
+    const timer = setTimeout(() => {
+      cancelWaiters.delete(onCancel)
+      resolve()
+    }, ms)
+    const onCancel = () => {
+      clearTimeout(timer)
+      cancelWaiters.delete(onCancel)
+      reject(new Error('已取消'))
+    }
+    cancelWaiters.add(onCancel)
+  })
+}
+
 function randomDelay(): Promise<void> {
   if (testHtmlLoader) return delay(0)
   return delay(DELAY_MIN + Math.random() * (DELAY_MAX - DELAY_MIN))
 }
 
-async function loadAndGetHtml(view: WebContentsView, url: string): Promise<string> {
-  if (testHtmlLoader) return testHtmlLoader(url)
+function pageUrlHasPathLikeHash(pageUrl: string): boolean {
+  try {
+    return isPathLikeHash(new URL(pageUrl).hash)
+  } catch {
+    return false
+  }
+}
 
-  const wc = view.webContents
+/** Catalog ≥5 (or rule ≥2); body rule / BODY_SELECTORS effective length ≥80. */
+export function isHydratedHtml(html: string, pageUrl: string, rule?: SiteRule): boolean {
+  if (extractCatalog(html, pageUrl, rule).length >= 2) return true
+  return extractBody(html, pageUrl, rule).ok
+}
+
+async function withCancel<T>(work: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let finished = false
+    const onCancel = () => {
+      if (finished) return
+      finished = true
+      cancelWaiters.delete(onCancel)
+      reject(new Error('已取消'))
+    }
+    if (anyActiveCancelled()) {
+      reject(new Error('已取消'))
+      return
+    }
+    cancelWaiters.add(onCancel)
+    work.then(
+      (value) => {
+        if (finished) return
+        finished = true
+        cancelWaiters.delete(onCancel)
+        resolve(value)
+      },
+      (err) => {
+        if (finished) return
+        finished = true
+        cancelWaiters.delete(onCancel)
+        reject(err)
+      },
+    )
+  })
+}
+
+export async function waitUntilHydrated(
+  pollHtml: () => Promise<string>,
+  pageUrl: string,
+  opts?: { pollMs?: number; timeoutMs?: number; rule?: SiteRule },
+): Promise<string> {
+  const pollMs = opts?.pollMs ?? HYDRATE_POLL_MS
+  const timeoutMs = opts?.timeoutMs ?? HYDRATE_TIMEOUT_MS
+  const started = Date.now()
+  const rule = opts?.rule
+  let last = ''
+  while (true) {
+    if (anyActiveCancelled()) throw new Error('已取消')
+    last = await withCancel(pollHtml())
+    if (anyActiveCancelled()) throw new Error('已取消')
+    const siteRule = rule ?? (await ruleForPage(pageUrl))
+    if (isHydratedHtml(last, pageUrl, siteRule)) return last
+    if (Date.now() - started >= timeoutMs) return last
+    await interruptibleDelay(pollMs)
+  }
+}
+
+async function waitForNavigationSettle(wc: Electron.WebContents, url: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
+    let settled = false
     const timer = setTimeout(() => {
       cleanup()
+      try {
+        wc.stop()
+      } catch {
+        /* ignore */
+      }
       reject(new Error('章节地址加载超时'))
     }, LOAD_TIMEOUT_MS)
     const onFail = (_e: Electron.Event, code: number, desc: string, _failedUrl: string, isMainFrame: boolean) => {
@@ -152,24 +269,74 @@ async function loadAndGetHtml(view: WebContentsView, url: string): Promise<strin
       cleanup()
       resolve()
     }
+    const onCancel = () => {
+      cleanup()
+      try {
+        wc.stop()
+      } catch {
+        /* ignore */
+      }
+      reject(new Error('已取消'))
+    }
     const cleanup = () => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
+      cancelWaiters.delete(onCancel)
       wc.removeListener('did-finish-load', onOk)
+      wc.removeListener('did-navigate-in-page', onOk)
       wc.removeListener('did-fail-load', onFail)
     }
+    cancelWaiters.add(onCancel)
+    if (anyActiveCancelled()) {
+      onCancel()
+      return
+    }
     wc.on('did-finish-load', onOk)
+    wc.on('did-navigate-in-page', onOk)
     wc.on('did-fail-load', onFail)
-    void wc.loadURL(url).catch((err) => {
-      cleanup()
-      reject(err)
-    })
+    void wc
+      .loadURL(url)
+      .then(() => {
+        if (settled) return
+        cleanup()
+        resolve()
+      })
+      .catch((err: unknown) => {
+        if (settled) return
+        const msg = err instanceof Error ? err.message : String(err)
+        if (msg.includes('ERR_ABORTED') || msg.includes('(-3)') || msg.includes('error code: -3')) return
+        cleanup()
+        reject(err)
+      })
   })
-  await delay(300)
-  return wc.executeJavaScript('document.documentElement.outerHTML')
+}
+
+async function loadAndGetHtml(view: WebContentsView, url: string, forceView = false): Promise<string> {
+  if (testHtmlLoader && !forceView) {
+    if (anyActiveCancelled()) throw new Error('已取消')
+    return testHtmlLoader(url)
+  }
+
+  const wc = view.webContents
+  await waitForNavigationSettle(wc, url)
+  if (anyActiveCancelled()) throw new Error('已取消')
+  const rule = await ruleForPage(url)
+  return waitUntilHydrated(() => wc.executeJavaScript('document.documentElement.outerHTML') as Promise<string>, url, {
+    rule,
+  })
+}
+
+/** Test hook for the hidden-view settle path (skips setTestHtmlLoader). */
+export function loadAndGetHtmlForTests(view: WebContentsView, url: string): Promise<string> {
+  return loadAndGetHtml(view, url, true)
 }
 
 async function loadPageHtml(url: string): Promise<string> {
-  if (testHtmlLoader) return testHtmlLoader(url)
+  if (testHtmlLoader) {
+    if (anyActiveCancelled()) throw new Error('已取消')
+    return testHtmlLoader(url)
+  }
   return loadAndGetHtml(getHiddenView(), url)
 }
 
@@ -243,6 +410,32 @@ export async function followCatalogIfNeeded(
   return { ok: true, bootstrap: bs }
 }
 
+function extractLooksEmpty(result: { ok: boolean; failCode?: FailCode }): boolean {
+  return !result.ok && (result.failCode === 'UnknownPage' || result.failCode === 'BodyEmpty' || !result.failCode)
+}
+
+async function startFromExtractedHtml(
+  pageHtml: string,
+  pageUrl: string,
+  opts?: { allowHiddenReload?: boolean },
+): Promise<{ ok: boolean; bookId?: string; code?: FailCode; message?: string }> {
+  const rule = await ruleForPage(pageUrl)
+  const result = extractPage(pageHtml, pageUrl, undefined, rule)
+  if (!result.ok || !result.bootstrap) {
+    const canReload =
+      (opts?.allowHiddenReload ?? true) && pageUrlHasPathLikeHash(pageUrl) && extractLooksEmpty(result)
+    if (canReload) {
+      const reloaded = await loadPageHtml(pageUrl)
+      return startFromExtractedHtml(reloaded, pageUrl, { allowHiddenReload: false })
+    }
+    return { ok: false, code: result.failCode || 'UnknownPage', message: result.failMessage || '无法识别为书' }
+  }
+
+  const followed = await followCatalogIfNeeded(result.bootstrap, loadPageHtml)
+  if (!followed.ok) return followed
+  return beginDownloadFromBootstrap(followed.bootstrap, pageUrl)
+}
+
 export async function startDownloadFromPage(
   pageHtml: string,
   pageUrl: string,
@@ -255,15 +448,7 @@ export async function startDownloadFromPage(
     return { ok: false, code: 'UnknownPage', message: '请先打开一本书的目录页或章节页' }
   }
 
-  const rule = await ruleForPage(pageUrl)
-  const result = extractPage(pageHtml, pageUrl, undefined, rule)
-  if (!result.ok || !result.bootstrap) {
-    return { ok: false, code: result.failCode || 'UnknownPage', message: result.failMessage || '无法识别为书' }
-  }
-
-  const followed = await followCatalogIfNeeded(result.bootstrap, loadPageHtml)
-  if (!followed.ok) return followed
-  return beginDownloadFromBootstrap(followed.bootstrap, pageUrl)
+  return startFromExtractedHtml(pageHtml, pageUrl)
 }
 
 export async function startDownload(): Promise<{ ok: boolean; bookId?: string; code?: FailCode; message?: string }> {
@@ -281,7 +466,7 @@ export async function startDownload(): Promise<{ ok: boolean; bookId?: string; c
   }
 
   const pageHtml = await browseView.webContents.executeJavaScript('document.documentElement.outerHTML')
-  return startDownloadFromPage(pageHtml, pageUrl)
+  return startFromExtractedHtml(pageHtml, pageUrl)
 }
 
 async function beginDownloadFromBootstrap(
@@ -426,6 +611,7 @@ export function cancelDownload(bookId?: string): void {
   } else {
     for (const dl of active.values()) dl.cancelled = true
   }
+  notifyLoadCancelled()
 }
 
 export async function checkUpdate(

@@ -16,6 +16,7 @@ vi.mock('electron', () => {
     async executeJavaScript(): Promise<string> {
       return '<html></html>'
     }
+    stop(): void {}
     on(): this {
       return this
     }
