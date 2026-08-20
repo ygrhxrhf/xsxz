@@ -14,6 +14,7 @@ import type {
   ReadingProgress,
 } from '../shared/types'
 import { DEFAULT_LIBRARY_PATH } from '../shared/types'
+import { canonicalizeUrl } from '../shared/urlHash'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -44,15 +45,7 @@ function indexFile(): string {
 }
 
 export function bookIdFromUrl(host: string, catalogUrl: string): string {
-  const u = new URL(catalogUrl)
-  u.hash = ''
-  for (const key of [...u.searchParams.keys()]) {
-    const lower = key.toLowerCase()
-    if (lower === 'page' || lower.startsWith('utm_')) u.searchParams.delete(key)
-  }
-  let href = u.toString()
-  href = href.replace(/[?&]+$/g, '')
-  href = href.replace(/\/+$/, '')
+  const href = canonicalizeUrl(catalogUrl)
   const clean = `${host}\n${href}`.toLowerCase()
   return 'd_' + createHash('sha256').update(clean).digest('hex').slice(0, 16)
 }
@@ -75,10 +68,9 @@ export function bookIdFromBytes(bytes: Uint8Array): string {
 
 export function normalizeChapterUrl(url: string): string {
   try {
-    const u = new URL(url)
-    u.hash = ''
+    const u = new URL(canonicalizeUrl(url))
     u.hostname = u.hostname.toLowerCase()
-    return u.toString().replace(/\/+$/, '')
+    return u.toString()
   } catch {
     return url
   }

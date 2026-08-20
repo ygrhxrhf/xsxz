@@ -6,6 +6,7 @@ import {
   assertImportable,
   bookIdFromUrl,
   mergeIncomingChapters,
+  normalizeChapterUrl,
   setLibraryPath,
   createBookFromBootstrap,
   bookExists,
@@ -86,6 +87,97 @@ describe('bookIdFromUrl', () => {
     const b = bookIdFromUrl('example.com', 'https://example.com/book-2/')
     expect(a).not.toBe(b)
   })
+
+  it('bqg hash catalogs 65, 472 and home are three ids', () => {
+    const host = 'www.bqg858.cc'
+    const id65 = bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/65/')
+    const id472 = bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/472/')
+    const idHome = bookIdFromUrl(host, 'https://www.bqg858.cc/#/')
+    expect(id65).toMatch(ID_RE)
+    expect(id472).toMatch(ID_RE)
+    expect(idHome).toMatch(ID_RE)
+    expect(id65).not.toBe(id472)
+    expect(id65).not.toBe(idHome)
+    expect(id472).not.toBe(idHome)
+    expect(bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/65/')).toBe(id65)
+    expect(bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/472/')).toBe(id472)
+    expect(bookIdFromUrl(host, 'https://www.bqg858.cc/#/')).toBe(idHome)
+  })
+
+  it('keeps path-like hash, drops in-page fragments, still strips utm/page, does not strip www.', () => {
+    const host = 'www.bqg858.cc'
+    const hashCatalog = bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/65/')
+    const origin = bookIdFromUrl(host, 'https://www.bqg858.cc/')
+    expect(hashCatalog).toMatch(ID_RE)
+    expect(hashCatalog).not.toBe(origin)
+
+    expect(
+      bookIdFromUrl(host, 'https://www.bqg858.cc/?utm_source=x#/book/65/'),
+    ).toBe(hashCatalog)
+    expect(bookIdFromUrl(host, 'https://www.bqg858.cc/?page=2#/book/65/')).toBe(hashCatalog)
+    expect(bookIdFromUrl(host, 'https://www.bqg858.cc/?#/book/65/')).toBe(hashCatalog)
+
+    const alice = 'https://www.alicesw.com/other/chapters/id/44828.html'
+    expect(bookIdFromUrl('www.alicesw.com', `${alice}#top`)).toBe(
+      bookIdFromUrl('www.alicesw.com', alice),
+    )
+
+    const classic = bookIdFromUrl('example.com', 'https://example.com/book/?utm_source=x#frag')
+    expect(classic).toBe(bookIdFromUrl('example.com', 'https://example.com/book/'))
+
+    const bareHost = bookIdFromUrl('bqg858.cc', 'https://bqg858.cc/#/book/65/')
+    const wwwHost = bookIdFromUrl('www.bqg858.cc', 'https://www.bqg858.cc/#/book/65/')
+    expect(wwwHost).not.toBe(bareHost)
+  })
+
+  it('hash catalog is not bare /book/65/ or origin', () => {
+    const host = 'www.bqg858.cc'
+    const hashCatalog = bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/65/')
+    const barePath = bookIdFromUrl(host, 'https://www.bqg858.cc/book/65/')
+    const bareChapter = bookIdFromUrl(host, 'https://www.bqg858.cc/book/65/1.html')
+    const origin = bookIdFromUrl(host, 'https://www.bqg858.cc/')
+    const home = bookIdFromUrl(host, 'https://www.bqg858.cc/#/')
+    for (const id of [hashCatalog, barePath, bareChapter, origin, home]) {
+      expect(id).toMatch(ID_RE)
+    }
+    expect(hashCatalog).not.toBe(barePath)
+    expect(hashCatalog).not.toBe(bareChapter)
+    expect(hashCatalog).not.toBe(origin)
+    expect(barePath).not.toBe(origin)
+    expect(hashCatalog).not.toBe(home)
+    expect(bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/65/')).toBe(hashCatalog)
+    expect(bookIdFromUrl(host, 'https://www.bqg858.cc/book/65/')).toBe(barePath)
+    expect(bookIdFromUrl(host, 'https://www.bqg858.cc/')).toBe(origin)
+  })
+
+  it('trailing slash on hash route is one book', () => {
+    const host = 'www.bqg858.cc'
+    const withSlash = bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/65/')
+    const noSlash = bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/65')
+    expect(withSlash).toMatch(ID_RE)
+    expect(withSlash).toBe(noSlash)
+    expect(withSlash).not.toBe(bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/472/'))
+    expect(withSlash).not.toBe(bookIdFromUrl(host, 'https://www.bqg858.cc/book/65/'))
+  })
+})
+
+describe('normalizeChapterUrl', () => {
+  it('normalize keeps hash chapter routes and aliases #content', () => {
+    const ch1 = normalizeChapterUrl('https://www.bqg858.cc/#/book/65/1.html')
+    const ch1Content = normalizeChapterUrl('https://www.bqg858.cc/#/book/65/1.html#content')
+    const ch2 = normalizeChapterUrl('https://www.bqg858.cc/#/book/65/2.html')
+    const bare = normalizeChapterUrl('https://www.bqg858.cc/book/65/1.html')
+    expect(ch1).toContain('#/book/65/1.html')
+    expect(ch1).not.toContain('#content')
+    expect(ch1Content).toBe(ch1)
+    expect(ch2).toContain('#/book/65/2.html')
+    expect(ch1).not.toBe(ch2)
+    expect(ch1).not.toBe(bare)
+    expect(bare).not.toContain('#/')
+
+    const alice = 'https://www.alicesw.com/book/46268/abc.html'
+    expect(normalizeChapterUrl(`${alice}#top`)).toBe(normalizeChapterUrl(alice))
+  })
 })
 
 describe('assertImportable', () => {
@@ -159,6 +251,32 @@ describe('mergeIncomingChapters', () => {
     })
     mergeIncomingChapters(existing, [{ title: '新章', url: 'https://example.com/new.html', index: 1 }])
     expect(existing.chapters.map((c) => c.title)).toEqual(['旧章', '新章'])
+  })
+
+  it('mergeIncomingChapters added 1 on hash #content plus new 2.html', () => {
+    const existing = book({
+      chapters: [
+        {
+          id: 'c0001',
+          index: 1,
+          title: '第1章 千金攻略（1）',
+          url: 'https://www.bqg858.cc/#/book/65/1.html',
+          file: 'chapters/0001.json',
+          status: 'ready',
+        },
+      ],
+    })
+    const { added } = mergeIncomingChapters(existing, [
+      { title: '第1章 千金攻略（1）', url: 'https://www.bqg858.cc/#/book/65/1.html#content', index: 1 },
+      { title: '第2章', url: 'https://www.bqg858.cc/#/book/65/2.html', index: 2 },
+    ])
+    expect(added).toBe(1)
+    expect(existing.chapters).toHaveLength(2)
+    expect(existing.chapters[0].status).toBe('ready')
+    expect(existing.chapters[0].url).toContain('#/book/65/1.html')
+    expect(existing.chapters[1].status).toBe('pending')
+    expect(existing.chapters[1].url).toContain('#/book/65/2.html')
+    expect(existing.chapters[1].id).toBe('c0002')
   })
 })
 
