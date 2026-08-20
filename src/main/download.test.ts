@@ -167,6 +167,172 @@ ${filler}
     expect(id.bookId).toBe(bookIdFromUrl('www.bqg858.cc', 'https://www.bqg858.cc/#/book/65/'))
     expect(id.bookId).not.toBe(bookIdFromUrl('www.bqg858.cc', 'https://www.bqg858.cc/'))
   })
+
+  it('hash chapter identityFromPage equals catalog bookId; bare path does not (VAL-IDENT-018)', async () => {
+    const host = 'www.bqg858.cc'
+    const hashCatalog = 'https://www.bqg858.cc/#/book/65/'
+    const hashChapter = 'https://www.bqg858.cc/#/book/65/1.html'
+    const bareCatalog = 'https://www.bqg858.cc/book/65/'
+    const bareChapter = 'https://www.bqg858.cc/book/65/1.html'
+    const catalogId = bookIdFromUrl(host, hashCatalog)
+
+    const catalogHtml = `<!DOCTYPE html>
+<html>
+<head><title>这个大佬画风不对</title></head>
+<body>
+<h1>这个大佬画风不对</h1>
+<div id="list">
+<dl>
+<dd><a href="#/book/65/1.html">第1章 千金攻略（1）</a></dd>
+<dd><a href="#/book/65/2.html">第2章 千金攻略（2）</a></dd>
+<dd><a href="#/book/65/3.html">第3章 千金攻略（3）</a></dd>
+<dd><a href="#/book/65/4.html">第4章 千金攻略（4）</a></dd>
+<dd><a href="#/book/65/5.html">第5章 千金攻略（5）</a></dd>
+</dl>
+</div>
+</body>
+</html>`
+    const filler =
+      '张若尘从梦中惊醒，发现自己身处一间简陋的房间之中。窗外月光如水，照在斑驳的墙壁上。他低头看了看自己的双手，年轻、有力，却不是他记忆中的样子。这个少年来自一个偏远的小城，自幼父母双亡，靠邻居接济长大。他站起身来，走到窗前，望着远处连绵的山峦。这个世界比地球更加广阔，充满了未知的危险和机遇。既然老天给了我第二次生命，我一定要活出个样子来。他握紧了拳头，眼中闪过坚定的光芒。'
+    const chapterHtml = `<!DOCTYPE html>
+<html>
+<head><title>第1章 千金攻略（1）</title></head>
+<body>
+<div id="chaptercontent">
+${filler}
+<a href="#/book/65/">返回目录</a>
+</div>
+</body>
+</html>`
+
+    const catalogPage = extractPage(catalogHtml, hashCatalog)
+    expect(catalogPage.ok).toBe(true)
+    expect(catalogPage.pageKind).toBe('catalog')
+    const fromCatalog = identityFromPage(hashCatalog, catalogPage.bootstrap!)
+    expect(fromCatalog.bookId).toBe(catalogId)
+
+    const chapterPage = extractPage(chapterHtml, hashChapter)
+    expect(chapterPage.ok).toBe(true)
+    expect(chapterPage.pageKind).toBe('chapter')
+    expect(chapterPage.bootstrap!.catalogUrl).toContain('#/book/65')
+    const fromChapter = identityFromPage(hashChapter, chapterPage.bootstrap!)
+    expect(fromChapter.bookId).toBe(catalogId)
+    expect(fromChapter.bookId).toBe(fromCatalog.bookId)
+
+    const followed = await followCatalogIfNeeded(chapterPage.bootstrap!, async (url) => {
+      expect(url).toContain('#/book/65')
+      expect(url).not.toContain('1.html')
+      return catalogHtml
+    })
+    expect(followed.ok).toBe(true)
+    if (!followed.ok) return
+    expect(followed.bootstrap.chapters.length).toBeGreaterThanOrEqual(5)
+    expect(identityFromPage(hashChapter, followed.bootstrap).bookId).toBe(catalogId)
+
+    const bareCatalogPage = extractPage(catalogHtml, bareCatalog)
+    expect(bareCatalogPage.ok).toBe(true)
+    expect(bareCatalogPage.pageKind).toBe('catalog')
+    const fromBareCatalog = identityFromPage(bareCatalog, bareCatalogPage.bootstrap!)
+    expect(fromBareCatalog.bookId).toBe(bookIdFromUrl(host, bareCatalog))
+    expect(fromBareCatalog.bookId).not.toBe(catalogId)
+
+    const bareChapterPage = extractPage(chapterHtml, bareChapter)
+    expect(bareChapterPage.pageKind).toBe('chapter')
+    const fromBareChapter = identityFromPage(bareChapter, bareChapterPage.bootstrap!)
+    expect(fromBareChapter.bookId).not.toBe(catalogId)
+    expect(fromBareChapter.bookId).not.toBe(bookIdFromUrl(host, hashChapter))
+  })
+
+  it('Alice chapter recovers chapters catalog as one bookId; novel without recovery is documented (VAL-IDENT-021)', async () => {
+    const host = 'www.alicesw.com'
+    const chaptersCatalog = 'https://www.alicesw.com/other/chapters/id/44828.html'
+    const novelUrl = 'https://www.alicesw.com/novel/44828.html'
+    const chapterUrl = 'https://www.alicesw.com/book/46268/9c5ec36414c68.html'
+    const catalogId = bookIdFromUrl(host, chaptersCatalog)
+
+    const aliceCatalogHtml = `<!DOCTYPE html>
+<html>
+<head><title>三国杀同人短篇合集 目录</title>
+<meta property="og:title" content="三国杀同人短篇合集">
+</head>
+<body>
+<h1>三国杀同人短篇合集</h1>
+<ul>
+  <li><a href="https://www.alicesw.com/book/46268/9c5ec36414c68.html">第一章 序</a></li>
+  <li><a href="https://www.alicesw.com/book/46268/77281b2336468.html">第二章 同人短篇</a></li>
+  <li><a href="https://www.alicesw.com/book/46268/49003fd028942.html">第三章 续写</a></li>
+  <li><a href="https://www.alicesw.com/book/46268/aaa1111111111.html">第四章 第四篇</a></li>
+  <li><a href="https://www.alicesw.com/book/46268/bbb2222222222.html">第五章 第五篇</a></li>
+</ul>
+</body>
+</html>`
+    const filler =
+      '张若尘从梦中惊醒，发现自己身处一间简陋的房间之中。窗外月光如水，照在斑驳的墙壁上。他低头看了看自己的双手，年轻、有力，却不是他记忆中的样子。这个少年来自一个偏远的小城，自幼父母双亡，靠邻居接济长大。他站起身来，走到窗前，望着远处连绵的山峦。这个世界比地球更加广阔，充满了未知的危险和机遇。既然老天给了我第二次生命，我一定要活出个样子来。他握紧了拳头，眼中闪过坚定的光芒。'
+    const aliceChapterHtml = `<!DOCTYPE html>
+<html>
+<head><title>序 - 三国杀同人短篇合集</title></head>
+<body>
+<div id="content">
+${filler}
+上一章 | <a href="/other/chapters/id/44828.html">返回目录</a> | 下一章
+</div>
+</body>
+</html>`
+    const aliceNovelHtml = `<!DOCTYPE html>
+<html>
+<head><title>三国杀同人短篇合集</title>
+<meta property="og:title" content="三国杀同人短篇合集">
+</head>
+<body>
+<h1>三国杀同人短篇合集</h1>
+<div id="content">
+${filler}
+</div>
+<p>最近更新：第2篇</p>
+<a href="/other/chapters/id/44828.html">查看所有章节</a>
+<ul>
+  <li><a href="/book/46268/9c5ec36414c68.html">第一章 序</a></li>
+  <li><a href="/book/46268/77281b2336468.html">第二章 同人短篇</a></li>
+</ul>
+</body>
+</html>`
+
+    const catalogPage = extractPage(aliceCatalogHtml, chaptersCatalog)
+    expect(catalogPage.ok).toBe(true)
+    expect(catalogPage.pageKind).toBe('catalog')
+    expect(identityFromPage(chaptersCatalog, catalogPage.bootstrap!).bookId).toBe(catalogId)
+
+    const chapterPage = extractPage(aliceChapterHtml, chapterUrl)
+    expect(chapterPage.ok).toBe(true)
+    expect(chapterPage.pageKind).toBe('chapter')
+    expect(chapterPage.bootstrap!.catalogUrl).toContain('/other/chapters/id/44828.html')
+    const fromChapter = identityFromPage(chapterUrl, chapterPage.bootstrap!)
+    expect(fromChapter.bookId).toBe(catalogId)
+    expect(fromChapter.bookId).not.toBe(bookIdFromUrl(host, chapterUrl))
+    expect(fromChapter.bookId).not.toBe(bookIdFromUrl(host, 'https://www.alicesw.com/book/46268/'))
+
+    const followed = await followCatalogIfNeeded(chapterPage.bootstrap!, async (url) => {
+      expect(url).toContain('/other/chapters/id/44828.html')
+      return aliceCatalogHtml
+    })
+    expect(followed.ok).toBe(true)
+    if (!followed.ok) return
+    expect(followed.bootstrap.chapters.length).toBeGreaterThanOrEqual(5)
+    expect(identityFromPage(chapterUrl, followed.bootstrap).bookId).toBe(catalogId)
+
+    const novelPage = extractPage(aliceNovelHtml, novelUrl)
+    const novelId = novelPage.ok && novelPage.bootstrap
+      ? identityFromPage(novelUrl, novelPage.bootstrap).bookId
+      : bookIdFromUrl(host, novelUrl)
+    if (novelPage.ok && novelPage.bootstrap?.catalogUrl?.includes('/other/chapters/id/44828.html')) {
+      expect(novelId).toBe(catalogId)
+    } else {
+      // Live tests must paste only the chapters URL (VAL-DL-001). Do not start from
+      // /novel/44828.html — that would be a second Alice card for the same title.
+      expect(novelId).not.toBe(catalogId)
+      expect(bookIdFromUrl(host, novelUrl)).not.toBe(catalogId)
+    }
+  })
 })
 
 describe('chapterNeedsDownload', () => {

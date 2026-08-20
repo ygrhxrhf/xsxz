@@ -247,7 +247,18 @@ function tryCatalogFromDoc(doc: Document, pageUrl: string): CatalogHit | null {
 // ---------------------------------------------------------------------------
 
 function findCatalogLink(doc: Document, pageUrl: string): string | null {
-  const catalogTexts = ['目录', '章节列表', '返回目录', '回目录', '返回书页', '书页', 'TOC', 'Chapter List']
+  const catalogTexts = [
+    '目录',
+    '章节列表',
+    '返回目录',
+    '回目录',
+    '返回书页',
+    '书页',
+    '查看所有章节',
+    '所有章节',
+    'TOC',
+    'Chapter List',
+  ]
   const anchors = [...doc.querySelectorAll('a[href]')] as HTMLAnchorElement[]
   for (const a of anchors) {
     const text = visibleText(a)

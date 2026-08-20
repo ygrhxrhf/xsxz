@@ -598,6 +598,60 @@ describe('hash-route catalog extract (VAL-IDENT-004..009 / 024 / 025)', () => {
     expect(classicChapter.bootstrap!.catalogUrl).not.toMatch(/#\//)
   })
 
+  it('Alice chapter recovers /other/chapters catalogUrl; novel may not (VAL-IDENT-018/021)', () => {
+    const filler =
+      '张若尘从梦中惊醒，发现自己身处一间简陋的房间之中。窗外月光如水，照在斑驳的墙壁上。他低头看了看自己的双手，年轻、有力，却不是他记忆中的样子。这个少年来自一个偏远的小城，自幼父母双亡，靠邻居接济长大。他站起身来，走到窗前，望着远处连绵的山峦。这个世界比地球更加广阔，充满了未知的危险和机遇。既然老天给了我第二次生命，我一定要活出个样子来。他握紧了拳头，眼中闪过坚定的光芒。'
+    const chapterUrl = 'https://www.alicesw.com/book/46268/9c5ec36414c68.html'
+    const chaptersCatalog = 'https://www.alicesw.com/other/chapters/id/44828.html'
+    const novelUrl = 'https://www.alicesw.com/novel/44828.html'
+    const chapterHtml = `<!DOCTYPE html>
+<html>
+<head><title>序 - 三国杀同人短篇合集</title></head>
+<body>
+<div id="content">
+${filler}
+上一章 | <a href="/other/chapters/id/44828.html">返回目录</a> | 下一章
+</div>
+</body>
+</html>`
+    const novelHtml = `<!DOCTYPE html>
+<html>
+<head><title>三国杀同人短篇合集</title></head>
+<body>
+<h1>三国杀同人短篇合集</h1>
+<div id="intro">${filler}</div>
+<a href="/other/chapters/id/44828.html">查看所有章节</a>
+<ul>
+  <li><a href="/book/46268/9c5ec36414c68.html">第一章 序</a></li>
+  <li><a href="/book/46268/77281b2336468.html">第二章 同人短篇</a></li>
+</ul>
+</body>
+</html>`
+
+    const chapterPage = extractPage(chapterHtml, chapterUrl)
+    expect(chapterPage.ok).toBe(true)
+    expect(chapterPage.pageKind).toBe('chapter')
+    expect(chapterPage.bootstrap!.catalogUrl).toBe(chaptersCatalog)
+    expect(chapterPage.bootstrap!.catalogUrl).not.toMatch(/#\//)
+    expect(bookIdFromUrl('www.alicesw.com', chapterPage.bootstrap!.catalogUrl!)).toBe(
+      bookIdFromUrl('www.alicesw.com', chaptersCatalog),
+    )
+
+    const novelPage = extractPage(novelHtml, novelUrl)
+    const recovered = novelPage.bootstrap?.catalogUrl
+    if (recovered && recovered.includes('/other/chapters/id/44828.html')) {
+      expect(bookIdFromUrl('www.alicesw.com', recovered)).toBe(
+        bookIdFromUrl('www.alicesw.com', chaptersCatalog),
+      )
+    } else {
+      // Novel landing does not recover the chapters catalog. Live tests must
+      // paste only https://www.alicesw.com/other/chapters/id/44828.html (VAL-DL-001).
+      expect(bookIdFromUrl('www.alicesw.com', novelUrl)).not.toBe(
+        bookIdFromUrl('www.alicesw.com', chaptersCatalog),
+      )
+    }
+  })
+
   it('query + path-like hash seen key agrees with normalize and merge added===0', () => {
     const clean = 'https://www.bqg858.cc/#/book/65/1.html'
     const utm = 'https://www.bqg858.cc/?utm_source=x#/book/65/1.html'

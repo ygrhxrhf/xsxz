@@ -191,7 +191,10 @@ export function identityFromPage(
   bs: ExtractBootstrap,
 ): { host: string; catalogUrl: string; bookId: string } {
   const host = new URL(pageUrl).hostname
-  const catalogUrl = bs.pageKind === 'catalog' ? pageUrl : bs.catalogUrl || pageUrl
+  // Prefer recovered catalog (hash `#/book/65/` or Alice `/other/chapters/…`).
+  // Catalog pages omit catalogUrl, so identity is the opened URL.
+  // Do not hash the chapter URL when bootstrap already recovered the catalog.
+  const catalogUrl = bs.catalogUrl || pageUrl
   return { host, catalogUrl, bookId: bookIdFromUrl(host, catalogUrl) }
 }
 
@@ -222,6 +225,8 @@ export async function followCatalogIfNeeded(
         ok: true,
         bootstrap: {
           ...bs,
+          pageKind: 'chapter',
+          catalogUrl: bs.catalogUrl,
           bookTitle: catPage.bootstrap?.bookTitle || bs.bookTitle,
           author: catPage.bootstrap?.author || bs.author,
           chapters,
