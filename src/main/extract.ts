@@ -8,6 +8,7 @@ import { Readability } from '@mozilla/readability'
 import { JSDOM } from 'jsdom'
 import type { CatalogChapter, ExtractBootstrap, FailCode, PageKind, SiteRule } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
+import { canonicalizeUrl, isPathLikeHash } from '../shared/urlHash'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -23,15 +24,46 @@ function linkDensity(el: Element): number {
   return linkLen / total
 }
 
-function stripQuery(url: string): string {
+function catalogSeenKey(url: string): string {
   try {
-    const u = new URL(url)
-    u.search = ''
-    u.hash = ''
-    return u.toString()
+    return canonicalizeUrl(url)
   } catch {
     return url
   }
+}
+
+function resolveCatalogHref(rawHref: string, pageUrl: string, resolvedHref?: string): string {
+  const raw = (rawHref || '').trim()
+  const candidates = [resolvedHref, raw]
+  for (const c of candidates) {
+    if (!c) continue
+    try {
+      return new URL(c, pageUrl).href
+    } catch {
+      /* try next */
+    }
+  }
+  return resolvedHref || raw
+}
+
+/** Empty, javascript:, and in-page fragments (`#`, `#top`, `#content`, `#list`). Keep `#/…` routes. */
+function shouldSkipCatalogHref(rawHref: string, resolvedHref?: string): boolean {
+  const raw = (rawHref || '').trim()
+  if (!raw) return true
+  if (/^javascript:/i.test(raw)) return true
+
+  if (raw.startsWith('#')) return !isPathLikeHash(raw)
+
+  try {
+    const u = new URL(resolvedHref || raw)
+    if (isPathLikeHash(u.hash)) return false
+    const path = u.pathname.replace(/\/+$/, '') || '/'
+    if (u.hash && !isPathLikeHash(u.hash) && path === '/') return true
+  } catch {
+    const i = raw.indexOf('#')
+    if (i >= 0) return !isPathLikeHash(raw.slice(i))
+  }
+  return false
 }
 
 function sameDomain(a: string, b: string): boolean {
@@ -117,15 +149,16 @@ function tryCatalogFromRule(doc: Document, pageUrl: string, rule?: SiteRule): Ca
   let index = 0
   for (const a of anchors) {
     const rawHref = (a.getAttribute('href') || '').trim()
-    if (!rawHref || rawHref.startsWith('#') || /^javascript:/i.test(rawHref)) continue
+    if (shouldSkipCatalogHref(rawHref, a.href)) continue
     if (!sameDomain(a.href, pageUrl)) continue
     const text = visibleText(a)
     if (text.length < 1 || text.length > 100) continue
-    const href = stripQuery(a.href)
+    const url = resolveCatalogHref(rawHref, pageUrl, a.href)
+    const href = catalogSeenKey(url)
     if (seen.has(href)) continue
     seen.add(href)
     index++
-    chapters.push({ title: text, url: a.href, index })
+    chapters.push({ title: text, url, index })
   }
   if (chapters.length < 2) return null
   return {
@@ -163,6 +196,8 @@ function tryCatalogFromDoc(doc: Document, pageUrl: string): CatalogHit | null {
   // Group by parent container
   const containers = new Map<Element, HTMLAnchorElement[]>()
   for (const a of allLinks) {
+    const rawHref = (a.getAttribute('href') || '').trim()
+    if (shouldSkipCatalogHref(rawHref, a.href)) continue
     if (!sameDomain(a.href, pageUrl)) continue
     if (!isChapterLink(a)) continue
     const parent = a.parentElement || doc.body
@@ -189,11 +224,13 @@ function tryCatalogFromDoc(doc: Document, pageUrl: string): CatalogHit | null {
   const chapters: CatalogChapter[] = []
   let index = 0
   for (const a of best.links) {
-    const href = stripQuery(a.href)
+    const rawHref = (a.getAttribute('href') || '').trim()
+    const url = resolveCatalogHref(rawHref, pageUrl, a.href)
+    const href = catalogSeenKey(url)
     if (seen.has(href)) continue
     seen.add(href)
     index++
-    chapters.push({ title: visibleText(a), url: a.href, index })
+    chapters.push({ title: visibleText(a), url, index })
   }
 
   if (chapters.length < 5) return null
@@ -214,8 +251,10 @@ function findCatalogLink(doc: Document, pageUrl: string): string | null {
   const anchors = [...doc.querySelectorAll('a[href]')] as HTMLAnchorElement[]
   for (const a of anchors) {
     const text = visibleText(a)
+    const rawHref = (a.getAttribute('href') || '').trim()
+    if (shouldSkipCatalogHref(rawHref, a.href)) continue
     if (catalogTexts.some((t) => text.includes(t)) && sameDomain(a.href, pageUrl)) {
-      return a.href
+      return resolveCatalogHref(rawHref, pageUrl, a.href)
     }
   }
   return null

@@ -140,6 +140,33 @@ describe('identityFromPage + followCatalogIfNeeded', () => {
     expect(id.bookId).toBe(bookIdFromUrl(id.host, id.catalogUrl))
     expect(id.bookId).toMatch(/^d_[0-9a-f]{16}$/)
   })
+
+  it('hash chapter extract bootstrap yields the catalog bookId (VAL-IDENT-024)', () => {
+    const filler =
+      '张若尘从梦中惊醒，发现自己身处一间简陋的房间之中。窗外月光如水，照在斑驳的墙壁上。他低头看了看自己的双手，年轻、有力，却不是他记忆中的样子。这个少年来自一个偏远的小城，自幼父母双亡，靠邻居接济长大。他站起身来，走到窗前，望着远处连绵的山峦。这个世界比地球更加广阔，充满了未知的危险和机遇。既然老天给了我第二次生命，我一定要活出个样子来。他握紧了拳头，眼中闪过坚定的光芒。'
+    const chapterHtml = `<!DOCTYPE html>
+<html>
+<head><title>第1章 千金攻略（1）</title></head>
+<body>
+<div id="chaptercontent">
+${filler}
+<a href="#/book/65/">返回目录</a>
+</div>
+</body>
+</html>`
+    const pageUrl = 'https://www.bqg858.cc/#/book/65/1.html'
+    const extracted = extractPage(chapterHtml, pageUrl)
+    expect(extracted.ok).toBe(true)
+    expect(extracted.pageKind).toBe('chapter')
+    expect(extracted.bootstrap!.catalogUrl).toContain('#/book/65')
+    expect(extracted.bootstrap!.catalogUrl).not.toContain('1.html')
+
+    const id = identityFromPage(pageUrl, extracted.bootstrap!)
+    expect(id.catalogUrl).toContain('#/book/65')
+    expect(id.catalogUrl).not.toBe(pageUrl)
+    expect(id.bookId).toBe(bookIdFromUrl('www.bqg858.cc', 'https://www.bqg858.cc/#/book/65/'))
+    expect(id.bookId).not.toBe(bookIdFromUrl('www.bqg858.cc', 'https://www.bqg858.cc/'))
+  })
 })
 
 describe('chapterNeedsDownload', () => {
