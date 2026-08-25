@@ -14,7 +14,7 @@ import {
 } from 'naive-ui'
 import type { Settings, SiteRule } from '@shared/types'
 
-const props = defineProps<{ active?: boolean }>()
+const props = defineProps<{ active?: boolean; prefillHost?: string; prefillNonce?: number }>()
 
 const settings = ref<Settings | null>(null)
 const baseUrl = ref('')
@@ -205,6 +205,13 @@ watch(
   () => props.active,
   (active) => {
     if (active) void load()
+  },
+)
+
+watch(
+  () => props.prefillNonce,
+  () => {
+    if (props.prefillHost) ruleHost.value = props.prefillHost
   },
 )
 

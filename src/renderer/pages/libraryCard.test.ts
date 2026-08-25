@@ -2,9 +2,15 @@ import { describe, expect, it } from 'vitest'
 import {
   applyAddedChapterCount,
   checkUpdateMessage,
+  checkUpdateNeedsBrowse,
+  filterLibraryBooks,
+  formatChapterOrdinal,
+  formatLibraryProgress,
   hasFailedChapters,
   isDownloadBook,
+  sortLibraryBooks,
 } from './libraryCard'
+import { failAdvice, filterCatalogChapters, readerProgressLabel, remainingChapterCount } from './readerHelpers'
 
 describe('library check-update card helpers', () => {
   it('shows 检查更新 only for download books', () => {
@@ -45,5 +51,83 @@ describe('library check-update card helpers', () => {
   it('bumps chapterCount by added when new chapters exist', () => {
     expect(applyAddedChapterCount(6, 1)).toBe(7)
     expect(applyAddedChapterCount(6, 0)).toBe(6)
+  })
+
+  it('shows 第 x 章 instead of a raw chapterId', () => {
+    expect(formatChapterOrdinal('c0005')).toBe('第 5 章')
+    expect(formatChapterOrdinal('c0005', 5)).toBe('第 5 章')
+    expect(
+      formatLibraryProgress({
+        id: 'd_1',
+        title: '测',
+        author: '甲',
+        importType: 'download',
+        status: 'partial',
+        chapterCount: 10,
+        readyCount: 6,
+        progress: { chapterId: 'c0003', scrollRatio: 0.42, updatedAt: '2026-01-01T00:00:00.000Z' },
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    ).toBe('第 3 章 · 42% · 6/10 章')
+  })
+
+  it('filters title/author/status and sorts locally', () => {
+    const books = [
+      {
+        id: '1',
+        title: '万古神帝',
+        author: '飞天鱼',
+        importType: 'download' as const,
+        status: 'ready' as const,
+        chapterCount: 2,
+        readyCount: 2,
+        progress: null,
+        updatedAt: '2026-01-02T00:00:00.000Z',
+      },
+      {
+        id: '2',
+        title: '导入书',
+        author: '乙',
+        importType: 'txt' as const,
+        status: 'partial' as const,
+        chapterCount: 3,
+        readyCount: 1,
+        progress: null,
+        updatedAt: '2026-01-03T00:00:00.000Z',
+      },
+    ]
+    expect(filterLibraryBooks(books, { q: '万古' }).map((b) => b.id)).toEqual(['1'])
+    expect(filterLibraryBooks(books, { q: '乙' }).map((b) => b.id)).toEqual(['2'])
+    expect(filterLibraryBooks(books, { status: 'partial' }).map((b) => b.id)).toEqual(['2'])
+    expect(sortLibraryBooks(books, 'title').map((b) => b.id)).toEqual(['2', '1'])
+  })
+
+  it('sends NeedLogin / Intercepted back to the browse page', () => {
+    expect(checkUpdateNeedsBrowse('NeedLogin')).toBe(true)
+    expect(checkUpdateNeedsBrowse('Intercepted')).toBe(true)
+    expect(checkUpdateNeedsBrowse('CatalogNotFound')).toBe(false)
+  })
+})
+
+describe('reader progress / catalog helpers', () => {
+  const chapters = [
+    { id: 'c0001', index: 1, title: '第一章 苏醒' },
+    { id: 'c0002', index: 2, title: '第二章 入门' },
+    { id: 'c0003', index: 3, title: '第三章 下山' },
+  ]
+
+  it('summarizes remaining chapters without exposing raw ids', () => {
+    expect(remainingChapterCount(chapters, 'c0001')).toBe(2)
+    expect(readerProgressLabel(chapters, 'c0002', 0.5)).toBe('第 2 章 · 本章 50% · 还剩 1 章')
+  })
+
+  it('filters the catalog by title keyword', () => {
+    expect(filterCatalogChapters(chapters, '入门').map((c) => c.id)).toEqual(['c0002'])
+    expect(filterCatalogChapters(chapters, '').map((c) => c.id)).toEqual(['c0001', 'c0002', 'c0003'])
+  })
+
+  it('gives NeedLogin a browse hint', () => {
+    expect(failAdvice('NeedLogin')).toMatch(/浏览页登录/)
+    expect(failAdvice('BodyEmpty')).toMatch(/重试/)
   })
 })

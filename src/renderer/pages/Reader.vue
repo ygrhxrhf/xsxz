@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace } from 'naive-ui'
+import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace, useMessage } from 'naive-ui'
 import { FAIL_CODE_ZH } from '@shared/types'
 import type { Book, ChapterMeta, AiChatMessage } from '@shared/types'
+import { failAdvice, filterCatalogChapters, readerProgressLabel } from './readerHelpers'
 
 const props = defineProps<{ bookId?: string }>()
-const emit = defineEmits<{ (e: 'back'): void }>()
+const emit = defineEmits<{
+  (e: 'back'): void
+  (e: 'go-browse', url?: string): void
+}>()
+const message = useMessage()
 
 const book = ref<Book | null>(null)
 const chapters = ref<ChapterMeta[]>([])
@@ -31,11 +36,15 @@ const showChat = ref(false)
 const chatMessages = ref<AiChatMessage[]>([])
 const chatInput = ref('')
 const chatLoading = ref(false)
+const catalogQuery = ref('')
+const scrollRatioView = ref(0)
+const retryingChapter = ref(false)
 
 const prefsReady = ref(false)
 
 // Debounced scroll save
 let scrollTimer: ReturnType<typeof setTimeout> | null = null
+let unsubDownload: (() => void) | null = null
 
 const nightClass = computed(() => (nightMode.value ? 'night' : ''))
 const contentStyle = computed(() => ({
@@ -43,6 +52,17 @@ const contentStyle = computed(() => ({
   lineHeight: lineHeight.value,
 }))
 const chapterReady = computed(() => Boolean(currentChapter.value && currentChapter.value.status === 'ready' && chapterBody.value))
+const canRetryChapter = computed(() => {
+  const ch = currentChapter.value
+  if (!book.value || !ch) return false
+  if (book.value.importType !== 'download') return false
+  return ch.status === 'failed' || ch.status === 'empty' || ch.status === 'pending'
+})
+const filteredCatalog = computed(() => filterCatalogChapters(chapters.value, catalogQuery.value))
+const progressSummary = computed(() =>
+  readerProgressLabel(chapters.value, currentChapter.value?.id, scrollRatioView.value),
+)
+const chapterFailHint = computed(() => failAdvice(currentChapter.value?.failCode))
 
 async function loadBook(bookId: string) {
   saveProgress()
@@ -83,6 +103,7 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
         chapterError.value = ''
       }
       showDrawer.value = false
+      scrollRatioView.value = scrollRatio
       await nextTick()
       scrollToRatio(scrollRatio)
     } else {
@@ -116,8 +137,30 @@ function saveProgress() {
 }
 
 function onScroll() {
+  const el = contentRef.value
+  if (el && el.scrollHeight > 0) scrollRatioView.value = el.scrollTop / el.scrollHeight
   if (scrollTimer) clearTimeout(scrollTimer)
   scrollTimer = setTimeout(saveProgress, 1000)
+}
+
+function goBrowseForChapter() {
+  const url = currentChapter.value?.url || book.value?.sourceUrl
+  emit('go-browse', url)
+}
+
+async function retryThisChapter() {
+  if (!book.value) return
+  retryingChapter.value = true
+  try {
+    const res = await window.api.download.retryFailed(book.value.id)
+    if (!res.ok) {
+      message.error(res.message || '重试失败')
+      return
+    }
+    message.info('已开始重试失败章')
+  } finally {
+    retryingChapter.value = false
+  }
 }
 
 function prevChapter() {
@@ -155,7 +198,7 @@ async function aiCleanBody() {
       aiResult.value = res.result.cleaned
       showAiResult.value = true
     } else {
-      window.alert(res.message || '清正文失败')
+      message.error(res.message || '清正文失败')
     }
   } finally {
     aiLoading.value = false
@@ -168,13 +211,14 @@ async function applyCleanedBody() {
   chapterBody.value = aiResult.value
   hasBodyRaw.value = true
   showAiResult.value = false
+  message.success('已应用到正文')
 }
 
 async function restoreCleanedBody() {
   if (!book.value || !currentChapter.value) return
   const res = await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, '', true)
   if (res && 'ok' in res && res.ok === false) {
-    window.alert((res as { message?: string }).message || '撤销失败')
+    message.error((res as { message?: string }).message || '撤销失败')
     return
   }
   const ch = await window.api.library.readChapter(book.value.id, currentChapter.value.id)
@@ -194,7 +238,7 @@ async function aiSummarize() {
       aiResult.value = res.text
       showAiResult.value = true
     } else {
-      window.alert(res.message || '摘要失败')
+      message.error(res.message || '摘要失败')
     }
   } finally {
     aiLoading.value = false
@@ -209,7 +253,7 @@ function getSelectedText(): string {
 async function aiTranslate() {
   const text = getSelectedText()
   if (!text) {
-    window.alert('请先在正文中选中要翻译的文字')
+    message.warning('请先在正文中选中要翻译的文字')
     return
   }
   aiLoading.value = true
@@ -220,7 +264,7 @@ async function aiTranslate() {
       aiResult.value = res.text
       showAiResult.value = true
     } else {
-      window.alert(res.message || '翻译失败')
+      message.error(res.message || '翻译失败')
     }
   } finally {
     aiLoading.value = false
@@ -258,10 +302,23 @@ onMounted(async () => {
   await loadPrefs()
   prefsReady.value = true
   if (props.bookId) await loadBook(props.bookId)
+  unsubDownload = window.api.download.onProgress((p) => {
+    if (!book.value || p.bookId !== book.value.id) return
+    if (p.status === 'done' || p.status === 'error' || p.status === 'cancelled') {
+      const stay = currentChapter.value?.id
+      void loadBook(book.value.id).then(() => {
+        if (stay) {
+          const ch = chapters.value.find((c) => c.id === stay)
+          if (ch) void openChapter(ch, scrollRatioView.value)
+        }
+      })
+    }
+  })
 })
 
 onUnmounted(() => {
   if (scrollTimer) clearTimeout(scrollTimer)
+  unsubDownload?.()
   saveProgress()
 })
 </script>
@@ -280,6 +337,7 @@ onUnmounted(() => {
       <div class="reader-bar">
         <n-button quaternary size="small" @click="emit('back')">← 返回书库</n-button>
         <span class="reader-book-title">{{ book.title }}</span>
+        <span class="reader-progress-label">{{ progressSummary }}</span>
         <n-button quaternary size="small" @click="showDrawer = true">目录</n-button>
       </div>
 
@@ -312,6 +370,15 @@ onUnmounted(() => {
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>
             <p v-if="chapterError" class="chapter-error">{{ chapterError }}</p>
+            <p v-if="chapterFailHint" class="chapter-hint">{{ chapterFailHint }}</p>
+            <n-space v-if="canRetryChapter || chapterError" justify="center" style="margin-bottom:16px">
+              <n-button v-if="canRetryChapter" size="small" type="warning" :loading="retryingChapter" @click="retryThisChapter">
+                重试失败章
+              </n-button>
+              <n-button v-if="currentChapter?.url || book.sourceUrl" size="small" @click="goBrowseForChapter">
+                去浏览页
+              </n-button>
+            </n-space>
             <p v-for="(para, i) in chapterBody.split(/\n{2,}/).filter(Boolean)" :key="i" class="para">{{ para }}</p>
           </template>
         </div>
@@ -323,7 +390,7 @@ onUnmounted(() => {
           上一章
         </n-button>
         <n-tag v-if="currentChapter">
-          {{ chapters.findIndex(c => c.id === currentChapter?.id) + 1 }} / {{ chapters.length }}
+          {{ progressSummary }}
         </n-tag>
         <n-button :disabled="!currentChapter || chapters[chapters.length-1]?.id === currentChapter?.id" @click="nextChapter">
           下一章
@@ -333,9 +400,10 @@ onUnmounted(() => {
       <!-- Chapter drawer -->
       <n-drawer v-model:show="showDrawer" placement="left" :width="320">
         <n-drawer-content title="目录">
+          <n-input v-model:value="catalogQuery" clearable placeholder="过滤目录" style="margin-bottom:12px" />
           <n-list hoverable clickable>
             <n-list-item
-              v-for="ch in chapters"
+              v-for="ch in filteredCatalog"
               :key="ch.id"
               @click="goToChapterId(ch.id)"
             >
@@ -437,6 +505,20 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   padding: 0 12px;
+}
+
+.reader-progress-label {
+  font-size: 12px;
+  color: #888;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+
+.chapter-hint {
+  text-align: center;
+  color: #c9a227;
+  padding: 0 8px 12px;
+  font-size: 13px;
 }
 
 .reader-body {

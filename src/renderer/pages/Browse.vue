@@ -3,8 +3,15 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NProgress, NTag } from 'naive-ui'
 import type { BrowseState, DownloadProgress } from '@shared/types'
 
+const props = defineProps<{
+  active?: boolean
+  prefillUrl?: string
+  prefillNonce?: number
+}>()
+
 const emit = defineEmits<{
   (e: 'open-book', bookId: string): void
+  (e: 'edit-site-rule', host: string): void
 }>()
 
 const address = ref('')
@@ -29,11 +36,33 @@ const canOpenDownloadedBook = computed(() => {
   return Boolean(p?.bookId) && (p!.status === 'done' || p!.status === 'error')
 })
 
+function currentHost(): string {
+  try {
+    const u = new URL(address.value || state.value.url)
+    return u.hostname.replace(/^www\./i, '')
+  } catch {
+    return ''
+  }
+}
+
+function editCurrentSiteRule() {
+  const host = currentHost()
+  if (!host) {
+    window.alert('请先打开一个有效网址')
+    return
+  }
+  emit('edit-site-rule', host)
+}
+
 function openThisBook() {
   const p = downloadProgress.value
   if (!p?.bookId || !canOpenDownloadedBook.value) return
   emit('open-book', p.bookId)
   showProgress.value = false
+}
+
+function restoreProgressDrawer() {
+  if (downloadProgress.value) showProgress.value = true
 }
 
 function reportBounds() {
@@ -55,6 +84,15 @@ function reportBounds() {
 }
 
 watch(showProgress, reportBounds)
+
+watch(
+  () => props.prefillNonce,
+  () => {
+    if (!props.prefillUrl) return
+    address.value = props.prefillUrl
+    void go()
+  },
+)
 
 async function go() {
   const res = await window.api.browse.load(address.value)
@@ -150,6 +188,17 @@ onUnmounted(() => {
         @click.prevent="startDownload"
       >
         下载本书
+      </n-button>
+      <n-button size="small" quaternary :disabled="!currentHost()" @click.prevent="editCurrentSiteRule">
+        配置本站规则
+      </n-button>
+      <n-button
+        v-if="downloadProgress && !showProgress"
+        size="small"
+        tertiary
+        @click.prevent="restoreProgressDrawer"
+      >
+        下载进度
       </n-button>
     </form>
     <div ref="slot" class="browse-slot" />

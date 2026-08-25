@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { NButton, NCard, NEmpty, NSpace, NTag, NPopconfirm, NDropdown, useMessage } from 'naive-ui'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
-import type { BookListItem, DownloadProgress } from '@shared/types'
+import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NTag, NPopconfirm, NModal, NDropdown, useMessage } from 'naive-ui'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { BookListItem, ChapterMeta, DownloadProgress, FailCode } from '@shared/types'
+import { FAIL_CODE_ZH } from '@shared/types'
 import {
   applyAddedChapterCount,
   checkUpdateMessage,
+  checkUpdateNeedsBrowse,
+  filterLibraryBooks,
+  formatChapterOrdinal,
+  formatLibraryProgress,
   hasFailedChapters,
   isDownloadBook,
+  sortLibraryBooks,
+  type LibrarySortKey,
+  type LibraryStatusFilter,
 } from './libraryCard'
 
 const props = defineProps<{ active?: boolean }>()
 
 const emit = defineEmits<{
   (e: 'open-book', bookId: string): void
+  (e: 'go-browse', url?: string): void
 }>()
 
 const message = useMessage()
@@ -22,7 +31,32 @@ const retryingId = ref<string | null>(null)
 const checkingId = ref<string | null>(null)
 const exportingId = ref<string | null>(null)
 const checkMsg = ref<Record<string, string>>({})
+const checkErr = ref<Record<string, boolean>>({})
+const query = ref('')
+const statusFilter = ref<LibraryStatusFilter>('all')
+const sortKey = ref<LibrarySortKey>('updated')
+const failedOpen = ref(false)
+const failedTitle = ref('')
+const failedBookId = ref('')
+const failedRows = ref<ChapterMeta[]>([])
 let unsubProgress: (() => void) | null = null
+let lastErrorToast = ''
+
+const visibleBooks = computed(() =>
+  sortLibraryBooks(filterLibraryBooks(books.value, { q: query.value, status: statusFilter.value }), sortKey.value),
+)
+
+const statusOptions = [
+  { label: '全部状态', value: 'all' },
+  { label: '下载中', value: 'downloading' },
+  { label: '完整', value: 'ready' },
+  { label: '部分', value: 'partial' },
+]
+const sortOptions = [
+  { label: '最近更新', value: 'updated' },
+  { label: '书名', value: 'title' },
+  { label: '作者', value: 'author' },
+]
 
 async function refresh() {
   loading.value = true
@@ -51,11 +85,23 @@ async function handleDelete(bookId: string) {
   await refresh()
 }
 
+function failLabel(ch: ChapterMeta): string {
+  return ch.failMessage || (ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败')
+}
+
+async function openFailedList(bookId: string, title: string) {
+  failedBookId.value = bookId
+  failedTitle.value = title
+  failedOpen.value = true
+  const res = await window.api.library.get(bookId)
+  failedRows.value = (res.book?.chapters || []).filter((c) => c.status === 'failed' || c.status === 'empty')
+}
+
 async function handleRetry(bookId: string) {
   retryingId.value = bookId
   const res = await window.api.download.retryFailed(bookId)
   if (!res.ok) {
-    window.alert(res.message || '重试失败')
+    message.error(res.message || '重试失败')
     retryingId.value = null
   }
 }
@@ -76,10 +122,17 @@ async function handleCheckUpdate(bookId: string) {
       }
     }
     checkMsg.value = { ...checkMsg.value, [bookId]: checkUpdateMessage(res) }
+    checkErr.value = { ...checkErr.value, [bookId]: !res.ok }
+    if (!res.ok && checkUpdateNeedsBrowse((res as { code?: FailCode }).code)) {
+      message.warning(res.message)
+      const detail = await window.api.library.get(bookId)
+      emit('go-browse', detail.book?.sourceUrl)
+    }
     if (res.ok && res.added > 0) await refresh()
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e)
-    checkMsg.value = { ...checkMsg.value, [bookId]: message || '检查更新失败' }
+    const text = e instanceof Error ? e.message : String(e)
+    checkMsg.value = { ...checkMsg.value, [bookId]: text || '检查更新失败' }
+    checkErr.value = { ...checkErr.value, [bookId]: true }
   } finally {
     checkingId.value = null
   }
@@ -112,8 +165,7 @@ function statusType(status: BookListItem['status']): 'info' | 'success' | 'warni
 }
 
 function fmtProgress(b: BookListItem): string {
-  if (!b.progress) return `${b.readyCount}/${b.chapterCount} 章`
-  return `${b.progress.chapterId} · ${b.readyCount}/${b.chapterCount} 章`
+  return formatLibraryProgress(b)
 }
 
 watch(
@@ -140,6 +192,13 @@ onMounted(() => {
         }
       }
     }
+    if (p.status === 'error') {
+      const text = p.lastError || '下载有失败章，可在书库重试'
+      if (text !== lastErrorToast) {
+        lastErrorToast = text
+        message.warning(text)
+      }
+    }
     if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
       retryingId.value = null
       checkingId.value = null
@@ -155,14 +214,20 @@ onUnmounted(() => {
 
 <template>
   <div class="page">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px">
       <h2 style="margin:0">书库</h2>
       <n-button type="primary" @click="handleImport">导入 txt / epub</n-button>
     </div>
+    <div v-if="books.length" class="lib-toolbar">
+      <n-input v-model:value="query" clearable placeholder="按书名或作者筛选" style="max-width:240px" />
+      <n-select v-model:value="statusFilter" :options="statusOptions" style="width:120px" />
+      <n-select v-model:value="sortKey" :options="sortOptions" style="width:132px" />
+    </div>
     <n-empty v-if="!books.length && !loading" description="还没有书，去浏览页下一本或导入文件" />
+    <n-empty v-else-if="!visibleBooks.length && !loading" description="没有符合筛选的书" />
     <div v-else class="book-grid">
       <n-card
-        v-for="b in books"
+        v-for="b in visibleBooks"
         :key="b.id"
         hoverable
         class="book-card"
@@ -177,7 +242,7 @@ onUnmounted(() => {
           </n-tag>
         </div>
         <div class="book-progress">{{ fmtProgress(b) }}</div>
-        <div v-if="checkMsg[b.id]" class="check-msg">{{ checkMsg[b.id] }}</div>
+        <div v-if="checkMsg[b.id]" class="check-msg" :class="{ error: checkErr[b.id] }">{{ checkMsg[b.id] }}</div>
         <n-space justify="end" style="margin-top:8px">
           <n-button
             v-if="isDownloadBook(b)"
@@ -196,6 +261,13 @@ onUnmounted(() => {
           >
             重试失败章
           </n-button>
+          <n-button
+            v-if="hasFailedChapters(b)"
+            size="tiny"
+            @click.stop="openFailedList(b.id, b.title)"
+          >
+            失败章
+          </n-button>
           <n-dropdown
             trigger="click"
             :options="[{ label: '导出 txt', key: 'txt' }, { label: '导出 epub', key: 'epub' }]"
@@ -212,10 +284,41 @@ onUnmounted(() => {
         </n-space>
       </n-card>
     </div>
+    <n-modal v-model:show="failedOpen" preset="card" :title="`失败章 · ${failedTitle}`" style="width:480px">
+      <n-empty v-if="!failedRows.length" description="当前没有失败章" />
+      <div v-else class="fail-list">
+        <div v-for="ch in failedRows" :key="ch.id" class="fail-row">
+          <div>
+            <div class="fail-title">{{ formatChapterOrdinal(ch.id, ch.index) }} {{ ch.title }}</div>
+            <div class="fail-reason">{{ failLabel(ch) }}</div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button size="small" @click="emit('go-browse')">去浏览页</n-button>
+          <n-button
+            size="small"
+            type="warning"
+            :loading="retryingId === failedBookId"
+            @click="handleRetry(failedBookId)"
+          >
+            重试失败章
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <style scoped>
+.lib-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
 .book-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -262,5 +365,32 @@ onUnmounted(() => {
   color: #63e2b7;
   margin-top: 6px;
   line-height: 1.4;
+}
+
+.check-msg.error {
+  color: #e88080;
+}
+
+.fail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.fail-row {
+  padding: 8px 0;
+  border-bottom: 1px solid #2c2c2c;
+}
+
+.fail-title {
+  font-size: 13px;
+}
+
+.fail-reason {
+  font-size: 12px;
+  color: #e88080;
+  margin-top: 4px;
 }
 </style>
