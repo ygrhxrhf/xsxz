@@ -25,8 +25,11 @@ const DELAY_MAX = 800
 const LOAD_TIMEOUT_MS = 25_000
 /** Poll interval after navigation settles. Classic HTML should pass the first tick. */
 export const HYDRATE_POLL_MS = 300
-/** Cap for catalog/body ready wait (10–15s). Hash SPA hydration, not an extra sleep on HTML. */
+/** Cap for catalog/body ready wait (10–15s). Hash SPA hydration, not a extra sleep on HTML. */
 export const HYDRATE_TIMEOUT_MS = 12_000
+/** Extra attempts after the first try, only for NavFailed / BodyEmpty. */
+export const CHAPTER_RETRY_TIMES = 2
+const CHAPTER_RETRY_BASE_MS = 1_000
 
 interface ActiveDownload {
   bookId: string
@@ -53,11 +56,39 @@ export function chapterNeedsDownload(status: ChapterStatus): boolean {
   return status === 'pending' || status === 'failed' || status === 'empty'
 }
 
+export function shouldRetryChapterFail(code: FailCode | undefined): boolean {
+  return code === 'NavFailed' || code === 'BodyEmpty'
+}
+
+export function chapterRetryDelayMs(attempt: number, opts?: { testing?: boolean }): number {
+  const testing = opts?.testing ?? Boolean(testHtmlLoader)
+  if (testing) return 0
+  const n = Math.max(1, attempt)
+  return CHAPTER_RETRY_BASE_MS * 2 ** (n - 1)
+}
+
+export function checkUpdateFailHint(
+  code: FailCode | undefined,
+): { goBrowse: boolean; message: string } | null {
+  if (code === 'NeedLogin') {
+    return { goBrowse: true, message: '需要登录后才能看，请先到浏览页登录再检查更新' }
+  }
+  if (code === 'Intercepted') {
+    return { goBrowse: true, message: '目录页被拦截或验证，请先到浏览页打开该站后再试' }
+  }
+  return null
+}
+
 function anyActiveCancelled(): boolean {
   for (const dl of active.values()) {
     if (dl.cancelled) return true
   }
   return false
+}
+
+function isCancelledError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e)
+  return msg === '已取消' || msg.includes('已取消')
 }
 
 function abortHiddenLoad(): void {
@@ -179,7 +210,7 @@ function interruptibleDelay(ms: number): Promise<void> {
 
 function randomDelay(): Promise<void> {
   if (testHtmlLoader) return delay(0)
-  return delay(DELAY_MIN + Math.random() * (DELAY_MAX - DELAY_MIN))
+  return interruptibleDelay(DELAY_MIN + Math.random() * (DELAY_MAX - DELAY_MIN))
 }
 
 function pageUrlHasPathLikeHash(pageUrl: string): boolean {
@@ -423,7 +454,9 @@ async function startFromExtractedHtml(
   const result = extractPage(pageHtml, pageUrl, undefined, rule)
   if (!result.ok || !result.bootstrap) {
     const canReload =
-      (opts?.allowHiddenReload ?? true) && pageUrlHasPathLikeHash(pageUrl) && extractLooksEmpty(result)
+      (opts?.allowHiddenReload ?? true) &&
+      pageUrlHasPathLikeHash(pageUrl) &&
+      extractLooksEmpty(result)
     if (canReload) {
       const reloaded = await loadPageHtml(pageUrl)
       return startFromExtractedHtml(reloaded, pageUrl, { allowHiddenReload: false })
@@ -544,36 +577,71 @@ export async function downloadChapters(bookId: string): Promise<void> {
       continue
     }
 
-    try {
-      const html = await loadPageHtml(chapterUrl)
+    let lastCode: FailCode = 'NavFailed'
+    let lastMsg = ''
+    let saved = false
+    const maxTries = 1 + CHAPTER_RETRY_TIMES
+
+    for (let attempt = 1; attempt <= maxTries; attempt++) {
       if (dl.cancelled) break
-      const bodyRule = await ruleForPage(chapterUrl)
-      const bodyResult = extractBody(html, chapterUrl, bodyRule)
-      if (bodyResult.ok) {
-        await writeChapterFile(bookId, ch.id, {
-          title: ch.title,
-          url: chapterUrl,
-          body: bodyResult.body,
-          bodyRaw: bodyResult.body,
-          status: 'ready',
-        })
-        ch.status = 'ready'
-        await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl })
-        dl.done++
-      } else {
-        const code = bodyResult.failCode || 'BodyEmpty'
-        dl.failed++
-        dl.lastError = failMessage(code, bodyResult.failMessage)
-        await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, code, dl.lastError)
+      try {
+        const html = await loadPageHtml(chapterUrl)
+        if (dl.cancelled) break
+        const bodyRule = await ruleForPage(chapterUrl)
+        const bodyResult = extractBody(html, chapterUrl, bodyRule)
+        if (bodyResult.ok) {
+          await writeChapterFile(bookId, ch.id, {
+            title: ch.title,
+            url: chapterUrl,
+            body: bodyResult.body,
+            bodyRaw: bodyResult.body,
+            status: 'ready',
+          })
+          ch.status = 'ready'
+          await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl })
+          dl.done++
+          saved = true
+          break
+        }
+        lastCode = bodyResult.failCode || 'BodyEmpty'
+        lastMsg = failMessage(lastCode, bodyResult.failMessage)
+        if (!shouldRetryChapterFail(lastCode) || attempt >= maxTries) {
+          dl.failed++
+          dl.lastError = lastMsg
+          await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, lastMsg)
+          saved = true
+          break
+        }
+        await interruptibleDelay(chapterRetryDelayMs(attempt))
+      } catch (e: unknown) {
+        if (isCancelledError(e) || dl.cancelled) break
+        lastCode = 'NavFailed'
+        lastMsg = failMessage('NavFailed', e instanceof Error ? e.message : String(e))
+        if (!shouldRetryChapterFail(lastCode) || attempt >= maxTries) {
+          dl.failed++
+          dl.lastError = lastMsg
+          await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, lastMsg)
+          saved = true
+          break
+        }
+        await interruptibleDelay(chapterRetryDelayMs(attempt))
       }
-    } catch (e: unknown) {
+    }
+
+    if (!saved && !dl.cancelled) {
       dl.failed++
-      dl.lastError = failMessage('NavFailed', e instanceof Error ? e.message : String(e))
-      await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, 'NavFailed', dl.lastError)
+      dl.lastError = lastMsg || failMessage(lastCode)
+      await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, dl.lastError)
     }
 
     emitProgress(bookId)
-    if (!dl.cancelled) await randomDelay()
+    if (!dl.cancelled) {
+      try {
+        await randomDelay()
+      } catch (e: unknown) {
+        if (!isCancelledError(e)) throw e
+      }
+    }
   }
 
   dl.currentTitle = undefined
@@ -630,9 +698,21 @@ export async function checkUpdate(
 
     const catHtml = await loadPageHtml(sourceUrl)
     const catRule = await ruleForPage(sourceUrl)
-    const chapters: CatalogChapter[] = extractCatalog(catHtml, sourceUrl, catRule)
+    const page = extractPage(catHtml, sourceUrl, undefined, catRule)
+    if (page.failCode === 'NeedLogin' || page.failCode === 'Intercepted') {
+      const hint = checkUpdateFailHint(page.failCode)
+      return {
+        ok: false,
+        code: page.failCode,
+        message: hint?.message || page.failMessage || FAIL_CODE_ZH[page.failCode],
+      }
+    }
+    const chapters: CatalogChapter[] =
+      page.ok && page.bootstrap && page.bootstrap.chapters.length > 0
+        ? page.bootstrap.chapters
+        : extractCatalog(catHtml, sourceUrl, catRule)
     if (chapters.length === 0) {
-      return { ok: false, message: '目录页无法访问或内容变化' }
+      return { ok: false, code: 'CatalogNotFound', message: '目录页无法访问或内容变化' }
     }
 
     const { added } = mergeIncomingChapters(book, chapters)

@@ -16,7 +16,6 @@ vi.mock('electron', () => {
     async executeJavaScript(): Promise<string> {
       return '<html></html>'
     }
-    stop(): void {}
     on(): this {
       return this
     }
@@ -54,7 +53,10 @@ vi.mock('electron', () => {
 import {
   cancelDownload,
   chapterNeedsDownload,
+  chapterRetryDelayMs,
   checkUpdate,
+  checkUpdateFailHint,
+  CHAPTER_RETRY_TIMES,
   DOWNLOAD_SESSION_PARTITION,
   followCatalogIfNeeded,
   getHiddenView,
@@ -65,6 +67,7 @@ import {
   setOwnerWindow,
   setTestHtmlLoader,
   retryFailed,
+  shouldRetryChapterFail,
   startDownload,
   startDownloadFromPage,
   waitForIdle,
@@ -342,6 +345,23 @@ describe('chapterNeedsDownload', () => {
     expect(chapterNeedsDownload('failed')).toBe(true)
     expect(chapterNeedsDownload('empty')).toBe(true)
     expect(chapterNeedsDownload('ready')).toBe(false)
+  })
+
+  it('retries only NavFailed / BodyEmpty and uses 1s/2s backoff outside tests', () => {
+    expect(shouldRetryChapterFail('NavFailed')).toBe(true)
+    expect(shouldRetryChapterFail('BodyEmpty')).toBe(true)
+    expect(shouldRetryChapterFail('Intercepted')).toBe(false)
+    expect(shouldRetryChapterFail('NeedLogin')).toBe(false)
+    expect(CHAPTER_RETRY_TIMES).toBe(2)
+    resetDownloadStateForTests()
+    expect(chapterRetryDelayMs(1, { testing: false })).toBe(1000)
+    expect(chapterRetryDelayMs(2, { testing: false })).toBe(2000)
+  })
+
+  it('uses zero retry delay when a test html loader is injected', () => {
+    setTestHtmlLoader(async () => '<html></html>')
+    expect(chapterRetryDelayMs(1)).toBe(0)
+    resetDownloadStateForTests()
   })
 })
 
@@ -1265,5 +1285,104 @@ describe('checkUpdate', () => {
     const accepted = await first
     expect(accepted.ok).toBe(true)
     await waitForIdle()
+  })
+
+  it('retries NavFailed twice then keeps the last failure', async () => {
+    let hits = 0
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      if (url.includes('1.html')) {
+        hits++
+        throw new Error('temporary nav fail')
+      }
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(hits).toBe(1 + CHAPTER_RETRY_TIMES)
+    const book = await loadBook(started.bookId!)
+    const first = book.chapters.find((c) => c.url?.includes('1.html'))
+    expect(first?.status).toBe('failed')
+    expect(first?.failCode).toBe('NavFailed')
+    expect(first?.failMessage).toMatch(/temporary nav fail/)
+  })
+
+  it('recovers a NavFailed chapter on the last retry', async () => {
+    let hits = 0
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      if (url.includes('1.html')) {
+        hits++
+        if (hits < 1 + CHAPTER_RETRY_TIMES) throw new Error('flaky')
+      }
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(hits).toBe(1 + CHAPTER_RETRY_TIMES)
+    const book = await loadBook(started.bookId!)
+    expect(book.chapters.find((c) => c.url?.includes('1.html'))?.status).toBe('ready')
+  })
+
+  it('does not retry Intercepted chapter pages', async () => {
+    let hits = 0
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      if (url.includes('1.html')) {
+        hits++
+        return interceptedHtml()
+      }
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(hits).toBe(1)
+    const book = await loadBook(started.bookId!)
+    expect(book.chapters.find((c) => c.url?.includes('1.html'))?.failCode).toBe('Intercepted')
+  })
+
+  it('returns NeedLogin / Intercepted codes so the library can send the user to browse', async () => {
+    expect(checkUpdateFailHint('NeedLogin')).toEqual({
+      goBrowse: true,
+      message: '需要登录后才能看，请先到浏览页登录再检查更新',
+    })
+    expect(checkUpdateFailHint('Intercepted')).toEqual({
+      goBrowse: true,
+      message: '目录页被拦截或验证，请先到浏览页打开该站后再试',
+    })
+    expect(checkUpdateFailHint('CatalogNotFound')).toBeNull()
+
+    const { bookId } = await seedSixChapterBook()
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('login-wall.html')
+      return fixture('chapter.html')
+    })
+    const login = await checkUpdate(bookId)
+    expect(login.ok).toBe(false)
+    if (login.ok) return
+    expect(login.code).toBe('NeedLogin')
+    expect(login.message).toMatch(/登录/)
+
+    loadedUrls.length = 0
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('intercepted.html')
+      return fixture('chapter.html')
+    })
+    const blocked = await checkUpdate(bookId)
+    expect(blocked.ok).toBe(false)
+    if (blocked.ok) return
+    expect(blocked.code).toBe('Intercepted')
+    expect(blocked.message).toMatch(/拦截|验证/)
   })
 })
