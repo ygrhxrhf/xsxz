@@ -6,20 +6,28 @@ import {
   getBook,
   readChapter,
   deleteBook,
+  listTrash,
+  restoreFromTrash,
+  purgeTrash,
   setProgress,
   updateChapterBody,
   setLibraryPath,
   readSummaries,
   writeChapterSummary,
+  readCharacterCard,
+  writeCharacterCard,
   assertImportable,
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { getSettings, updateSettings, getApiKey } from './settings'
-import { startDownload, cancelDownload, retryFailed, checkUpdate, setOwnerWindow, setBrowseView } from './download'
+import { startDownload, cancelDownload, retryFailed, checkUpdate, checkAllUpdates, cancelCheckAll, setOwnerWindow, setBrowseView } from './download'
 import { listSiteRules, upsertSiteRule, removeSiteRule } from './siteRules'
 import { exportBook } from './exportBook'
-import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters, testConnection } from './ai'
+import { searchInBook } from './search'
+import { createBackup, restoreBackup } from './backup'
+import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
+import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -181,6 +189,15 @@ function registerIpc(): void {
     })
     return { filePaths: result.filePaths }
   })
+  ipcMain.handle('dialog.openZip', async () => {
+    if (!mainWindow) return { filePaths: [] }
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择书库备份文件',
+      filters: [{ name: '书库备份', extensions: ['zip'] }],
+      properties: ['openFile'],
+    })
+    return { filePaths: result.filePaths }
+  })
   ipcMain.handle('dialog.openDirectory', async () => {
     if (!mainWindow) return { filePaths: [] }
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -215,7 +232,31 @@ function registerIpc(): void {
       await deleteBook(bookId)
       return { ok: true }
     } catch (e: unknown) {
-      return { ok: false, message: String(e) }
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('library.listTrash', async () => {
+    try {
+      const items = await listTrash()
+      return { ok: true, items }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('library.restoreTrash', async (_e, { name }: { name: string }) => {
+    try {
+      await restoreFromTrash(name)
+      return { ok: true }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('library.purgeTrash', async (_e, payload?: { name?: string }) => {
+    try {
+      const purged = await purgeTrash(payload?.name)
+      return { ok: true, purged }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
   ipcMain.handle('library.import', async (_e, { filePath }: { filePath: string }) => {
@@ -255,6 +296,71 @@ function registerIpc(): void {
       }
     },
   )
+  ipcMain.handle('library.searchInBook', async (_e, { bookId, query }: { bookId: string; query: string }) => {
+    try {
+      const hits = await searchInBook(bookId, query || '')
+      return { ok: true, hits }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('backup.create', async (_e, args: { destDir: string }) => {
+    try {
+      return await createBackup(args.destDir)
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('backup.restore', async (_e, args: { zipPath: string }) => {
+    try {
+      return await restoreBackup(args.zipPath)
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('annotations.list', async (_e, { bookId }: { bookId: string }) => {
+    try {
+      return { ok: true, items: await listAnnotations(bookId) }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle(
+    'annotations.add',
+    async (_e, draft: import('../shared/types').Annotation) => {
+      try {
+        const item = await addAnnotation(draft)
+        return { ok: true, item }
+      } catch (e: unknown) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  )
+  ipcMain.handle(
+    'annotations.update',
+    async (
+      _e,
+      args: { bookId: string; annotationId: string; patch: import('../shared/types').AnnotationUpdate },
+    ) => {
+      try {
+        const item = await updateAnnotation(args.bookId, args.annotationId, args.patch)
+        if (!item) return { ok: false, message: '标记不存在' }
+        return { ok: true, item }
+      } catch (e: unknown) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  )
+  ipcMain.handle('annotations.remove', async (_e, args: { bookId: string; annotationId: string }) => {
+    try {
+      await removeAnnotation(args.bookId, args.annotationId)
+      return { ok: true }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
 
   ipcMain.handle('download.start', async () => startDownload())
   ipcMain.handle('download.cancel', async (_e, { bookId }: { bookId?: string }) => {
@@ -263,6 +369,11 @@ function registerIpc(): void {
   })
   ipcMain.handle('download.retryFailed', async (_e, { bookId }: { bookId: string }) => retryFailed(bookId))
   ipcMain.handle('download.checkUpdate', (_e, { bookId }: { bookId: string }) => checkUpdate(bookId))
+  ipcMain.handle('download.checkAll', () => checkAllUpdates())
+  ipcMain.handle('download.cancelCheckAll', () => {
+    cancelCheckAll()
+    return { ok: true }
+  })
 
   ipcMain.handle('siteRules.list', async () => {
     const rules = await listSiteRules()
@@ -402,6 +513,71 @@ function registerIpc(): void {
       }
     },
   )
+  ipcMain.handle('ai.characterCard', async (_e, { bookId, uptoChapterId }: { bookId: string; uptoChapterId: string }) => {
+    try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const book = await getBook(bookId)
+      if (!book.chapters.some((c) => c.id === uptoChapterId)) {
+        return { ok: false, message: '章节不存在' }
+      }
+      // 材料红线：夹紧到已读进度，未读章绝不进提示词
+      const progressChapterId = book.progress?.chapterId ?? null
+      const cutoff = clampSummarizeChapters(book.chapters, uptoChapterId, progressChapterId)
+      if (cutoff.length === 0) {
+        return { ok: false, message: '还没有已读章节，先读几章再生成人物卡' }
+      }
+      const cutoffIds = new Set(cutoff.map((c) => c.id))
+      const cutIdx = Math.max(...book.chapters.map((c, i) => (cutoffIds.has(c.id) ? i : -1)))
+      const catalogTitles = book.chapters.slice(0, cutIdx + 1).map((c) => c.title)
+      const stored = await readSummaries(bookId)
+      const chapterSummaries = book.chapters
+        .slice(0, cutIdx + 1)
+        .map((c) => ({ title: c.title, text: stored.byChapter[c.id] || '' }))
+        .filter((s) => s.text)
+      const recentBodies: Array<{ title: string; body: string }> = []
+      for (const ch of cutoff.slice(-3)) {
+        try {
+          const file = await readChapter(bookId, ch.id)
+          if (file.body) recentBodies.push({ title: ch.title, body: file.body })
+        } catch {
+          /* skip */
+        }
+      }
+      const raw = await generateCharacterCard(
+        { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+        {
+          bookTitle: book.title,
+          uptoChapterTitle: book.chapters[cutIdx]?.title || '',
+          catalogTitles,
+          chapterSummaries,
+          recentBodies,
+        },
+      )
+      const parsed = parseCharacterCard(raw)
+      const card = {
+        version: 1 as const,
+        uptoChapterId,
+        characters: parsed?.characters ?? [],
+        foreshadows: parsed?.foreshadows ?? [],
+        raw,
+        updatedAt: new Date().toISOString(),
+      }
+      await writeCharacterCard(bookId, card)
+      return { ok: true, card }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('ai.getCharacterCard', async (_e, { bookId }: { bookId: string }) => {
+    try {
+      const card = await readCharacterCard(bookId)
+      return { ok: true, card }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
 }
 
 app.setName('spbf')

@@ -1,8 +1,20 @@
 import { app, safeStorage } from 'electron'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { ReaderPrefs, Settings } from '../shared/types'
-import { DEFAULT_LIBRARY_PATH, DEFAULT_READER_PREFS, DEFAULT_AI_PLACEHOLDER } from '../shared/types'
+import type { AppearancePrefs, ReaderPrefs, Settings, Skin, TtsPrefs } from '../shared/types'
+import {
+  DEFAULT_APPEARANCE_PREFS,
+  DEFAULT_LIBRARY_PATH,
+  DEFAULT_READER_PREFS,
+  DEFAULT_TTS_PREFS,
+  DEFAULT_AI_PLACEHOLDER,
+} from '../shared/types'
+
+const SKINS: readonly Skin[] = ['sakura', 'minimal']
+
+function readSkin(value: unknown): Skin {
+  return SKINS.includes(value as Skin) ? (value as Skin) : DEFAULT_APPEARANCE_PREFS.skin
+}
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
@@ -39,6 +51,8 @@ export async function getApiKey(): Promise<string> {
 export async function getSettings(): Promise<Settings> {
   const raw = await loadRaw()
   const reader = (raw.reader as Partial<ReaderPrefs>) || {}
+  const tts = (raw.tts as Partial<TtsPrefs>) || {}
+  const appearance = (raw.appearance as Partial<AppearancePrefs>) || {}
   return {
     libraryPath:
       typeof raw.libraryPath === 'string' && raw.libraryPath.trim()
@@ -51,6 +65,14 @@ export async function getSettings(): Promise<Settings> {
       fontSize: typeof reader.fontSize === 'number' ? reader.fontSize : DEFAULT_READER_PREFS.fontSize,
       lineHeight: typeof reader.lineHeight === 'number' ? reader.lineHeight : DEFAULT_READER_PREFS.lineHeight,
       nightMode: typeof reader.nightMode === 'boolean' ? reader.nightMode : DEFAULT_READER_PREFS.nightMode,
+    },
+    tts: {
+      rate: typeof tts.rate === 'number' ? tts.rate : DEFAULT_TTS_PREFS.rate,
+      autoNextChapter:
+        typeof tts.autoNextChapter === 'boolean' ? tts.autoNextChapter : DEFAULT_TTS_PREFS.autoNextChapter,
+    },
+    appearance: {
+      skin: readSkin(appearance.skin),
     },
   }
 }
@@ -72,6 +94,16 @@ export async function updateSettings(update: Partial<Settings> & { apiKey?: stri
   if (update.reader) {
     const prev = (raw.reader as Record<string, unknown>) || {}
     raw.reader = { ...prev, ...update.reader }
+  }
+  if (update.tts) {
+    const prev = (raw.tts as Record<string, unknown>) || {}
+    raw.tts = { ...prev, ...update.tts }
+  }
+  if (update.appearance) {
+    const prev = (raw.appearance as Record<string, unknown>) || {}
+    const next = { ...prev, ...update.appearance }
+    if (typeof next.skin === 'string') next.skin = readSkin(next.skin)
+    raw.appearance = next
   }
   await saveRaw(raw)
   return getSettings()

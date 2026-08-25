@@ -5,8 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   assertImportable,
   bookIdFromUrl,
+  deleteBook,
+  listTrash,
   mergeIncomingChapters,
   normalizeChapterUrl,
+  purgeTrash,
+  restoreFromTrash,
   setLibraryPath,
   createBookFromBootstrap,
   bookExists,
@@ -462,5 +466,98 @@ describe('setLibraryPath + createBookFromBootstrap', () => {
     const after = await loadBook('d_prog')
     expect(after.chapters[0].status).toBe('ready')
     expect(after.progress?.chapterId).toBe('c0001')
+  })
+})
+
+describe('trash（回收站）', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-trash-'))
+    await setLibraryPath(dir)
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function seedBook(id: string, title: string) {
+    const created = await createBookFromBootstrap({
+      bookId: id,
+      title,
+      author: '作者甲',
+      sourceUrl: `https://example.com/${id}/`,
+      sourceHost: 'example.com',
+      importType: 'download',
+      chapterTitles: ['第一章', '第二章'],
+      chapterUrls: [`https://example.com/${id}/1.html`, `https://example.com/${id}/2.html`],
+    })
+    created.chapters[0].status = 'ready'
+    await saveBook(created)
+    return created
+  }
+
+  it('deleteBook moves the book into __trash__ instead of removing it', async () => {
+    await seedBook('d_trash_a', '要删的书')
+    expect((await listBooks()).map((b) => b.id)).toContain('d_trash_a')
+
+    await deleteBook('d_trash_a')
+
+    expect(await bookExists('d_trash_a')).toBe(false)
+    expect((await listBooks()).map((b) => b.id)).not.toContain('d_trash_a')
+
+    const items = await listTrash()
+    expect(items).toHaveLength(1)
+    expect(items[0].bookId).toBe('d_trash_a')
+    expect(items[0].title).toBe('要删的书')
+    expect(items[0].chapterCount).toBe(2)
+    expect(new Date(items[0].trashedAt).toString()).not.toBe('Invalid Date')
+  })
+
+  it('restoreFromTrash puts the same book back with its data intact', async () => {
+    await seedBook('d_trash_b', '还原的书')
+    await deleteBook('d_trash_b')
+    const items = await listTrash()
+
+    await restoreFromTrash(items[0].name)
+
+    expect(await bookExists('d_trash_b')).toBe(true)
+    const back = await loadBook('d_trash_b')
+    expect(back.title).toBe('还原的书')
+    expect(back.chapters[0].status).toBe('ready')
+    expect((await listTrash())).toHaveLength(0)
+    expect((await listBooks()).map((b) => b.id)).toContain('d_trash_b')
+  })
+
+  it('restore refuses when a live book already occupies the id', async () => {
+    await seedBook('d_trash_c', '第一份')
+    await deleteBook('d_trash_c')
+    await seedBook('d_trash_c', '第二份')
+    const items = await listTrash()
+
+    await expect(restoreFromTrash(items[0].name)).rejects.toThrow('无法还原')
+    // 原条目仍在回收站
+    expect(await listTrash()).toHaveLength(1)
+  })
+
+  it('purgeTrash removes one entry or empties everything', async () => {
+    await seedBook('d_trash_d', '甲')
+    await seedBook('d_trash_e', '乙')
+    await deleteBook('d_trash_d')
+    await deleteBook('d_trash_e')
+    const items = await listTrash()
+    expect(items).toHaveLength(2)
+
+    await purgeTrash(items[0].name)
+    expect(await listTrash()).toHaveLength(1)
+
+    const purged = await purgeTrash()
+    expect(purged).toBe(1)
+    expect(await listTrash()).toHaveLength(0)
+  })
+
+  it('rejects illegal trash names (path traversal)', async () => {
+    await expect(restoreFromTrash('../escape')).rejects.toThrow('不合法')
+    await expect(purgeTrash('..\\escape')).rejects.toThrow('不合法')
   })
 })

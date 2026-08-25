@@ -79,6 +79,16 @@ export interface BookListItem {
   updatedAt: string
 }
 
+/** 回收站条目（<libraryPath>/__trash__/<bookId>-<删除时间毫秒>）。 */
+export interface TrashItem {
+  name: string
+  bookId: string
+  title: string
+  author: string
+  chapterCount: number
+  trashedAt: string
+}
+
 export interface CatalogChapter {
   title: string
   url: string
@@ -105,6 +115,89 @@ export interface DownloadProgress {
   lastError?: string
 }
 
+/** 批量检查更新：逐本进度推送（download.checkAll.progress） */
+export interface CheckAllProgress {
+  current: number
+  total: number
+  bookId: string
+  title: string
+}
+
+export type CheckOneResult =
+  | { ok: true; bookId: string; title: string; added: number }
+  | { ok: false; bookId: string; title: string; message: string }
+
+/** download.checkAll 的聚合结果。checked = 已尝试的本数；total = 候选总本数。 */
+export interface CheckAllResult {
+  ok: boolean
+  message?: string
+  total: number
+  checked: number
+  booksWithUpdates: number
+  results: CheckOneResult[]
+}
+
+/** 本书内全文搜索的单章命中 */
+export interface BookSearchHit {
+  chapterId: string
+  chapterIndex: number
+  chapterTitle: string
+  /** 本章命中次数 */
+  count: number
+  /** 首个命中摘录（含前后约 20 字） */
+  excerpt: string
+  /** 首个命中所在段落下标 */
+  paraIndex: number
+}
+
+/**
+ * 书签 / 划线笔记。坐标以「规范化正文」为准：
+ * 章节正文按空行切段、丢弃空段后用 '\n\n' 连接的文本。
+ */
+export interface Annotation {
+  id: string
+  bookId: string
+  chapterId: string
+  kind: 'highlight' | 'bookmark'
+  start: number
+  end: number
+  /** 原文片段，用于漂移校正；书签为空串 */
+  excerpt: string
+  note?: string
+  createdAt: string
+}
+
+export interface AnnotationUpdate {
+  note?: string
+  /** 漂移校正后的新坐标（成对提供才生效） */
+  start?: number
+  end?: number
+}
+
+export interface CharacterEntry {
+  name: string
+  role?: string
+  relations?: string
+  status?: string
+}
+
+export interface ForeshadowEntry {
+  desc: string
+  where?: string
+  open?: boolean
+}
+
+/** ai/characters.json 的内容；材料红线同摘要：只用已读部分 */
+export interface CharacterCard {
+  version: number
+  uptoChapterId?: string
+  characters: CharacterEntry[]
+  foreshadows: ForeshadowEntry[]
+  /** 模型原始返回，JSON 解析失败时兜底展示 */
+  raw: string
+  updatedAt: string
+}
+
 export interface BrowseState {
   url: string
   title: string
@@ -119,6 +212,22 @@ export interface ReaderPrefs {
   nightMode: boolean
 }
 
+/** 朗读偏好（Web speechSynthesis） */
+export interface TtsPrefs {
+  /** 语速，0.5–2 */
+  rate: number
+  /** 一章读完后自动跳下一章继续 */
+  autoNextChapter: boolean
+}
+
+/** 界面皮肤：夜樱 / 简约 */
+export type Skin = 'sakura' | 'minimal'
+
+/** 外观偏好 */
+export interface AppearancePrefs {
+  skin: Skin
+}
+
 export interface Settings {
   libraryPath: string
   baseUrl: string
@@ -126,6 +235,8 @@ export interface Settings {
   /** 渲染进程只拿是否已配置，不回传明文 */
   apiKeyConfigured: boolean
   reader: ReaderPrefs
+  tts: TtsPrefs
+  appearance: AppearancePrefs
 }
 
 export interface SettingsUpdate {
@@ -135,6 +246,8 @@ export interface SettingsUpdate {
   /** 空字符串表示清除 */
   apiKey?: string
   reader?: Partial<ReaderPrefs>
+  tts?: Partial<TtsPrefs>
+  appearance?: Partial<AppearancePrefs>
 }
 
 /** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */
@@ -168,6 +281,15 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   fontSize: 18,
   lineHeight: 1.8,
   nightMode: false,
+}
+
+export const DEFAULT_TTS_PREFS: TtsPrefs = {
+  rate: 1,
+  autoNextChapter: true,
+}
+
+export const DEFAULT_APPEARANCE_PREFS: AppearancePrefs = {
+  skin: 'sakura',
 }
 
 export const DEFAULT_AI_PLACEHOLDER = {

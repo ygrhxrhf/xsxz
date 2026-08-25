@@ -260,3 +260,95 @@ export async function testConnection(config: AiConfig): Promise<string> {
     { role: 'user', content: '只回复 ok' },
   ])
 }
+
+// ---------------------------------------------------------------------------
+// 人物卡 / 伏笔追踪
+// ---------------------------------------------------------------------------
+
+export interface CharacterMaterial {
+  bookTitle: string
+  uptoChapterTitle: string
+  /** 截至当前章的目录标题（不含未读） */
+  catalogTitles: string[]
+  /** 已读章节摘要（chapterId → text 中已保存的部分） */
+  chapterSummaries: Array<{ title: string; text: string }>
+  /** 最近几章已读正文节选 */
+  recentBodies: Array<{ title: string; body: string }>
+}
+
+export function buildCharacterCardPrompt(m: CharacterMaterial): string {
+  const catalog = m.catalogTitles.join('、')
+  const summaries = m.chapterSummaries.map((s) => `【${s.title}】${s.text}`).join('\n')
+  const bodies = m.recentBodies
+    .map((b) => `【${b.title}】\n${b.body.slice(0, 1200)}`)
+    .join('\n\n')
+
+  return `你是小说阅读助手。请根据以下**已读部分**的材料整理「人物卡 + 伏笔追踪」，帮助读者回忆并跟进剧情。只使用已读内容，不要猜测或引用未读章节。
+
+书名：《${m.bookTitle}》
+已读到：${m.uptoChapterTitle}
+截至当前的目录：${catalog}
+${summaries ? `\n已读章摘要：\n${summaries}\n` : ''}
+${bodies ? `\n最近几章正文节选：\n${bodies}\n` : ''}
+请只返回一个 JSON 对象，不要用 markdown 代码块包裹，格式：
+{"characters":[{"name":"人名","role":"主角/配角/反派等","relations":"与其他人物的关系","status":"目前状态"}],"foreshadows":[{"desc":"伏笔描述","where":"首次出现的章节标题","open":true}]}
+characters 按重要程度排序；foreshadows 里 open=true 表示尚未回收。某类为空就给空数组。`
+}
+
+export interface ParsedCharacterCard {
+  characters: Array<{ name: string; role?: string; relations?: string; status?: string }>
+  foreshadows: Array<{ desc: string; where?: string; open?: boolean }>
+}
+
+/** 解析模型返回；JSON 不合法时返回 null（调用方保留 raw 兜底展示）。 */
+export function parseCharacterCard(text: string): ParsedCharacterCard | null {
+  const raw = text.trim()
+  if (!raw) return null
+  const stripped = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
+
+  const candidates = [stripped]
+  const s = raw.indexOf('{')
+  const e = raw.lastIndexOf('}')
+  if (s >= 0 && e > s) candidates.push(raw.slice(s, e + 1))
+
+  for (const c of candidates) {
+    try {
+      const obj = JSON.parse(c) as Record<string, unknown>
+      const characters = normalizeEntries(obj.characters, (x) => ({
+        name: String(x.name ?? '').trim(),
+        role: optStr(x.role),
+        relations: optStr(x.relations),
+        status: optStr(x.status),
+      })).filter((x) => x.name)
+      const foreshadows = normalizeEntries(obj.foreshadows, (x) => ({
+        desc: String(x.desc ?? x.description ?? '').trim(),
+        where: optStr(x.where),
+        open: typeof x.open === 'boolean' ? x.open : true,
+      })).filter((x) => x.desc)
+      if (!Array.isArray(obj.characters) && !Array.isArray(obj.foreshadows)) continue
+      return { characters, foreshadows }
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return null
+}
+
+function optStr(v: unknown): string | undefined {
+  const s = typeof v === 'string' ? v.trim() : ''
+  return s || undefined
+}
+
+function normalizeEntries<T>(value: unknown, map: (x: Record<string, unknown>) => T): T[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === 'object').map(map)
+}
+
+export async function generateCharacterCard(
+  config: AiConfig,
+  material: CharacterMaterial,
+): Promise<string> {
+  return chatCompletion(config.baseUrl, config.apiKey, config.model, [
+    { role: 'user', content: buildCharacterCardPrompt(material) },
+  ])
+}

@@ -7,16 +7,20 @@
 ```
 <libraryPath>\
   index.json
+  __tmp__\
+  __trash__\               # 回收站：删除的书整目录移入 <bookId>-<删除毫秒>；不自动清理
   <bookId>\
     book.json
+    annotations.json       # 书签 / 划线（见下）
     origin\                 # 导入时保留的源文件
     chapters\
       0001.json
     ai\
       summaries.json
+      characters.json      # AI 人物卡 / 伏笔追踪（见下）
 ```
 
-`library/` 目录（默认路径）已在 `.gitignore`。
+`library/` 目录（默认路径）已在 `.gitignore`。书库备份 zip 不含 `__trash__` / `__tmp__`。
 
 ---
 
@@ -98,6 +102,31 @@
 
 ---
 
+## annotations.json
+
+对齐 `Annotation[]`（`{ version: 1, items: [...] }`）。书签与划线共用；坐标以「规范化正文」（按空行切段、丢空段后 `\n\n` 连接）为准，划线必带 `excerpt` 供漂移校正。缺省文件视为无标记。
+
+---
+
+## ai/characters.json
+
+AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
+
+```json
+{
+  "version": 1,
+  "uptoChapterId": "c0012",
+  "characters": [{ "name": "张若尘", "role": "主角", "relations": "…", "status": "…" }],
+  "foreshadows": [{ "desc": "…", "where": "第三章", "open": true }],
+  "raw": "模型原始返回（解析失败时兜底展示）",
+  "updatedAt": "ISO 8601"
+}
+```
+
+材料红线与摘要一致：只允许已读进度之前的章节进入提示词。缺省文件视为无人物卡。
+
+---
+
 ## 书身份 / 去重
 
 **下载**
@@ -130,6 +159,13 @@
     "fontSize": 18,
     "lineHeight": 1.8,
     "nightMode": false
+  },
+  "tts": {
+    "rate": 1,
+    "autoNextChapter": true
+  },
+  "appearance": {
+    "skin": "sakura"
   }
 }
 ```
@@ -137,6 +173,7 @@
 - API Key **不得**明文写入书库或 git。
 - `settings.get` IPC 不返回明文，只返回 `apiKeyConfigured`。
 - `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
+- `appearance.skin` 取值 `sakura`（夜樱，默认）/ `minimal`（简约），非法值回退默认。
 
 ---
 

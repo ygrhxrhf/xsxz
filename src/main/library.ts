@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile, readdir, rm, stat, cp } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, readdir, rm, rename, stat, cp } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import type {
@@ -12,6 +13,8 @@ import type {
   FailCode,
   ImportType,
   ReadingProgress,
+  TrashItem,
+  CharacterCard,
 } from '../shared/types'
 import { DEFAULT_LIBRARY_PATH } from '../shared/types'
 import { canonicalizeUrl } from '../shared/urlHash'
@@ -92,7 +95,8 @@ function applyOverallStatus(book: Book): void {
 /** Serialize load-modify-save so setProgress cannot revert ready promotion. */
 const bookLocks = new Map<string, Promise<unknown>>()
 
-async function withBookLock<T>(bookId: string, fn: () => Promise<T>): Promise<T> {
+/** Per-book serial lock; shared with the annotations store in the same dir. */
+export async function withBookLock<T>(bookId: string, fn: () => Promise<T>): Promise<T> {
   const prev = bookLocks.get(bookId) ?? Promise.resolve()
   let release!: () => void
   const mine = new Promise<void>((resolve) => {
@@ -228,6 +232,28 @@ export async function ensureLibrary(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// trash（回收站）
+// ---------------------------------------------------------------------------
+
+function trashDir(): string {
+  return join(getLibraryPath(), '__trash__')
+}
+
+/** 回收站条目名固定为 `<bookId>-<删除时间毫秒>`；不合法返回 null。 */
+function safeTrashName(name: string): string | null {
+  return /^[A-Za-z0-9_]+-\d+$/.test(name) ? name : null
+}
+
+function splitTrashName(name: string): { bookId: string; trashedAt: string } | null {
+  const idx = name.lastIndexOf('-')
+  if (idx <= 0) return null
+  const ms = Number(name.slice(idx + 1))
+  const bookId = name.slice(0, idx)
+  if (!Number.isFinite(ms)) return null
+  return { bookId, trashedAt: new Date(ms).toISOString() }
+}
+
+// ---------------------------------------------------------------------------
 // index (cache)
 // ---------------------------------------------------------------------------
 
@@ -313,8 +339,80 @@ export async function getBook(bookId: string): Promise<Book> {
 }
 
 export async function deleteBook(bookId: string): Promise<void> {
-  await rm(bookDir(bookId), { recursive: true, force: true })
+  const src = bookDir(bookId)
+  try {
+    await stat(join(src, 'book.json'))
+  } catch {
+    await rebuildIndex()
+    return
+  }
+  await mkdir(trashDir(), { recursive: true })
+  const dest = join(trashDir(), `${bookId}-${Date.now()}`)
+  await rename(src, dest)
   await rebuildIndex()
+}
+
+export async function listTrash(): Promise<TrashItem[]> {
+  let entries: Dirent[]
+  try {
+    entries = await readdir(trashDir(), { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const items: TrashItem[] = []
+  for (const ent of entries) {
+    if (!ent.isDirectory() || !safeTrashName(ent.name)) continue
+    const parts = splitTrashName(ent.name)
+    if (!parts) continue
+    try {
+      const raw = await readFile(join(trashDir(), ent.name, 'book.json'), 'utf-8')
+      const book = JSON.parse(raw) as Book
+      items.push({
+        name: ent.name,
+        bookId: parts.bookId,
+        title: book.title || '(未命名)',
+        author: book.author || '',
+        chapterCount: Array.isArray(book.chapters) ? book.chapters.length : 0,
+        trashedAt: parts.trashedAt,
+      })
+    } catch {
+      /* skip corrupt trash entry */
+    }
+  }
+  items.sort((a, b) => b.trashedAt.localeCompare(a.trashedAt))
+  return items
+}
+
+export async function restoreFromTrash(name: string): Promise<void> {
+  const safe = safeTrashName(name)
+  if (!safe) throw new Error('回收站条目名不合法')
+  const parts = splitTrashName(safe)
+  if (!parts) throw new Error('回收站条目名不合法')
+  if (await bookExists(parts.bookId)) {
+    throw new Error('书库中已存在这本书，无法还原')
+  }
+  await rename(join(trashDir(), safe), bookDir(parts.bookId))
+  await rebuildIndex()
+}
+
+export async function purgeTrash(name?: string): Promise<number> {
+  if (name) {
+    const safe = safeTrashName(name)
+    if (!safe) throw new Error('回收站条目名不合法')
+    await rm(join(trashDir(), safe), { recursive: true, force: true })
+    return 1
+  }
+  let count = 0
+  try {
+    const entries = await readdir(trashDir(), { withFileTypes: true })
+    for (const ent of entries) {
+      if (ent.isDirectory() && safeTrashName(ent.name)) count++
+    }
+  } catch {
+    return 0
+  }
+  await rm(trashDir(), { recursive: true, force: true })
+  return count
 }
 
 export async function readChapter(bookId: string, chapterId: string): Promise<ChapterFile> {
@@ -390,6 +488,23 @@ export async function writeChapterSummary(bookId: string, chapterId: string, tex
   data.byChapter[chapterId] = text
   data.updatedAt = now()
   await writeFile(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), 'utf-8')
+}
+
+export async function readCharacterCard(bookId: string): Promise<CharacterCard | null> {
+  try {
+    return JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'characters.json'), 'utf-8')) as CharacterCard
+  } catch {
+    return null
+  }
+}
+
+export async function writeCharacterCard(bookId: string, card: CharacterCard): Promise<void> {
+  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+  await writeFile(
+    join(bookDir(bookId), 'ai', 'characters.json'),
+    JSON.stringify({ ...card, version: 1, updatedAt: now() }, null, 2),
+    'utf-8',
+  )
 }
 
 // ---------------------------------------------------------------------------

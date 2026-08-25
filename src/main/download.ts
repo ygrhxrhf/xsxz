@@ -5,6 +5,7 @@ import {
   bookExists,
   bookIdFromUrl,
   createBookFromBootstrap,
+  listBooks,
   loadBook,
   markChapterStatus,
   mergeIncomingChapters,
@@ -12,7 +13,17 @@ import {
   saveBook,
   writeChapterFile,
 } from './library'
-import type { CatalogChapter, ChapterStatus, DownloadProgress, ExtractBootstrap, FailCode, SiteRule } from '../shared/types'
+import type {
+  CatalogChapter,
+  ChapterStatus,
+  CheckAllProgress,
+  CheckAllResult,
+  CheckOneResult,
+  DownloadProgress,
+  ExtractBootstrap,
+  FailCode,
+  SiteRule,
+} from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 import { isPathLikeHash } from '../shared/urlHash'
 
@@ -30,6 +41,8 @@ export const HYDRATE_TIMEOUT_MS = 12_000
 /** Extra attempts after the first try, only for NavFailed / BodyEmpty. */
 export const CHAPTER_RETRY_TIMES = 2
 const CHAPTER_RETRY_BASE_MS = 1_000
+/** 批量检查更新：两本书之间的间隔，降低对站点的请求压力。 */
+export const CHECK_ALL_GAP_MS = 1_000
 
 interface ActiveDownload {
   bookId: string
@@ -51,6 +64,8 @@ const active = new Map<string, ActiveDownload>()
 let testHtmlLoader: HtmlLoader | null = null
 const runningJobs = new Set<Promise<void>>()
 const cancelWaiters = new Set<() => void>()
+let checkAllCancelled = false
+let checkAllRunning = false
 
 export function chapterNeedsDownload(status: ChapterStatus): boolean {
   return status === 'pending' || status === 'failed' || status === 'empty'
@@ -125,6 +140,8 @@ export function resetDownloadStateForTests(): void {
   hiddenView = null
   browseView = null
   ownerWindow = null
+  checkAllCancelled = false
+  checkAllRunning = false
 }
 
 export async function waitForIdle(timeoutMs = 15_000): Promise<void> {
@@ -737,6 +754,83 @@ export async function checkUpdate(
     const message = e instanceof Error ? e.message : String(e)
     return { ok: false, message: message || '检查更新失败' }
   }
+}
+
+function emitCheckAllProgress(p: CheckAllProgress): void {
+  ownerWindow?.webContents.send('download.checkAll.progress', p)
+}
+
+/**
+ * 全部检查更新：对书库里每本带 sourceUrl 的下载书逐本串行调 checkUpdate。
+ * 每本完成后等下载队列空闲再继续，两本之间留 CHECK_ALL_GAP_MS 间隔；
+ * 中途 cancelCheckAll 只影响尚未检查的书。
+ */
+export async function checkAllUpdates(): Promise<CheckAllResult> {
+  if (checkAllRunning) {
+    return { ok: false, message: '已有批量检查更新在进行中', total: 0, checked: 0, booksWithUpdates: 0, results: [] }
+  }
+  if (active.size > 0) {
+    return {
+      ok: false,
+      message: '已有下载任务在进行中，请等待完成或取消后再试',
+      total: 0,
+      checked: 0,
+      booksWithUpdates: 0,
+      results: [],
+    }
+  }
+  checkAllRunning = true
+  checkAllCancelled = false
+  try {
+    const items = await listBooks()
+    const candidates = []
+    for (const item of items) {
+      if (item.importType !== 'download') continue
+      try {
+        const b = await loadBook(item.id)
+        if ((b.sourceUrl || '').trim()) candidates.push(b)
+      } catch {
+        /* skip corrupt book */
+      }
+    }
+
+    const total = candidates.length
+    const results: CheckOneResult[] = []
+    let checked = 0
+    let booksWithUpdates = 0
+
+    for (let i = 0; i < candidates.length; i++) {
+      if (checkAllCancelled) break
+      const b = candidates[i]
+      emitCheckAllProgress({ current: i + 1, total, bookId: b.id, title: b.title })
+      const res = await checkUpdate(b.id)
+      checked++
+      if (res.ok) {
+        if (res.added > 0) booksWithUpdates++
+        results.push({ ok: true, bookId: res.bookId, title: b.title, added: res.added })
+        try {
+          await waitForIdle()
+        } catch {
+          results.push({ ok: false, bookId: b.id, title: b.title, message: '等待该书章节下载完成超时，批量检查已停止' })
+          break
+        }
+      } else {
+        results.push({ ok: false, bookId: b.id, title: b.title, message: res.message })
+      }
+      if (i < candidates.length - 1 && !checkAllCancelled && !testHtmlLoader) {
+        await delay(CHECK_ALL_GAP_MS)
+      }
+    }
+    return { ok: true, total, checked, booksWithUpdates, results }
+  } finally {
+    checkAllRunning = false
+  }
+}
+
+/** 停止批量检查：不再检查剩余的书；当前正在补章的那本也会被取消。 */
+export function cancelCheckAll(): void {
+  checkAllCancelled = true
+  cancelDownload()
 }
 
 export async function retryFailed(bookId: string): Promise<{ ok: boolean; message?: string }> {

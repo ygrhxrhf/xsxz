@@ -51,9 +51,11 @@ vi.mock('electron', () => {
 })
 
 import {
+  cancelCheckAll,
   cancelDownload,
   chapterNeedsDownload,
   chapterRetryDelayMs,
+  checkAllUpdates,
   checkUpdate,
   checkUpdateFailHint,
   CHAPTER_RETRY_TIMES,
@@ -1384,5 +1386,141 @@ describe('checkUpdate', () => {
     if (blocked.ok) return
     expect(blocked.code).toBe('Intercepted')
     expect(blocked.message).toMatch(/拦截|验证/)
+  })
+})
+
+
+describe('checkAllUpdates（全部检查更新）', () => {
+  let dir: string
+  const loadedUrls: string[] = []
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-dl-checkall-'))
+    await setLibraryPath(dir)
+    loadedUrls.length = 0
+    resetDownloadStateForTests()
+  })
+
+  afterEach(async () => {
+    resetDownloadStateForTests()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function seedBook(suffix: string): Promise<string> {
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), `https://example.com/${suffix}/index.html`)
+    if (!started.ok || !started.bookId) throw new Error(`seed ${suffix} failed`)
+    await waitForIdle()
+    loadedUrls.length = 0
+    return started.bookId
+  }
+
+  function serveUpdatedCatalog(): void {
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html')) return catalogWithSeventh()
+      return fixture('chapter.html')
+    })
+  }
+
+  it('updates every download book serially and aggregates results', async () => {
+    const a = await seedBook('alpha')
+    const b = await seedBook('beta')
+    serveUpdatedCatalog()
+
+    const res = await checkAllUpdates()
+
+    expect(res.ok).toBe(true)
+    expect(res.total).toBe(2)
+    expect(res.checked).toBe(2)
+    expect(res.booksWithUpdates).toBe(2)
+    expect(res.results).toHaveLength(2)
+    expect(res.results.every((r) => r.ok)).toBe(true)
+    for (const id of [a, b]) {
+      const book = await loadBook(id)
+      expect(book.chapters).toHaveLength(7)
+      expect(book.chapters[6].status).toBe('ready')
+    }
+  })
+
+  it('skips imported books and books without sourceUrl', async () => {
+    await createBookFromBootstrap({
+      bookId: 'i_txt_only',
+      title: '导入的书',
+      author: '',
+      importType: 'txt',
+      chapterTitles: ['第一章'],
+    })
+    const real = await seedBook('real')
+    serveUpdatedCatalog()
+
+    const res = await checkAllUpdates()
+
+    expect(res.total).toBe(1)
+    expect(res.checked).toBe(1)
+    expect(res.results).toHaveLength(1)
+    expect(res.results[0]).toMatchObject({ ok: true, bookId: real, added: 1 })
+  })
+
+  it('refuses while another download job holds the lock', async () => {
+    const bookId = await seedBook('lock')
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('7.html') || url.includes('6.html')) await gate
+      if (url.includes('index.html')) return catalogWithSeventh()
+      return fixture('chapter.html')
+    })
+    const first = checkUpdate(bookId)
+    await vi.waitFor(() => {
+      expect(loadedUrls.some((u) => u.includes('6.html') || u.includes('7.html'))).toBe(true)
+    })
+
+    const blocked = await checkAllUpdates()
+
+    expect(blocked.ok).toBe(false)
+    expect(blocked.message).toBe(LOCK_MSG)
+    release()
+    expect((await first).ok).toBe(true)
+    await waitForIdle()
+  })
+
+  it('cancelCheckAll stops before the remaining books', async () => {
+    await seedBook('one')
+    await seedBook('two')
+
+    let cancelFired = false
+    setOwnerWindow({
+      contentView: {
+        addChildView(): void {},
+        removeChildView(): void {},
+      },
+      webContents: {
+        send(channel: string): void {
+          if (channel === 'download.checkAll.progress' && !cancelFired) {
+            cancelFired = true
+            cancelCheckAll()
+          }
+        },
+      },
+    } as unknown as Parameters<typeof setOwnerWindow>[0])
+
+    serveUpdatedCatalog()
+    const res = await checkAllUpdates()
+
+    expect(cancelFired).toBe(true)
+    expect(res.total).toBe(2)
+    expect(res.checked).toBe(1)
+    expect(res.results[0].ok).toBe(true)
+    // 只补完第一本，另一本保持 6 章
+    const counts = (await listBooks()).map((x) => x.chapterCount).sort((a, b) => a - b)
+    expect(counts).toEqual([6, 7])
   })
 })

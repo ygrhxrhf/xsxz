@@ -23,6 +23,7 @@ const api = {
   dialog: {
     openFile: () => ipcRenderer.invoke('dialog.openFile') as Promise<{ filePaths: string[] }>,
     openDirectory: () => ipcRenderer.invoke('dialog.openDirectory') as Promise<{ filePaths: string[] }>,
+    openZip: () => ipcRenderer.invoke('dialog.openZip') as Promise<{ filePaths: string[] }>,
   },
   browse: {
     load: (url: string) => ipcRenderer.invoke('browse.load', { url }),
@@ -51,17 +52,66 @@ const api = {
       ipcRenderer.invoke('library.export', { bookId, format, destDir }) as Promise<
         { ok: true; path: string } | { ok: false; message: string }
       >,
+    searchInBook: (bookId: string, query: string) =>
+      ipcRenderer.invoke('library.searchInBook', { bookId, query }) as Promise<
+        { ok: true; hits: import('../shared/types').BookSearchHit[] } | { ok: false; message: string }
+      >,
+    listTrash: () =>
+      ipcRenderer.invoke('library.listTrash') as Promise<
+        { ok: true; items: import('../shared/types').TrashItem[] } | { ok: false; message: string }
+      >,
+    restoreTrash: (name: string) =>
+      ipcRenderer.invoke('library.restoreTrash', { name }) as Promise<{ ok: true } | { ok: false; message: string }>,
+    purgeTrash: (name?: string) =>
+      ipcRenderer.invoke('library.purgeTrash', { name }) as Promise<
+        { ok: true; purged: number } | { ok: false; message: string }
+      >,
   },
   download: {
     start: () => ipcRenderer.invoke('download.start'),
     cancel: (bookId?: string) => ipcRenderer.invoke('download.cancel', { bookId }),
     retryFailed: (bookId: string) => ipcRenderer.invoke('download.retryFailed', { bookId }),
     checkUpdate: (bookId: string) => ipcRenderer.invoke('download.checkUpdate', { bookId }),
+    checkAll: () =>
+      ipcRenderer.invoke('download.checkAll') as Promise<import('../shared/types').CheckAllResult>,
+    cancelCheckAll: () => ipcRenderer.invoke('download.cancelCheckAll') as Promise<{ ok: true }>,
     onProgress: (handler: (payload: DownloadProgress) => void) => on('download.progress', handler),
+    onCheckAllProgress: (handler: (payload: import('../shared/types').CheckAllProgress) => void) =>
+      on('download.checkAll.progress', handler),
   },
   settings: {
     get: () => ipcRenderer.invoke('settings.get') as Promise<Settings>,
     set: (update: SettingsUpdate) => ipcRenderer.invoke('settings.set', update) as Promise<Settings>,
+  },
+  backup: {
+    create: (destDir: string) =>
+      ipcRenderer.invoke('backup.create', { destDir }) as Promise<
+        { ok: true; path: string; files: number } | { ok: false; message: string }
+      >,
+    restore: (zipPath: string) =>
+      ipcRenderer.invoke('backup.restore', { zipPath }) as Promise<
+        { ok: true; books: number; files: number } | { ok: false; message: string }
+      >,
+  },
+  annotations: {
+    list: (bookId: string) =>
+      ipcRenderer.invoke('annotations.list', { bookId }) as Promise<
+        { ok: true; items: import('../shared/types').Annotation[] } | { ok: false; message: string }
+      >,
+    add: (draft: Omit<import('../shared/types').Annotation, 'id' | 'createdAt'>) =>
+      ipcRenderer.invoke('annotations.add', draft) as Promise<
+        { ok: true; item: import('../shared/types').Annotation } | { ok: false; message: string }
+      >,
+    update: (
+      bookId: string,
+      annotationId: string,
+      patch: import('../shared/types').AnnotationUpdate,
+    ) =>
+      ipcRenderer.invoke('annotations.update', { bookId, annotationId, patch }) as Promise<
+        { ok: true; item: import('../shared/types').Annotation } | { ok: false; message: string }
+      >,
+    remove: (bookId: string, annotationId: string) =>
+      ipcRenderer.invoke('annotations.remove', { bookId, annotationId }) as Promise<{ ok: true } | { ok: false; message: string }>,
   },
   siteRules: {
     list: () => ipcRenderer.invoke('siteRules.list') as Promise<{ rules: SiteRule[] }>,
@@ -81,6 +131,16 @@ const api = {
       ipcRenderer.invoke('ai.chat', { bookId, chapterId, messages }),
     test: (opts?: { baseUrl?: string; model?: string; apiKey?: string }) =>
       ipcRenderer.invoke('ai.test', opts) as Promise<{ ok: boolean; text?: string; message?: string }>,
+    characterCard: (bookId: string, uptoChapterId: string) =>
+      ipcRenderer.invoke('ai.characterCard', { bookId, uptoChapterId }) as Promise<
+        | { ok: true; card: import('../shared/types').CharacterCard }
+        | { ok: false; message: string }
+      >,
+    getCharacterCard: (bookId: string) =>
+      ipcRenderer.invoke('ai.getCharacterCard', { bookId }) as Promise<
+        | { ok: true; card: import('../shared/types').CharacterCard | null }
+        | { ok: false; message: string }
+      >,
   },
 }
 
