@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { NConfigProvider, darkTheme, zhCN, dateZhCN } from 'naive-ui'
+import { NConfigProvider, NMessageProvider, darkTheme, zhCN, dateZhCN } from 'naive-ui'
 import BrowsePage from './pages/Browse.vue'
 import LibraryPage from './pages/Library.vue'
 import ReaderPage from './pages/Reader.vue'
@@ -55,27 +55,29 @@ onUnmounted(() => {
 
 <template>
   <n-config-provider :theme="darkTheme" :locale="zhCN" :date-locale="dateZhCN">
-    <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">小说浏览器</div>
-        <button
-          v-for="item in tabs"
-          :key="item.id"
-          class="nav-btn"
-          :class="{ active: tab === item.id }"
-          type="button"
-          @click="tab = item.id"
-        >
-          {{ item.label }}
-        </button>
-      </aside>
-      <section class="main">
-        <BrowsePage v-show="tab === 'browse'" @open-book="openBook" />
-        <LibraryPage v-show="tab === 'library'" :active="libraryActive" @open-book="openBook" />
-        <ReaderPage v-show="tab === 'reader'" :book-id="currentBookId" @back="backToLibrary" />
-        <SettingsPage v-show="tab === 'settings'" :active="tab === 'settings'" />
-      </section>
-    </div>
+    <n-message-provider>
+      <div class="app-shell">
+        <aside class="sidebar">
+          <div class="brand">小说浏览器</div>
+          <button
+            v-for="item in tabs"
+            :key="item.id"
+            class="nav-btn"
+            :class="{ active: tab === item.id }"
+            type="button"
+            @click="tab = item.id"
+          >
+            {{ item.label }}
+          </button>
+        </aside>
+        <section class="main">
+          <BrowsePage v-show="tab === 'browse'" @open-book="openBook" />
+          <LibraryPage v-show="tab === 'library'" :active="libraryActive" @open-book="openBook" />
+          <ReaderPage v-show="tab === 'reader'" :book-id="currentBookId" @back="backToLibrary" />
+          <SettingsPage v-show="tab === 'settings'" :active="tab === 'settings'" />
+        </section>
+      </div>
+    </n-message-provider>
   </n-config-provider>
 </template>
 

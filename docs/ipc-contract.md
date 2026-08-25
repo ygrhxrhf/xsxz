@@ -26,7 +26,7 @@
 | `dialog.openFile` | invoke | 无 | `{ filePaths: string[] }` |
 | `dialog.openDirectory` | invoke | 无 | `{ filePaths: string[] }` |
 
-`openFile` 用于导入 txt / epub。`openDirectory` 用于选择书库根目录。主进程打开原生对话框。
+`openFile` 用于导入 txt / epub。`openDirectory` 用于选择书库根目录，也用于本机导出 txt / epub 的目标目录。主进程打开原生对话框。
 
 ---
 
@@ -59,10 +59,13 @@
 | `library.import` | invoke | `{ filePath: string }` | `{ ok: true; bookId: string } \| { ok: false; message: string }` |
 | `library.setProgress` | invoke | `{ bookId: string; progress: ReadingProgress }` | `{ ok: true }` |
 | `library.updateChapterBody` | invoke | `{ bookId: string; chapterId: string; body: string; restoreRaw?: boolean }` | `{ ok: true } \| { ok: false; message: string }` |
+| `library.export` | invoke | `{ bookId: string; format: 'txt' \| 'epub'; destDir: string }` | `{ ok: true; path: string } \| { ok: false; message: string }` |
 
 `library.import` 的路径由主进程 `dialog.showOpenDialog` 选出后传入，或设置页先选文件再 invoke。只接受 `.txt` / `.epub`（大小写不敏感）；其它后缀或不带后缀返回 `{ ok: false, message }`（中文，说明不支持的类型）。不得把 `.docx` 等当 txt 硬读。
 
 `restoreRaw: true` 时用 `bodyRaw` 覆盖 `body`（清正文撤销）。
+
+`library.export` 只把已下 `ready` 章成本机 txt / epub，落到用户选的目录。不做公网分享。目录由渲染进程先调 `dialog.openDirectory` 再传入。
 
 ---
 
@@ -130,7 +133,7 @@
 window.api = {
   dialog: { openFile, openDirectory },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, onUrl, onState },
-  library: { list, get, readChapter, delete, import, setProgress, updateChapterBody },
+  library: { list, get, readChapter, delete, import, setProgress, updateChapterBody, export },
   download: { start, cancel, retryFailed, checkUpdate, onProgress },
   settings: { get, set },
   siteRules: { list, upsert, remove },

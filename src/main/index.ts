@@ -18,6 +18,7 @@ import { importEpub } from './importEpub'
 import { getSettings, updateSettings, getApiKey } from './settings'
 import { startDownload, cancelDownload, retryFailed, checkUpdate, setOwnerWindow, setBrowseView } from './download'
 import { listSiteRules, upsertSiteRule, removeSiteRule } from './siteRules'
+import { exportBook } from './exportBook'
 import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters } from './ai'
 
 const PARTITION = 'persist:novel'
@@ -244,6 +245,16 @@ function registerIpc(): void {
       return { ok: false, message: String(e) }
     }
   })
+  ipcMain.handle(
+    'library.export',
+    async (_e, args: { bookId: string; format: 'txt' | 'epub'; destDir: string }) => {
+      try {
+        return await exportBook(args.bookId, args.format, args.destDir)
+      } catch (e: unknown) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  )
 
   ipcMain.handle('download.start', async () => startDownload())
   ipcMain.handle('download.cancel', async (_e, { bookId }: { bookId?: string }) => {

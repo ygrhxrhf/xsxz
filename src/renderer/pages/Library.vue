@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NCard, NEmpty, NSpace, NTag, NPopconfirm } from 'naive-ui'
+import { NButton, NCard, NEmpty, NSpace, NTag, NPopconfirm, NDropdown, useMessage } from 'naive-ui'
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, DownloadProgress } from '@shared/types'
 import {
@@ -15,10 +15,12 @@ const emit = defineEmits<{
   (e: 'open-book', bookId: string): void
 }>()
 
+const message = useMessage()
 const books = ref<BookListItem[]>([])
 const loading = ref(false)
 const retryingId = ref<string | null>(null)
 const checkingId = ref<string | null>(null)
+const exportingId = ref<string | null>(null)
 const checkMsg = ref<Record<string, string>>({})
 let unsubProgress: (() => void) | null = null
 
@@ -80,6 +82,20 @@ async function handleCheckUpdate(bookId: string) {
     checkMsg.value = { ...checkMsg.value, [bookId]: message || '检查更新失败' }
   } finally {
     checkingId.value = null
+  }
+}
+
+async function handleExport(bookId: string, format: 'txt' | 'epub') {
+  const { filePaths } = await window.api.dialog.openDirectory()
+  const dest = filePaths?.[0]
+  if (!dest) return
+  exportingId.value = bookId
+  try {
+    const res = await window.api.library.export(bookId, format, dest)
+    if (res.ok) message.success(`已导出到 ${res.path}`)
+    else message.error(res.message || '导出失败')
+  } finally {
+    exportingId.value = null
   }
 }
 
@@ -180,6 +196,13 @@ onUnmounted(() => {
           >
             重试失败章
           </n-button>
+          <n-dropdown
+            trigger="click"
+            :options="[{ label: '导出 txt', key: 'txt' }, { label: '导出 epub', key: 'epub' }]"
+            @select="(key: string) => handleExport(b.id, key as 'txt' | 'epub')"
+          >
+            <n-button size="tiny" :loading="exportingId === b.id" @click.stop>导出</n-button>
+          </n-dropdown>
           <n-popconfirm @positive-click="handleDelete(b.id)">
             <template #trigger>
               <n-button size="tiny" quaternary @click.stop>删除</n-button>

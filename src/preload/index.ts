@@ -47,6 +47,10 @@ const api = {
       ipcRenderer.invoke('library.setProgress', { bookId, progress }),
     updateChapterBody: (bookId: string, chapterId: string, body: string, restoreRaw?: boolean) =>
       ipcRenderer.invoke('library.updateChapterBody', { bookId, chapterId, body, restoreRaw }),
+    export: (bookId: string, format: 'txt' | 'epub', destDir: string) =>
+      ipcRenderer.invoke('library.export', { bookId, format, destDir }) as Promise<
+        { ok: true; path: string } | { ok: false; message: string }
+      >,
   },
   download: {
     start: () => ipcRenderer.invoke('download.start'),
