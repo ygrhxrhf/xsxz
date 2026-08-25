@@ -248,7 +248,7 @@ onUnmounted(() => {
             </n-button>
           </div>
         </div>
-        <div v-else style="color:#888;text-align:center;padding:24px">等待下载开始…</div>
+        <div v-else class="dl-waiting">等待下载开始…</div>
       </n-drawer-content>
     </n-drawer>
   </div>
@@ -259,6 +259,12 @@ onUnmounted(() => {
   padding: 8px 0;
 }
 
+.dl-waiting {
+  color: var(--muted);
+  text-align: center;
+  padding: 24px;
+}
+
 .dl-title {
   font-size: 15px;
   font-weight: 600;
@@ -267,7 +273,7 @@ onUnmounted(() => {
 
 .dl-stats {
   font-size: 13px;
-  color: #888;
+  color: var(--muted);
   margin-top: 6px;
   display: flex;
   align-items: center;
@@ -276,13 +282,13 @@ onUnmounted(() => {
 
 .dl-current {
   font-size: 12px;
-  color: #999;
+  color: var(--muted);
   margin-top: 4px;
 }
 
 .dl-error {
   font-size: 12px;
-  color: #e88080;
+  color: var(--danger);
   margin-top: 4px;
 }
 

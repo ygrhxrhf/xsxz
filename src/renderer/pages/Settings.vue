@@ -12,9 +12,18 @@ import {
   NPopconfirm,
   NTag,
 } from 'naive-ui'
-import type { Settings, SiteRule } from '@shared/types'
+import type { Settings, SiteRule, Skin } from '@shared/types'
 
-const props = defineProps<{ active?: boolean; prefillHost?: string; prefillNonce?: number }>()
+const props = defineProps<{ active?: boolean; prefillHost?: string; prefillNonce?: number; skin?: Skin }>()
+
+const emit = defineEmits<{
+  (e: 'change-skin', skin: Skin): void
+}>()
+
+const skinOptions: { id: Skin; name: string; desc: string; mark: string }[] = [
+  { id: 'sakura', name: '夜樱', desc: '深色 · 樱粉 × 紫罗兰', mark: '🌸' },
+  { id: 'minimal', name: '简约', desc: '浅色 · 中性克制', mark: '📘' },
+]
 
 const settings = ref<Settings | null>(null)
 const baseUrl = ref('')
@@ -201,6 +210,48 @@ function removeCurrentRule() {
   return removeRule(ruleHost.value)
 }
 
+// 备份与恢复
+const backingUp = ref(false)
+const restoring = ref(false)
+
+async function handleBackup() {
+  const { filePaths } = await window.api.dialog.openDirectory()
+  const dest = filePaths?.[0]
+  if (!dest) return
+  backingUp.value = true
+  try {
+    const res = await window.api.backup.create(dest)
+    if (res.ok) msg.value = `已备份到 ${res.path}`
+    else {
+      msg.value = res.message || '备份失败'
+      msgType.value = 'error'
+    }
+  } finally {
+    backingUp.value = false
+  }
+}
+
+async function handleRestore() {
+  const { filePaths } = await window.api.dialog.openZip()
+  const zipPath = filePaths?.[0]
+  if (!zipPath) return
+  if (!window.confirm('恢复会清空当前书库，再用备份文件覆盖。确定继续吗？')) return
+  restoring.value = true
+  try {
+    const res = await window.api.backup.restore(zipPath)
+    if (res.ok) {
+      msg.value = `已从备份恢复 ${res.books} 本书`
+      msgType.value = 'success'
+      settings.value = await window.api.settings.get()
+    } else {
+      msg.value = res.message || '恢复失败'
+      msgType.value = 'error'
+    }
+  } finally {
+    restoring.value = false
+  }
+}
+
 watch(
   () => props.active,
   (active) => {
@@ -221,6 +272,30 @@ onMounted(load)
 <template>
   <div class="page" style="max-width:600px">
     <h2>设置</h2>
+
+    <n-card title="外观" style="margin-bottom:16px">
+      <div class="skin-grid">
+        <button
+          v-for="s in skinOptions"
+          :key="s.id"
+          type="button"
+          class="skin-card"
+          :class="{ active: skin === s.id }"
+          @click="emit('change-skin', s.id)"
+        >
+          <span class="skin-swatch" :class="s.id">
+            <span class="sw-dot d1"></span>
+            <span class="sw-dot d2"></span>
+            <span class="sw-dot d3"></span>
+          </span>
+          <span class="skin-name">
+            {{ s.mark }} {{ s.name }}
+            <span v-if="skin === s.id" class="skin-current">✓ 使用中</span>
+          </span>
+          <span class="skin-desc">{{ s.desc }}</span>
+        </button>
+      </div>
+    </n-card>
 
     <n-card title="书库" style="margin-bottom:16px">
       <n-space vertical :size="12">
@@ -269,9 +344,7 @@ onMounted(load)
         </n-space>
       </n-space>
 
-      <div v-if="msg" :style="{ marginTop: '8px', color: msgType === 'error' ? '#e88080' : msgType === 'success' ? '#63e2b7' : '#888', fontSize: '13px' }">
-        {{ msg }}
-      </div>
+      <div v-if="msg" class="form-msg" :class="msgType">{{ msg }}</div>
     </n-card>
 
     <n-card title="站点规则" style="margin-bottom:16px">
@@ -308,15 +381,7 @@ onMounted(load)
             确认删除该站点规则？
           </n-popconfirm>
         </n-space>
-        <div
-          v-if="ruleMsg"
-          :style="{
-            color: ruleMsgType === 'error' ? '#e88080' : ruleMsgType === 'success' ? '#63e2b7' : '#888',
-            fontSize: '13px',
-          }"
-        >
-          {{ ruleMsg }}
-        </div>
+        <div v-if="ruleMsg" class="form-msg" :class="ruleMsgType">{{ ruleMsg }}</div>
       </n-space>
 
       <div class="rule-list">
@@ -338,6 +403,16 @@ onMounted(load)
       </div>
     </n-card>
 
+    <n-card title="备份与恢复" style="margin-bottom:16px">
+      <p style="color:#888;font-size:13px;margin:0 0 12px">
+        备份把整个书库（不含回收站）打包成 zip 存到你选的文件夹。恢复是整库覆盖：会先清空当前书库再导入备份。
+      </p>
+      <n-space>
+        <n-button :loading="backingUp" @click="handleBackup">备份书库…</n-button>
+        <n-button type="warning" :loading="restoring" @click="handleRestore">从备份恢复…</n-button>
+      </n-space>
+    </n-card>
+
     <n-card title="阅读偏好" style="margin-bottom:16px">
       <p style="color:#888;font-size:13px">字体大小、行距、夜间模式请在阅读器中调整（实时保存）。</p>
     </n-card>
@@ -352,6 +427,122 @@ onMounted(load)
 </template>
 
 <style scoped>
+.skin-grid {
+  display: flex;
+  gap: 12px;
+}
+
+.skin-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 12px;
+  cursor: pointer;
+  color: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+.skin-card:hover {
+  border-color: var(--hover-line);
+  transform: translateY(-2px);
+}
+
+.skin-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.skin-swatch {
+  width: 100%;
+  height: 44px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.skin-swatch.sakura {
+  background: linear-gradient(135deg, #ff8ec7, #a78bfa);
+}
+
+.skin-swatch.minimal {
+  background: #f2f3f6;
+  border: 1px solid #e4e5ec;
+}
+
+.sw-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.sakura .d1 {
+  background: #fff;
+}
+
+.sakura .d2 {
+  background: #ffd7ea;
+}
+
+.sakura .d3 {
+  background: #43315c;
+}
+
+.minimal .d1 {
+  background: #5e6f9e;
+}
+
+.minimal .d2 {
+  background: #c9cede;
+}
+
+.minimal .d3 {
+  background: #26262e;
+}
+
+.skin-name {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skin-current {
+  font-size: 11px;
+  color: var(--success);
+  font-weight: 500;
+}
+
+.skin-desc {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.form-msg {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.form-msg.success {
+  color: var(--success);
+}
+
+.form-msg.error {
+  color: var(--danger);
+}
+
+.form-msg.info {
+  color: var(--muted);
+}
+
 .rule-list {
   margin-top: 16px;
 }
@@ -361,15 +552,15 @@ onMounted(load)
   align-items: flex-start;
   gap: 8px;
   width: 100%;
-  background: #2c2c30;
-  border: 1px solid #3a3a40;
-  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 8px;
 }
 
 .rule-row:hover {
-  border-color: #63e2b7;
+  border-color: var(--hover-line);
 }
 
 .rule-row-main {
@@ -389,7 +580,7 @@ onMounted(load)
 
 .rule-preview {
   font-size: 12px;
-  color: #999;
+  color: var(--muted);
   line-height: 1.5;
 }
 </style>

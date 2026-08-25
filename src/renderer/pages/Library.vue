@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NTag, NPopconfirm, NModal, NDropdown, useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { BookListItem, ChapterMeta, DownloadProgress, FailCode } from '@shared/types'
+import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, TrashItem } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
 import {
   applyAddedChapterCount,
@@ -40,6 +40,7 @@ const failedTitle = ref('')
 const failedBookId = ref('')
 const failedRows = ref<ChapterMeta[]>([])
 let unsubProgress: (() => void) | null = null
+let unsubCheckAll: (() => void) | null = null
 let lastErrorToast = ''
 
 const visibleBooks = computed(() =>
@@ -81,8 +82,98 @@ async function handleImport() {
 }
 
 async function handleDelete(bookId: string) {
-  await window.api.library.delete(bookId)
+  const res = await window.api.library.delete(bookId)
+  if (res && 'ok' in res && res.ok === false) {
+    message.error(res.message || '删除失败')
+    return
+  }
+  message.success('已移入回收站')
   await refresh()
+}
+
+// 回收站
+const trashOpen = ref(false)
+const trashLoading = ref(false)
+const trashItems = ref<TrashItem[]>([])
+
+async function openTrash() {
+  trashOpen.value = true
+  await reloadTrash()
+}
+
+async function reloadTrash() {
+  trashLoading.value = true
+  try {
+    const res = await window.api.library.listTrash()
+    if (res.ok) trashItems.value = res.items
+    else message.error(res.message || '读取回收站失败')
+  } finally {
+    trashLoading.value = false
+  }
+}
+
+function fmtTrashedAt(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN')
+}
+
+async function handleRestore(name: string) {
+  const res = await window.api.library.restoreTrash(name)
+  if (res.ok) {
+    message.success('已还原到书库')
+    await Promise.all([reloadTrash(), refresh()])
+  } else {
+    message.error(res.message || '还原失败')
+  }
+}
+
+async function handlePurge(name?: string) {
+  const res = await window.api.library.purgeTrash(name)
+  if (res.ok) {
+    message.success(name ? '已彻底清除' : `已清空回收站（${res.purged} 项）`)
+    await reloadTrash()
+  } else {
+    message.error(res.message || '清除失败')
+  }
+}
+
+// 全部检查更新
+const checkAllLoading = ref(false)
+const checkAllStatus = ref('')
+
+function checkAllSummary(res: import('@shared/types').CheckAllResult): string {
+  const updated = res.results.filter((r) => r.ok && r.added > 0)
+  const failed = res.results.filter((r) => !r.ok)
+  const parts: string[] = []
+  parts.push(`共 ${res.total} 本可更新`)
+  if (updated.length) parts.push(`${updated.length} 本有新章 +${updated.reduce((n, r) => n + (r.ok ? r.added : 0), 0)} 章`)
+  else parts.push('暂无新章')
+  if (failed.length) parts.push(`${failed.length} 本失败`)
+  if (res.checked < res.total) parts.push('已中止')
+  return parts.join('，')
+}
+
+async function handleCheckAll() {
+  checkAllLoading.value = true
+  try {
+    const res = await window.api.download.checkAll()
+    checkAllStatus.value = ''
+    if (!res.ok) {
+      message.warning(res.message || '无法开始批量检查')
+      return
+    }
+    const summary = checkAllSummary(res)
+    const hasFail = res.results.some((r) => !r.ok)
+    if (hasFail) message.warning(summary)
+    else message.success(summary)
+    await refresh()
+  } finally {
+    checkAllLoading.value = false
+  }
+}
+
+function handleCancelCheckAll() {
+  void window.api.download.cancelCheckAll()
 }
 
 function failLabel(ch: ChapterMeta): string {
@@ -158,6 +249,13 @@ function statusLabel(status: BookListItem['status']): string {
   return '部分'
 }
 
+/** 按书 id 稳定映射一个色相，让每本书的封面渐变色不同 */
+function coverHue(id: string): string {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360
+  return String(h)
+}
+
 function statusType(status: BookListItem['status']): 'info' | 'success' | 'warning' {
   if (status === 'downloading') return 'info'
   if (status === 'ready') return 'success'
@@ -205,10 +303,14 @@ onMounted(() => {
       void refresh()
     }
   })
+  unsubCheckAll = window.api.download.onCheckAllProgress((p) => {
+    checkAllStatus.value = `正在检查 ${p.current}/${p.total}：《${p.title}》`
+  })
 })
 
 onUnmounted(() => {
   unsubProgress?.()
+  unsubCheckAll?.()
 })
 </script>
 
@@ -216,7 +318,13 @@ onUnmounted(() => {
   <div class="page">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px">
       <h2 style="margin:0">书库</h2>
-      <n-button type="primary" @click="handleImport">导入 txt / epub</n-button>
+      <n-space align="center">
+        <span v-if="checkAllStatus" class="checkall-status">{{ checkAllStatus }}</span>
+        <n-button v-if="checkAllLoading" size="small" @click="handleCancelCheckAll">停止</n-button>
+        <n-button v-else :disabled="!books.length" @click="handleCheckAll">全部检查更新</n-button>
+        <n-button @click="openTrash">回收站</n-button>
+        <n-button type="primary" @click="handleImport">导入 txt / epub</n-button>
+      </n-space>
     </div>
     <div v-if="books.length" class="lib-toolbar">
       <n-input v-model:value="query" clearable placeholder="按书名或作者筛选" style="max-width:240px" />
@@ -233,7 +341,7 @@ onUnmounted(() => {
         class="book-card"
         @click="emit('open-book', b.id)"
       >
-        <div class="book-cover">📖</div>
+        <div class="book-cover" :style="{ '--hue': coverHue(b.id) }">📖</div>
         <div class="book-title">{{ b.title }}</div>
         <div class="book-meta">
           <span v-if="b.author">{{ b.author }}</span>
@@ -279,7 +387,7 @@ onUnmounted(() => {
             <template #trigger>
               <n-button size="tiny" quaternary @click.stop>删除</n-button>
             </template>
-            确认删除《{{ b.title }}》？本地文件将被清除。
+            把《{{ b.title }}》移入回收站？之后可在回收站还原。
           </n-popconfirm>
         </n-space>
       </n-card>
@@ -308,6 +416,38 @@ onUnmounted(() => {
         </n-space>
       </template>
     </n-modal>
+
+    <n-modal v-model:show="trashOpen" preset="card" title="回收站" style="width:520px">
+      <n-empty v-if="!trashItems.length && !trashLoading" description="回收站是空的" />
+      <div v-else class="fail-list">
+        <div v-for="t in trashItems" :key="t.name" class="fail-row">
+          <div>
+            <div class="fail-title">《{{ t.title }}》{{ t.author ? ` · ${t.author}` : '' }}（{{ t.chapterCount }} 章）</div>
+            <div class="fail-reason">删除于 {{ fmtTrashedAt(t.trashedAt) }}</div>
+          </div>
+          <n-space>
+            <n-button size="tiny" @click="handleRestore(t.name)">还原</n-button>
+            <n-popconfirm @positive-click="handlePurge(t.name)">
+              <template #trigger>
+                <n-button size="tiny" type="error" quaternary>彻底清除</n-button>
+              </template>
+              彻底删除《{{ t.title }}》？此操作不可撤销。
+            </n-popconfirm>
+          </n-space>
+        </div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-popconfirm v-if="trashItems.length" @positive-click="handlePurge()">
+            <template #trigger>
+              <n-button size="small" type="error">清空回收站</n-button>
+            </template>
+            彻底删除回收站里的全部 {{ trashItems.length }} 本？此操作不可撤销。
+          </n-popconfirm>
+          <n-button size="small" @click="trashOpen = false">关闭</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -319,6 +459,12 @@ onUnmounted(() => {
   margin-bottom: 16px;
 }
 
+.checkall-status {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .book-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -327,12 +473,26 @@ onUnmounted(() => {
 
 .book-card {
   cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.book-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--card-hover-border);
+  box-shadow: var(--card-hover-shadow);
 }
 
 .book-cover {
-  font-size: 48px;
-  text-align: center;
-  padding: 24px 0 12px;
+  height: 96px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 42px;
+  border-radius: 10px;
+  background: var(--cover-background);
+  box-shadow: var(--cover-ring);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
 .book-title {
@@ -347,8 +507,8 @@ onUnmounted(() => {
 
 .book-meta {
   font-size: 12px;
-  color: #999;
-  margin-top: 4px;
+  color: var(--muted);
+  margin-top: 6px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -356,19 +516,20 @@ onUnmounted(() => {
 
 .book-progress {
   font-size: 12px;
-  color: #888;
+  color: var(--muted);
+  opacity: 0.85;
   margin-top: 4px;
 }
 
 .check-msg {
   font-size: 12px;
-  color: #63e2b7;
+  color: var(--success);
   margin-top: 6px;
   line-height: 1.4;
 }
 
 .check-msg.error {
-  color: #e88080;
+  color: var(--danger);
 }
 
 .fail-list {
@@ -381,7 +542,7 @@ onUnmounted(() => {
 
 .fail-row {
   padding: 8px 0;
-  border-bottom: 1px solid #2c2c2c;
+  border-bottom: 1px solid var(--line);
 }
 
 .fail-title {
@@ -390,7 +551,7 @@ onUnmounted(() => {
 
 .fail-reason {
   font-size: 12px;
-  color: #e88080;
+  color: var(--danger);
   margin-top: 4px;
 }
 </style>

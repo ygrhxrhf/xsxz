@@ -1,10 +1,129 @@
-:root {
-  --bg: #161616;
-  --sidebar: #1e1e1e;
-  --line: #2c2c2c;
-  --text: #f2f2f2;
-  --muted: #9a9a9a;
-  --accent: #7c9cff;
+/* 双皮肤变量层：
+   默认（body 无标记）= 夜樱 sakura；
+   body[data-skin='minimal'] 覆盖为简约浅色。
+   组件样式一律消费这些变量，不写死颜色。 */
+body {
+  /* 基础 */
+  --text: #f3effc;
+  --muted: #a89fc4;
+  --line: rgba(203, 170, 247, 0.16);
+  --accent: #ff8ec7;
+  --panel: rgba(255, 255, 255, 0.045);
+  --selection-bg: rgba(255, 142, 199, 0.38);
+  --scrollbar-thumb: rgba(214, 168, 236, 0.22);
+  --scrollbar-thumb-hover: rgba(255, 158, 208, 0.45);
+
+  /* 外壳 */
+  --sidebar-bg:
+    linear-gradient(180deg, rgba(255, 142, 199, 0.07), rgba(180, 155, 255, 0.05) 40%, transparent),
+    rgba(255, 255, 255, 0.03);
+  --nav-hover-bg: rgba(255, 142, 199, 0.1);
+  --nav-active-bg: linear-gradient(135deg, #ff8ec7, #a78bfa);
+  --nav-active-shadow: 0 4px 16px rgba(196, 130, 240, 0.35);
+  --brand-mark-bg: linear-gradient(135deg, #ff8ec7, #a78bfa);
+  --brand-mark-shadow: 0 4px 14px rgba(255, 142, 199, 0.35);
+  --brand-title-fill: linear-gradient(90deg, #ffa9d4, #c3a8ff);
+  --chrome-bg: rgba(29, 21, 46, 0.92);
+  --input-bg: rgba(11, 8, 19, 0.65);
+  --input-ring: 0 0 0 3px rgba(255, 142, 199, 0.18);
+  --chip-bg: rgba(255, 255, 255, 0.05);
+  --chip-hover-bg: rgba(255, 142, 199, 0.12);
+
+  /* 内容 */
+  --card-hover-border: rgba(255, 142, 199, 0.55);
+  --card-hover-shadow: 0 10px 28px rgba(255, 142, 199, 0.14), 0 4px 12px rgba(0, 0, 0, 0.35);
+  --hover-line: rgba(255, 142, 199, 0.55);
+  --cover-background:
+    radial-gradient(120px 70px at 72% 18%, hsla(calc(var(--hue, 320) * 1deg), 95%, 82%, 0.38), transparent 70%),
+    linear-gradient(135deg, hsl(calc(var(--hue, 320) * 1deg + 320) 62% 74%), hsl(calc(var(--hue, 320) * 1deg) 60% 60%));
+  --cover-ring: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+  --popover-bg: #261e3d;
+  --popover-ring: 0 0 0 1px rgba(255, 142, 199, 0.12);
+  --danger: #ff8ba3;
+  --success: #7ceac3;
+  --warning-text: #ffc978;
+  --note-accent: #ffa6d4;
+  --active-chapter: #ff9fce;
+
+  /* 阅读器 */
+  --bar-bg: rgba(32, 24, 51, 0.85);
+  --reader-paper: rgba(35, 26, 56, 0.72);
+  --reader-paper-text: #f4eefc;
+  --speaking-bg: rgba(255, 142, 199, 0.16);
+  --hit-bg: #ffb7dc;
+  --hit-text: #47102e;
+  --hl-bg: rgba(255, 208, 120, 0.32);
+  --bubble-user-bg: linear-gradient(135deg, #ff8ec7, #a78bfa);
+  --bubble-user-text: #fff;
+  --bubble-ai-bg: rgba(255, 255, 255, 0.06);
+  --bubble-ai-text: #efe9fb;
+  --bubble-ai-border: rgba(203, 170, 247, 0.18);
+  --title-ornament: '❀';
+
+  color: var(--text);
+  background:
+    radial-gradient(900px 520px at 88% -12%, rgba(180, 155, 255, 0.14), transparent 62%),
+    radial-gradient(820px 500px at -8% 108%, rgba(255, 142, 199, 0.13), transparent 60%),
+    linear-gradient(158deg, #161022 0%, #1b1430 52%, #14101f 100%);
+  background-attachment: fixed;
+}
+
+body[data-skin='minimal'] {
+  /* 基础 */
+  --text: #26262e;
+  --muted: #767682;
+  --line: #e6e7ee;
+  --accent: #5e6f9e;
+  --panel: #ffffff;
+  --selection-bg: rgba(94, 111, 158, 0.22);
+  --scrollbar-thumb: rgba(38, 38, 46, 0.18);
+  --scrollbar-thumb-hover: rgba(38, 38, 46, 0.32);
+
+  /* 外壳 */
+  --sidebar-bg: #ffffff;
+  --nav-hover-bg: #f0f1f5;
+  --nav-active-bg: #5e6f9e;
+  --nav-active-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+  --brand-mark-bg: #eef0f5;
+  --brand-mark-shadow: none;
+  --brand-title-fill: #26262e;
+  --chrome-bg: #ffffff;
+  --input-bg: #f4f5f8;
+  --input-ring: 0 0 0 3px rgba(94, 111, 158, 0.15);
+  --chip-bg: #ffffff;
+  --chip-hover-bg: #f0f1f5;
+
+  /* 内容 */
+  --card-hover-border: #c9cede;
+  --card-hover-shadow: 0 8px 20px rgba(15, 23, 42, 0.1);
+  --hover-line: #b6bfd4;
+  --cover-background: linear-gradient(135deg, #eef0f4, #e0e3ea);
+  --cover-ring: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+  --popover-bg: #ffffff;
+  --popover-ring: 0 0 0 1px rgba(15, 23, 42, 0.06);
+  --danger: #d64550;
+  --success: #2f9e6e;
+  --warning-text: #b07508;
+  --note-accent: #55679c;
+  --active-chapter: #4a5fa5;
+
+  /* 阅读器 */
+  --bar-bg: #ffffff;
+  --reader-paper: #ffffff;
+  --reader-paper-text: #2a2a33;
+  --speaking-bg: rgba(94, 111, 158, 0.13);
+  --hit-bg: #ffd66e;
+  --hit-text: #3d2f00;
+  --hl-bg: rgba(255, 208, 120, 0.45);
+  --bubble-user-bg: #5e6f9e;
+  --bubble-user-text: #fff;
+  --bubble-ai-bg: #f3f4f7;
+  --bubble-ai-text: #33333d;
+  --bubble-ai-border: #e4e5ec;
+  --title-ornament: none;
+
+  background: linear-gradient(180deg, #fafbfc, #f2f3f6);
+  background-attachment: fixed;
 }
 
 html,
@@ -12,9 +131,34 @@ body,
 #app {
   margin: 0;
   height: 100%;
-  background: var(--bg);
-  color: var(--text);
   font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+::selection {
+  background: var(--selection-bg);
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 .n-config-provider {
@@ -34,35 +178,123 @@ body,
 .sidebar {
   width: 200px;
   flex-shrink: 0;
-  background: var(--sidebar);
+  background: var(--sidebar-bg);
   border-right: 1px solid var(--line);
-  padding: 16px 10px;
+  padding: 18px 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px 16px;
+}
+
+.brand-mark {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  border-radius: 12px;
+  background: var(--brand-mark-bg);
+  box-shadow: var(--brand-mark-shadow);
+}
+
+.brand-title {
   font-size: 15px;
-  font-weight: 600;
-  padding: 4px 10px 14px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: var(--brand-title-fill);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.brand-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 1px;
 }
 
 .nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   text-align: left;
-  border: 0;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: 9px 12px;
+  border-radius: 12px;
   cursor: pointer;
   font-size: 14px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.15s;
 }
 
-.nav-btn.active,
 .nav-btn:hover {
-  background: #2a2a2a;
+  background: var(--nav-hover-bg);
   color: var(--text);
+}
+
+.nav-btn.active {
+  border-color: transparent;
+  background: var(--nav-active-bg);
+  color: #fff;
+  box-shadow: var(--nav-active-shadow);
+}
+
+.nav-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.nav-icon {
+  font-size: 15px;
+}
+
+/* 简约皮肤：隐藏 emoji 图标等装饰，靠留白和字重区分 */
+body[data-skin='minimal'] .nav-icon {
+  display: none;
+}
+
+.skin-toggle {
+  margin: 8px 4px 0;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.skin-toggle:hover {
+  border-color: var(--hover-line);
+  color: var(--text);
+  background: var(--nav-hover-bg);
+}
+
+.sidebar-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-footer {
+  padding: 8px 8px 0;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.75;
+  text-align: center;
+  letter-spacing: 2px;
 }
 
 .main {
@@ -92,27 +324,40 @@ body,
   gap: 8px;
   padding: 0 12px;
   border-bottom: 1px solid var(--line);
-  background: #1a1a1a;
+  background: var(--chrome-bg);
 }
 
 .chrome input {
   flex: 1;
   height: 32px;
-  border-radius: 6px;
+  border-radius: 10px;
   border: 1px solid var(--line);
-  background: #111;
+  background: var(--input-bg);
   color: var(--text);
-  padding: 0 10px;
+  padding: 0 12px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.chrome input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--input-ring);
 }
 
 .chrome button {
   height: 32px;
   border: 1px solid var(--line);
-  background: #262626;
+  background: var(--chip-bg);
   color: var(--text);
-  border-radius: 6px;
-  padding: 0 10px;
+  border-radius: 10px;
+  padding: 0 12px;
   cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.chrome button:hover:not(:disabled) {
+  border-color: var(--hover-line);
+  background: var(--chip-hover-bg);
 }
 
 .chrome button:disabled {
