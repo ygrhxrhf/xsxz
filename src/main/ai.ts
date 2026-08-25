@@ -9,6 +9,34 @@ interface ChatResponse {
   choices: { message: { content: string } }[]
 }
 
+export const AI_REQUEST_TIMEOUT_MS = 30_000
+export const AI_CHAT_HISTORY_LIMIT = 8
+
+export function formatAiRequestError(status: number, bodyText = ''): string {
+  const snippet = bodyText.slice(0, 200)
+  if (status === 401 || status === 403) return 'API Key 无效或无权限，请到设置页核对'
+  if (status === 429) return '请求过于频繁或额度用尽，请稍后再试'
+  if (status === 408) return 'AI 请求超时，请稍后重试'
+  if (status >= 500) return `模型服务暂时不可用 (${status})`
+  return `AI 请求失败 (${status})${snippet ? `：${snippet}` : ''}`
+}
+
+export function clipChatMessages(messages: AiChatMessage[], limit = AI_CHAT_HISTORY_LIMIT): AiChatMessage[] {
+  const usable = messages.filter((m) => m.role !== 'system')
+  if (usable.length <= limit) return usable
+  return usable.slice(-limit)
+}
+
+export function formatAiTransportError(e: unknown): string {
+  const name = e && typeof e === 'object' && 'name' in e ? String((e as { name?: string }).name) : ''
+  const msg = e instanceof Error ? e.message : String(e)
+  if (name === 'AbortError' || /aborted|timeout|超时/i.test(msg)) return 'AI 请求超时，请稍后重试'
+  if (/fetch|network|ECONN|ENOTFOUND|EAI_AGAIN|Failed to fetch|unable to connect/i.test(msg)) {
+    return '无法连接模型服务，请检查接口地址和网络'
+  }
+  return msg || 'AI 请求失败'
+}
+
 async function chatCompletion(
   baseUrl: string,
   apiKey: string,
@@ -16,20 +44,29 @@ async function chatCompletion(
   messages: ChatMessage[],
 ): Promise<string> {
   const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ model, messages, temperature: 0.3 }),
-  })
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`AI 请求失败 (${res.status}): ${text.slice(0, 200)}`)
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), AI_REQUEST_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ model, messages, temperature: 0.3 }),
+      signal: ac.signal,
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(formatAiRequestError(res.status, text))
+    }
+    const data: ChatResponse = await res.json()
+    return data.choices?.[0]?.message?.content || ''
+  } catch (e: unknown) {
+    throw new Error(formatAiTransportError(e))
+  } finally {
+    clearTimeout(timer)
   }
-  const data: ChatResponse = await res.json()
-  return data.choices?.[0]?.message?.content || ''
 }
 
 export interface AiConfig {
@@ -212,8 +249,14 @@ ${currentChapterBody.slice(0, 2000)}
 
   const apiMessages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
-    ...messages.map((m) => ({ role: m.role, content: m.content })),
+    ...clipChatMessages(messages).map((m) => ({ role: m.role, content: m.content })),
   ]
 
   return chatCompletion(config.baseUrl, config.apiKey, config.model, apiMessages)
+}
+
+export async function testConnection(config: AiConfig): Promise<string> {
+  return chatCompletion(config.baseUrl, config.apiKey, config.model, [
+    { role: 'user', content: '只回复 ok' },
+  ])
 }

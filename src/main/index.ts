@@ -19,7 +19,7 @@ import { getSettings, updateSettings, getApiKey } from './settings'
 import { startDownload, cancelDownload, retryFailed, checkUpdate, setOwnerWindow, setBrowseView } from './download'
 import { listSiteRules, upsertSiteRule, removeSiteRule } from './siteRules'
 import { exportBook } from './exportBook'
-import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters } from './ai'
+import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters, testConnection } from './ai'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -305,7 +305,7 @@ function registerIpc(): void {
       const result = await cleanChapterBody({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, ch.title, ch.body)
       return { ok: true, result }
     } catch (e: unknown) {
-      return { ok: false, message: String(e) }
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
   ipcMain.handle('ai.summarize', async (_e, { bookId, uptoChapterId }: { bookId: string; uptoChapterId: string }) => {
@@ -337,7 +337,7 @@ function registerIpc(): void {
       await writeChapterSummary(bookId, uptoChapterId, text)
       return { ok: true, text }
     } catch (e: unknown) {
-      return { ok: false, message: String(e) }
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
   ipcMain.handle('ai.translate', async (_e, { text }: { text: string }) => {
@@ -348,7 +348,7 @@ function registerIpc(): void {
       const result = await translateText({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, text)
       return { ok: true, text: result }
     } catch (e: unknown) {
-      return { ok: false, message: String(e) }
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
   ipcMain.handle('ai.chat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
@@ -380,9 +380,28 @@ function registerIpc(): void {
       )
       return { ok: true, text }
     } catch (e: unknown) {
-      return { ok: false, message: String(e) }
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
+  ipcMain.handle(
+    'ai.test',
+    async (_e, payload?: { baseUrl?: string; model?: string; apiKey?: string }) => {
+      try {
+        const settings = await getSettings()
+        const stored = await getApiKey()
+        const apiKey = (payload?.apiKey || '').trim() || stored
+        if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+        const text = await testConnection({
+          baseUrl: (payload?.baseUrl || settings.baseUrl).trim() || settings.baseUrl,
+          model: (payload?.model || settings.model).trim() || settings.model,
+          apiKey,
+        })
+        return { ok: true, text }
+      } catch (e: unknown) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  )
 }
 
 app.setName('spbf')

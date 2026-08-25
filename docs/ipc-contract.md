@@ -120,8 +120,11 @@
 | `ai.summarize` | invoke | `{ bookId: string; uptoChapterId: string }` | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.translate` | invoke | `{ text: string }` | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.chat` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `{ ok: true; text: string } \| { ok: false; message: string }` |
+| `ai.test` | invoke | `{ baseUrl?: string; model?: string; apiKey?: string }`（均可空，空则用已保存设置） | `{ ok: true; text: string } \| { ok: false; message: string }` |
 
 未配置 Key 或网络失败：返回 `{ ok: false; message }`，不得影响浏览/下载/阅读。
+
+`ai.test` 发一条最小 chat completions 探活。401/403、429、超时、5xx 返回中文分级文案。
 
 `ai.summarize` 把截止夹紧到已存阅读进度 `book.progress.chapterId`（若有）：只读该截止内 `ready` 章正文，再取其中最近 10 章。不得把进度之后的未读章送进模型。无进度时以请求的 `uptoChapterId` 为截止。
 
@@ -137,7 +140,7 @@ window.api = {
   download: { start, cancel, retryFailed, checkUpdate, onProgress },
   settings: { get, set },
   siteRules: { list, upsert, remove },
-  ai: { clean, summarize, translate, chat },
+  ai: { clean, summarize, translate, chat, test },
 }
 ```
 

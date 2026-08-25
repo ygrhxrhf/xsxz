@@ -22,6 +22,7 @@ const model = ref('')
 const apiKey = ref('')
 const libraryPath = ref('')
 const saving = ref(false)
+const testing = ref(false)
 const msg = ref('')
 const msgType = ref<'success' | 'error' | 'info'>('info')
 
@@ -105,6 +106,30 @@ async function clearKey() {
   settings.value = await window.api.settings.get()
   msg.value = 'API Key 已清除'
   msgType.value = 'info'
+}
+
+async function testAi() {
+  testing.value = true
+  msg.value = ''
+  try {
+    const res = await window.api.ai.test({
+      baseUrl: baseUrl.value,
+      model: model.value,
+      apiKey: apiKey.value || undefined,
+    })
+    if (res.ok) {
+      msg.value = '连接成功'
+      msgType.value = 'success'
+    } else {
+      msg.value = res.message || '连接失败'
+      msgType.value = 'error'
+    }
+  } catch (e: unknown) {
+    msg.value = String(e)
+    msgType.value = 'error'
+  } finally {
+    testing.value = false
+  }
 }
 
 async function saveRule() {
@@ -232,6 +257,7 @@ onMounted(load)
         </n-input-group>
         <n-space>
           <n-button type="primary" :loading="saving" @click="save">保存</n-button>
+          <n-button :loading="testing" @click="testAi">测试连接</n-button>
           <n-button v-if="settings?.apiKeyConfigured" quaternary type="error" @click="clearKey">清除 Key</n-button>
         </n-space>
       </n-space>
