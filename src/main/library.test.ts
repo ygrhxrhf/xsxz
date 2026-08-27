@@ -18,6 +18,7 @@ import {
   listBooks,
   markChapterStatus,
   readChapter,
+  readChat,
   readSummaries,
   refreshBookStatus,
   rebuildIndex,
@@ -25,6 +26,7 @@ import {
   setProgress,
   writeChapterFile,
   writeChapterSummary,
+  writeChat,
 } from './library'
 import type { Book, CatalogChapter } from '../shared/types'
 
@@ -524,6 +526,22 @@ describe('summaries v2 migration', () => {
     await writeFile(join(dir, 'd_summary', 'ai', 'summaries.json'), JSON.stringify({ byChapter: ['bad'] }), 'utf-8')
 
     await expect(readSummaries('d_summary')).resolves.toMatchObject({ version: 2, byChapter: {} })
+  })
+})
+
+describe('chat storage', () => {
+  let dir: string
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'spbf-chat-')); await setLibraryPath(dir); await createBookFromBootstrap({ bookId: 'd_chat', title: '聊书', author: '', importType: 'download', chapterTitles: ['一'] }) })
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }) })
+
+  it('keeps the newest 40 user or assistant messages and treats damaged files as empty', async () => {
+    const messages = Array.from({ length: 41 }, (_, i) => ({ role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant', content: `m${i}` }))
+    await writeChat('d_chat', messages)
+    const saved = await readChat('d_chat')
+    expect(saved.messages).toHaveLength(40)
+    expect(saved.messages[0]?.content).toBe('m1')
+    await writeFile(join(dir, 'd_chat', 'ai', 'chat.json'), '{ bad', 'utf-8')
+    await expect(readChat('d_chat')).resolves.toMatchObject({ version: 1, messages: [] })
   })
 })
 

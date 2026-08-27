@@ -3,6 +3,7 @@ import type { Dirent } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import type {
+  AiChatFile,
   AiSummaries,
   Book,
   BookListItem,
@@ -566,6 +567,27 @@ export async function writeStorySoFar(bookId: string, uptoChapterId: string, tex
   data.storySoFar = { uptoChapterId, text, updatedAt }
   data.updatedAt = updatedAt
   await writeFile(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), 'utf-8')
+}
+
+export async function readChat(bookId: string): Promise<AiChatFile> {
+  try {
+    const data: unknown = JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'chat.json'), 'utf-8'))
+    if (!isRecord(data) || !Array.isArray(data.messages)) throw new Error('invalid chat')
+    const messages = data.messages
+      .filter((message): message is Record<string, unknown> => isRecord(message))
+      .filter((message) => (message.role === 'user' || message.role === 'assistant') && typeof message.content === 'string')
+      .map((message) => ({ role: message.role as 'user' | 'assistant', content: message.content as string }))
+      .slice(-40)
+    return { version: 1, messages, updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : now() }
+  } catch {
+    return { version: 1, messages: [], updatedAt: now() }
+  }
+}
+
+export async function writeChat(bookId: string, messages: AiChatFile['messages']): Promise<void> {
+  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+  const data: AiChatFile = { version: 1, messages: messages.slice(-40), updatedAt: now() }
+  await writeFile(join(bookDir(bookId), 'ai', 'chat.json'), JSON.stringify(data, null, 2), 'utf-8')
 }
 
 export async function readCharacterCard(bookId: string): Promise<CharacterCard | null> {
