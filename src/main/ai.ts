@@ -313,14 +313,16 @@ export async function summarizeUpTo(
   ])
 }
 
-export async function translateText(config: AiConfig, text: string): Promise<string> {
-  const prompt = `请把下面这段文字译成通顺的现代汉语。若原文已经是现代白话，只做简短释义，不要译成外文。只返回译文或释义，不要解释。
+export function buildTranslatePrompt(text: string): string {
+  return `请把下面这段文字译成通顺的现代汉语。若原文已经是现代白话，只做简短释义，不要译成外文。只返回译文或释义，不要解释。
 
 原文：
 ${text}`
+}
 
+export async function translateText(config: AiConfig, text: string): Promise<string> {
   return chatCompletion(config.baseUrl, config.apiKey, config.model, [
-    { role: 'user', content: prompt },
+    { role: 'user', content: buildTranslatePrompt(text) },
   ])
 }
 

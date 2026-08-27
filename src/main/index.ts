@@ -30,7 +30,7 @@ import { exportBook } from './exportBook'
 import { searchInBook } from './search'
 import { createBackup, restoreBackup } from './backup'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
-import { AiJobSlot, buildBookChatMessages, buildChapterSummaryPrompt, buildStorySoFarPrompt, cleanChapterBody, summarizeUpTo, streamChatCompletion, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
+import { AiJobSlot, buildBookChatMessages, buildChapterSummaryPrompt, buildStorySoFarPrompt, buildTranslatePrompt, cleanChapterBody, summarizeUpTo, streamChatCompletion, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -554,6 +554,43 @@ function registerIpc(): void {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
+  ipcMain.handle('ai.translateStream', async (_e, { text }: { text: string }) => {
+    try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      if (!text.trim()) return { ok: false, message: '请先在正文中选中要翻译的文字' }
+      if (text.length > 2000) return { ok: false, message: '选中过长，请缩短后再问' }
+      return aiJobSlot.start(async (jobId, signal) => {
+        let partial = ''
+        try {
+          const translated = await streamChatCompletion(
+            { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+            [{ role: 'user', content: buildTranslatePrompt(text) }],
+            signal,
+            (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
+          )
+          mainWindow?.webContents.send('ai.done', { jobId, ok: true, text: translated })
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', { jobId, ok: true, text: partial })
+            return
+          }
+          mainWindow?.webContents.send('ai.done', {
+            jobId,
+            ok: false,
+            message: e instanceof Error ? e.message : String(e),
+          })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
   ipcMain.handle('ai.translate', async (_e, { text }: { text: string }) => {
     try {
       const settings = await getSettings()

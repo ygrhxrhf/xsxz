@@ -41,6 +41,8 @@ const recapText = ref('')
 const recapJobId = ref('')
 const recapJobKind = ref<'chapter' | 'story' | ''>('')
 const recapLoading = computed(() => Boolean(recapJobId.value))
+const translateJobId = ref('')
+const translateLoading = computed(() => Boolean(translateJobId.value))
 const chatMessages = ref<AiChatMessage[]>([])
 const chatInput = ref('')
 const chatLoading = ref(false)
@@ -696,25 +698,37 @@ function getSelectedText(): string {
   return sel ? sel.toString().trim() : ''
 }
 
-async function aiTranslate() {
-  const text = getSelectedText()
+async function translateSelectedText() {
+  const text = selectedExcerpt.value || getSelectedText()
+  showSelPopup.value = false
   if (!text) {
     message.warning('请先在正文中选中要翻译的文字')
     return
   }
-  aiLoading.value = true
-  aiResultTitle.value = '翻译'
-  try {
-    const res = await window.api.ai.translate(text)
-    if (res.ok) {
-      aiResult.value = res.text
-      showAiResult.value = true
-    } else {
-      message.error(res.message || '翻译失败')
-    }
-  } finally {
-    aiLoading.value = false
+  if (text.length > 2000) {
+    message.warning('选中过长，请缩短后再问')
+    return
   }
+  if (translateJobId.value) {
+    showAiResult.value = true
+    message.warning('请先停止当前生成')
+    return
+  }
+  const res = await window.api.ai.translateStream(text)
+  if (!res.ok) {
+    message.error(res.message)
+    return
+  }
+  translateJobId.value = res.jobId
+  aiResultTitle.value = '翻译'
+  aiResult.value = ''
+  showAiResult.value = true
+  selectedExcerpt.value = ''
+  window.getSelection()?.removeAllRanges()
+}
+
+function stopTranslate() {
+  if (translateJobId.value) void window.api.ai.cancel(translateJobId.value)
 }
 
 function askSuggested(question: string) {
@@ -819,12 +833,18 @@ onMounted(async () => {
   window.addEventListener('keydown', onReaderKeydown)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => {
     if (jobId === recapJobId.value) recapText.value += delta
+    if (jobId === translateJobId.value) aiResult.value += delta
     if (jobId === chatJobId.value && chatAssistantIndex.value >= 0) {
       const assistant = chatMessages.value[chatAssistantIndex.value]
       if (assistant) assistant.content += delta
     }
   })
   unsubAiDone = window.api.ai.onDone((event) => {
+    if (event.jobId === translateJobId.value) {
+      translateJobId.value = ''
+      aiResult.value = event.ok ? event.text : `错误：${event.message}`
+      return
+    }
     if (event.jobId === chatJobId.value) {
       const assistantIndex = chatAssistantIndex.value
       const assistant = chatMessages.value[assistantIndex]
@@ -941,7 +961,6 @@ onUnmounted(() => {
               <n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button>
               <n-button size="tiny" block @click="openRecap">看到这里</n-button>
               <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCharacterCard">人物卡</n-button>
-              <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiTranslate">翻译选中</n-button>
               <n-button size="tiny" block :disabled="!chapterReady" @click="showChat = true">聊书</n-button>
             </n-space>
           </div>
@@ -1016,6 +1035,7 @@ onUnmounted(() => {
               <n-button type="primary" size="small" @click="applyCleanedBody">应用到正文</n-button>
               <n-button size="small" @click="showAiResult = false">取消</n-button>
             </n-space>
+            <n-button v-else-if="aiResultTitle === '翻译' && translateLoading" type="warning" @click="stopTranslate">停止</n-button>
           </template>
         </n-drawer-content>
       </n-drawer>
@@ -1083,6 +1103,7 @@ onUnmounted(() => {
       >
         <n-button size="tiny" type="primary" @click="addHighlight">划线</n-button>
         <n-button size="tiny" @click="askSelectedText">问这段</n-button>
+        <n-button size="tiny" @click="translateSelectedText">翻译</n-button>
         <n-button size="tiny" @click="showSelPopup = false; selectedExcerpt = ''">取消</n-button>
       </div>
 
