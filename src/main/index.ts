@@ -27,7 +27,7 @@ import { exportBook } from './exportBook'
 import { searchInBook } from './search'
 import { createBackup, restoreBackup } from './backup'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
-import { cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
+import { AiJobSlot, cleanChapterBody, summarizeUpTo, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -36,6 +36,7 @@ let mainWindow: BrowserWindow | null = null
 let browseView: WebContentsView | null = null
 let browseVisible = false
 let lastBounds = { x: SIDEBAR_WIDTH, y: 52, width: 900, height: 700 }
+const aiJobSlot = new AiJobSlot()
 
 function novelSession() {
   return session.fromPartition(PARTITION)
@@ -404,6 +405,11 @@ function registerIpc(): void {
       await setLibraryPath(next.libraryPath)
     }
     return next
+  })
+
+  ipcMain.handle('ai.cancel', (_e, payload?: { jobId?: string }) => {
+    aiJobSlot.cancel(payload?.jobId)
+    return { ok: true }
   })
 
   ipcMain.handle('ai.clean', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {

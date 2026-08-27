@@ -1,4 +1,4 @@
-import type { AiChatMessage, AiCleanResult, ChapterStatus } from '../shared/types'
+import type { AiChatMessage, AiCleanResult, AiJobStart, ChapterStatus } from '../shared/types'
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -9,8 +9,37 @@ interface ChatResponse {
   choices: { message: { content: string } }[]
 }
 
-export const AI_REQUEST_TIMEOUT_MS = 30_000
+export const AI_REQUEST_TIMEOUT_MS = 120_000
 export const AI_CHAT_HISTORY_LIMIT = 8
+export const AI_BUSY_MESSAGE = '请先停止当前生成'
+
+let nextAiJobId = 0
+
+/** Main-process single slot for every streaming AI request. */
+export class AiJobSlot {
+  private current: { jobId: string; controller: AbortController } | null = null
+
+  get busy(): boolean {
+    return this.current !== null
+  }
+
+  start(run: (jobId: string, signal: AbortSignal) => Promise<void>): AiJobStart {
+    if (this.current) return { ok: false, message: AI_BUSY_MESSAGE }
+    const jobId = `ai-${Date.now()}-${++nextAiJobId}`
+    const controller = new AbortController()
+    this.current = { jobId, controller }
+    void Promise.resolve().then(() => run(jobId, controller.signal)).catch(() => {}).finally(() => {
+      if (this.current?.jobId === jobId) this.current = null
+    })
+    return { ok: true, jobId }
+  }
+
+  cancel(jobId?: string): void {
+    if (!this.current || (jobId && this.current.jobId !== jobId)) return
+    this.current.controller.abort()
+  }
+}
+
 
 export function formatAiRequestError(status: number, bodyText = ''): string {
   const snippet = bodyText.slice(0, 200)
@@ -73,6 +102,60 @@ export interface AiConfig {
   baseUrl: string
   model: string
   apiKey: string
+}
+
+/** Parse OpenAI-compatible SSE `data:` lines into deltas. */
+export async function streamChatCompletion(
+  config: AiConfig,
+  messages: ChatMessage[],
+  signal: AbortSignal,
+  onDelta: (delta: string) => void,
+): Promise<string> {
+  const timeout = AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS)
+  const requestSignal = AbortSignal.any([signal, timeout])
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+      body: JSON.stringify({ model: config.model, messages, temperature: 0.3, stream: true }),
+      signal: requestSignal,
+    })
+    if (!res.ok) throw new Error(formatAiRequestError(res.status, await res.text().catch(() => '')))
+    if (!res.body) throw new Error('模型服务未返回流式内容')
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let pending = ''
+    let text = ''
+    const consume = (line: string) => {
+      const value = line.trim()
+      if (!value.startsWith('data:')) return
+      const data = value.slice(5).trim()
+      if (!data || data === '[DONE]') return
+      try {
+        const delta = (JSON.parse(data) as { choices?: Array<{ delta?: { content?: unknown } }> })
+          .choices?.[0]?.delta?.content
+        if (typeof delta === 'string' && delta) {
+          text += delta
+          onDelta(delta)
+        }
+      } catch {
+        // Ignore malformed provider frames instead of corrupting accumulated text.
+      }
+    }
+    while (true) {
+      const { done, value } = await reader.read()
+      pending += decoder.decode(value, { stream: !done })
+      const lines = pending.split(/\r?\n/)
+      pending = lines.pop() ?? ''
+      lines.forEach(consume)
+      if (done) break
+    }
+    if (pending) consume(pending)
+    return text
+  } catch (e: unknown) {
+    throw new Error(formatAiTransportError(e))
+  }
 }
 
 export async function cleanChapterBody(
