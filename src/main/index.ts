@@ -14,6 +14,7 @@ import {
   setLibraryPath,
   readSummaries,
   writeChapterSummary,
+  writeStorySoFar,
   readCharacterCard,
   writeCharacterCard,
   assertImportable,
@@ -27,7 +28,7 @@ import { exportBook } from './exportBook'
 import { searchInBook } from './search'
 import { createBackup, restoreBackup } from './backup'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
-import { AiJobSlot, buildChapterSummaryPrompt, cleanChapterBody, summarizeUpTo, streamChatCompletion, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
+import { AiJobSlot, buildChapterSummaryPrompt, buildStorySoFarPrompt, cleanChapterBody, summarizeUpTo, streamChatCompletion, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -410,6 +411,46 @@ function registerIpc(): void {
   ipcMain.handle('ai.cancel', (_e, payload?: { jobId?: string }) => {
     aiJobSlot.cancel(payload?.jobId)
     return { ok: true }
+  })
+
+  ipcMain.handle('ai.storySoFar', async (_e, { bookId, uptoChapterId }: { bookId: string; uptoChapterId: string }) => {
+    try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const book = await getBook(bookId)
+      if (!book.progress?.chapterId) return { ok: false, message: '还没有阅读进度，打开阅读器读几章再来。' }
+      const requested = book.chapters.findIndex((chapter) => chapter.id === uptoChapterId)
+      const progressed = book.chapters.findIndex((chapter) => chapter.id === book.progress!.chapterId)
+      const cutoff = Math.min(requested, progressed)
+      if (cutoff < 0) return { ok: false, message: '章节不存在' }
+      const stored = await readSummaries(bookId)
+      const read = book.chapters.slice(0, cutoff + 1).filter((chapter) => chapter.status === 'ready')
+      const summaries = read.map((chapter) => ({ title: chapter.title, text: stored.byChapter[chapter.id] || '' })).filter((item) => item.text)
+      if (!summaries.length) return { ok: false, message: '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。' }
+      const missing = read.length - summaries.length
+      return aiJobSlot.start(async (jobId, signal) => {
+        try {
+          const generated = await streamChatCompletion(
+            { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+            [{ role: 'user', content: buildStorySoFarPrompt(book.title, summaries) }], signal,
+            (delta) => mainWindow?.webContents.send('ai.chunk', { jobId, delta }),
+          )
+          const text = `${missing > 0 ? `以下仅根据已有摘要的章节整理，另有 ${missing} 章尚未生成本章摘要。\n\n` : ''}${generated}`
+          try {
+            await writeStorySoFar(bookId, book.chapters[cutoff]!.id, text)
+          } catch {
+            mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
+            return
+          }
+          mainWindow?.webContents.send('ai.done', { jobId, ok: true, text })
+        } catch (e: unknown) {
+          mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: e instanceof Error ? e.message : String(e) })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   ipcMain.handle('ai.summarizeChapter', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {

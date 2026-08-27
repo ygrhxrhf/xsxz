@@ -158,6 +158,11 @@ export async function streamChatCompletion(
   }
 }
 
+export function buildStorySoFarPrompt(bookTitle: string, summaries: Array<{ title: string; text: string }>): string {
+  const context = summaries.map((item) => `【${item.title}】\n${item.text}`).join('\n\n')
+  return `你是一个小说阅读助手。请只根据以下已读章节摘要，合成为不超过 400 字的前情提要。不要剧透后续内容，只返回前情正文。\n\n书名：《${bookTitle}》\n已读摘要：\n${context}`
+}
+
 export function buildChapterSummaryPrompt(bookTitle: string, chapterTitle: string, body: string): string {
   const clipped = body.slice(0, 8000)
   const truncated = body.length > clipped.length

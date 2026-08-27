@@ -559,6 +559,15 @@ export async function writeChapterSummary(bookId: string, chapterId: string, tex
   await writeFile(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), 'utf-8')
 }
 
+export async function writeStorySoFar(bookId: string, uptoChapterId: string, text: string): Promise<void> {
+  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+  const data = await readSummaries(bookId)
+  const updatedAt = now()
+  data.storySoFar = { uptoChapterId, text, updatedAt }
+  data.updatedAt = updatedAt
+  await writeFile(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), 'utf-8')
+}
+
 export async function readCharacterCard(bookId: string): Promise<CharacterCard | null> {
   try {
     return JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'characters.json'), 'utf-8')) as CharacterCard
