@@ -30,7 +30,7 @@ import { exportBook } from './exportBook'
 import { searchInBook } from './search'
 import { createBackup, restoreBackup } from './backup'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
-import { AiJobSlot, buildChapterSummaryPrompt, buildStorySoFarPrompt, cleanChapterBody, summarizeUpTo, streamChatCompletion, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
+import { AiJobSlot, buildBookChatMessages, buildChapterSummaryPrompt, buildStorySoFarPrompt, cleanChapterBody, summarizeUpTo, streamChatCompletion, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -415,6 +415,15 @@ function registerIpc(): void {
     catch (e: unknown) { return { ok: false, message: e instanceof Error ? e.message : String(e) } }
   })
 
+  ipcMain.handle('ai.clearChat', async (_e, { bookId }: { bookId: string }) => {
+    try {
+      await writeChat(bookId, [])
+      return { ok: true }
+    } catch {
+      return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
+    }
+  })
+
   ipcMain.handle('ai.cancel', (_e, payload?: { jobId?: string }) => {
     aiJobSlot.cancel(payload?.jobId)
     return { ok: true }
@@ -556,6 +565,82 @@ function registerIpc(): void {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
+  ipcMain.handle('ai.chatStream', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
+    try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const book = await getBook(args.bookId)
+      const ch = await readChapter(args.bookId, args.chapterId)
+      const uptoIdx = book.chapters.findIndex((chapter) => chapter.id === args.chapterId)
+      if (uptoIdx < 0) return { ok: false, message: '章节不存在' }
+      const catalogSummary = book.chapters.slice(0, uptoIdx + 1).map((chapter) => chapter.title).join('、')
+      const stored = await readSummaries(args.bookId)
+      const readSummary = book.chapters
+        .slice(0, uptoIdx + 1)
+        .map((chapter) => stored.byChapter[chapter.id])
+        .filter(Boolean)
+        .join('\n\n')
+      const persistedMessages = args.messages.filter((message) => message.role !== 'system')
+      const apiMessages = buildBookChatMessages(
+        book.title,
+        ch.title,
+        ch.body,
+        catalogSummary,
+        readSummary,
+        args.messages,
+      )
+      return aiJobSlot.start(async (jobId, signal) => {
+        try {
+          await writeChat(args.bookId, persistedMessages)
+        } catch {
+          mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
+          return
+        }
+
+        let partial = ''
+        try {
+          const text = await streamChatCompletion(
+            { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+            apiMessages,
+            signal,
+            (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
+          )
+          try {
+            await writeChat(args.bookId, [...persistedMessages, { role: 'assistant', content: text }])
+          } catch {
+            mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
+            return
+          }
+          mainWindow?.webContents.send('ai.done', { jobId, ok: true, text })
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            try {
+              await writeChat(args.bookId, partial
+                ? [...persistedMessages, { role: 'assistant', content: partial }]
+                : persistedMessages)
+            } catch {
+              mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
+              return
+            }
+            mainWindow?.webContents.send('ai.done', { jobId, ok: true, text: partial })
+            return
+          }
+          mainWindow?.webContents.send('ai.done', {
+            jobId,
+            ok: false,
+            message: e instanceof Error ? e.message : String(e),
+          })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
   ipcMain.handle('ai.chat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
     try {
       const settings = await getSettings()

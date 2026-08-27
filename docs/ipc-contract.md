@@ -172,6 +172,8 @@
 | `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string }` | `AiJobStart` |
 | `ai.getSummaries` | invoke | `{ bookId: string }` | `{ ok: true; summaries: AiSummaries } \| { ok: false; message: string }` |
 | `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart` |
+| `ai.getChat` | invoke | `{ bookId: string }` | `{ ok: true; messages: AiChatMessage[] } \| { ok: false; message: string }` |
+| `ai.clearChat` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.translateStream` | invoke | `{ text: string }` | `AiJobStart` |
 | `ai.cancel` | invoke | `{ jobId?: string }` | `{ ok: true }` |
 | `ai.chunk` | 主→渲染 | — | `AiChunkEvent` |
@@ -200,7 +202,7 @@ window.api = {
   settings: { get, set },
   backup: { create, restore },
   siteRules: { list, upsert, remove },
-  ai: { clean, summarize, translate, chat, test, characterCard, getCharacterCard, summarizeChapter, storySoFar, getSummaries, chatStream, translateStream, cancel, onChunk, onDone },
+  ai: { clean, summarize, translate, chat, getChat, clearChat, test, characterCard, getCharacterCard, summarizeChapter, storySoFar, getSummaries, chatStream, translateStream, cancel, onChunk, onDone },
   annotations: { list, add, update, remove },
 }
 ```

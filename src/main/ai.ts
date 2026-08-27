@@ -1,6 +1,6 @@
 import type { AiChatMessage, AiCleanResult, AiJobStart, ChapterStatus } from '../shared/types'
 
-interface ChatMessage {
+export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
 }
@@ -324,15 +324,14 @@ ${text}`
   ])
 }
 
-export async function chatAboutBook(
-  config: AiConfig,
+export function buildBookChatMessages(
   bookTitle: string,
   currentChapterTitle: string,
   currentChapterBody: string,
   catalogSummary: string,
   readSummary: string,
   messages: AiChatMessage[],
-): Promise<string> {
+): ChatMessage[] {
   const systemPrompt = `你是一个小说阅读助手。你正在帮读者阅读《${bookTitle}》。
 
 当前章节：${currentChapterTitle}
@@ -347,12 +346,27 @@ ${currentChapterBody.slice(0, 2000)}
 
 请基于以上内容回答读者的问题。只使用当前章及之前的信息。如果问题涉及未读内容，请说明你只知道到当前章节为止的内容。`
 
-  const apiMessages: ChatMessage[] = [
+  return [
     { role: 'system', content: systemPrompt },
     ...clipChatMessages(messages).map((m) => ({ role: m.role, content: m.content })),
   ]
+}
 
-  return chatCompletion(config.baseUrl, config.apiKey, config.model, apiMessages)
+export async function chatAboutBook(
+  config: AiConfig,
+  bookTitle: string,
+  currentChapterTitle: string,
+  currentChapterBody: string,
+  catalogSummary: string,
+  readSummary: string,
+  messages: AiChatMessage[],
+): Promise<string> {
+  return chatCompletion(
+    config.baseUrl,
+    config.apiKey,
+    config.model,
+    buildBookChatMessages(bookTitle, currentChapterTitle, currentChapterBody, catalogSummary, readSummary, messages),
+  )
 }
 
 export async function testConnection(config: AiConfig): Promise<string> {

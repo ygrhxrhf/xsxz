@@ -134,6 +134,7 @@ const api = {
     chat: (bookId: string, chapterId: string, messages: AiChatMessage[]) =>
       ipcRenderer.invoke('ai.chat', { bookId, chapterId, messages }),
     getChat: (bookId: string) => ipcRenderer.invoke('ai.getChat', { bookId }) as Promise<{ ok: true; messages: AiChatMessage[] } | { ok: false; message: string }>,
+    clearChat: (bookId: string) => ipcRenderer.invoke('ai.clearChat', { bookId }) as Promise<{ ok: true } | { ok: false; message: string }>,
     test: (opts?: { baseUrl?: string; model?: string; apiKey?: string }) =>
       ipcRenderer.invoke('ai.test', opts) as Promise<{ ok: boolean; text?: string; message?: string }>,
     characterCard: (bookId: string, uptoChapterId: string) =>

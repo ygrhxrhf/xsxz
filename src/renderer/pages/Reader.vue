@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace, useMessage } from 'naive-ui'
+import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace, NPopconfirm, useMessage } from 'naive-ui'
 import { FAIL_CODE_ZH } from '@shared/types'
 import type { Book, ChapterMeta, AiChatMessage } from '@shared/types'
 import { failAdvice, filterCatalogChapters, formatCharacterCard, readerProgressLabel, resolveReaderKey } from './readerHelpers'
@@ -44,6 +44,8 @@ const recapLoading = computed(() => Boolean(recapJobId.value))
 const chatMessages = ref<AiChatMessage[]>([])
 const chatInput = ref('')
 const chatLoading = ref(false)
+const chatJobId = ref('')
+const chatAssistantIndex = ref(-1)
 const catalogQuery = ref('')
 const scrollRatioView = ref(0)
 const retryingChapter = ref(false)
@@ -684,25 +686,46 @@ async function aiTranslate() {
 }
 
 function askSuggested(question: string) {
+  if (chatLoading.value) {
+    message.warning('请先停止当前生成')
+    return
+  }
   chatInput.value = question
   void sendChat()
 }
 
 async function sendChat() {
   if (!book.value || !currentChapter.value || !chatInput.value.trim()) return
+  if (chatLoading.value) {
+    message.warning('请先停止当前生成')
+    return
+  }
   const userMsg = chatInput.value.trim()
   chatMessages.value.push({ role: 'user', content: userMsg })
   chatInput.value = ''
+  const res = await window.api.ai.chatStream(book.value.id, currentChapter.value.id, chatMessages.value)
+  if (!res.ok) {
+    chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
+    return
+  }
+  chatJobId.value = res.jobId
   chatLoading.value = true
-  try {
-    const res = await window.api.ai.chat(book.value.id, currentChapter.value.id, chatMessages.value)
-    if (res.ok) {
-      chatMessages.value.push({ role: 'assistant', content: res.text })
-    } else {
-      chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
-    }
-  } finally {
-    chatLoading.value = false
+  chatMessages.value.push({ role: 'assistant', content: '' })
+  chatAssistantIndex.value = chatMessages.value.length - 1
+}
+
+function stopChat() {
+  if (chatJobId.value) void window.api.ai.cancel(chatJobId.value)
+}
+
+async function clearChat() {
+  if (!book.value || chatLoading.value) return
+  const res = await window.api.ai.clearChat(book.value.id)
+  if (res.ok) {
+    chatMessages.value = []
+    chatInput.value = ''
+  } else {
+    message.error(res.message)
   }
 }
 
@@ -755,7 +778,7 @@ watch([ttsRate, ttsAutoNext], () => {
 
 watch(() => props.bookId, (id) => { if (id) loadBook(id) })
 watch(showChat, async (open) => {
-  if (!open || !book.value) return
+  if (!open || !book.value || chatLoading.value) return
   const res = await window.api.ai.getChat(book.value.id)
   if (res.ok) chatMessages.value = res.messages
 })
@@ -764,8 +787,26 @@ onMounted(async () => {
   window.addEventListener('keydown', onReaderKeydown)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => {
     if (jobId === recapJobId.value) recapText.value += delta
+    if (jobId === chatJobId.value && chatAssistantIndex.value >= 0) {
+      const assistant = chatMessages.value[chatAssistantIndex.value]
+      if (assistant) assistant.content += delta
+    }
   })
   unsubAiDone = window.api.ai.onDone((event) => {
+    if (event.jobId === chatJobId.value) {
+      const assistantIndex = chatAssistantIndex.value
+      const assistant = chatMessages.value[assistantIndex]
+      if (event.ok) {
+        if (assistant) assistant.content = event.text
+        if (!event.text && assistantIndex >= 0) chatMessages.value.splice(assistantIndex, 1)
+      } else if (assistant) {
+        assistant.content = `错误：${event.message}`
+      }
+      chatJobId.value = ''
+      chatAssistantIndex.value = -1
+      chatLoading.value = false
+      return
+    }
     if (event.jobId !== recapJobId.value) return
     const kind = recapJobKind.value
     recapJobId.value = ''
@@ -969,11 +1010,7 @@ onUnmounted(() => {
             <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
               <div class="chat-bubble">{{ msg.content }}</div>
             </div>
-            <div v-if="chatLoading" class="chat-msg assistant">
-              <div class="chat-bubble">思考中…</div>
-            </div>
             <div v-if="chatMessages.length === 0 && !chatLoading" class="chat-empty">
-              <p>问点什么吧</p>
               <n-space>
                 <n-button size="tiny" @click="askSuggested('这章讲了什么？')">这章讲了什么？</n-button>
                 <n-button size="tiny" @click="askSuggested('主角现在什么状态？')">主角现在什么状态？</n-button>
@@ -983,15 +1020,24 @@ onUnmounted(() => {
           </div>
           <template #footer>
             <div class="chat-input-row">
+              <n-popconfirm
+                positive-text="确定"
+                negative-text="取消"
+                @positive-click="clearChat"
+              >
+                清空后无法恢复，确定清空？
+                <template #trigger>
+                  <n-button :disabled="chatLoading || chatMessages.length === 0">清空对话</n-button>
+                </template>
+              </n-popconfirm>
               <n-input
                 v-model:value="chatInput"
                 placeholder="输入问题…"
                 :disabled="chatLoading"
                 @keyup.enter="sendChat"
               />
-              <n-button type="primary" :loading="chatLoading" :disabled="!chatInput.trim()" @click="sendChat">
-                发送
-              </n-button>
+              <n-button v-if="chatLoading" type="warning" @click="stopChat">停止</n-button>
+              <n-button v-else type="primary" :disabled="!chatInput.trim()" @click="sendChat">发送</n-button>
             </div>
           </template>
         </n-drawer-content>
