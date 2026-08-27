@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildChapterSummaryPrompt,
   buildSummarizePrompt,
   clampSummarizeChapters,
   summarizeUpTo,
@@ -79,6 +80,17 @@ describe('clampSummarizeChapters', () => {
     }
     const clamped = clampSummarizeChapters(many, 'c0012', 'c0003')
     expect(clamped.map((c) => c.id)).toEqual(['c0001', 'c0002', 'c0003'])
+  })
+})
+
+describe('buildChapterSummaryPrompt', () => {
+  it('limits a chapter to 8000 characters and asks for an 80–150 character spoiler-free summary', () => {
+    const prompt = buildChapterSummaryPrompt('测试书', '第一章', `${'甲'.repeat(8000)}未送入模型`)
+    expect(prompt).toContain('80–150 字')
+    expect(prompt).toContain('不要剧透后续章节')
+    expect(prompt).toContain('正文过长，以下内容已截断')
+    expect(prompt).toContain('甲'.repeat(8000))
+    expect(prompt).not.toContain('未送入模型')
   })
 })
 

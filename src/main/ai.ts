@@ -158,6 +158,18 @@ export async function streamChatCompletion(
   }
 }
 
+export function buildChapterSummaryPrompt(bookTitle: string, chapterTitle: string, body: string): string {
+  const clipped = body.slice(0, 8000)
+  const truncated = body.length > clipped.length
+  return `你是一个小说阅读助手。请只根据以下当前章节内容，写出 80–150 字的本章摘要。不要剧透后续章节，不要补充章节外信息，只返回摘要正文。
+
+书名：《${bookTitle}》
+章节：${chapterTitle}
+${truncated ? '提示：正文过长，以下内容已截断。\n' : ''}
+正文：
+${clipped}`
+}
+
 export async function cleanChapterBody(
   config: AiConfig,
   chapterTitle: string,
