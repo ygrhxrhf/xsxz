@@ -36,6 +36,11 @@ const aiResult = ref('')
 const aiResultTitle = ref('')
 const showAiResult = ref(false)
 const showChat = ref(false)
+const showRecap = ref(false)
+const recapText = ref('')
+const recapJobId = ref('')
+const recapJobKind = ref<'chapter' | 'story' | ''>('')
+const recapLoading = computed(() => Boolean(recapJobId.value))
 const chatMessages = ref<AiChatMessage[]>([])
 const chatInput = ref('')
 const chatLoading = ref(false)
@@ -410,6 +415,8 @@ function onReaderKeydown(e: KeyboardEvent) {
 // Debounced scroll save
 let scrollTimer: ReturnType<typeof setTimeout> | null = null
 let unsubDownload: (() => void) | null = null
+let unsubAiChunk: (() => void) | null = null
+let unsubAiDone: (() => void) | null = null
 
 const nightClass = computed(() => (nightMode.value ? 'night' : ''))
 const contentStyle = computed(() => ({
@@ -620,6 +627,36 @@ async function aiSummarize() {
   }
 }
 
+async function openRecap() {
+  if (!book.value) return
+  showRecap.value = true
+  if (!book.value.progress?.chapterId) {
+    recapText.value = '还没有阅读进度，打开阅读器读几章再来。'
+    return
+  }
+  const res = await window.api.ai.getSummaries(book.value.id)
+  recapText.value = res.ok ? (res.summaries.storySoFar?.text || '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。') : res.message
+}
+
+async function startRecap(kind: 'chapter' | 'story') {
+  if (!book.value || !currentChapter.value) return
+  const res = kind === 'chapter'
+    ? await window.api.ai.summarizeChapter(book.value.id, currentChapter.value.id)
+    : await window.api.ai.storySoFar(book.value.id, currentChapter.value.id)
+  if (!res.ok) {
+    message.error(res.message)
+    return
+  }
+  recapJobId.value = res.jobId
+  recapJobKind.value = kind
+  recapText.value = ''
+  showRecap.value = true
+}
+
+function stopRecap() {
+  if (recapJobId.value) void window.api.ai.cancel(recapJobId.value)
+}
+
 function getSelectedText(): string {
   const sel = window.getSelection()
   return sel ? sel.toString().trim() : ''
@@ -715,6 +752,21 @@ watch(() => props.bookId, (id) => { if (id) loadBook(id) })
 
 onMounted(async () => {
   window.addEventListener('keydown', onReaderKeydown)
+  unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => {
+    if (jobId === recapJobId.value) recapText.value += delta
+  })
+  unsubAiDone = window.api.ai.onDone((event) => {
+    if (event.jobId !== recapJobId.value) return
+    const kind = recapJobKind.value
+    recapJobId.value = ''
+    recapJobKind.value = ''
+    if (event.ok) {
+      recapText.value = event.text
+      if (kind === 'chapter') message.success('本章摘要已保存')
+    } else {
+      recapText.value = `错误：${event.message}`
+    }
+  })
   await loadPrefs()
   prefsReady.value = true
   if (props.bookId) await loadBook(props.bookId)
@@ -737,6 +789,8 @@ onUnmounted(() => {
   ttsStop()
   if (scrollTimer) clearTimeout(scrollTimer)
   unsubDownload?.()
+  unsubAiChunk?.()
+  unsubAiDone?.()
   saveProgress()
 })
 </script>
@@ -802,7 +856,7 @@ onUnmounted(() => {
             <n-space vertical :size="6">
               <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCleanBody">清正文</n-button>
               <n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button>
-              <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiSummarize">前情摘要</n-button>
+              <n-button size="tiny" block @click="openRecap">看到这里</n-button>
               <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCharacterCard">人物卡</n-button>
               <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiTranslate">翻译选中</n-button>
               <n-button size="tiny" block :disabled="!chapterReady" @click="showChat = true">聊书</n-button>
@@ -878,6 +932,21 @@ onUnmounted(() => {
             <n-space v-if="aiResultTitle === '清正文'">
               <n-button type="primary" size="small" @click="applyCleanedBody">应用到正文</n-button>
               <n-button size="small" @click="showAiResult = false">取消</n-button>
+            </n-space>
+          </template>
+        </n-drawer-content>
+      </n-drawer>
+
+      <n-drawer v-model:show="showRecap" placement="right" :width="420">
+        <n-drawer-content title="看到这里" closable>
+          <div class="ai-result">{{ recapText }}</div>
+          <template #footer>
+            <n-space>
+              <n-button v-if="recapLoading" type="warning" @click="stopRecap">停止</n-button>
+              <template v-else>
+                <n-button :disabled="!book?.progress?.chapterId" type="primary" @click="startRecap('story')">刷新看到这里</n-button>
+                <n-button :disabled="!chapterReady" @click="startRecap('chapter')">生成本章摘要</n-button>
+              </template>
             </n-space>
           </template>
         </n-drawer-content>
