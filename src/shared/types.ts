@@ -269,9 +269,41 @@ export interface AiChatMessage {
   content: string
 }
 
+export interface AiStorySoFar {
+  /** 合成前情的已读截止章节 */
+  uptoChapterId: string
+  /** 仅根据该截止范围内已保存的本章摘要合成 */
+  text: string
+  updatedAt: string
+}
+
+/** 每书 ai/summaries.json v2；byChapter 只保存单章摘要。 */
 export interface AiSummaries {
-  /** chapterId → 摘要；只含已读章 */
+  version: number
+  /** chapterId → 本章摘要；只含已读章，不能存合成前情 */
   byChapter: Record<string, string>
+  storySoFar?: AiStorySoFar
+  updatedAt: string
+}
+
+/** 异步 AI 任务的启动响应。 */
+export type AiJobStart = { ok: true; jobId: string } | { ok: false; message: string }
+
+/** 主进程发送的流式文本增量。 */
+export interface AiChunkEvent {
+  jobId: string
+  delta: string
+}
+
+/** 主进程发送的流式任务终态。 */
+export type AiDoneEvent =
+  | { jobId: string; ok: true; text: string }
+  | { jobId: string; ok: false; message: string }
+
+/** 每书 ai/chat.json 的内容；不包含 system 消息或 API Key。 */
+export interface AiChatFile {
+  version: 1
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>
   updatedAt: string
 }
 

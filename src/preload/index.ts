@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AiChatMessage,
+  AiChunkEvent,
+  AiDoneEvent,
+  AiJobStart,
+  AiSummaries,
   BookListItem,
   BrowseState,
   ChapterFile,
@@ -141,6 +145,22 @@ const api = {
         | { ok: true; card: import('../shared/types').CharacterCard | null }
         | { ok: false; message: string }
       >,
+    summarizeChapter: (bookId: string, chapterId: string) =>
+      ipcRenderer.invoke('ai.summarizeChapter', { bookId, chapterId }) as Promise<AiJobStart>,
+    storySoFar: (bookId: string, uptoChapterId: string) =>
+      ipcRenderer.invoke('ai.storySoFar', { bookId, uptoChapterId }) as Promise<AiJobStart>,
+    getSummaries: (bookId: string) =>
+      ipcRenderer.invoke('ai.getSummaries', { bookId }) as Promise<
+        | { ok: true; summaries: AiSummaries }
+        | { ok: false; message: string }
+      >,
+    chatStream: (bookId: string, chapterId: string, messages: AiChatMessage[]) =>
+      ipcRenderer.invoke('ai.chatStream', { bookId, chapterId, messages }) as Promise<AiJobStart>,
+    translateStream: (text: string) =>
+      ipcRenderer.invoke('ai.translateStream', { text }) as Promise<AiJobStart>,
+    cancel: (jobId?: string) => ipcRenderer.invoke('ai.cancel', { jobId }) as Promise<{ ok: true }>,
+    onChunk: (handler: (payload: AiChunkEvent) => void) => on('ai.chunk', handler),
+    onDone: (handler: (payload: AiDoneEvent) => void) => on('ai.done', handler),
   },
 }
 

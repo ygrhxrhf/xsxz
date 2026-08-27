@@ -168,6 +168,14 @@
 | `ai.test` | invoke | `{ baseUrl?: string; model?: string; apiKey?: string }`（均可空，空则用已保存设置） | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.characterCard` | invoke | `{ bookId: string; uptoChapterId: string }` | `{ ok: true; card: CharacterCard } \| { ok: false; message: string }` |
 | `ai.getCharacterCard` | invoke | `{ bookId: string }` | `{ ok: true; card: CharacterCard \| null } \| { ok: false; message: string }` |
+| `ai.summarizeChapter` | invoke | `{ bookId: string; chapterId: string }` | `AiJobStart` |
+| `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string }` | `AiJobStart` |
+| `ai.getSummaries` | invoke | `{ bookId: string }` | `{ ok: true; summaries: AiSummaries } \| { ok: false; message: string }` |
+| `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart` |
+| `ai.translateStream` | invoke | `{ text: string }` | `AiJobStart` |
+| `ai.cancel` | invoke | `{ jobId?: string }` | `{ ok: true }` |
+| `ai.chunk` | 主→渲染 | — | `AiChunkEvent` |
+| `ai.done` | 主→渲染 | — | `AiDoneEvent` |
 
 未配置 Key 或网络失败：返回 `{ ok: false; message }`，不得影响浏览/下载/阅读。
 
@@ -176,6 +184,8 @@
 `ai.summarize` 把截止夹紧到已存阅读进度 `book.progress.chapterId`（若有）：只读该截止内 `ready` 章正文，再取其中最近 10 章。不得把进度之后的未读章送进模型。无进度时以请求的 `uptoChapterId` 为截止。
 
 `ai.characterCard`（人物卡 / 伏笔追踪）沿用同一夹紧规则：目录、已读摘要、最近 3 章已读正文节选进入提示词；未读内容绝不进模型。生成结果解析为 JSON 存 `<bookDir>/ai/characters.json` 并返回；解析失败保留 `raw` 兜底展示。`ai.getCharacterCard` 只读取上次保存的卡。
+
+本战役新增的流式频道统一先返回 `AiJobStart`。成功的 `jobId` 对应后续零或多个 `ai.chunk`（SSE `delta`）和恰好一个 `ai.done`；失败也只由 `ai.done` 给出 `{ ok:false, message }`。`ai.cancel` 只中断当前同 ID 的任务；遗漏或过期 ID 仍返回 `{ ok:true }`。新频道尚未实现 handler 时不得由 UI 调用，后续切片会补齐实现。
 
 ---
 
@@ -190,7 +200,7 @@ window.api = {
   settings: { get, set },
   backup: { create, restore },
   siteRules: { list, upsert, remove },
-  ai: { clean, summarize, translate, chat, test, characterCard, getCharacterCard },
+  ai: { clean, summarize, translate, chat, test, characterCard, getCharacterCard, summarizeChapter, storySoFar, getSummaries, chatStream, translateStream, cancel, onChunk, onDone },
   annotations: { list, add, update, remove },
 }
 ```

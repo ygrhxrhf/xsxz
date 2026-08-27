@@ -98,7 +98,43 @@
 
 ## ai/summaries.json
 
-对齐 `AiSummaries`。只写已读章摘要。缺省文件视为无摘要。
+对齐 `AiSummaries` v2。缺省文件视为 `{ version: 2, byChapter: {}, updatedAt: <当前 ISO-8601> }`。
+
+```json
+{
+  "version": 2,
+  "byChapter": { "c0001": "本章摘要" },
+  "storySoFar": {
+    "uptoChapterId": "c0012",
+    "text": "合成前情",
+    "updatedAt": "ISO-8601"
+  },
+  "updatedAt": "ISO-8601"
+}
+```
+
+- `byChapter` 的值只能是单章摘要，不能写合成前情；只可包含已读范围内章节。
+- `storySoFar` 只保存基于已读范围内现有 `byChapter` 合成的前情；缺省表示尚未合成。
+- 读取旧版（无 `version: 2`）时：旧 `byChapter` 不得作为章摘要送模型。优先把 `book.progress.chapterId` 对应旧文本搬到 `storySoFar`；否则搬迁 chapters 中 index 最大且有旧文本的一条；之后清空 `byChapter` 并以 v2 回写。非对象或 `byChapter` 非对象视为空 v2，不能导致阅读器崩溃。
+
+---
+
+## ai/chat.json
+
+对齐 `AiChatFile`：
+
+```json
+{
+  "version": 1,
+  "messages": [
+    { "role": "user", "content": "这章讲了什么？" },
+    { "role": "assistant", "content": "……" }
+  ],
+  "updatedAt": "ISO-8601"
+}
+```
+
+每书独立保存，不含 system 消息或 API Key；最多 40 条，超过时丢弃最旧条目。缺失或损坏文件按空历史处理。
 
 ---
 
