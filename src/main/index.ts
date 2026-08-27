@@ -515,8 +515,11 @@ function registerIpc(): void {
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const ch = await readChapter(bookId, chapterId)
       if (!ch.body) return { ok: false, message: '当前章节没有可清理的正文' }
-      const result = await cleanChapterBody({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, ch.title, ch.body)
-      return { ok: true, result }
+      const exclusive = await aiJobSlot.runExclusive(() =>
+        cleanChapterBody({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, ch.title, ch.body),
+      )
+      if (!exclusive.ok) return exclusive
+      return { ok: true, result: exclusive.value }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
@@ -762,7 +765,7 @@ function registerIpc(): void {
           /* skip */
         }
       }
-      const raw = await generateCharacterCard(
+      const exclusive = await aiJobSlot.runExclusive(() => generateCharacterCard(
         { baseUrl: settings.baseUrl, model: settings.model, apiKey },
         {
           bookTitle: book.title,
@@ -771,7 +774,9 @@ function registerIpc(): void {
           chapterSummaries,
           recentBodies,
         },
-      )
+      ))
+      if (!exclusive.ok) return exclusive
+      const raw = exclusive.value
       const parsed = parseCharacterCard(raw)
       const card = {
         version: 1 as const,

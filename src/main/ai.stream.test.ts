@@ -51,4 +51,19 @@ describe('AiJobSlot', () => {
     release()
     await vi.waitFor(() => expect(slot.busy).toBe(false))
   })
+
+  it('shares the same slot with non-streaming AI work', async () => {
+    const slot = new AiJobSlot()
+    let release!: () => void
+    const first = slot.runExclusive(async () => {
+      await new Promise<void>((resolve) => { release = resolve })
+      return '完成'
+    })
+    await Promise.resolve()
+    expect(slot.start(async () => {})).toEqual({ ok: false, message: AI_BUSY_MESSAGE })
+    expect(await slot.runExclusive(async () => '第二个')).toEqual({ ok: false, message: AI_BUSY_MESSAGE })
+    release()
+    await expect(first).resolves.toEqual({ ok: true, value: '完成' })
+    expect(slot.busy).toBe(false)
+  })
 })

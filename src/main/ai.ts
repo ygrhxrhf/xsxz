@@ -34,6 +34,17 @@ export class AiJobSlot {
     return { ok: true, jobId }
   }
 
+  async runExclusive<T>(run: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; message: string }> {
+    if (this.current) return { ok: false, message: AI_BUSY_MESSAGE }
+    const jobId = `ai-${Date.now()}-${++nextAiJobId}`
+    this.current = { jobId, controller: new AbortController() }
+    try {
+      return { ok: true, value: await run() }
+    } finally {
+      if (this.current?.jobId === jobId) this.current = null
+    }
+  }
+
   cancel(jobId?: string): void {
     if (!this.current || (jobId && this.current.jobId !== jobId)) return
     this.current.controller.abort()
