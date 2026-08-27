@@ -754,6 +754,11 @@ watch([ttsRate, ttsAutoNext], () => {
 })
 
 watch(() => props.bookId, (id) => { if (id) loadBook(id) })
+watch(showChat, async (open) => {
+  if (!open || !book.value) return
+  const res = await window.api.ai.getChat(book.value.id)
+  if (res.ok) chatMessages.value = res.messages
+})
 
 onMounted(async () => {
   window.addEventListener('keydown', onReaderKeydown)

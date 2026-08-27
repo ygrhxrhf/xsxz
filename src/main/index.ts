@@ -16,6 +16,7 @@ import {
   writeChapterSummary,
   writeStorySoFar,
   writeChat,
+  readChat,
   readCharacterCard,
   writeCharacterCard,
   assertImportable,
@@ -407,6 +408,11 @@ function registerIpc(): void {
       await setLibraryPath(next.libraryPath)
     }
     return next
+  })
+
+  ipcMain.handle('ai.getChat', async (_e, { bookId }: { bookId: string }) => {
+    try { return { ok: true, messages: (await readChat(bookId)).messages } }
+    catch (e: unknown) { return { ok: false, message: e instanceof Error ? e.message : String(e) } }
   })
 
   ipcMain.handle('ai.cancel', (_e, payload?: { jobId?: string }) => {
