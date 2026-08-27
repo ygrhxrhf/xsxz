@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NTag, NPopconfirm, NModal, NDropdown, useMessage } from 'naive-ui'
+import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, TrashItem } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
@@ -39,8 +39,14 @@ const failedOpen = ref(false)
 const failedTitle = ref('')
 const failedBookId = ref('')
 const failedRows = ref<ChapterMeta[]>([])
+const recapOpen = ref(false)
+const recapBook = ref<BookListItem | null>(null)
+const recapText = ref('')
+const recapJobId = ref('')
 let unsubProgress: (() => void) | null = null
 let unsubCheckAll: (() => void) | null = null
+let unsubAiChunk: (() => void) | null = null
+let unsubAiDone: (() => void) | null = null
 let lastErrorToast = ''
 
 const visibleBooks = computed(() =>
@@ -273,7 +279,41 @@ watch(
   },
 )
 
+async function openRecap(item: BookListItem) {
+  recapBook.value = item
+  recapOpen.value = true
+  if (!item.progress?.chapterId) {
+    recapText.value = '还没有阅读进度，打开阅读器读几章再来。'
+    return
+  }
+  const res = await window.api.ai.getSummaries(item.id)
+  recapText.value = res.ok ? (res.summaries.storySoFar?.text || '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。') : res.message
+}
+
+function stopRecap() {
+  if (recapJobId.value) void window.api.ai.cancel(recapJobId.value)
+}
+
+function openRecapBook() {
+  if (recapBook.value) emit('open-book', recapBook.value.id)
+}
+
+async function refreshRecap() {
+  const item = recapBook.value
+  if (!item?.progress?.chapterId) return
+  const res = await window.api.ai.storySoFar(item.id, item.progress.chapterId)
+  if (!res.ok) return message.error(res.message)
+  recapJobId.value = res.jobId
+  recapText.value = ''
+}
+
 onMounted(() => {
+  unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => { if (jobId === recapJobId.value) recapText.value += delta })
+  unsubAiDone = window.api.ai.onDone((event) => {
+    if (event.jobId !== recapJobId.value) return
+    recapJobId.value = ''
+    recapText.value = event.ok ? event.text : `错误：${event.message}`
+  })
   refresh()
   unsubProgress = window.api.download.onProgress((p: DownloadProgress) => {
     if (p.status === 'running' && p.bookId) {
@@ -311,6 +351,8 @@ onMounted(() => {
 onUnmounted(() => {
   unsubProgress?.()
   unsubCheckAll?.()
+  unsubAiChunk?.()
+  unsubAiDone?.()
 })
 </script>
 
@@ -383,6 +425,7 @@ onUnmounted(() => {
           >
             <n-button size="tiny" :loading="exportingId === b.id" @click.stop>导出</n-button>
           </n-dropdown>
+           <n-button size="tiny" @click.stop="openRecap(b)">前情提要</n-button>
           <n-popconfirm @positive-click="handleDelete(b.id)">
             <template #trigger>
               <n-button size="tiny" quaternary @click.stop>删除</n-button>
@@ -392,6 +435,18 @@ onUnmounted(() => {
         </n-space>
       </n-card>
     </div>
+    <n-drawer v-model:show="recapOpen" placement="right" :width="420">
+      <n-drawer-content title="前情提要" closable>
+        <div class="ai-result">{{ recapText }}</div>
+        <template #footer>
+          <n-space>
+            <n-button v-if="recapJobId" type="warning" @click="stopRecap">停止</n-button>
+            <n-button v-else :disabled="!recapBook?.progress?.chapterId" type="primary" @click="refreshRecap">刷新看到这里</n-button>
+            <n-button v-if="!recapBook?.progress?.chapterId" @click="openRecapBook">打开该书</n-button>
+          </n-space>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
     <n-modal v-model:show="failedOpen" preset="card" :title="`失败章 · ${failedTitle}`" style="width:480px">
       <n-empty v-if="!failedRows.length" description="当前没有失败章" />
       <div v-else class="fail-list">
