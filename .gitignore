@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 dist/
 out/
 library/
@@ -8,4 +8,5 @@ library-live/
 release/
 *.tsbuildinfo
 .mission-planning/
+.multi-agent/
 
