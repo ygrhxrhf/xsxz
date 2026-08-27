@@ -15,6 +15,7 @@ import {
   readSummaries,
   writeChapterSummary,
   writeStorySoFar,
+  writeChat,
   readCharacterCard,
   writeCharacterCard,
   assertImportable,
@@ -576,6 +577,7 @@ function registerIpc(): void {
         readSummary,
         args.messages,
       )
+      await writeChat(args.bookId, [...args.messages.filter((message) => message.role !== 'system'), { role: 'assistant', content: text }])
       return { ok: true, text }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
