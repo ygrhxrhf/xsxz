@@ -474,12 +474,81 @@ export async function copyOriginFile(bookId: string, sourcePath: string): Promis
   await cp(sourcePath, join(destDir, basename(sourcePath)))
 }
 
-export async function readSummaries(bookId: string): Promise<AiSummaries> {
+function emptySummaries(): AiSummaries {
+  return { version: 2, byChapter: {}, updatedAt: now() }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function stringEntries(value: unknown): Record<string, string> | null {
+  if (!isRecord(value)) return null
+  const entries = Object.entries(value)
+  if (entries.some(([, text]) => typeof text !== 'string')) return null
+  return Object.fromEntries(entries) as Record<string, string>
+}
+
+/**
+ * Convert the legacy `byChapter = whole story so far` shape into v2 without
+ * ever exposing legacy text as a per-chapter summary to a model caller.
+ */
+export async function migrateSummariesV1(bookId: string, legacy: Record<string, string>): Promise<AiSummaries> {
+  const migrated = emptySummaries()
+  let book: Book | null = null
   try {
-    return JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'summaries.json'), 'utf-8'))
+    book = await loadBook(bookId)
   } catch {
-    return { byChapter: {}, updatedAt: now() }
+    return migrated
   }
+
+  const progressId = book.progress?.chapterId
+  let sourceId = progressId && legacy[progressId] ? progressId : undefined
+  if (!sourceId) {
+    sourceId = [...book.chapters]
+      .sort((a, b) => b.index - a.index)
+      .find((chapter) => Boolean(legacy[chapter.id]))?.id
+  }
+  if (sourceId) {
+    migrated.storySoFar = {
+      uptoChapterId: sourceId,
+      text: legacy[sourceId]!,
+      updatedAt: migrated.updatedAt,
+    }
+  }
+  return migrated
+}
+
+export async function readSummaries(bookId: string): Promise<AiSummaries> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'summaries.json'), 'utf-8'))
+  } catch {
+    return emptySummaries()
+  }
+  if (!isRecord(parsed)) return emptySummaries()
+
+  const byChapter = stringEntries(parsed.byChapter)
+  if (!byChapter) return emptySummaries()
+  if (parsed.version === 2) {
+    const story = isRecord(parsed.storySoFar)
+      && typeof parsed.storySoFar.uptoChapterId === 'string'
+      && typeof parsed.storySoFar.text === 'string'
+      && typeof parsed.storySoFar.updatedAt === 'string'
+      ? {
+          uptoChapterId: parsed.storySoFar.uptoChapterId,
+          text: parsed.storySoFar.text,
+          updatedAt: parsed.storySoFar.updatedAt,
+        }
+      : undefined
+    return {
+      version: 2,
+      byChapter,
+      ...(story ? { storySoFar: story } : {}),
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : now(),
+    }
+  }
+  return migrateSummariesV1(bookId, byChapter)
 }
 
 export async function writeChapterSummary(bookId: string, chapterId: string, text: string): Promise<void> {

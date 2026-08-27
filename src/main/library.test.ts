@@ -18,11 +18,13 @@ import {
   listBooks,
   markChapterStatus,
   readChapter,
+  readSummaries,
   refreshBookStatus,
   rebuildIndex,
   saveBook,
   setProgress,
   writeChapterFile,
+  writeChapterSummary,
 } from './library'
 import type { Book, CatalogChapter } from '../shared/types'
 
@@ -466,6 +468,62 @@ describe('setLibraryPath + createBookFromBootstrap', () => {
     const after = await loadBook('d_prog')
     expect(after.chapters[0].status).toBe('ready')
     expect(after.progress?.chapterId).toBe('c0001')
+  })
+})
+
+describe('summaries v2 migration', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-summaries-'))
+    await setLibraryPath(dir)
+    const created = await createBookFromBootstrap({
+      bookId: 'd_summary',
+      title: '迁移测试',
+      author: '',
+      importType: 'download',
+      chapterTitles: ['第一章', '第二章', '第三章'],
+    })
+    created.progress = { chapterId: 'c0002', scrollRatio: 0.5, updatedAt: '2026-01-01T00:00:00.000Z' }
+    await saveBook(created)
+    await mkdir(join(dir, 'd_summary', 'ai'), { recursive: true })
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('moves legacy progress summary into storySoFar and never exposes it in byChapter', async () => {
+    await writeFile(
+      join(dir, 'd_summary', 'ai', 'summaries.json'),
+      JSON.stringify({ byChapter: { c0001: '旧前情一', c0002: '旧前情二' }, updatedAt: '2026-01-01T00:00:00.000Z' }),
+      'utf-8',
+    )
+
+    const migrated = await readSummaries('d_summary')
+    expect(migrated).toMatchObject({ version: 2, byChapter: {}, storySoFar: { uptoChapterId: 'c0002', text: '旧前情二' } })
+
+    await writeChapterSummary('d_summary', 'c0002', '第二章的新摘要')
+    const saved = JSON.parse(await readFile(join(dir, 'd_summary', 'ai', 'summaries.json'), 'utf-8'))
+    expect(saved).toMatchObject({ version: 2, byChapter: { c0002: '第二章的新摘要' }, storySoFar: { uptoChapterId: 'c0002', text: '旧前情二' } })
+  })
+
+  it('moves the highest indexed legacy chapter when progress has no old entry', async () => {
+    await writeFile(
+      join(dir, 'd_summary', 'ai', 'summaries.json'),
+      JSON.stringify({ byChapter: { c0001: '旧一', c0003: '旧三' } }),
+      'utf-8',
+    )
+
+    const migrated = await readSummaries('d_summary')
+    expect(migrated.storySoFar).toMatchObject({ uptoChapterId: 'c0003', text: '旧三' })
+    expect(migrated.byChapter).toEqual({})
+  })
+
+  it('treats malformed summaries as an empty v2 file without throwing', async () => {
+    await writeFile(join(dir, 'd_summary', 'ai', 'summaries.json'), JSON.stringify({ byChapter: ['bad'] }), 'utf-8')
+
+    await expect(readSummaries('d_summary')).resolves.toMatchObject({ version: 2, byChapter: {} })
   })
 })
 
