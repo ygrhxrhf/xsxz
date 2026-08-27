@@ -92,6 +92,8 @@ const showMarks = ref(false)
 const selPopupX = ref(0)
 const selPopupY = ref(0)
 const showSelPopup = ref(false)
+const selectedExcerpt = ref('')
+const restoringChat = ref(false)
 const editingNoteId = ref('')
 const noteDraft = ref('')
 
@@ -202,8 +204,10 @@ function onContentMouseup(e: MouseEvent) {
     const sel = selectionOffsets()
     if (!sel) {
       showSelPopup.value = false
+      selectedExcerpt.value = ''
       return
     }
+    selectedExcerpt.value = sel.text.trim()
     selPopupX.value = Math.min(window.innerWidth - 190, Math.max(8, e.clientX - 60))
     selPopupY.value = Math.min(window.innerHeight - 60, e.clientY + 12)
     showSelPopup.value = true
@@ -229,6 +233,34 @@ async function addHighlight() {
     message.error(res.message || '划线失败')
   }
   window.getSelection()?.removeAllRanges()
+  selectedExcerpt.value = ''
+}
+
+async function askSelectedText() {
+  const excerpt = selectedExcerpt.value || getSelectedText()
+  showSelPopup.value = false
+  if (!excerpt) {
+    message.warning('请先在正文中选中要提问的文字')
+    return
+  }
+  if (excerpt.length > 2000) {
+    message.warning('选中过长，请缩短后再问')
+    return
+  }
+  if (chatLoading.value) {
+    message.warning('请先停止当前生成')
+    return
+  }
+  if (!book.value) return
+  restoringChat.value = true
+  showChat.value = true
+  const history = await window.api.ai.getChat(book.value.id)
+  if (history.ok) chatMessages.value = history.messages
+  restoringChat.value = false
+  chatInput.value = `这段话是什么意思？结合剧情解释一下。\n\n「${excerpt}」`
+  selectedExcerpt.value = ''
+  window.getSelection()?.removeAllRanges()
+  await sendChat()
 }
 
 const chapterBookmark = computed(
@@ -778,7 +810,7 @@ watch([ttsRate, ttsAutoNext], () => {
 
 watch(() => props.bookId, (id) => { if (id) loadBook(id) })
 watch(showChat, async (open) => {
-  if (!open || !book.value || chatLoading.value) return
+  if (!open || !book.value || chatLoading.value || restoringChat.value) return
   const res = await window.api.ai.getChat(book.value.id)
   if (res.ok) chatMessages.value = res.messages
 })
@@ -1050,7 +1082,8 @@ onUnmounted(() => {
         :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }"
       >
         <n-button size="tiny" type="primary" @click="addHighlight">划线</n-button>
-        <n-button size="tiny" @click="showSelPopup = false">取消</n-button>
+        <n-button size="tiny" @click="askSelectedText">问这段</n-button>
+        <n-button size="tiny" @click="showSelPopup = false; selectedExcerpt = ''">取消</n-button>
       </div>
 
       <!-- Marks drawer -->
