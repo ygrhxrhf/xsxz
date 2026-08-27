@@ -683,6 +683,11 @@ async function aiTranslate() {
   }
 }
 
+function askSuggested(question: string) {
+  chatInput.value = question
+  void sendChat()
+}
+
 async function sendChat() {
   if (!book.value || !currentChapter.value || !chatInput.value.trim()) return
   const userMsg = chatInput.value.trim()
@@ -963,7 +968,12 @@ onUnmounted(() => {
               <div class="chat-bubble">思考中…</div>
             </div>
             <div v-if="chatMessages.length === 0 && !chatLoading" class="chat-empty">
-              问点什么吧，比如「这章讲了什么」「主角是谁」「推荐类似小说」
+              <p>问点什么吧</p>
+              <n-space>
+                <n-button size="tiny" @click="askSuggested('这章讲了什么？')">这章讲了什么？</n-button>
+                <n-button size="tiny" @click="askSuggested('主角现在什么状态？')">主角现在什么状态？</n-button>
+                <n-button size="tiny" @click="askSuggested('有哪些未收的伏笔？')">有哪些未收的伏笔？</n-button>
+              </n-space>
             </div>
           </div>
           <template #footer>
