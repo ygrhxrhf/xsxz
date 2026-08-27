@@ -43,6 +43,7 @@ const recapOpen = ref(false)
 const recapBook = ref<BookListItem | null>(null)
 const recapText = ref('')
 const recapJobId = ref('')
+const recapStopping = ref(false)
 let unsubProgress: (() => void) | null = null
 let unsubCheckAll: (() => void) | null = null
 let unsubAiChunk: (() => void) | null = null
@@ -291,7 +292,9 @@ async function openRecap(item: BookListItem) {
 }
 
 function stopRecap() {
-  if (recapJobId.value) void window.api.ai.cancel(recapJobId.value)
+  if (!recapJobId.value) return
+  recapStopping.value = true
+  void window.api.ai.cancel(recapJobId.value)
 }
 
 function openRecapBook() {
@@ -303,6 +306,7 @@ async function refreshRecap() {
   if (!item?.progress?.chapterId) return
   const res = await window.api.ai.storySoFar(item.id, item.progress.chapterId)
   if (!res.ok) return message.error(res.message)
+  recapStopping.value = false
   recapJobId.value = res.jobId
   recapText.value = ''
 }
@@ -312,6 +316,11 @@ onMounted(() => {
   unsubAiDone = window.api.ai.onDone((event) => {
     if (event.jobId !== recapJobId.value) return
     recapJobId.value = ''
+    if (recapStopping.value) {
+      recapStopping.value = false
+      if (recapBook.value) void openRecap(recapBook.value)
+      return
+    }
     recapText.value = event.ok ? event.text : `错误：${event.message}`
   })
   refresh()
@@ -418,6 +427,7 @@ onUnmounted(() => {
           >
             失败章
           </n-button>
+          <n-button size="tiny" @click.stop="openRecap(b)">前情提要</n-button>
           <n-dropdown
             trigger="click"
             :options="[{ label: '导出 txt', key: 'txt' }, { label: '导出 epub', key: 'epub' }]"
@@ -425,7 +435,6 @@ onUnmounted(() => {
           >
             <n-button size="tiny" :loading="exportingId === b.id" @click.stop>导出</n-button>
           </n-dropdown>
-           <n-button size="tiny" @click.stop="openRecap(b)">前情提要</n-button>
           <n-popconfirm @positive-click="handleDelete(b.id)">
             <template #trigger>
               <n-button size="tiny" quaternary @click.stop>删除</n-button>

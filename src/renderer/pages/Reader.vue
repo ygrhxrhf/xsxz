@@ -40,6 +40,7 @@ const showRecap = ref(false)
 const recapText = ref('')
 const recapJobId = ref('')
 const recapJobKind = ref<'chapter' | 'story' | ''>('')
+const recapStopping = ref(false)
 const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
@@ -210,7 +211,7 @@ function onContentMouseup(e: MouseEvent) {
       return
     }
     selectedExcerpt.value = sel.text.trim()
-    selPopupX.value = Math.min(window.innerWidth - 190, Math.max(8, e.clientX - 60))
+    selPopupX.value = Math.min(window.innerWidth - 260, Math.max(8, e.clientX - 90))
     selPopupY.value = Math.min(window.innerHeight - 60, e.clientY + 12)
     showSelPopup.value = true
   }, 0)
@@ -663,9 +664,8 @@ async function aiSummarize() {
   }
 }
 
-async function openRecap() {
+async function loadStoredRecap() {
   if (!book.value) return
-  showRecap.value = true
   if (!book.value.progress?.chapterId) {
     recapText.value = '还没有阅读进度，打开阅读器读几章再来。'
     return
@@ -674,15 +674,27 @@ async function openRecap() {
   recapText.value = res.ok ? (res.summaries.storySoFar?.text || '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。') : res.message
 }
 
+async function openRecap() {
+  if (!book.value) return
+  showRecap.value = true
+  if (!recapLoading.value) await loadStoredRecap()
+}
+
 async function startRecap(kind: 'chapter' | 'story') {
   if (!book.value || !currentChapter.value) return
+  const uptoChapterId = kind === 'chapter' ? currentChapter.value.id : book.value.progress?.chapterId
+  if (!uptoChapterId) {
+    recapText.value = '还没有阅读进度，打开阅读器读几章再来。'
+    return
+  }
   const res = kind === 'chapter'
-    ? await window.api.ai.summarizeChapter(book.value.id, currentChapter.value.id)
-    : await window.api.ai.storySoFar(book.value.id, currentChapter.value.id)
+    ? await window.api.ai.summarizeChapter(book.value.id, uptoChapterId)
+    : await window.api.ai.storySoFar(book.value.id, uptoChapterId)
   if (!res.ok) {
     message.error(res.message)
     return
   }
+  recapStopping.value = false
   recapJobId.value = res.jobId
   recapJobKind.value = kind
   recapText.value = ''
@@ -690,7 +702,9 @@ async function startRecap(kind: 'chapter' | 'story') {
 }
 
 function stopRecap() {
-  if (recapJobId.value) void window.api.ai.cancel(recapJobId.value)
+  if (!recapJobId.value) return
+  recapStopping.value = true
+  void window.api.ai.cancel(recapJobId.value)
 }
 
 function getSelectedText(): string {
@@ -861,11 +875,21 @@ onMounted(async () => {
     }
     if (event.jobId !== recapJobId.value) return
     const kind = recapJobKind.value
+    const stopped = recapStopping.value
     recapJobId.value = ''
     recapJobKind.value = ''
+    recapStopping.value = false
+    if (stopped) {
+      void loadStoredRecap()
+      return
+    }
     if (event.ok) {
-      recapText.value = event.text
-      if (kind === 'chapter') message.success('本章摘要已保存')
+      if (kind === 'chapter') {
+        message.success('本章摘要已保存')
+        void loadStoredRecap()
+      } else {
+        recapText.value = event.text
+      }
     } else {
       recapText.value = `错误：${event.message}`
     }
