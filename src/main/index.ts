@@ -531,7 +531,8 @@ function registerIpc(): void {
         summaries,
         { uptoChapterId, progressChapterId },
       )
-      await writeChapterSummary(bookId, uptoChapterId, text)
+      const storyUptoChapterId = cutoff[cutoff.length - 1]?.id ?? uptoChapterId
+      await writeStorySoFar(bookId, storyUptoChapterId, text)
       return { ok: true, text }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
