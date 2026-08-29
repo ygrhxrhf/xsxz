@@ -23,6 +23,22 @@ describe('long chapter cleaning plan', () => {
       .toEqual(paragraphs(8, 7_000).split('\n\n'))
   })
 
+  it('dynamically shrinks target segments when a long custom requirement consumes the budget', () => {
+    const custom = `请清正文。${'要求'.repeat(5_000)}`
+    const body = paragraphs(3, 8_000)
+    const plan = planCleanChapterRequest('长章', body, custom)
+    expect(plan.batches.every((batch) => countTextCharacters(batch.prompt) <= AI_INPUT_CHARACTER_BUDGET)).toBe(true)
+    const sentTargetCharacters = plan.batches
+      .flatMap((batch) => batch.targetParagraphs)
+      .reduce((total, paragraph) => total + countTextCharacters(paragraph), 0)
+    expect(sentTargetCharacters).toBe(countTextCharacters(body.replace(/\n/g, '')))
+  })
+
+  it('rejects before execution when fixed and custom content cannot fit the hard budget', () => {
+    expect(() => planCleanChapterRequest('长章', '正文', '要求'.repeat(20_000)))
+      .toThrow('AI 请求固定内容过长，无法在 30000 字预算内发送')
+  })
+
   it('sends batches sequentially and merges only returned targets after all succeed', async () => {
     const plan = planCleanChapterRequest('长章', paragraphs(8, 7_000))
     let request = 0

@@ -15,6 +15,22 @@ afterEach(() => {
 })
 
 describe('AI exclusive slot cancellation', () => {
+  it('does not cancel a streaming job when the caller omits jobId', async () => {
+    const slot = new AiJobSlot()
+    let streamSignal: AbortSignal | undefined
+    const started = slot.start(async (_jobId, signal) => {
+      streamSignal = signal
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+    })
+    expect(started.ok).toBe(true)
+    await Promise.resolve()
+    slot.cancel()
+    expect(streamSignal?.aborted).toBe(false)
+    if (started.ok) slot.cancel(started.jobId)
+    expect(streamSignal?.aborted).toBe(true)
+    await Promise.resolve()
+  })
+
   it('passes the shared abort signal into non-stream work', async () => {
     const slot = new AiJobSlot()
     const running = slot.runExclusive((signal) => new Promise<string>((_resolve, reject) => {

@@ -102,6 +102,19 @@ describe('buildChapterSummaryPrompt', () => {
     expect(plan.budget.range).toContain('前 8000 字')
     expect(plan.prompt).toContain('正文过长，以下内容已截断')
   })
+
+  it('uses the remaining complete-prompt budget for body when custom requirements are long', () => {
+    const plan = planChapterSummaryRequest('测试书', '超长章', '甲'.repeat(40_000), `摘要要求：${'乙'.repeat(25_000)}`)
+    expect(plan.requiresConfirmation).toBe(true)
+    expect(plan.budget.sentCharacters).toBeLessThanOrEqual(30_000)
+    expect(plan.budget.range).toMatch(/当前章节正文前 \d+ 字/)
+    expect(plan.budget.range).not.toContain('前 8000 字')
+  })
+
+  it('rejects a chapter summary when fixed and custom content leave no body budget', () => {
+    expect(() => planChapterSummaryRequest('测试书', '超长章', '正文', '要求'.repeat(20_000)))
+      .toThrow('AI 请求固定内容过长，无法在 30000 字预算内发送')
+  })
 })
 
 describe('buildSummarizePrompt / summarizeUpTo payload', () => {

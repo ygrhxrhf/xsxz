@@ -13,6 +13,7 @@ import type {
 import { BUILTIN_AI_PROMPTS } from '../shared/aiPrompts'
 import {
   AI_INPUT_CHARACTER_BUDGET,
+  CLEAN_PARAGRAPH_SEGMENT_LIMIT,
   countTextCharacters,
   estimateAiTokens,
   normalizeAiParagraphs,
@@ -76,7 +77,7 @@ let nextAiJobId = 0
 
 /** Main-process single slot for every streaming AI request. */
 export class AiJobSlot {
-  private current: { jobId: string; controller: AbortController } | null = null
+  private current: { jobId: string; controller: AbortController; mode: 'stream' | 'exclusive' } | null = null
 
   get busy(): boolean {
     return this.current !== null
@@ -86,7 +87,7 @@ export class AiJobSlot {
     if (this.current) return { ok: false, message: AI_BUSY_MESSAGE }
     const jobId = `ai-${Date.now()}-${++nextAiJobId}`
     const controller = new AbortController()
-    this.current = { jobId, controller }
+    this.current = { jobId, controller, mode: 'stream' }
     void Promise.resolve().then(() => run(jobId, controller.signal)).catch(() => {}).finally(() => {
       if (this.current?.jobId === jobId) this.current = null
     })
@@ -99,7 +100,7 @@ export class AiJobSlot {
     if (this.current) return { ok: false, message: AI_BUSY_MESSAGE }
     const jobId = `ai-${Date.now()}-${++nextAiJobId}`
     const controller = new AbortController()
-    this.current = { jobId, controller }
+    this.current = { jobId, controller, mode: 'exclusive' }
     try {
       return { ok: true, value: await run(controller.signal, jobId) }
     } finally {
@@ -108,8 +109,12 @@ export class AiJobSlot {
   }
 
   cancel(jobId?: string): void {
-    if (!this.current || (jobId && this.current.jobId !== jobId)) return
-    this.current.controller.abort()
+    if (!this.current) return
+    if (jobId) {
+      if (this.current.jobId === jobId) this.current.controller.abort()
+      return
+    }
+    if (this.current.mode === 'exclusive') this.current.controller.abort()
   }
 }
 
@@ -596,7 +601,17 @@ export function planChapterSummaryRequest(
     taskInstruction,
     Number.POSITIVE_INFINITY,
   )
-  const prompt = buildChapterSummaryPrompt(bookTitle, chapterTitle, body, taskInstruction)
+  const bodyCharacters = countTextCharacters(body)
+  let bodyLimit = Math.min(8_000, bodyCharacters)
+  let prompt = buildChapterSummaryPrompt(bookTitle, chapterTitle, body, taskInstruction, bodyLimit)
+  while (countTextCharacters(prompt) > AI_INPUT_CHARACTER_BUDGET && bodyLimit > 0) {
+    const overflow = countTextCharacters(prompt) - AI_INPUT_CHARACTER_BUDGET
+    bodyLimit = Math.max(0, bodyLimit - Math.max(1, overflow))
+    prompt = buildChapterSummaryPrompt(bookTitle, chapterTitle, body, taskInstruction, bodyLimit)
+  }
+  if (bodyLimit < 1 || countTextCharacters(prompt) > AI_INPUT_CHARACTER_BUDGET) {
+    throw new Error('AI 请求固定内容过长，无法在 30000 字预算内发送')
+  }
   return {
     prompt,
     requiresConfirmation: countTextCharacters(fullPrompt) > AI_INPUT_CHARACTER_BUDGET,
@@ -607,7 +622,9 @@ export function planChapterSummaryRequest(
       chapterCount: 1,
       paragraphCount: normalizeAiParagraphs(body).length,
       batchCount: 1,
-      range: '当前章节正文前 8000 字，用于生成本章摘要；其余正文本次不发送。',
+      range: bodyLimit < bodyCharacters
+        ? `当前章节正文前 ${bodyLimit} 字，用于生成本章摘要；其余正文本次不发送。`
+        : '当前章节全文，用于生成本章摘要。',
     },
   }
 }
@@ -662,7 +679,18 @@ export function planCleanChapterRequest(
   body: string,
   taskInstruction = BUILTIN_AI_PROMPTS.clean,
 ): AiCleanPlan {
-  const paragraphs = normalizeAiParagraphs(body)
+  const emptyBatchPrompt = buildCleanBatchPrompt(
+    chapterTitle,
+    undefined,
+    [''],
+    undefined,
+    taskInstruction,
+  )
+  const segmentBudget = Math.floor(
+    (AI_INPUT_CHARACTER_BUDGET - countTextCharacters(emptyBatchPrompt)) / 3,
+  )
+  const segmentLimit = Math.min(CLEAN_PARAGRAPH_SEGMENT_LIMIT, segmentBudget)
+  const paragraphs = normalizeAiParagraphs(body, segmentLimit)
   const originalPrompt = buildCleanPrompt(chapterTitle, body, taskInstruction)
   const batches: AiCleanBatch[] = []
   let start = 0
@@ -677,7 +705,10 @@ export function planCleanChapterRequest(
         end + 1 < paragraphs.length ? paragraphs[end + 1] : undefined,
         taskInstruction,
       )
-      if (countTextCharacters(candidate) > AI_INPUT_CHARACTER_BUDGET && end > start) break
+      if (countTextCharacters(candidate) > AI_INPUT_CHARACTER_BUDGET) {
+        if (end === start) throw new Error('AI 请求固定内容过长，无法在 30000 字预算内发送')
+        break
+      }
       selectedPrompt = candidate
       end += 1
     }
@@ -693,6 +724,9 @@ export function planCleanChapterRequest(
       ),
     })
     start = targetEnd
+  }
+  if (batches.some((batch) => countTextCharacters(batch.prompt) > AI_INPUT_CHARACTER_BUDGET)) {
+    throw new Error('AI 请求固定内容过长，无法在 30000 字预算内发送')
   }
   const sentCharacters = batches.reduce((total, batch) => total + countTextCharacters(batch.prompt), 0)
   return {
