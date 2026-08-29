@@ -318,13 +318,11 @@ export async function runAiTaskCompletion(
 }
 
 async function chatCompletion(
-  baseUrl: string,
-  apiKey: string,
-  model: string,
+  config: AiConfig,
   messages: ChatMessage[],
   taskOptions: Pick<AiTaskOptions, 'task' | 'inputTokenEstimate' | 'recapLength'> = { task: 'legacy' },
 ): Promise<string> {
-  return (await runAiTaskCompletion({ baseUrl, apiKey, model }, messages, taskOptions)).text
+  return (await runAiTaskCompletion(config, messages, taskOptions)).text
 }
 
 /** Backward-compatible text-only stream wrapper; task-aware callers use runAiTaskCompletion. */
@@ -374,7 +372,7 @@ ${body}
 
 请直接返回清理后的正文，不要加任何解释。`
 
-  const cleaned = await chatCompletion(config.baseUrl, config.apiKey, config.model, [
+  const cleaned = await chatCompletion(config, [
     { role: 'user', content: prompt },
   ], { task: 'clean', inputTokenEstimate: Math.ceil(prompt.length / 2) })
 
@@ -493,7 +491,7 @@ export async function summarizeUpTo(
   }
 
   const prompt = buildSummarizePrompt(bookTitle, selected)
-  return chatCompletion(config.baseUrl, config.apiKey, config.model, [
+  return chatCompletion(config, [
     { role: 'user', content: prompt },
   ], { task: 'recap' })
 }
@@ -507,7 +505,7 @@ ${text}`
 
 export async function translateText(config: AiConfig, text: string): Promise<string> {
   const prompt = buildTranslatePrompt(text)
-  return chatCompletion(config.baseUrl, config.apiKey, config.model, [
+  return chatCompletion(config, [
     { role: 'user', content: prompt },
   ], { task: 'translate', inputTokenEstimate: Math.ceil(prompt.length / 2) })
 }
@@ -550,15 +548,13 @@ export async function chatAboutBook(
   messages: AiChatMessage[],
 ): Promise<string> {
   return chatCompletion(
-    config.baseUrl,
-    config.apiKey,
-    config.model,
+    config,
     buildBookChatMessages(bookTitle, currentChapterTitle, currentChapterBody, catalogSummary, readSummary, messages),
   )
 }
 
 export async function testConnection(config: AiConfig): Promise<string> {
-  return chatCompletion(config.baseUrl, config.apiKey, config.model, [
+  return chatCompletion(config, [
     { role: 'user', content: '只回复 ok' },
   ])
 }
@@ -650,7 +646,7 @@ export async function generateCharacterCard(
   config: AiConfig,
   material: CharacterMaterial,
 ): Promise<string> {
-  return chatCompletion(config.baseUrl, config.apiKey, config.model, [
+  return chatCompletion(config, [
     { role: 'user', content: buildCharacterCardPrompt(material) },
   ], { task: 'memory' })
 }

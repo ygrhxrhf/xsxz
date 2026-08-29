@@ -5,6 +5,7 @@ import {
   getAiTaskPolicy,
   parseAiJsonObject,
   runAiTaskCompletion,
+  summarizeUpTo,
   type AiConfig,
   type AiTaskKind,
 } from './ai'
@@ -91,6 +92,16 @@ describe('task-aware request bodies', () => {
       return new Response(JSON.stringify({ choices: [{ message: { content: '摘要' }, finish_reason: 'stop' }] }), { status: 200 })
     }))
     await runAiTaskCompletion({ ...deepseek, thinkingEnabled: false }, messages, { task: 'chapterSummary' })
+  })
+
+  it('preserves thinkingEnabled=false through an existing production recap helper', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      expect(body.max_tokens).toBe(900)
+      expect(body).not.toHaveProperty('reasoning_effort')
+      return new Response(JSON.stringify({ choices: [{ message: { content: '前情' }, finish_reason: 'stop' }] }), { status: 200 })
+    }))
+    await summarizeUpTo({ ...deepseek, thinkingEnabled: false }, '测试书', [{ title: '第一章', body: '正文' }])
   })
 
   it('sends only OpenAI-compatible core fields to custom services', async () => {
