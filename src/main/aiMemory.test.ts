@@ -58,6 +58,11 @@ describe('strict memory extraction whitelist and merge', () => {
     expect(result.changedItems).toBe(4)
   })
 
+  it('rejects duplicate candidate ids before resolving model references', () => {
+    expect(() => applyAiMemoryExtraction(null, raw(), [first, { ...second, id: first.id }]))
+      .toThrow('记忆候选来源 ID 重复，原有记忆未改变')
+  })
+
   it('rejects an item with any unknown citation but keeps independently valid items', () => {
     const result = applyAiMemoryExtraction(null, raw({
       characters: [

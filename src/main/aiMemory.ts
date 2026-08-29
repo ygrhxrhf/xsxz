@@ -231,7 +231,11 @@ export function applyAiMemoryExtraction(
   }
   const updatedAt = options.updatedAt ?? new Date().toISOString()
   const memory = existingMemory ? cloneMemory(existingMemory) : emptyMemory(updatedAt)
-  const candidateMap = new Map(candidates.map((candidate) => [candidate.id, candidate]))
+  const candidateMap = new Map<string, AiMemoryCandidate>()
+  for (const candidate of candidates) {
+    if (candidateMap.has(candidate.id)) throw new Error('记忆候选来源 ID 重复，原有记忆未改变')
+    candidateMap.set(candidate.id, candidate)
+  }
   const changed = new Set<string>()
   let acceptedItems = 0
   let rejectedItems = 0
