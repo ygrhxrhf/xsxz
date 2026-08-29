@@ -716,10 +716,11 @@ export async function writeAiMemory(
   options: AtomicWriteOptions = {},
 ): Promise<void> {
   if (!isAiMemoryFile(memory)) throw new Error('小说记忆数据格式无效')
+  const content = JSON.stringify(memory, null, 2)
   await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
   await atomicWriteText(
     join(bookDir(bookId), 'ai', 'memory.json'),
-    JSON.stringify(memory, null, 2),
+    content,
     options,
   )
 }
