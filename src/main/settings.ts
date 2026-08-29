@@ -164,7 +164,7 @@ export function resetSettingsCacheForTests(): void {
 async function loadRaw(): Promise<Record<string, unknown>> {
   if (cache) return cache
   try {
-    cache = JSON.parse(await readFile(settingsPath(), 'utf-8'))
+    cache = readRecord(JSON.parse(await readFile(settingsPath(), 'utf-8')))
   } catch {
     cache = {}
   }
@@ -212,35 +212,33 @@ export async function getSettings(): Promise<Settings> {
   }
 }
 
-export async function updateSettings(update: SettingsUpdate): Promise<Settings> {
+export async function updateSettings(update: SettingsUpdate | null | undefined): Promise<Settings> {
   const raw = await loadRaw()
-  if (typeof update.libraryPath === 'string') {
-    raw.libraryPath = update.libraryPath.trim() || DEFAULT_LIBRARY_PATH
+  const patch = readRecord(update)
+  if (typeof patch.libraryPath === 'string') {
+    raw.libraryPath = patch.libraryPath.trim() || DEFAULT_LIBRARY_PATH
   }
-  if (typeof update.baseUrl === 'string') raw.baseUrl = update.baseUrl
-  if (typeof update.model === 'string') raw.model = update.model
-  if (typeof update.apiKey === 'string') {
-    if (update.apiKey) {
-      raw.apiKeyEnc = safeStorage.encryptString(update.apiKey).toString('base64')
+  if (typeof patch.baseUrl === 'string') raw.baseUrl = patch.baseUrl
+  if (typeof patch.model === 'string') raw.model = patch.model
+  if (typeof patch.apiKey === 'string') {
+    if (patch.apiKey) {
+      raw.apiKeyEnc = safeStorage.encryptString(patch.apiKey).toString('base64')
     } else {
       delete raw.apiKeyEnc
     }
   }
-  if (update.reader) {
-    const prev = readRecord(raw.reader)
-    raw.reader = { ...prev, ...update.reader }
+  if (patch.reader) {
+    raw.reader = { ...readRecord(raw.reader), ...readRecord(patch.reader) }
   }
-  if (update.tts) {
-    const prev = (raw.tts as Record<string, unknown>) || {}
-    raw.tts = { ...prev, ...update.tts }
+  if (patch.tts) {
+    raw.tts = { ...readRecord(raw.tts), ...readRecord(patch.tts) }
   }
-  if (update.appearance) {
-    const prev = (raw.appearance as Record<string, unknown>) || {}
-    const next = { ...prev, ...update.appearance }
+  if (patch.appearance) {
+    const next = { ...readRecord(raw.appearance), ...readRecord(patch.appearance) }
     if (typeof next.skin === 'string') next.skin = readSkin(next.skin)
     raw.appearance = next
   }
-  if (update.ai) raw.ai = mergeAiPrefs(raw.ai, update.ai)
+  if (patch.ai) raw.ai = mergeAiPrefs(raw.ai, patch.ai)
   await saveRaw(raw)
   return getSettings()
 }

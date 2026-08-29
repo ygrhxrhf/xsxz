@@ -104,6 +104,24 @@ describe('AI settings compatibility', () => {
     expect(settings.ai).toEqual(DEFAULT_AI_PREFS)
   })
 
+  it.each([null, [], 'broken-root', 42])(
+    'treats a non-object JSON settings root as empty settings: %j',
+    async (root) => {
+      await mkdir(TEST_DIR, { recursive: true })
+      await writeFile(SETTINGS_FILE, JSON.stringify(root), 'utf-8')
+      resetSettingsCacheForTests()
+
+      const settings = await getSettings()
+      expect(settings.model).toBe('deepseek-v4-flash')
+      expect(settings.ai).toEqual(DEFAULT_AI_PREFS)
+    },
+  )
+
+  it('accepts empty top-level settings updates without throwing', async () => {
+    await expect(updateSettings(null)).resolves.toMatchObject({ model: 'deepseek-v4-flash' })
+    await expect(updateSettings(undefined)).resolves.toMatchObject({ ai: DEFAULT_AI_PREFS })
+  })
+
   it('normalizes damaged fields independently without changing existing baseURL, model, or key state', async () => {
     await mkdir(TEST_DIR, { recursive: true })
     await writeFile(
