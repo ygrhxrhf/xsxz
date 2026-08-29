@@ -9,4 +9,6 @@ release/
 *.tsbuildinfo
 .mission-planning/
 .multi-agent/
+.dsh/
+.zcode/
 
