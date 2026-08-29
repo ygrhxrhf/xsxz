@@ -601,7 +601,7 @@ async function loadPrefs() {
   const s = await window.api.settings.get()
   fontSize.value = s.reader.fontSize
   lineHeight.value = s.reader.lineHeight
-  nightMode.value = s.reader.nightMode
+  nightMode.value = s.reader.theme === 'night'
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
 }
@@ -825,7 +825,7 @@ async function aiCharacterCard() {
 watch([fontSize, lineHeight, nightMode], () => {
   if (!prefsReady.value) return
   void window.api.settings.set({
-    reader: { fontSize: fontSize.value, lineHeight: lineHeight.value, nightMode: nightMode.value },
+    reader: { fontSize: fontSize.value, lineHeight: lineHeight.value, theme: nightMode.value ? 'night' : 'paper' },
   })
 })
 

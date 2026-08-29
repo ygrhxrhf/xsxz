@@ -206,10 +206,19 @@ export interface BrowseState {
   loading: boolean
 }
 
+export type ReaderTheme = 'paper' | 'sepia' | 'gray' | 'night'
+export type ReaderFontFamily = 'serif' | 'system' | 'mono'
+export type ReaderContentWidth = 'narrow' | 'medium' | 'wide'
+export type ReaderParagraphSpacing = 'compact' | 'normal' | 'relaxed'
+
 export interface ReaderPrefs {
   fontSize: number
   lineHeight: number
-  nightMode: boolean
+  theme: ReaderTheme
+  fontFamily: ReaderFontFamily
+  contentWidth: ReaderContentWidth
+  paragraphSpacing: ReaderParagraphSpacing
+  paragraphIndent: boolean
 }
 
 /** 朗读偏好（Web speechSynthesis） */
@@ -310,9 +319,13 @@ export interface AiChatFile {
 export const DEFAULT_LIBRARY_PATH = 'D:\\spbf\\library'
 
 export const DEFAULT_READER_PREFS: ReaderPrefs = {
+  theme: 'paper',
+  fontFamily: 'serif',
   fontSize: 18,
   lineHeight: 1.8,
-  nightMode: false,
+  contentWidth: 'medium',
+  paragraphSpacing: 'normal',
+  paragraphIndent: true,
 }
 
 export const DEFAULT_TTS_PREFS: TtsPrefs = {
