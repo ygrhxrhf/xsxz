@@ -1396,9 +1396,12 @@ onUnmounted(() => {
 
       <!-- Marks drawer -->
       <n-drawer v-model:show="showMarks" placement="left" :width="340">
-        <n-drawer-content title="书签与划线" closable>
+        <n-drawer-content title="标记" closable>
+          <n-button block :type="chapterBookmark ? 'warning' : 'primary'" :disabled="!currentChapter" style="margin-bottom:12px" @click="toggleBookmark">
+            {{ chapterBookmark ? '移除本章书签' : '给本章加书签' }}
+          </n-button>
           <div v-if="!sortedMarks.length" class="control-label" style="text-align:center;padding:24px 0">
-            还没有标记。选中正文可划线，点顶部「书签」可收藏整章。
+            还没有标记。选中正文可添加划线或备注。
           </div>
           <div v-else class="mark-list">
             <div v-for="a in sortedMarks" :key="a.id" class="mark-row">
