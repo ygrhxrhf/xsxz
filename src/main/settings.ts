@@ -2,6 +2,8 @@ import { app, safeStorage } from 'electron'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
+  AiPrefs,
+  AiPromptKind,
   AppearancePrefs,
   ReaderContentWidth,
   ReaderFontFamily,
@@ -9,10 +11,13 @@ import type {
   ReaderPrefs,
   ReaderTheme,
   Settings,
+  SettingsUpdate,
   Skin,
   TtsPrefs,
 } from '../shared/types'
 import {
+  AI_PROMPT_KINDS,
+  DEFAULT_AI_PREFS,
   DEFAULT_APPEARANCE_PREFS,
   DEFAULT_LIBRARY_PATH,
   DEFAULT_READER_PREFS,
@@ -25,6 +30,10 @@ const READER_THEMES: readonly ReaderTheme[] = ['paper', 'sepia', 'gray', 'night'
 const READER_FONT_FAMILIES: readonly ReaderFontFamily[] = ['serif', 'system', 'mono']
 const READER_CONTENT_WIDTHS: readonly ReaderContentWidth[] = ['narrow', 'medium', 'wide']
 const READER_PARAGRAPH_SPACINGS: readonly ReaderParagraphSpacing[] = ['compact', 'normal', 'relaxed']
+const AI_PROVIDERS: readonly AiPrefs['provider'][] = ['deepseek', 'custom']
+const AI_RECAP_LENGTHS: readonly AiPrefs['recapLength'][] = ['short', 'standard', 'detailed']
+const AI_PROMPT_MODES: readonly AiPrefs['promptMode'][AiPromptKind][] = ['builtin', 'custom']
+const LEGACY_DEEPSEEK_MODELS = new Set(['deepseek-chat', 'deepseek-reasoner'])
 
 function readSkin(value: unknown): Skin {
   return SKINS.includes(value as Skin) ? (value as Skin) : DEFAULT_APPEARANCE_PREFS.skin
@@ -43,6 +52,66 @@ function readEnum<T extends string>(value: unknown, values: readonly T[], fallba
 function readFiniteClamped(value: unknown, min: number, max: number, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
   return Math.max(min, Math.min(max, value))
+}
+
+export function normalizeCustomOrigin(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  try {
+    const url = new URL(value.trim())
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    if (url.username || url.password || url.origin === 'null') return null
+    return url.origin
+  } catch {
+    return null
+  }
+}
+
+export function normalizeTrustedCustomOrigins(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const normalized = value.map(normalizeCustomOrigin).filter((origin): origin is string => Boolean(origin))
+  return [...new Set(normalized)]
+}
+
+export function isLegacyDeepSeekModel(value: unknown): boolean {
+  return typeof value === 'string' && LEGACY_DEEPSEEK_MODELS.has(value.trim().toLowerCase())
+}
+
+export function normalizeAiPrefs(value: unknown): AiPrefs {
+  const ai = readRecord(value)
+  const rawPrompts = readRecord(ai.customPrompts)
+  const customPrompts: AiPrefs['customPrompts'] = {}
+  for (const kind of AI_PROMPT_KINDS) {
+    const prompt = rawPrompts[kind]
+    if (typeof prompt === 'string' && prompt.trim()) customPrompts[kind] = prompt
+  }
+
+  const rawModes = readRecord(ai.promptMode)
+  const promptMode = { ...DEFAULT_AI_PREFS.promptMode }
+  for (const kind of AI_PROMPT_KINDS) {
+    const requested = readEnum(rawModes[kind], AI_PROMPT_MODES, DEFAULT_AI_PREFS.promptMode[kind])
+    promptMode[kind] = requested === 'custom' && customPrompts[kind] ? 'custom' : 'builtin'
+  }
+
+  return {
+    provider: readEnum(ai.provider, AI_PROVIDERS, DEFAULT_AI_PREFS.provider),
+    thinkingEnabled:
+      typeof ai.thinkingEnabled === 'boolean' ? ai.thinkingEnabled : DEFAULT_AI_PREFS.thinkingEnabled,
+    recapLength: readEnum(ai.recapLength, AI_RECAP_LENGTHS, DEFAULT_AI_PREFS.recapLength),
+    trustedCustomOrigins: normalizeTrustedCustomOrigins(ai.trustedCustomOrigins),
+    promptMode,
+    customPrompts,
+  }
+}
+
+function mergeAiPrefs(current: unknown, patch: unknown): AiPrefs {
+  const previous = readRecord(current)
+  const update = readRecord(patch)
+  return normalizeAiPrefs({
+    ...previous,
+    ...update,
+    promptMode: { ...readRecord(previous.promptMode), ...readRecord(update.promptMode) },
+    customPrompts: { ...readRecord(previous.customPrompts), ...readRecord(update.customPrompts) },
+  })
 }
 
 export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
@@ -86,6 +155,11 @@ function settingsPath(): string {
 }
 
 let cache: Record<string, unknown> | null = null
+
+/** 仅供隔离的设置契约测试模拟应用重启。 */
+export function resetSettingsCacheForTests(): void {
+  cache = null
+}
 
 async function loadRaw(): Promise<Record<string, unknown>> {
   if (cache) return cache
@@ -134,10 +208,11 @@ export async function getSettings(): Promise<Settings> {
     appearance: {
       skin: readSkin(appearance.skin),
     },
+    ai: normalizeAiPrefs(raw.ai),
   }
 }
 
-export async function updateSettings(update: Partial<Settings> & { apiKey?: string }): Promise<Settings> {
+export async function updateSettings(update: SettingsUpdate): Promise<Settings> {
   const raw = await loadRaw()
   if (typeof update.libraryPath === 'string') {
     raw.libraryPath = update.libraryPath.trim() || DEFAULT_LIBRARY_PATH
@@ -165,6 +240,7 @@ export async function updateSettings(update: Partial<Settings> & { apiKey?: stri
     if (typeof next.skin === 'string') next.skin = readSkin(next.skin)
     raw.appearance = next
   }
+  if (update.ai) raw.ai = mergeAiPrefs(raw.ai, update.ai)
   await saveRaw(raw)
   return getSettings()
 }

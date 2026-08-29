@@ -465,6 +465,31 @@ export const DEFAULT_APPEARANCE_PREFS: AppearancePrefs = {
   skin: 'sakura',
 }
 
+export const AI_PROMPT_KINDS: readonly AiPromptKind[] = [
+  'clean',
+  'translate',
+  'chapterSummary',
+  'recap',
+  'memory',
+  'evidenceQa',
+]
+
+export const DEFAULT_AI_PREFS: AiPrefs = {
+  provider: 'deepseek',
+  thinkingEnabled: true,
+  recapLength: 'standard',
+  trustedCustomOrigins: [],
+  promptMode: {
+    clean: 'builtin',
+    translate: 'builtin',
+    chapterSummary: 'builtin',
+    recap: 'builtin',
+    memory: 'builtin',
+    evidenceQa: 'builtin',
+  },
+  customPrompts: {},
+}
+
 export const DEFAULT_AI_PLACEHOLDER = {
   baseUrl: 'https://api.deepseek.com/v1',
   model: 'deepseek-v4-flash',
