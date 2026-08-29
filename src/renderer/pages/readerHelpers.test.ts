@@ -5,8 +5,10 @@ import {
   failAdvice,
   formatCharacterCard,
   remainingChapterCount,
+  resolveImmersiveKey,
   resolveReaderKey,
   scrollableDistance,
+  shouldAutoHideReaderTools,
   scrollTopFromRatio,
 } from './readerHelpers'
 
@@ -46,6 +48,27 @@ describe('reader progress helpers', () => {
     expect(remainingChapterCount(chapters, 'c1')).toBe(2)
     expect(remainingChapterCount(chapters, 'c3')).toBe(0)
     expect(remainingChapterCount(chapters, 'missing')).toBe(3)
+  })
+})
+
+describe('immersive reader helpers', () => {
+  it('hides tools after three idle seconds only in an unprotected reading state', () => {
+    expect(shouldAutoHideReaderTools({ idleMs: 2999, overlayOpen: false, selectionOpen: false, pointerInToolbar: false })).toBe(false)
+    expect(shouldAutoHideReaderTools({ idleMs: 3000, overlayOpen: false, selectionOpen: false, pointerInToolbar: false })).toBe(true)
+  })
+
+  it('keeps tools visible for drawers, selections, and toolbar hover', () => {
+    expect(shouldAutoHideReaderTools({ idleMs: 5000, overlayOpen: true, selectionOpen: false, pointerInToolbar: false })).toBe(false)
+    expect(shouldAutoHideReaderTools({ idleMs: 5000, overlayOpen: false, selectionOpen: true, pointerInToolbar: false })).toBe(false)
+    expect(shouldAutoHideReaderTools({ idleMs: 5000, overlayOpen: false, selectionOpen: false, pointerInToolbar: true })).toBe(false)
+  })
+
+  it('maps M, Alt, and Escape across normal and locked modes', () => {
+    expect(resolveImmersiveKey('m', 'normal')).toEqual({ mode: 'locked', toolsVisible: true, temporaryReveal: false })
+    expect(resolveImmersiveKey('M', 'locked')).toEqual({ mode: 'normal', toolsVisible: true, temporaryReveal: false })
+    expect(resolveImmersiveKey('Alt', 'locked')).toEqual({ mode: 'locked', toolsVisible: true, temporaryReveal: true })
+    expect(resolveImmersiveKey('Escape', 'locked')).toEqual({ mode: 'normal', toolsVisible: true, temporaryReveal: false })
+    expect(resolveImmersiveKey('Escape', 'normal')).toEqual({ mode: 'normal', toolsVisible: true, temporaryReveal: false })
   })
 })
 

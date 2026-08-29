@@ -81,7 +81,55 @@ export type ReaderKeyAction =
   | 'font-smaller'
   | 'close-drawer'
 
+export type ReaderImmersiveMode = 'normal' | 'locked'
+
+export interface ReaderToolVisibilityContext {
+  idleMs: number
+  overlayOpen: boolean
+  selectionOpen: boolean
+  pointerInToolbar: boolean
+}
+
+export interface ReaderImmersiveKeyResult {
+  mode: ReaderImmersiveMode
+  toolsVisible: boolean
+  temporaryReveal: boolean
+}
+
 const TEXT_ENTRY_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
+const TOOL_HIDE_DELAY_MS = 3000
+
+/** 工具层只在阅读现场完全空闲时自动隐藏。 */
+export function shouldAutoHideReaderTools(context: ReaderToolVisibilityContext): boolean {
+  return (
+    context.idleMs >= TOOL_HIDE_DELAY_MS &&
+    !context.overlayOpen &&
+    !context.selectionOpen &&
+    !context.pointerInToolbar
+  )
+}
+
+/** 解析沉浸阅读快捷键；抽屉关闭等优先级由组件负责。 */
+export function resolveImmersiveKey(
+  key: string,
+  mode: ReaderImmersiveMode,
+): ReaderImmersiveKeyResult | null {
+  const normalized = key.toLowerCase()
+  if (normalized === 'm') {
+    return {
+      mode: mode === 'locked' ? 'normal' : 'locked',
+      toolsVisible: true,
+      temporaryReveal: false,
+    }
+  }
+  if (key === 'Alt') {
+    return { mode, toolsVisible: true, temporaryReveal: mode === 'locked' }
+  }
+  if (key === 'Escape') {
+    return { mode: 'normal', toolsVisible: true, temporaryReveal: false }
+  }
+  return null
+}
 
 /** 把人物卡整理成可读文本；解析失败时回退原始返回。 */
 export function formatCharacterCard(

@@ -9,9 +9,12 @@ import {
   filterCatalogChapters,
   formatCharacterCard,
   readerProgressLabel,
+  resolveImmersiveKey,
   resolveReaderKey,
   scrollTopFromRatio,
+  shouldAutoHideReaderTools,
 } from './readerHelpers'
+import type { ReaderImmersiveMode } from './readerHelpers'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { decorateText, relocateRange } from '@shared/paragraphSearch'
 import type { Annotation, BookSearchHit } from '@shared/types'
@@ -60,6 +63,15 @@ const chatAssistantIndex = ref(-1)
 const catalogQuery = ref('')
 const scrollRatioView = ref(0)
 const retryingChapter = ref(false)
+
+// 沉浸工具层
+const immersiveMode = ref<ReaderImmersiveMode>('normal')
+const toolsVisible = ref(true)
+const temporaryToolReveal = ref(false)
+const pointerInToolbar = ref(false)
+const activeToolPanel = ref<'tts' | 'ai' | 'appearance' | null>(null)
+let lastToolActivityAt = Date.now()
+let toolHideTimer: ReturnType<typeof setTimeout> | null = null
 
 const prefsReady = ref(false)
 
@@ -395,7 +407,108 @@ const FONT_MIN = 12
 const FONT_MAX = 36
 
 function anyDrawerOpen() {
-  return showDrawer.value || showAiResult.value || showChat.value || showSearch.value
+  return (
+    showDrawer.value ||
+    showAiResult.value ||
+    showChat.value ||
+    showSearch.value ||
+    showMarks.value ||
+    showRecap.value ||
+    activeToolPanel.value !== null
+  )
+}
+
+function selectionOpen() {
+  return showSelPopup.value || Boolean(selectedExcerpt.value)
+}
+
+function clearToolHideTimer() {
+  if (!toolHideTimer) return
+  clearTimeout(toolHideTimer)
+  toolHideTimer = null
+}
+
+function scheduleToolHide() {
+  clearToolHideTimer()
+  if (anyDrawerOpen() || selectionOpen() || pointerInToolbar.value) {
+    toolsVisible.value = true
+    return
+  }
+  const elapsed = Date.now() - lastToolActivityAt
+  toolHideTimer = setTimeout(() => {
+    const idleMs = Date.now() - lastToolActivityAt
+    if (
+      shouldAutoHideReaderTools({
+        idleMs,
+        overlayOpen: anyDrawerOpen(),
+        selectionOpen: selectionOpen(),
+        pointerInToolbar: pointerInToolbar.value,
+      })
+    ) {
+      toolsVisible.value = false
+      temporaryToolReveal.value = false
+    } else {
+      scheduleToolHide()
+    }
+  }, Math.max(0, 3000 - elapsed))
+}
+
+function revealTools(temporary = false) {
+  toolsVisible.value = true
+  temporaryToolReveal.value = temporary
+  lastToolActivityAt = Date.now()
+  scheduleToolHide()
+}
+
+function onReaderPointerMove(e: MouseEvent) {
+  if (immersiveMode.value === 'locked') {
+    if (e.clientY <= 64) revealTools(true)
+    return
+  }
+  revealTools(false)
+}
+
+function onToolbarEnter() {
+  pointerInToolbar.value = true
+  revealTools(immersiveMode.value === 'locked')
+}
+
+function onToolbarLeave() {
+  pointerInToolbar.value = false
+  if (immersiveMode.value === 'locked' && temporaryToolReveal.value && !anyDrawerOpen() && !selectionOpen()) {
+    toolsVisible.value = false
+    temporaryToolReveal.value = false
+    return
+  }
+  lastToolActivityAt = Date.now()
+  scheduleToolHide()
+}
+
+function toggleToolPanel(panel: 'tts' | 'ai' | 'appearance') {
+  activeToolPanel.value = activeToolPanel.value === panel ? null : panel
+  revealTools(immersiveMode.value === 'locked')
+}
+
+function toggleImmersiveLock() {
+  const result = resolveImmersiveKey('m', immersiveMode.value)
+  if (!result) return
+  immersiveMode.value = result.mode
+  toolsVisible.value = result.toolsVisible
+  temporaryToolReveal.value = result.temporaryReveal
+  lastToolActivityAt = Date.now()
+  scheduleToolHide()
+}
+
+function closeReaderOverlays() {
+  showDrawer.value = false
+  showAiResult.value = false
+  showChat.value = false
+  showSearch.value = false
+  showMarks.value = false
+  showRecap.value = false
+  activeToolPanel.value = null
+  showSelPopup.value = false
+  selectedExcerpt.value = ''
 }
 
 function pageByScreen(direction: 1 | -1) {
@@ -410,14 +523,34 @@ function setFontSize(next: number) {
 
 function onReaderKeydown(e: KeyboardEvent) {
   if (!book.value) return
+  const target = e.target as HTMLElement | null
+  const isTextEntry = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT' || Boolean(target?.isContentEditable)
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
-    const target = e.target as HTMLElement | null
-    if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable) return
+    if (isTextEntry) return
     e.preventDefault()
     openSearch()
+    revealTools(immersiveMode.value === 'locked')
     return
   }
-  const target = e.target as HTMLElement | null
+  if (!isTextEntry && e.key === 'Escape' && selectionOpen()) {
+    e.preventDefault()
+    showSelPopup.value = false
+    selectedExcerpt.value = ''
+    revealTools(immersiveMode.value === 'locked')
+    return
+  }
+  if (!isTextEntry && !(e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'm' || e.key === 'Alt' || (e.key === 'Escape' && !anyDrawerOpen()))) {
+    const result = resolveImmersiveKey(e.key, immersiveMode.value)
+    if (result) {
+      e.preventDefault()
+      immersiveMode.value = result.mode
+      toolsVisible.value = result.toolsVisible
+      temporaryToolReveal.value = result.temporaryReveal
+      lastToolActivityAt = Date.now()
+      scheduleToolHide()
+      return
+    }
+  }
   const action = resolveReaderKey({
     key: e.key,
     targetTag: target?.tagName ?? null,
@@ -449,10 +582,8 @@ function onReaderKeydown(e: KeyboardEvent) {
       setFontSize(fontSize.value - 1)
       break
     case 'close-drawer':
-      showDrawer.value = false
-      showAiResult.value = false
-      showChat.value = false
-      showSearch.value = false
+      closeReaderOverlays()
+      revealTools(immersiveMode.value === 'locked')
       break
   }
 }
@@ -850,6 +981,14 @@ watch(showChat, async (open) => {
   const res = await window.api.ai.getChat(book.value.id)
   if (res.ok) chatMessages.value = res.messages
 })
+watch(
+  [showDrawer, showAiResult, showChat, showSearch, showMarks, showRecap, showSelPopup, activeToolPanel],
+  () => {
+    if (anyDrawerOpen() || selectionOpen()) toolsVisible.value = true
+    lastToolActivityAt = Date.now()
+    scheduleToolHide()
+  },
+)
 
 onMounted(async () => {
   window.addEventListener('keydown', onReaderKeydown)
@@ -904,6 +1043,8 @@ onMounted(async () => {
   })
   await loadPrefs()
   prefsReady.value = true
+  lastToolActivityAt = Date.now()
+  scheduleToolHide()
   if (props.bookId) await loadBook(props.bookId)
   unsubDownload = window.api.download.onProgress((p) => {
     if (!book.value || p.bookId !== book.value.id) return
@@ -923,6 +1064,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onReaderKeydown)
   ttsStop()
   if (scrollTimer) clearTimeout(scrollTimer)
+  clearToolHideTimer()
   unsubDownload?.()
   unsubAiChunk?.()
   unsubAiDone?.()
@@ -931,77 +1073,57 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :class="['reader-wrap', nightClass]">
+  <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" @mousemove="onReaderPointerMove">
     <!-- No book selected -->
     <div v-if="!book" class="page placeholder">
       <h2>阅读</h2>
-      <p>从书库点开一本书后在这里阅读。</p>
+      <p>从书库打开一本书后在这里阅读。</p>
+      <n-button @click="emit('back')">返回书库</n-button>
     </div>
 
     <!-- Reader -->
     <template v-else>
-      <!-- Top bar -->
-      <div class="reader-bar">
-        <n-button quaternary size="small" @click="emit('back')">← 返回书库</n-button>
-        <span class="reader-book-title">{{ book.title }}</span>
-        <span class="reader-progress-label">{{ progressSummary }}</span>
-        <n-button quaternary size="small" :type="chapterBookmark ? 'primary' : 'default'" @click="toggleBookmark">
-          {{ chapterBookmark ? '★ 书签' : '☆ 书签' }}
-        </n-button>
-        <n-button quaternary size="small" @click="showMarks = true">标记{{ annotations.length ? `(${annotations.length})` : '' }}</n-button>
-        <n-button quaternary size="small" @click="openSearch">搜索</n-button>
-        <n-button quaternary size="small" @click="showDrawer = true">目录</n-button>
-      </div>
+      <div
+        :class="['reader-toolbar', { visible: toolsVisible }]"
+        @mouseenter="onToolbarEnter"
+        @mouseleave="onToolbarLeave"
+      >
+        <button class="tool-button" title="返回书库" aria-label="返回书库" @click="emit('back')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10"/></svg></button>
+        <button class="tool-button" title="目录" aria-label="目录" @click="showDrawer = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+        <div class="reader-book-title" :title="`${book.title} · ${currentChapter?.title || ''}`">《{{ book.title }}》· {{ currentChapter?.title }}</div>
+        <button class="tool-button" title="搜索" aria-label="搜索" @click="openSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg></button>
+        <button class="tool-button" title="标记" aria-label="标记" @click="showMarks = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg></button>
+        <button class="tool-button" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg></button>
+        <button class="tool-button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg></button>
+        <button class="tool-button" title="外观" aria-label="外观" @click="toggleToolPanel('appearance')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z"/></svg></button>
+        <button class="tool-button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
 
-      <!-- Main content area -->
-      <div class="reader-body">
-        <!-- Sidebar controls -->
-        <div class="reader-controls">
-          <div class="control-label">字号 {{ fontSize }}</div>
-          <n-slider v-model:value="fontSize" :min="12" :max="36" :step="1" />
-          <div class="control-label">行距 {{ lineHeight.toFixed(1) }}</div>
-          <n-slider v-model:value="lineHeight" :min="1.2" :max="3.0" :step="0.1" />
-          <div class="control-label" style="margin-top:8px">
-            <n-switch v-model:value="nightMode" /> 夜间
-          </div>
-          <div style="border-top:1px solid var(--r-line);margin-top:8px;padding-top:8px">
-            <div class="control-label" style="margin-bottom:6px;font-weight:600">朗读</div>
+        <div v-if="activeToolPanel" class="tool-panel" @click.stop>
+          <template v-if="activeToolPanel === 'appearance'">
+            <strong>阅读外观</strong>
+            <div class="control-label">字号 {{ fontSize }}</div><n-slider v-model:value="fontSize" :min="12" :max="36" :step="1" />
+            <div class="control-label">行距 {{ lineHeight.toFixed(1) }}</div><n-slider v-model:value="lineHeight" :min="1.2" :max="3" :step="0.1" />
+            <div class="control-label"><n-switch v-model:value="nightMode" /> 夜间</div>
+          </template>
+          <template v-else-if="activeToolPanel === 'tts'">
+            <strong>朗读</strong>
             <n-space vertical :size="6" v-if="ttsSupported">
-              <n-space :size="6">
-                <n-button
-                  v-if="!ttsSpeaking"
-                  size="tiny"
-                  :disabled="!chapterReady"
-                  @click="ttsStart(0)"
-                >
-                  播放
-                </n-button>
-                <n-button v-else-if="ttsPaused" size="tiny" type="primary" @click="ttsResume">继续</n-button>
-                <n-button v-else size="tiny" @click="ttsPause">暂停</n-button>
-                <n-button v-if="ttsSpeaking" size="tiny" @click="ttsStop">停止</n-button>
-              </n-space>
-              <div class="control-label">语速 {{ ttsRate.toFixed(1) }}x</div>
-              <n-slider v-model:value="ttsRate" :min="0.5" :max="2" :step="0.1" />
+              <n-space :size="6"><n-button v-if="!ttsSpeaking" size="tiny" :disabled="!chapterReady" @click="ttsStart(0)">播放</n-button><n-button v-else-if="ttsPaused" size="tiny" type="primary" @click="ttsResume">继续</n-button><n-button v-else size="tiny" @click="ttsPause">暂停</n-button><n-button v-if="ttsSpeaking" size="tiny" @click="ttsStop">停止</n-button></n-space>
+              <div class="control-label">语速 {{ ttsRate.toFixed(1) }}x</div><n-slider v-model:value="ttsRate" :min="0.5" :max="2" :step="0.1" />
               <div class="control-label"><n-switch v-model:value="ttsAutoNext" /> 自动下一章</div>
             </n-space>
             <div v-else class="control-label">当前环境不支持朗读</div>
-          </div>
-          <div style="border-top:1px solid var(--r-line);margin-top:8px;padding-top:8px">
-            <div class="control-label" style="margin-bottom:6px;font-weight:600">AI 助手</div>
-            <n-space vertical :size="6">
-              <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCleanBody">清正文</n-button>
-              <n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button>
-              <n-button size="tiny" block @click="openRecap">看到这里</n-button>
-              <n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCharacterCard">人物卡</n-button>
-              <n-button size="tiny" block :disabled="!chapterReady" @click="showChat = true">聊书</n-button>
-            </n-space>
-          </div>
-          <div class="control-label key-hint">快捷键：←/→ 换章 · 空格翻屏 · +/- 字号 · Esc 关弹层</div>
+          </template>
+          <template v-else>
+            <strong>AI</strong>
+            <n-space vertical :size="6"><n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCleanBody">清正文</n-button><n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button><n-button size="tiny" block @click="openRecap">看到这里</n-button><n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCharacterCard">人物卡</n-button><n-button size="tiny" block :disabled="!chapterReady" @click="showChat = true">聊书</n-button></n-space>
+          </template>
         </div>
+      </div>
 
-        <!-- Text area -->
+      <div class="reader-body">
         <div class="reader-content reader-pane" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup">
-          <div v-if="chapterLoading" class="loading-hint">加载中…</div>
+          <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>
             <p v-if="chapterError" class="chapter-error">{{ chapterError }}</p>
@@ -1024,17 +1146,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Bottom nav -->
-      <div class="reader-nav">
-        <n-button :disabled="!currentChapter || chapters[0]?.id === currentChapter?.id" @click="prevChapter">
-          上一章
-        </n-button>
-        <n-tag v-if="currentChapter">
-          {{ progressSummary }}
-        </n-tag>
-        <n-button :disabled="!currentChapter || chapters[chapters.length-1]?.id === currentChapter?.id" @click="nextChapter">
-          下一章
-        </n-button>
+      <div class="reader-progress-track" :title="progressSummary" aria-label="阅读进度">
+        <div class="reader-progress-fill" :style="{ width: `${Math.round(scrollRatioView * 100)}%` }"></div>
       </div>
 
       <!-- Chapter drawer -->
@@ -1210,9 +1323,11 @@ onUnmounted(() => {
   --r-bar-bg: var(--bar-bg);
   --r-line: var(--line);
   --r-muted: var(--muted);
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
+  overflow: hidden;
   background: transparent;
   color: var(--text);
   transition: background .2s, color .2s;
@@ -1536,5 +1651,105 @@ onUnmounted(() => {
 .chat-input-row {
   display: flex;
   gap: 8px;
+}
+
+.reader-toolbar {
+  position: absolute;
+  z-index: 30;
+  top: 12px;
+  left: 50%;
+  width: min(920px, calc(100% - 32px));
+  min-height: 48px;
+  transform: translate(-50%, -10px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--r-line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--r-bar-bg) 94%, transparent);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .16);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+}
+
+.reader-toolbar.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+
+.tool-button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.tool-button:hover { background: rgba(127, 127, 127, .14); }
+.tool-button:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
+.tool-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.reader-toolbar .reader-book-title { min-width: 0; }
+
+.tool-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 48px;
+  width: 248px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--r-line);
+  border-radius: 12px;
+  background: var(--popover-bg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .24);
+}
+
+.reader-body {
+  padding: 28px clamp(16px, 5vw, 72px) 20px;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--reader-bg, transparent);
+}
+
+.reader-content {
+  width: min(100%, 38em);
+  max-width: 38em;
+  flex: 0 1 38em;
+  padding: 64px clamp(24px, 5vw, 56px) 100px;
+  border-radius: 6px 6px 0 0;
+  box-shadow: 0 2px 18px rgba(0, 0, 0, .08);
+}
+
+.reader-progress-track {
+  position: absolute;
+  z-index: 25;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(127, 127, 127, .16);
+  pointer-events: none;
+}
+
+.reader-progress-fill {
+  height: 100%;
+  background: var(--active-chapter);
+  transition: width .12s linear;
+}
+
+.reader-wrap.immersive-locked .reader-progress-track { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-wrap, .reader-toolbar, .reader-progress-fill { transition: none !important; }
 }
 </style>
