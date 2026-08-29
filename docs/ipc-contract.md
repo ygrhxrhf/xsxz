@@ -126,6 +126,20 @@
 
 `SettingsUpdate.appearance.skin`（`'sakura' | 'minimal'`）用于换肤：渲染层切皮肤时提交，主进程校验合法值后并入 `settings.json`；非法值按默认 `'sakura'` 处理。
 
+`Settings.reader` / `SettingsUpdate.reader` 使用同一个 `ReaderPrefs` 契约；更新时仍通过现有 `settings.set` 提交 `Partial<ReaderPrefs>`，频道名、请求响应外形和 preload API 不变：
+
+| 字段 | 类型 | 默认值 | 读取规则 |
+|---|---|---|---|
+| `fontSize` | `number` | `18` | 有限数值夹紧到 12–36 |
+| `lineHeight` | `number` | `1.8` | 有限数值夹紧到 1.2–3.0 |
+| `theme` | `'paper' \| 'sepia' \| 'gray' \| 'night'` | `'paper'` | 有效新值优先；缺失或非法时兼容旧 `nightMode` |
+| `fontFamily` | `'serif' \| 'system' \| 'mono'` | `'serif'` | 非法值回退默认 |
+| `contentWidth` | `'narrow' \| 'medium' \| 'wide'` | `'medium'` | 非法值回退默认 |
+| `paragraphSpacing` | `'compact' \| 'normal' \| 'relaxed'` | `'normal'` | 非法值回退默认 |
+| `paragraphIndent` | `boolean` | `true` | 非布尔值回退默认 |
+
+读取设置时逐字段校验，一个字段损坏不会丢弃其他合法字段。旧 `nightMode: true` 迁移为 `theme: 'night'`，`false` 迁移为 `'paper'`；未知旧字段可继续留在磁盘，但返回的正式 `ReaderPrefs` 不再包含或依赖 `nightMode`。
+
 ---
 
 ## 站点规则

@@ -194,7 +194,11 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
   "reader": {
     "fontSize": 18,
     "lineHeight": 1.8,
-    "nightMode": false
+    "theme": "paper",
+    "fontFamily": "serif",
+    "contentWidth": "medium",
+    "paragraphSpacing": "normal",
+    "paragraphIndent": true
   },
   "tts": {
     "rate": 1,
@@ -210,6 +214,9 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
 - `settings.get` IPC 不返回明文，只返回 `apiKeyConfigured`。
 - `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
 - `appearance.skin` 取值 `sakura`（夜樱，默认）/ `minimal`（简约），非法值回退默认。
+- `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。
+- `reader.theme` 取值 `paper`（默认）/ `sepia` / `gray` / `night`；`reader.fontFamily` 取值 `serif`（默认）/ `system` / `mono`；`reader.contentWidth` 取值 `narrow` / `medium`（默认）/ `wide`；`reader.paragraphSpacing` 取值 `compact` / `normal`（默认）/ `relaxed`；`reader.paragraphIndent` 为布尔值，默认 `true`。非法字段逐项回退，不影响其他合法设置。
+- 向后兼容：有效的新 `theme` 优先；新主题缺失或非法时，旧 `nightMode: true` 迁移为 `night`、`false` 迁移为 `paper`。首次成功保存新偏好后写入新字段；未知旧字段允许继续保留，但读取逻辑不再依赖它们。设置文件整体损坏时按默认值启动，不重建书库、章节、进度或标记数据。
 
 ---
 
