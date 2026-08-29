@@ -24,7 +24,7 @@ import {
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
-import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, normalizeSettingsUpdatePayload } from './settings'
+import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
 import { startDownload, cancelDownload, retryFailed, checkUpdate, checkAllUpdates, cancelCheckAll, setOwnerWindow, setBrowseView } from './download'
 import { listSiteRules, upsertSiteRule, removeSiteRule } from './siteRules'
 import { exportBook } from './exportBook'
@@ -83,7 +83,7 @@ function trustedAiConfig(
     baseUrl,
     model: override.model ?? settings.model,
     apiKey,
-    provider: ai.provider,
+    provider: resolveEffectiveAiProvider(baseUrl, ai.provider),
     thinkingEnabled: ai.thinkingEnabled,
   }
 }

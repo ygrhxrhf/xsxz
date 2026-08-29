@@ -25,6 +25,7 @@ import {
   normalizeSettingsUpdatePayload,
   normalizeTrustedCustomOrigins,
   resetSettingsCacheForTests,
+  resolveEffectiveAiProvider,
   updateSettings,
 } from './settings'
 
@@ -115,9 +116,22 @@ describe('AI endpoint trust guard', () => {
     expect(() => assertTrustedAiEndpoint('https://custom.example:8443/v2', ai)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
   })
 
+  it('forces every non-official protocol or port to custom transport after trust', () => {
+    const ai = {
+      ...DEFAULT_AI_PREFS,
+      trustedCustomOrigins: ['http://api.deepseek.com', 'https://api.deepseek.com:8443'],
+    }
+    expect(() => assertTrustedAiEndpoint('http://api.deepseek.com/v1', ai)).not.toThrow()
+    expect(() => assertTrustedAiEndpoint('https://api.deepseek.com:8443/v1', ai)).not.toThrow()
+    expect(resolveEffectiveAiProvider('http://api.deepseek.com/v1', 'deepseek')).toBe('custom')
+    expect(resolveEffectiveAiProvider('https://api.deepseek.com:8443/v1', 'deepseek')).toBe('custom')
+    expect(resolveEffectiveAiProvider('https://api.deepseek.com/v1', 'deepseek')).toBe('deepseek')
+  })
+
   it('requires confirmation when custom mode explicitly targets the official host', () => {
     const custom = { ...DEFAULT_AI_PREFS, provider: 'custom' as const }
     expect(() => assertTrustedAiEndpoint('https://api.deepseek.com/v1', custom)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
+    expect(resolveEffectiveAiProvider('https://api.deepseek.com/v1', 'custom')).toBe('custom')
   })
 })
 

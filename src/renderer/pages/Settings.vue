@@ -445,10 +445,10 @@ onMounted(load)
           <n-input v-model:value="model" placeholder="deepseek-v4-flash" />
         </n-input-group>
         <n-alert v-if="legacyModelWarning" type="warning">
-          当前模型名 {{ model }} 可能已停用。DeepSeek 官方当前推荐使用 deepseek-v4-flash。
-          <template #action>
+          <n-space vertical :size="8">
+            <span>当前模型名 {{ model }} 可能已停用。DeepSeek 官方当前推荐使用 deepseek-v4-flash。</span>
             <n-button size="small" @click="migrateLegacyModel">改用 deepseek-v4-flash</n-button>
-          </template>
+          </n-space>
         </n-alert>
         <n-input-group>
           <n-input-group-label style="width:80px">API Key</n-input-group-label>

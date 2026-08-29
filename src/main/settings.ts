@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type {
   AiPrefs,
   AiPromptKind,
+  AiProvider,
   AppearancePrefs,
   ReaderContentWidth,
   ReaderFontFamily,
@@ -78,11 +79,15 @@ export function isLegacyDeepSeekModel(value: unknown): boolean {
 
 export const AI_CUSTOM_SERVICE_NOTICE = 'API Key 和你主动选择的正文内容将发送到此接口地址。请只使用你信任的服务。'
 
+export function resolveEffectiveAiProvider(baseUrl: string, requested: AiProvider): AiProvider {
+  const origin = normalizeCustomOrigin(baseUrl)
+  return origin === 'https://api.deepseek.com' && requested !== 'custom' ? 'deepseek' : 'custom'
+}
+
 export function assertTrustedAiEndpoint(baseUrl: string, ai: AiPrefs): void {
   const origin = normalizeCustomOrigin(baseUrl)
   if (!origin) throw new Error(AI_CUSTOM_SERVICE_NOTICE)
-  const officialDeepSeek = origin === 'https://api.deepseek.com'
-  const usesCustomTransport = ai.provider === 'custom' || !officialDeepSeek
+  const usesCustomTransport = resolveEffectiveAiProvider(baseUrl, ai.provider) === 'custom'
   if (usesCustomTransport && !ai.trustedCustomOrigins.includes(origin)) {
     throw new Error(AI_CUSTOM_SERVICE_NOTICE)
   }

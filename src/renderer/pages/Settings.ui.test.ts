@@ -39,6 +39,53 @@ describe('Settings AI custom-origin confirmation', () => {
     vi.restoreAllMocks()
   })
 
+  it('migrates a legacy DeepSeek model only after the user clicks the explicit action', async () => {
+    let current: Settings = {
+      libraryPath: '/tmp/library',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-chat',
+      apiKeyConfigured: true,
+      reader: DEFAULT_READER_PREFS,
+      tts: DEFAULT_TTS_PREFS,
+      appearance: DEFAULT_APPEARANCE_PREFS,
+      ai: { ...DEFAULT_AI_PREFS },
+    }
+    const set = vi.fn(async (update: Record<string, unknown>) => {
+      current = {
+        ...current,
+        ...(typeof update.baseUrl === 'string' ? { baseUrl: update.baseUrl } : {}),
+        ...(typeof update.model === 'string' ? { model: update.model } : {}),
+      }
+      return current
+    })
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        settings: { get: vi.fn(async () => current), set },
+        siteRules: { list: vi.fn(async () => ({ rules: [] })) },
+        ai: { test: vi.fn() },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(SettingsPage, { active: true })
+    app.mount(host)
+    unmount = () => app.unmount()
+    await flushUi()
+
+    expect(document.body.textContent).toContain('当前模型名 deepseek-chat 可能已停用')
+    expect(set).not.toHaveBeenCalled()
+    button('改用 deepseek-v4-flash').click()
+    await flushUi()
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-flash',
+      ai: expect.objectContaining({ provider: 'deepseek' }),
+    }))
+    expect(document.body.textContent).toContain('模型已改为 deepseek-v4-flash')
+  })
+
   it('cancels without trust or API call, then confirms once before the first real call', async () => {
     let current: Settings = {
       libraryPath: '/tmp/library',
