@@ -33,6 +33,12 @@ export interface AiTaskPolicy {
   structured: boolean
 }
 
+export interface AiTransportHooks {
+  sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>
+  random?: () => number
+  now?: () => number
+}
+
 export interface AiTaskOptions {
   task: AiTaskKind
   stream?: boolean
@@ -40,6 +46,8 @@ export interface AiTaskOptions {
   onDelta?: (delta: string) => void
   inputTokenEstimate?: number
   recapLength?: 'short' | 'standard' | 'detailed'
+  /** 仅用于无网络的确定性 transport 测试；生产调用不传。 */
+  hooks?: AiTransportHooks
 }
 
 export interface AiCompletionResult {
@@ -95,6 +103,7 @@ export class AiJobSlot {
 export function formatAiRequestError(status: number, bodyText = ''): string {
   const snippet = bodyText.slice(0, 200)
   if (status === 401 || status === 403) return 'API Key 无效或无权限，请到设置页核对'
+  if (status === 402) return '模型服务余额不足，请到服务商控制台检查'
   if (status === 429) return '请求过于频繁或额度用尽，请稍后再试'
   if (status === 408) return 'AI 请求超时，请稍后重试'
   if (status >= 500) return `模型服务暂时不可用 (${status})`
@@ -208,15 +217,18 @@ function buildRequestBody(
   messages: ChatMessage[],
   policy: AiTaskPolicy,
   stream: boolean,
+  allowExtensions = true,
 ): Record<string, unknown> {
   const provider = resolveProvider(config)
   const body: Record<string, unknown> = { model: config.model, messages, stream }
   if (policy.maxTokens !== undefined) body.max_tokens = policy.maxTokens
   if (provider === 'deepseek') {
     if (policy.mode === 'fast') body.temperature = 0.3
-    if (policy.mode === 'high' && config.thinkingEnabled !== false) body.reasoning_effort = 'high'
-    if (policy.structured) body.response_format = { type: 'json_object' }
-    if (stream) body.stream_options = { include_usage: true }
+    if (allowExtensions && policy.mode === 'high' && config.thinkingEnabled !== false) {
+      body.reasoning_effort = 'high'
+    }
+    if (allowExtensions && policy.structured) body.response_format = { type: 'json_object' }
+    if (allowExtensions && stream) body.stream_options = { include_usage: true }
   }
   return body
 }
@@ -224,6 +236,47 @@ function buildRequestBody(
 function requestSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
   const timeout = AbortSignal.timeout(timeoutMs)
   return signal ? AbortSignal.any([signal, timeout]) : timeout
+}
+
+export function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value.trim())
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000)
+  const date = Date.parse(value)
+  return Number.isFinite(date) ? Math.max(0, date - now) : undefined
+}
+
+function retryDelayMs(response: Response, retryIndex: number, hooks: AiTransportHooks): number {
+  const fromHeader = parseRetryAfterMs(response.headers.get('Retry-After'), (hooks.now ?? Date.now)())
+  if (fromHeader !== undefined) return fromHeader
+  const jitter = Math.floor(Math.max(0, Math.min(1, (hooks.random ?? Math.random)())) * 250)
+  return (retryIndex === 0 ? 1_000 : 2_000) + jitter
+}
+
+function defaultSleep(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, delayMs)
+    function done() {
+      signal.removeEventListener('abort', aborted)
+      resolve()
+    }
+    function aborted() {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', aborted)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', aborted, { once: true })
+    if (signal.aborted) aborted()
+  })
+}
+
+function hasCompatibilityExtensions(body: Record<string, unknown>): boolean {
+  return 'reasoning_effort' in body || 'response_format' in body || 'stream_options' in body
+}
+
+function isTransientStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 503
 }
 
 function finishResult(
@@ -296,25 +349,50 @@ export async function runAiTaskCompletion(
 ): Promise<AiCompletionResult> {
   const policy = getAiTaskPolicy(options.task, options)
   const stream = options.stream === true
+  const hooks = options.hooks ?? {}
+  const signal = requestSignal(options.signal, policy.timeoutMs)
+  let transientRetries = 0
+  let compatibilityDowngraded = false
   try {
-    const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-      body: JSON.stringify(buildRequestBody(config, messages, policy, stream)),
-      signal: requestSignal(options.signal, policy.timeoutMs),
-    })
-    if (!response.ok) {
+    while (true) {
+      const body = buildRequestBody(config, messages, policy, stream, !compatibilityDowngraded)
+      const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+        body: JSON.stringify(body),
+        signal,
+      })
+      if (response.ok) {
+        if (stream) return readStreamResult(response, policy, options.onDelta ?? (() => {}))
+        const data = await response.json() as Record<string, unknown>
+        const choice = Array.isArray(data.choices) ? data.choices[0] as Record<string, unknown> | undefined : undefined
+        const message = choice?.message && typeof choice.message === 'object' ? choice.message as Record<string, unknown> : undefined
+        const content = typeof message?.content === 'string' ? message.content : ''
+        // reasoning_content is intentionally ignored and never returned.
+        const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined
+        return finishResult(content, finishReason, parseUsage(data.usage), policy)
+      }
+
+      if (
+        !compatibilityDowngraded
+        && (response.status === 400 || response.status === 422)
+        && hasCompatibilityExtensions(body)
+      ) {
+        await response.body?.cancel().catch(() => {})
+        compatibilityDowngraded = true
+        continue
+      }
+
+      if (isTransientStatus(response.status) && transientRetries < 2) {
+        const delayMs = retryDelayMs(response, transientRetries, hooks)
+        transientRetries += 1
+        await response.body?.cancel().catch(() => {})
+        await (hooks.sleep ?? defaultSleep)(delayMs, signal)
+        continue
+      }
+
       throw new Error(formatAiRequestError(response.status, await response.text().catch(() => '')))
     }
-    if (stream) return readStreamResult(response, policy, options.onDelta ?? (() => {}))
-
-    const data = await response.json() as Record<string, unknown>
-    const choice = Array.isArray(data.choices) ? data.choices[0] as Record<string, unknown> | undefined : undefined
-    const message = choice?.message && typeof choice.message === 'object' ? choice.message as Record<string, unknown> : undefined
-    const content = typeof message?.content === 'string' ? message.content : ''
-    // reasoning_content is intentionally ignored and never returned.
-    const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined
-    return finishResult(content, finishReason, parseUsage(data.usage), policy)
   } catch (error: unknown) {
     throw new Error(formatAiTransportError(error))
   }
