@@ -13,11 +13,13 @@ import type {
   ReaderTheme,
 } from '@shared/types'
 import {
+  approximateBookRatio,
   chapterScrollRatio,
   failAdvice,
   filterCatalogChapters,
   formatCharacterCard,
   readerProgressLabel,
+  remainingChapterCount,
   resolveImmersiveKey,
   resolveReaderKey,
   scrollTopFromRatio,
@@ -44,6 +46,7 @@ const hasBodyRaw = ref(false)
 const chapterLoading = ref(false)
 const contentRef = ref<HTMLElement | null>(null)
 const showDrawer = ref(false)
+const catalogItemRefs = new Map<string, HTMLElement>()
 
 // Reader prefs (from settings)
 const fontSize = ref(DEFAULT_READER_PREFS.fontSize)
@@ -652,12 +655,21 @@ const canRetryChapter = computed(() => {
   return ch.status === 'failed' || ch.status === 'empty' || ch.status === 'pending'
 })
 const filteredCatalog = computed(() => filterCatalogChapters(chapters.value, catalogQuery.value))
+const currentChapterIndex = computed(() => chapters.value.findIndex((chapter) => chapter.id === currentChapter.value?.id))
+const previousChapter = computed(() => currentChapterIndex.value > 0 ? chapters.value[currentChapterIndex.value - 1] : null)
+const followingChapter = computed(() => currentChapterIndex.value >= 0 && currentChapterIndex.value < chapters.value.length - 1 ? chapters.value[currentChapterIndex.value + 1] : null)
+const bookProgressRatio = computed(() => approximateBookRatio(chapters.value, currentChapter.value?.id, scrollRatioView.value))
+const chapterPercent = computed(() => Math.round(scrollRatioView.value * 100))
+const bookPercent = computed(() => Math.round(bookProgressRatio.value * 100))
+const remainingChapters = computed(() => remainingChapterCount(chapters.value, currentChapter.value?.id))
+const bookProgressDetail = computed(() => `全书 ${bookPercent.value}% · 本章 ${chapterPercent.value}% · 还剩 ${remainingChapters.value} 章`)
 const progressSummary = computed(() =>
   readerProgressLabel(chapters.value, currentChapter.value?.id, scrollRatioView.value),
 )
 const chapterFailHint = computed(() => failAdvice(currentChapter.value?.failCode))
 
 async function loadBook(bookId: string) {
+  const previousChapterId = currentChapter.value?.id
   saveProgress()
   const res = await window.api.library.get(bookId)
   if (res.book) {
@@ -666,7 +678,14 @@ async function loadBook(bookId: string) {
     currentChapter.value = null
     lostHighlightIds.value = new Set()
     await reloadAnnotations()
-    // Restore progress
+    if (previousChapterId) {
+      const retained = chapters.value.find((chapter) => chapter.id === previousChapterId)
+      if (retained) {
+        await openChapter(retained, scrollRatioView.value)
+        return
+      }
+      if (chapters.value.length > 0) message.info('原章节已不存在，已打开第一章。')
+    }
     if (res.book.progress) {
       const ch = chapters.value.find((c) => c.id === res.book!.progress!.chapterId)
       if (ch) {
@@ -674,10 +693,7 @@ async function loadBook(bookId: string) {
         return
       }
     }
-    // Default to first chapter
-    if (chapters.value.length > 0) {
-      await openChapter(chapters.value[0], 0)
-    }
+    if (chapters.value.length > 0) await openChapter(chapters.value[0], 0)
   }
 }
 
@@ -779,6 +795,17 @@ function nextChapter() {
 function goToChapterId(chId: string) {
   const ch = chapters.value.find((c) => c.id === chId)
   if (ch) openChapter(ch, 0)
+}
+
+function setCatalogItemRef(chapterId: string, element: unknown) {
+  if (element instanceof HTMLElement) catalogItemRefs.set(chapterId, element)
+  else catalogItemRefs.delete(chapterId)
+}
+
+async function scrollCatalogToCurrent() {
+  await nextTick()
+  const id = currentChapter.value?.id
+  if (id) catalogItemRefs.get(id)?.scrollIntoView({ block: 'center' })
 }
 
 function currentReaderPrefs(): ReaderPrefs {
@@ -1084,6 +1111,7 @@ watch(showChat, async (open) => {
   const res = await window.api.ai.getChat(book.value.id)
   if (res.ok) chatMessages.value = res.messages
 })
+watch(showDrawer, (open) => { if (open) void scrollCatalogToCurrent() })
 watch(
   [showDrawer, showAiResult, showChat, showSearch, showMarks, showRecap, showSelPopup, activeToolPanel],
   () => {
@@ -1152,13 +1180,7 @@ onMounted(async () => {
   unsubDownload = window.api.download.onProgress((p) => {
     if (!book.value || p.bookId !== book.value.id) return
     if (p.status === 'done' || p.status === 'error' || p.status === 'cancelled') {
-      const stay = currentChapter.value?.id
-      void loadBook(book.value.id).then(() => {
-        if (stay) {
-          const ch = chapters.value.find((c) => c.id === stay)
-          if (ch) void openChapter(ch, scrollRatioView.value)
-        }
-      })
+      void loadBook(book.value.id)
     }
   })
 })
@@ -1235,6 +1257,7 @@ onUnmounted(() => {
       </div>
 
       <div class="reader-body">
+        <button class="chapter-hotzone left" :disabled="!previousChapter" :title="previousChapter ? `上一章：${previousChapter.title}` : '已经是第一章'" aria-label="上一章" @click="prevChapter"><span>‹</span></button>
         <div class="reader-content reader-pane" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
@@ -1255,12 +1278,18 @@ onUnmounted(() => {
               :data-p="i"
               :class="['para', { 'para-speaking': i === spokenPara }]"
             ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+            <button v-if="chapterReady && followingChapter" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
+            <div v-else-if="chapterReady && currentChapterIndex === chapters.length - 1" class="chapter-end-card finished">
+              <strong>已读完《{{ book.title }}》</strong>
+              <n-button size="small" @click="emit('back')">返回书库</n-button>
+            </div>
           </template>
         </div>
+        <button class="chapter-hotzone right" :disabled="!followingChapter" :title="followingChapter ? `下一章：${followingChapter.title}` : '已经是最后一章'" aria-label="下一章" @click="nextChapter"><span>›</span></button>
       </div>
 
-      <div class="reader-progress-track" :title="progressSummary" aria-label="阅读进度">
-        <div class="reader-progress-fill" :style="{ width: `${Math.round(scrollRatioView * 100)}%` }"></div>
+      <div class="reader-progress-track" :title="bookProgressDetail" :aria-label="bookProgressDetail">
+        <div class="reader-progress-fill" :style="{ width: `${bookPercent}%` }"></div>
       </div>
 
       <!-- Chapter drawer -->
@@ -1273,7 +1302,7 @@ onUnmounted(() => {
               :key="ch.id"
               @click="goToChapterId(ch.id)"
             >
-              <div :class="['ch-item', { active: ch.id === currentChapter?.id }]">
+              <div :ref="(element) => setCatalogItemRef(ch.id, element)" :class="['ch-item', { active: ch.id === currentChapter?.id }]">
                 <span>{{ ch.title }}</span>
                 <n-tag v-if="ch.status === 'failed'" size="tiny" type="error">{{ ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败' }}</n-tag>
                 <n-tag v-else-if="ch.status === 'pending'" size="tiny">未下</n-tag>
@@ -1830,7 +1859,8 @@ onUnmounted(() => {
 }
 
 .reader-body {
-  padding: 28px clamp(16px, 5vw, 72px) 20px;
+  position: relative;
+  padding: 28px clamp(48px, 5vw, 72px) 20px;
   justify-content: center;
   overflow: hidden;
   background: var(--reader-outer);
@@ -1864,6 +1894,42 @@ onUnmounted(() => {
 
 .reader-wrap.immersive-locked .reader-progress-track { opacity: 1; }
 .reader-wrap.night .reader-content { background: var(--reader-paper); color: var(--reader-paper-text); }
+
+.chapter-hotzone {
+  position: absolute;
+  z-index: 18;
+  top: 0;
+  bottom: 3px;
+  width: 48px;
+  border: 0;
+  background: transparent;
+  color: var(--reader-paper-text);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity .15s ease, background .15s ease;
+}
+.chapter-hotzone.left { left: 0; }
+.chapter-hotzone.right { right: 0; }
+.chapter-hotzone:not(:disabled):hover, .chapter-hotzone:not(:disabled):focus-visible { opacity: 1; background: rgba(127, 127, 127, .12); }
+.chapter-hotzone:disabled { cursor: default; }
+.chapter-hotzone span { font-size: 36px; line-height: 1; }
+.chapter-hotzone:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: -3px; }
+
+.chapter-end-card {
+  width: 100%;
+  min-height: 72px;
+  margin: 56px 0 8px;
+  padding: 16px 20px;
+  border: 1px solid color-mix(in srgb, var(--reader-paper-text) 20%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--reader-paper-text) 5%, transparent);
+  color: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.chapter-end-card:hover { background: color-mix(in srgb, var(--reader-paper-text) 9%, transparent); }
+.chapter-end-card:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
+.chapter-end-card.finished { display: flex; flex-direction: column; align-items: center; gap: 12px; cursor: default; }
 .para { text-indent: var(--paragraph-indent, 2em); margin-bottom: var(--paragraph-spacing, .45em); }
 
 .option-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
