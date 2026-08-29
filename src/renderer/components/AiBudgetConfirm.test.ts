@@ -45,4 +45,34 @@ describe('AI over-budget confirmation', () => {
     expect(confirm).not.toHaveBeenCalled()
     app.unmount()
   })
+
+  it('emits confirmation only after the explicit continue action', async () => {
+    const confirm = vi.fn()
+    const cancel = vi.fn()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(AiBudgetConfirm, {
+      show: true,
+      budget: {
+        originalCharacters: 40_000,
+        sentCharacters: 8_500,
+        estimatedTokens: 5_900,
+        chapterCount: 1,
+        paragraphCount: 4,
+        batchCount: 1,
+        range: '当前章节正文前 8000 字，用于生成本章摘要；其余正文本次不发送。',
+      },
+      onConfirm: confirm,
+      onCancel: cancel,
+    })
+    app.mount(host)
+    await nextTick()
+    const continueButton = [...document.querySelectorAll('button')]
+      .find((item) => item.textContent?.trim() === '继续')
+    continueButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(cancel).not.toHaveBeenCalled()
+    app.unmount()
+  })
 })

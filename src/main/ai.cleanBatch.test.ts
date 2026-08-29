@@ -19,6 +19,8 @@ describe('long chapter cleaning plan', () => {
     expect(plan.batches[1]!.prompt).toContain('只读前文：\n第')
     expect(plan.budget.paragraphCount).toBe(8)
     expect(plan.budget.batchCount).toBe(plan.batches.length)
+    expect(plan.batches.flatMap((batch) => batch.targetParagraphs))
+      .toEqual(paragraphs(8, 7_000).split('\n\n'))
   })
 
   it('sends batches sequentially and merges only returned targets after all succeed', async () => {
