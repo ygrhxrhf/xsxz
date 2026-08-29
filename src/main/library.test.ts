@@ -536,6 +536,13 @@ describe('novel memory v1 storage', () => {
     expect(await readAiMemory('d_memory')).toBeNull()
   })
 
+  it('snapshots the validated value before asynchronous file work begins', async () => {
+    const writing = writeAiMemory('d_memory', memory)
+    memory.characters[0]!.name = '异步篡改'
+    await writing
+    expect((await readAiMemory('d_memory'))?.characters[0]?.name).toBe('顾清')
+  })
+
   it('prefers valid new memory and otherwise falls back to the legacy character card', async () => {
     await writeCharacterCard('d_memory', {
       version: 1,
