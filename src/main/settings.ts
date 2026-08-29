@@ -212,9 +212,13 @@ export async function getSettings(): Promise<Settings> {
   }
 }
 
+export function normalizeSettingsUpdatePayload(value: unknown): SettingsUpdate {
+  return readRecord(value) as SettingsUpdate
+}
+
 export async function updateSettings(update: SettingsUpdate | null | undefined): Promise<Settings> {
   const raw = await loadRaw()
-  const patch = readRecord(update)
+  const patch = normalizeSettingsUpdatePayload(update) as Record<string, unknown>
   if (typeof patch.libraryPath === 'string') {
     raw.libraryPath = patch.libraryPath.trim() || DEFAULT_LIBRARY_PATH
   }

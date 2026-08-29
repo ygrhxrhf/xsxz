@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { BrowseState, Settings, SettingsUpdate, SiteRule } from '../shared/types'
+import type { BrowseState, SiteRule } from '../shared/types'
 import {
   listBooks,
   getBook,
@@ -23,7 +23,7 @@ import {
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
-import { getSettings, updateSettings, getApiKey } from './settings'
+import { getSettings, updateSettings, getApiKey, normalizeSettingsUpdatePayload } from './settings'
 import { startDownload, cancelDownload, retryFailed, checkUpdate, checkAllUpdates, cancelCheckAll, setOwnerWindow, setBrowseView } from './download'
 import { listSiteRules, upsertSiteRule, removeSiteRule } from './siteRules'
 import { exportBook } from './exportBook'
@@ -401,10 +401,10 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('settings.get', async () => getSettings())
-  ipcMain.handle('settings.set', async (_e, update: SettingsUpdate) => {
-    // SettingsUpdate.reader is Partial<ReaderPrefs>; updateSettings's param type is stricter.
-    const next = await updateSettings(update as Partial<Settings> & { apiKey?: string })
-    if (typeof update.libraryPath === 'string') {
+  ipcMain.handle('settings.set', async (_e, update: unknown) => {
+    const patch = normalizeSettingsUpdatePayload(update)
+    const next = await updateSettings(patch)
+    if (typeof patch.libraryPath === 'string') {
       await setLibraryPath(next.libraryPath)
     }
     return next

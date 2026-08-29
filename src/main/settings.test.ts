@@ -20,6 +20,7 @@ import {
   normalizeAiPrefs,
   normalizeCustomOrigin,
   normalizeReaderPrefs,
+  normalizeSettingsUpdatePayload,
   normalizeTrustedCustomOrigins,
   resetSettingsCacheForTests,
   updateSettings,
@@ -117,9 +118,15 @@ describe('AI settings compatibility', () => {
     },
   )
 
-  it('accepts empty top-level settings updates without throwing', async () => {
-    await expect(updateSettings(null)).resolves.toMatchObject({ model: 'deepseek-v4-flash' })
-    await expect(updateSettings(undefined)).resolves.toMatchObject({ ai: DEFAULT_AI_PREFS })
+  it('normalizes the untrusted settings.set IPC payload before any property access', async () => {
+    expect(normalizeSettingsUpdatePayload(null)).toEqual({})
+    expect(normalizeSettingsUpdatePayload(undefined)).toEqual({})
+    expect(normalizeSettingsUpdatePayload([])).toEqual({})
+    expect(normalizeSettingsUpdatePayload({ libraryPath: 'D:\\safe' })).toEqual({ libraryPath: 'D:\\safe' })
+    await expect(updateSettings(normalizeSettingsUpdatePayload(null))).resolves.toMatchObject({
+      model: 'deepseek-v4-flash',
+      ai: DEFAULT_AI_PREFS,
+    })
   })
 
   it('normalizes damaged fields independently without changing existing baseURL, model, or key state', async () => {
