@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiRequestStage, BrowseState, SiteRule } from '../shared/types'
+import type { AiRequestStage, BrowseState, Settings, SiteRule } from '../shared/types'
+import { DEFAULT_AI_PREFS } from '../shared/types'
 import {
   listBooks,
   getBook,
@@ -23,7 +24,7 @@ import {
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
-import { getSettings, updateSettings, getApiKey, normalizeSettingsUpdatePayload } from './settings'
+import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, normalizeSettingsUpdatePayload } from './settings'
 import { startDownload, cancelDownload, retryFailed, checkUpdate, checkAllUpdates, cancelCheckAll, setOwnerWindow, setBrowseView } from './download'
 import { listSiteRules, upsertSiteRule, removeSiteRule } from './siteRules'
 import { exportBook } from './exportBook'
@@ -49,6 +50,7 @@ import {
   runAiSaveStage,
   parseCharacterCard,
   testConnection,
+  type AiConfig,
   type AiSuccessDoneEvent,
 } from './ai'
 
@@ -61,6 +63,30 @@ let browseVisible = false
 let lastBounds = { x: SIDEBAR_WIDTH, y: 52, width: 900, height: 700 }
 const aiJobSlot = new AiJobSlot()
 const aiPendingSaves = new AiPendingSaveStore()
+
+function trustedAiConfig(
+  settings: Settings,
+  apiKey: string,
+  override: { baseUrl?: string; model?: string; provider?: AiConfig['provider']; thinkingEnabled?: boolean } = {},
+): AiConfig {
+  const provider = override.provider === 'deepseek' || override.provider === 'custom'
+    ? override.provider
+    : undefined
+  const ai = {
+    ...(settings.ai ?? DEFAULT_AI_PREFS),
+    ...(provider ? { provider } : {}),
+    ...(typeof override.thinkingEnabled === 'boolean' ? { thinkingEnabled: override.thinkingEnabled } : {}),
+  }
+  const baseUrl = override.baseUrl ?? settings.baseUrl
+  assertTrustedAiEndpoint(baseUrl, ai)
+  return {
+    baseUrl,
+    model: override.model ?? settings.model,
+    apiKey,
+    provider: ai.provider,
+    thinkingEnabled: ai.thinkingEnabled,
+  }
+}
 
 function sendAiStage(jobId: string, stage: AiRequestStage, detail?: string): void {
   mainWindow?.webContents.send('ai.stage', { jobId, stage, ...(detail ? { detail } : {}) })
@@ -507,13 +533,7 @@ function registerIpc(): void {
         try {
           sendAiStage(jobId, 'requesting')
           const result = await streamAiTaskCompletion(
-            {
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              provider: settings.ai?.provider,
-              thinkingEnabled: settings.ai?.thinkingEnabled,
-            },
+            trustedAiConfig(settings, apiKey),
             [{ role: 'user', content: buildStorySoFarPrompt(book.title, summaries) }], signal,
             (delta) => {
               partial += delta
@@ -558,13 +578,7 @@ function registerIpc(): void {
         try {
           sendAiStage(jobId, 'requesting')
           const result = await streamAiTaskCompletion(
-            {
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              provider: settings.ai?.provider,
-              thinkingEnabled: settings.ai?.thinkingEnabled,
-            },
+            trustedAiConfig(settings, apiKey),
             [{ role: 'user', content: buildChapterSummaryPrompt(book.title, chapter.title, chapter.body) }],
             signal,
             (delta) => {
@@ -604,13 +618,7 @@ function registerIpc(): void {
       const ch = await readChapter(bookId, chapterId)
       if (!ch.body) return { ok: false, message: '当前章节没有可清理的正文' }
       const exclusive = await aiJobSlot.runExclusive(() =>
-        cleanChapterBody({
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              provider: settings.ai?.provider,
-              thinkingEnabled: settings.ai?.thinkingEnabled,
-            }, ch.title, ch.body),
+        cleanChapterBody(trustedAiConfig(settings, apiKey), ch.title, ch.body),
       )
       if (!exclusive.ok) return exclusive
       return { ok: true, result: exclusive.value }
@@ -639,13 +647,7 @@ function registerIpc(): void {
         }
       }
       const exclusive = await aiJobSlot.runExclusive(() => summarizeUpTo(
-        {
-          baseUrl: settings.baseUrl,
-          model: settings.model,
-          apiKey,
-          provider: settings.ai?.provider,
-          thinkingEnabled: settings.ai?.thinkingEnabled,
-        },
+        trustedAiConfig(settings, apiKey),
         book.title,
         summaries,
         { uptoChapterId, progressChapterId },
@@ -671,13 +673,7 @@ function registerIpc(): void {
         try {
           sendAiStage(jobId, 'requesting')
           const result = await streamAiTaskCompletion(
-            {
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              provider: settings.ai?.provider,
-              thinkingEnabled: settings.ai?.thinkingEnabled,
-            },
+            trustedAiConfig(settings, apiKey),
             [{ role: 'user', content: buildTranslatePrompt(text) }],
             signal,
             (delta) => {
@@ -709,13 +705,10 @@ function registerIpc(): void {
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const exclusive = await aiJobSlot.runExclusive(() => translateText({
-        baseUrl: settings.baseUrl,
-        model: settings.model,
-        apiKey,
-        provider: settings.ai?.provider,
-        thinkingEnabled: settings.ai?.thinkingEnabled,
-      }, text))
+      const exclusive = await aiJobSlot.runExclusive(() => translateText(
+        trustedAiConfig(settings, apiKey),
+        text,
+      ))
       if (!exclusive.ok) return exclusive
       return { ok: true, text: exclusive.value }
     } catch (e: unknown) {
@@ -764,13 +757,7 @@ function registerIpc(): void {
         try {
           sendAiStage(jobId, 'requesting')
           const result = await streamAiTaskCompletion(
-            {
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              provider: settings.ai?.provider,
-              thinkingEnabled: settings.ai?.thinkingEnabled,
-            },
+            trustedAiConfig(settings, apiKey),
             apiMessages,
             signal,
             (delta) => {
@@ -831,13 +818,7 @@ function registerIpc(): void {
         .filter(Boolean)
         .join('\n\n')
       const exclusive = await aiJobSlot.runExclusive(() => chatAboutBook(
-        {
-          baseUrl: settings.baseUrl,
-          model: settings.model,
-          apiKey,
-          provider: settings.ai?.provider,
-          thinkingEnabled: settings.ai?.thinkingEnabled,
-        },
+        trustedAiConfig(settings, apiKey),
         book.title,
         ch.title,
         ch.body,
@@ -854,17 +835,31 @@ function registerIpc(): void {
   })
   ipcMain.handle(
     'ai.test',
-    async (_e, payload?: { baseUrl?: string; model?: string; apiKey?: string }) => {
+    async (_e, payload?: {
+      baseUrl?: string
+      model?: string
+      apiKey?: string
+      provider?: AiConfig['provider']
+      thinkingEnabled?: boolean
+    }) => {
       try {
         const settings = await getSettings()
         const stored = await getApiKey()
-        const apiKey = (payload?.apiKey || '').trim() || stored
+        const providedKey = typeof payload?.apiKey === 'string' ? payload.apiKey.trim() : ''
+        const apiKey = providedKey || stored
         if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-        const exclusive = await aiJobSlot.runExclusive(() => testConnection({
-          baseUrl: (payload?.baseUrl || settings.baseUrl).trim() || settings.baseUrl,
-          model: (payload?.model || settings.model).trim() || settings.model,
-          apiKey,
-        }))
+        const providedBaseUrl = typeof payload?.baseUrl === 'string' ? payload.baseUrl.trim() : ''
+        const providedModel = typeof payload?.model === 'string' ? payload.model.trim() : ''
+        const baseUrl = providedBaseUrl || settings.baseUrl
+        const model = providedModel || settings.model
+        const exclusive = await aiJobSlot.runExclusive(() => testConnection(
+          trustedAiConfig(settings, apiKey, {
+            baseUrl,
+            model,
+            provider: payload?.provider,
+            thinkingEnabled: payload?.thinkingEnabled,
+          }),
+        ))
         if (!exclusive.ok) return exclusive
         return { ok: true, text: exclusive.value }
       } catch (e: unknown) {
@@ -905,13 +900,7 @@ function registerIpc(): void {
         }
       }
       const exclusive = await aiJobSlot.runExclusive(() => generateCharacterCard(
-        {
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              provider: settings.ai?.provider,
-              thinkingEnabled: settings.ai?.thinkingEnabled,
-            },
+        trustedAiConfig(settings, apiKey),
         {
           bookTitle: book.title,
           uptoChapterTitle: book.chapters[cutIdx]?.title || '',

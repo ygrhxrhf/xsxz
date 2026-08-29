@@ -15,6 +15,8 @@ import {
   DEFAULT_READER_PREFS,
 } from '../shared/types'
 import {
+  AI_CUSTOM_SERVICE_NOTICE,
+  assertTrustedAiEndpoint,
   getSettings,
   isLegacyDeepSeekModel,
   normalizeAiPrefs,
@@ -94,6 +96,26 @@ describe('normalizeReaderPrefs', () => {
       fontSize: DEFAULT_READER_PREFS.fontSize,
       lineHeight: DEFAULT_READER_PREFS.lineHeight,
     })
+  })
+})
+
+describe('AI endpoint trust guard', () => {
+  it('allows official DeepSeek but blocks untrusted custom endpoints and malformed URLs', () => {
+    expect(() => assertTrustedAiEndpoint('https://api.deepseek.com/v1', DEFAULT_AI_PREFS)).not.toThrow()
+    expect(() => assertTrustedAiEndpoint('https://custom.example/v1', DEFAULT_AI_PREFS)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
+    expect(() => assertTrustedAiEndpoint('not a URL', DEFAULT_AI_PREFS)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
+  })
+
+  it('uses normalized origins so paths reuse trust while protocol and port changes do not', () => {
+    const ai = { ...DEFAULT_AI_PREFS, provider: 'custom' as const, trustedCustomOrigins: ['https://custom.example'] }
+    expect(() => assertTrustedAiEndpoint('https://custom.example/v2/chat', ai)).not.toThrow()
+    expect(() => assertTrustedAiEndpoint('http://custom.example/v2', ai)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
+    expect(() => assertTrustedAiEndpoint('https://custom.example:8443/v2', ai)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
+  })
+
+  it('requires confirmation when custom mode explicitly targets the official host', () => {
+    const custom = { ...DEFAULT_AI_PREFS, provider: 'custom' as const }
+    expect(() => assertTrustedAiEndpoint('https://api.deepseek.com/v1', custom)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
   })
 })
 

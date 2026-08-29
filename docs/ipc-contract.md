@@ -192,7 +192,7 @@
 | `ai.summarize` | invoke | `{ bookId: string; uptoChapterId: string }` | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.translate` | invoke | `{ text: string }` | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.chat` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `{ ok: true; text: string } \| { ok: false; message: string }` |
-| `ai.test` | invoke | `{ baseUrl?: string; model?: string; apiKey?: string }`（均可空，空则用已保存设置） | `{ ok: true; text: string } \| { ok: false; message: string }` |
+| `ai.test` | invoke | `{ baseUrl?: string; model?: string; apiKey?: string; provider?: AiProvider; thinkingEnabled?: boolean }`（均可空，空则用已保存设置） | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.characterCard` | invoke | `{ bookId: string; uptoChapterId: string }` | `{ ok: true; card: CharacterCard } \| { ok: false; message: string }` |
 | `ai.getCharacterCard` | invoke | `{ bookId: string }` | `{ ok: true; card: CharacterCard \| null } \| { ok: false; message: string }` |
 | `ai.summarizeChapter` | invoke | `{ bookId: string; chapterId: string }` | `AiJobStart` |

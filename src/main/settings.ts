@@ -76,6 +76,18 @@ export function isLegacyDeepSeekModel(value: unknown): boolean {
   return typeof value === 'string' && LEGACY_DEEPSEEK_MODELS.has(value.trim().toLowerCase())
 }
 
+export const AI_CUSTOM_SERVICE_NOTICE = 'API Key 和你主动选择的正文内容将发送到此接口地址。请只使用你信任的服务。'
+
+export function assertTrustedAiEndpoint(baseUrl: string, ai: AiPrefs): void {
+  const origin = normalizeCustomOrigin(baseUrl)
+  if (!origin) throw new Error(AI_CUSTOM_SERVICE_NOTICE)
+  const officialDeepSeek = new URL(origin).hostname.toLowerCase() === 'api.deepseek.com'
+  const usesCustomTransport = ai.provider === 'custom' || !officialDeepSeek
+  if (usesCustomTransport && !ai.trustedCustomOrigins.includes(origin)) {
+    throw new Error(AI_CUSTOM_SERVICE_NOTICE)
+  }
+}
+
 export function normalizeAiPrefs(value: unknown): AiPrefs {
   const ai = readRecord(value)
   const rawPrompts = readRecord(ai.customPrompts)

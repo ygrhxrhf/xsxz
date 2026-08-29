@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   NButton,
   NCard,
@@ -10,9 +10,24 @@ import {
   NAlert,
   NEmpty,
   NPopconfirm,
+  NRadio,
+  NRadioGroup,
+  NSwitch,
   NTag,
+  NModal,
 } from 'naive-ui'
-import type { Settings, SiteRule, Skin } from '@shared/types'
+import type { AiProvider, Settings, SiteRule, Skin } from '@shared/types'
+import { DEFAULT_AI_PREFS } from '@shared/types'
+import {
+  AI_CUSTOM_SERVICE_NOTICE,
+  customOriginNeedsConfirmation,
+  DEEPSEEK_BASE_URL,
+  DEEPSEEK_RECOMMENDED_MODEL,
+  inferAiProvider,
+  isLegacyDeepSeekModelName,
+  isOfficialDeepSeekUrl,
+  normalizeAiServiceOrigin,
+} from '../aiSettings'
 
 const props = defineProps<{ active?: boolean; prefillHost?: string; prefillNonce?: number; skin?: Skin }>()
 
@@ -29,11 +44,20 @@ const settings = ref<Settings | null>(null)
 const baseUrl = ref('')
 const model = ref('')
 const apiKey = ref('')
+const provider = ref<AiProvider>('deepseek')
+const thinkingEnabled = ref(true)
+const trustedCustomOrigins = ref<string[]>([])
 const libraryPath = ref('')
 const saving = ref(false)
 const testing = ref(false)
 const msg = ref('')
 const msgType = ref<'success' | 'error' | 'info'>('info')
+const trustModalVisible = ref(false)
+const pendingTrustOrigin = ref('')
+let resolveTrust: ((accepted: boolean) => void) | null = null
+
+const legacyModelWarning = computed(() => provider.value === 'deepseek' && isLegacyDeepSeekModelName(model.value))
+const usesCustomEndpoint = computed(() => provider.value === 'custom' || !isOfficialDeepSeekUrl(baseUrl.value))
 
 const rules = ref<SiteRule[]>([])
 const ruleHost = ref('')
@@ -76,6 +100,10 @@ async function load() {
   settings.value = await window.api.settings.get()
   baseUrl.value = settings.value.baseUrl
   model.value = settings.value.model
+  const ai = settings.value.ai ?? DEFAULT_AI_PREFS
+  provider.value = inferAiProvider(settings.value.baseUrl, ai.provider)
+  thinkingEnabled.value = ai.thinkingEnabled
+  trustedCustomOrigins.value = [...ai.trustedCustomOrigins]
   libraryPath.value = settings.value.libraryPath
   await loadRules()
 }
@@ -85,22 +113,53 @@ async function pickLibrary() {
   if (filePaths?.[0]) libraryPath.value = filePaths[0]
 }
 
-async function save() {
+function settleTrust(accepted: boolean) {
+  trustModalVisible.value = false
+  const resolver = resolveTrust
+  resolveTrust = null
+  resolver?.(accepted)
+}
+
+function requestTrust(origin: string): Promise<boolean> {
+  settleTrust(false)
+  pendingTrustOrigin.value = origin
+  trustModalVisible.value = true
+  return new Promise((resolve) => { resolveTrust = resolve })
+}
+
+async function trustedOriginsForCurrentForm(): Promise<string[] | null> {
+  const origin = normalizeAiServiceOrigin(baseUrl.value)
+  if (!origin) {
+    msg.value = '接口地址仅支持有效的 HTTP(S) 地址'
+    msgType.value = 'error'
+    return null
+  }
+  const pending = customOriginNeedsConfirmation(
+    provider.value,
+    baseUrl.value,
+    trustedCustomOrigins.value,
+  )
+  if (pending && !await requestTrust(pending)) return null
+  return pending
+    ? [...new Set([...trustedCustomOrigins.value, pending])]
+    : [...trustedCustomOrigins.value]
+}
+
+function changeProvider(next: AiProvider) {
+  provider.value = next
+  if (next === 'deepseek') {
+    baseUrl.value = DEEPSEEK_BASE_URL
+    model.value = DEEPSEEK_RECOMMENDED_MODEL
+  }
+}
+
+async function saveLibrary() {
   saving.value = true
   msg.value = ''
   try {
-    const update: Record<string, unknown> = {
-      baseUrl: baseUrl.value,
-      model: model.value,
-      libraryPath: libraryPath.value,
-    }
-    if (apiKey.value) {
-      update.apiKey = apiKey.value
-    }
-    settings.value = await window.api.settings.set(update as import('@shared/types').SettingsUpdate)
-    apiKey.value = ''
+    settings.value = await window.api.settings.set({ libraryPath: libraryPath.value })
     libraryPath.value = settings.value.libraryPath
-    msg.value = '设置已保存。书库路径立即生效，不会迁移旧目录里的书。' + (settings.value.apiKeyConfigured ? ' API Key 已加密存储。' : '')
+    msg.value = '书库路径已保存。新路径立即生效，不会迁移旧目录里的书。'
     msgType.value = 'success'
   } catch (e: unknown) {
     msg.value = String(e)
@@ -108,6 +167,44 @@ async function save() {
   } finally {
     saving.value = false
   }
+}
+
+async function saveAi(): Promise<boolean> {
+  msg.value = ''
+  const trustedOrigins = await trustedOriginsForCurrentForm()
+  if (!trustedOrigins) return false
+  saving.value = true
+  try {
+    const update: import('@shared/types').SettingsUpdate = {
+      baseUrl: baseUrl.value.trim(),
+      model: model.value.trim(),
+      ai: {
+        provider: provider.value,
+        thinkingEnabled: thinkingEnabled.value,
+        trustedCustomOrigins: trustedOrigins,
+      },
+    }
+    if (apiKey.value) update.apiKey = apiKey.value
+    settings.value = await window.api.settings.set(update)
+    apiKey.value = ''
+    trustedCustomOrigins.value = [...(settings.value.ai ?? DEFAULT_AI_PREFS).trustedCustomOrigins]
+    msg.value = 'AI 设置已保存。' + (settings.value.apiKeyConfigured ? ' API Key 已加密存储。' : '')
+    msgType.value = 'success'
+    return true
+  } catch (e: unknown) {
+    msg.value = String(e)
+    msgType.value = 'error'
+    return false
+  } finally {
+    saving.value = false
+  }
+}
+
+async function migrateLegacyModel() {
+  provider.value = 'deepseek'
+  baseUrl.value = DEEPSEEK_BASE_URL
+  model.value = DEEPSEEK_RECOMMENDED_MODEL
+  if (await saveAi()) msg.value = '模型已改为 deepseek-v4-flash'
 }
 
 async function clearKey() {
@@ -118,13 +215,21 @@ async function clearKey() {
 }
 
 async function testAi() {
-  testing.value = true
   msg.value = ''
+  const trustedOrigins = await trustedOriginsForCurrentForm()
+  if (!trustedOrigins) return
+  testing.value = true
   try {
+    if (trustedOrigins.length !== trustedCustomOrigins.value.length) {
+      settings.value = await window.api.settings.set({ ai: { trustedCustomOrigins: trustedOrigins } })
+      trustedCustomOrigins.value = [...trustedOrigins]
+    }
     const res = await window.api.ai.test({
       baseUrl: baseUrl.value,
       model: model.value,
       apiKey: apiKey.value || undefined,
+      provider: provider.value,
+      thinkingEnabled: thinkingEnabled.value,
     })
     if (res.ok) {
       msg.value = '连接成功'
@@ -140,6 +245,8 @@ async function testAi() {
     testing.value = false
   }
 }
+
+onBeforeUnmount(() => settleTrust(false))
 
 async function saveRule() {
   const host = ruleHost.value.trim()
@@ -307,7 +414,7 @@ onMounted(load)
         <p style="color:#888;font-size:13px;margin:0">
           保存后立即使用新路径，不会把旧书拷过去。旧目录里的文件仍留在原处。
         </p>
-        <n-button type="primary" :loading="saving" @click="save">保存路径</n-button>
+        <n-button type="primary" :loading="saving" @click="saveLibrary">保存路径</n-button>
       </n-space>
     </n-card>
 
@@ -320,14 +427,29 @@ onMounted(load)
       </n-alert>
 
       <n-space vertical :size="12">
+        <div>
+          <div class="field-label">模型服务</div>
+          <n-radio-group :value="provider" @update:value="changeProvider">
+            <n-space>
+              <n-radio value="deepseek">DeepSeek 官方</n-radio>
+              <n-radio value="custom">自定义兼容服务</n-radio>
+            </n-space>
+          </n-radio-group>
+        </div>
         <n-input-group>
           <n-input-group-label style="width:80px">接口地址</n-input-group-label>
           <n-input v-model:value="baseUrl" placeholder="https://api.deepseek.com/v1" />
         </n-input-group>
         <n-input-group>
           <n-input-group-label style="width:80px">模型名</n-input-group-label>
-          <n-input v-model:value="model" placeholder="deepseek-chat" />
+          <n-input v-model:value="model" placeholder="deepseek-v4-flash" />
         </n-input-group>
+        <n-alert v-if="legacyModelWarning" type="warning">
+          当前模型名 {{ model }} 可能已停用。DeepSeek 官方当前推荐使用 deepseek-v4-flash。
+          <template #action>
+            <n-button size="small" @click="migrateLegacyModel">改用 deepseek-v4-flash</n-button>
+          </template>
+        </n-alert>
         <n-input-group>
           <n-input-group-label style="width:80px">API Key</n-input-group-label>
           <n-input
@@ -337,8 +459,18 @@ onMounted(load)
             placeholder="输入新的 API Key（留空则不更新）"
           />
         </n-input-group>
+        <div class="switch-row">
+          <div>
+            <div class="field-label">复杂任务使用思考模式</div>
+            <div class="field-help">人物、前情和证据问答使用思考模式；翻译、清正文和摘要使用快速模式。</div>
+          </div>
+          <n-switch v-model:value="thinkingEnabled" />
+        </div>
+        <n-alert v-if="usesCustomEndpoint" type="warning">
+          {{ AI_CUSTOM_SERVICE_NOTICE }}
+        </n-alert>
         <n-space>
-          <n-button type="primary" :loading="saving" @click="save">保存</n-button>
+          <n-button type="primary" :loading="saving" @click="saveAi">保存</n-button>
           <n-button :loading="testing" @click="testAi">测试连接</n-button>
           <n-button v-if="settings?.apiKeyConfigured" quaternary type="error" @click="clearKey">清除 Key</n-button>
         </n-space>
@@ -423,10 +555,47 @@ onMounted(load)
         技术栈：Electron + Vue 3 + Naive UI
       </p>
     </n-card>
+
+    <n-modal
+      :show="trustModalVisible"
+      preset="card"
+      title="确认自定义模型服务"
+      style="width:min(520px, calc(100vw - 32px))"
+      :mask-closable="false"
+      :close-on-esc="false"
+      :closable="false"
+    >
+      <p style="margin:0 0 16px;line-height:1.7">
+        本次请求会把 API Key 和所示正文内容发送到 {{ pendingTrustOrigin }}。确定信任并继续吗？
+      </p>
+      <n-space justify="end">
+        <n-button @click="settleTrust(false)">取消</n-button>
+        <n-button type="primary" @click="settleTrust(true)">信任并继续</n-button>
+      </n-space>
+    </n-modal>
   </div>
 </template>
 
 <style scoped>
+.field-label {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.field-help {
+  color: #888;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .skin-grid {
   display: flex;
   gap: 12px;
