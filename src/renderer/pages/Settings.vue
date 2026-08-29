@@ -12,12 +12,15 @@ import {
   NPopconfirm,
   NRadio,
   NRadioGroup,
+  NSelect,
   NSwitch,
   NTag,
   NModal,
+  useMessage,
 } from 'naive-ui'
-import type { AiProvider, Settings, SiteRule, Skin } from '@shared/types'
-import { DEFAULT_AI_PREFS } from '@shared/types'
+import type { AiPromptKind, AiPromptMode, AiProvider, Settings, SiteRule, Skin } from '@shared/types'
+import { AI_PROMPT_KINDS, DEFAULT_AI_PREFS } from '@shared/types'
+import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
 import {
   AI_CUSTOM_SERVICE_NOTICE,
   customOriginNeedsConfirmation,
@@ -34,6 +37,7 @@ const props = defineProps<{ active?: boolean; prefillHost?: string; prefillNonce
 const emit = defineEmits<{
   (e: 'change-skin', skin: Skin): void
 }>()
+const message = useMessage()
 
 const skinOptions: { id: Skin; name: string; desc: string; mark: string }[] = [
   { id: 'sakura', name: '夜樱', desc: '深色 · 樱粉 × 紫罗兰', mark: '🌸' },
@@ -47,6 +51,10 @@ const apiKey = ref('')
 const provider = ref<AiProvider>('deepseek')
 const thinkingEnabled = ref(true)
 const trustedCustomOrigins = ref<string[]>([])
+const selectedPromptKind = ref<AiPromptKind>('clean')
+const promptMode = ref<Record<AiPromptKind, AiPromptMode>>({ ...DEFAULT_AI_PREFS.promptMode })
+const customPrompts = ref<Partial<Record<AiPromptKind, string>>>({})
+const promptUndo = ref<Partial<Record<AiPromptKind, { mode: AiPromptMode; text?: string }>>>({})
 const libraryPath = ref('')
 const saving = ref(false)
 const testing = ref(false)
@@ -58,6 +66,18 @@ let resolveTrust: ((accepted: boolean) => void) | null = null
 
 const legacyModelWarning = computed(() => provider.value === 'deepseek' && isLegacyDeepSeekModelName(model.value))
 const usesCustomEndpoint = computed(() => provider.value === 'custom' || !isOfficialDeepSeekUrl(baseUrl.value))
+const promptOptions = AI_PROMPT_KINDS.map((kind) => ({ label: AI_PROMPT_LABELS[kind], value: kind }))
+const selectedPromptMode = computed(() => promptMode.value[selectedPromptKind.value])
+const selectedPromptText = computed({
+  get: () => selectedPromptMode.value === 'custom'
+    ? (customPrompts.value[selectedPromptKind.value] ?? '')
+    : BUILTIN_AI_PROMPTS[selectedPromptKind.value],
+  set: (value: string) => {
+    if (selectedPromptMode.value !== 'custom') return
+    customPrompts.value = { ...customPrompts.value, [selectedPromptKind.value]: value }
+  },
+})
+const canUndoPrompt = computed(() => Boolean(promptUndo.value[selectedPromptKind.value]))
 
 const rules = ref<SiteRule[]>([])
 const ruleHost = ref('')
@@ -104,6 +124,8 @@ async function load() {
   provider.value = inferAiProvider(settings.value.baseUrl, ai.provider)
   thinkingEnabled.value = ai.thinkingEnabled
   trustedCustomOrigins.value = [...ai.trustedCustomOrigins]
+  promptMode.value = { ...ai.promptMode }
+  customPrompts.value = { ...ai.customPrompts }
   libraryPath.value = settings.value.libraryPath
   await loadRules()
 }
@@ -182,12 +204,17 @@ async function saveAi(): Promise<boolean> {
         provider: provider.value,
         thinkingEnabled: thinkingEnabled.value,
         trustedCustomOrigins: trustedOrigins,
+        promptMode: { ...promptMode.value },
+        customPrompts: { ...customPrompts.value },
       },
     }
     if (apiKey.value) update.apiKey = apiKey.value
     settings.value = await window.api.settings.set(update)
     apiKey.value = ''
-    trustedCustomOrigins.value = [...(settings.value.ai ?? DEFAULT_AI_PREFS).trustedCustomOrigins]
+    const savedAi = settings.value.ai ?? DEFAULT_AI_PREFS
+    trustedCustomOrigins.value = [...savedAi.trustedCustomOrigins]
+    promptMode.value = { ...savedAi.promptMode }
+    customPrompts.value = { ...savedAi.customPrompts }
     msg.value = 'AI 设置已保存。' + (settings.value.apiKeyConfigured ? ' API Key 已加密存储。' : '')
     msgType.value = 'success'
     return true
@@ -205,6 +232,84 @@ async function migrateLegacyModel() {
   baseUrl.value = DEEPSEEK_BASE_URL
   model.value = DEEPSEEK_RECOMMENDED_MODEL
   if (await saveAi()) msg.value = '模型已改为 deepseek-v4-flash'
+}
+
+function copyPromptAsCustom() {
+  const kind = selectedPromptKind.value
+  customPrompts.value = { ...customPrompts.value, [kind]: BUILTIN_AI_PROMPTS[kind] }
+  promptMode.value = { ...promptMode.value, [kind]: 'custom' }
+}
+
+async function savePromptSettings() {
+  saving.value = true
+  try {
+    settings.value = await window.api.settings.set({
+      ai: {
+        promptMode: { ...promptMode.value },
+        customPrompts: { ...customPrompts.value },
+      },
+    })
+    const savedAi = settings.value.ai ?? DEFAULT_AI_PREFS
+    promptMode.value = { ...savedAi.promptMode }
+    customPrompts.value = { ...savedAi.customPrompts }
+    msg.value = 'AI 提示词已保存'
+    msgType.value = 'success'
+  } catch (e: unknown) {
+    msg.value = String(e)
+    msgType.value = 'error'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function restorePromptDefault() {
+  const kind = selectedPromptKind.value
+  const before = { mode: promptMode.value[kind], text: customPrompts.value[kind] }
+  const nextMode = { ...promptMode.value, [kind]: 'builtin' as const }
+  const nextPrompts = { ...customPrompts.value }
+  delete nextPrompts[kind]
+  try {
+    settings.value = await window.api.settings.set({
+      ai: {
+        promptMode: nextMode,
+        customPrompts: { ...nextPrompts, [kind]: '' },
+      },
+    })
+    const savedAi = settings.value.ai ?? DEFAULT_AI_PREFS
+    promptMode.value = { ...savedAi.promptMode }
+    customPrompts.value = { ...savedAi.customPrompts }
+    promptUndo.value = { ...promptUndo.value, [kind]: before }
+    msg.value = '已恢复默认提示词'
+    msgType.value = 'success'
+    message.success('已恢复默认提示词')
+  } catch (e: unknown) {
+    msg.value = String(e)
+    msgType.value = 'error'
+  }
+}
+
+async function undoPromptRestore() {
+  const kind = selectedPromptKind.value
+  const before = promptUndo.value[kind]
+  if (!before) return
+  const nextMode = { ...promptMode.value, [kind]: before.mode }
+  const nextPrompts = { ...customPrompts.value, [kind]: before.text ?? '' }
+  try {
+    settings.value = await window.api.settings.set({
+      ai: { promptMode: nextMode, customPrompts: nextPrompts },
+    })
+    const savedAi = settings.value.ai ?? DEFAULT_AI_PREFS
+    promptMode.value = { ...savedAi.promptMode }
+    customPrompts.value = { ...savedAi.customPrompts }
+    const remaining = { ...promptUndo.value }
+    delete remaining[kind]
+    promptUndo.value = remaining
+    msg.value = '已撤销提示词恢复'
+    msgType.value = 'success'
+  } catch (e: unknown) {
+    msg.value = String(e)
+    msgType.value = 'error'
+  }
 }
 
 async function clearKey() {
@@ -363,6 +468,7 @@ watch(
   () => props.active,
   (active) => {
     if (active) void load()
+    else promptUndo.value = {}
   },
 )
 
@@ -476,6 +582,49 @@ onMounted(load)
         </n-space>
       </n-space>
 
+      <section class="prompt-settings">
+        <h3>AI 提示词</h3>
+        <n-alert type="info" style="margin-bottom:12px">
+          防剧透、已读范围、来源坐标和结构化输出规则由应用固定维护，不会被自定义提示词覆盖。
+        </n-alert>
+        <n-space vertical :size="12">
+          <n-select v-model:value="selectedPromptKind" :options="promptOptions" />
+          <n-space align="center">
+            <n-tag :type="selectedPromptMode === 'builtin' ? 'default' : 'success'">
+              {{ selectedPromptMode === 'builtin' ? '使用内置' : '自定义' }}
+            </n-tag>
+            <n-button
+              v-if="selectedPromptMode === 'builtin'"
+              size="small"
+              @click="copyPromptAsCustom"
+            >复制为自定义</n-button>
+            <n-button
+              v-else
+              size="small"
+              @click="restorePromptDefault"
+            >恢复默认</n-button>
+            <n-button
+              v-if="canUndoPrompt"
+              size="small"
+              quaternary
+              @click="undoPromptRestore"
+            >撤销</n-button>
+          </n-space>
+          <n-input
+            v-model:value="selectedPromptText"
+            type="textarea"
+            :autosize="{ minRows: 5, maxRows: 10 }"
+            :readonly="selectedPromptMode === 'builtin'"
+          />
+          <n-button
+            v-if="selectedPromptMode === 'custom'"
+            type="primary"
+            :loading="saving"
+            @click="savePromptSettings"
+          >保存提示词</n-button>
+        </n-space>
+      </section>
+
       <div v-if="msg" class="form-msg" :class="msgType">{{ msg }}</div>
     </n-card>
 
@@ -577,6 +726,16 @@ onMounted(load)
 </template>
 
 <style scoped>
+.prompt-settings {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.prompt-settings h3 {
+  margin: 0 0 12px;
+}
+
 .field-label {
   font-size: 13px;
   font-weight: 600;

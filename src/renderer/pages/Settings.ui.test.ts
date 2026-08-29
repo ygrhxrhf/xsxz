@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { createApp, nextTick } from 'vue'
+import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { NMessageProvider } from 'naive-ui'
 import { DEFAULT_AI_PREFS, DEFAULT_APPEARANCE_PREFS, DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS, type Settings } from '../../shared/types'
 import SettingsPage from './Settings.vue'
 
@@ -22,6 +23,20 @@ async function flushUi(): Promise<void> {
   await nextTick()
 }
 
+function settingsHarness(active = ref(true)) {
+  return defineComponent({
+    setup: () => () => h(NMessageProvider, null, {
+      default: () => h(SettingsPage, { active: active.value }),
+    }),
+  })
+}
+
+function textarea(): HTMLTextAreaElement {
+  const match = document.querySelector('textarea')
+  if (!match) throw new Error('textarea not found')
+  return match
+}
+
 function button(text: string): HTMLButtonElement {
   const match = [...document.querySelectorAll('button')]
     .find((item) => item.textContent?.trim() === text)
@@ -37,6 +52,130 @@ describe('Settings AI custom-origin confirmation', () => {
     unmount = undefined
     document.body.innerHTML = ''
     vi.restoreAllMocks()
+  })
+
+  it('copies a built-in prompt for editing and persists only the editable task requirement', async () => {
+    let current: Settings = {
+      libraryPath: '/tmp/library',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-flash',
+      apiKeyConfigured: true,
+      reader: DEFAULT_READER_PREFS,
+      tts: DEFAULT_TTS_PREFS,
+      appearance: DEFAULT_APPEARANCE_PREFS,
+      ai: { ...DEFAULT_AI_PREFS },
+    }
+    const set = vi.fn(async (update: { ai?: Partial<NonNullable<Settings['ai']>> }) => {
+      if (update.ai) current = { ...current, ai: { ...current.ai!, ...update.ai } }
+      return current
+    })
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        settings: { get: vi.fn(async () => current), set },
+        siteRules: { list: vi.fn(async () => ({ rules: [] })) },
+        ai: { test: vi.fn() },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(settingsHarness())
+    app.mount(host)
+    unmount = () => app.unmount()
+    await flushUi()
+
+    expect(document.body.textContent).toContain('防剧透、已读范围、来源坐标和结构化输出规则由应用固定维护')
+    expect(textarea().readOnly).toBe(true)
+    button('复制为自定义').click()
+    await flushUi()
+    expect(textarea().readOnly).toBe(false)
+    textarea().value = '保留段落，并删除站点广告。'
+    textarea().dispatchEvent(new Event('input', { bubbles: true }))
+    await flushUi()
+    button('保存提示词').click()
+    await flushUi()
+
+    expect(set).toHaveBeenCalledWith({
+      ai: expect.objectContaining({
+        promptMode: expect.objectContaining({ clean: 'custom' }),
+        customPrompts: expect.objectContaining({ clean: '保留段落，并删除站点广告。' }),
+      }),
+    })
+  })
+
+  it('restores immediately and supports one in-memory undo for the same prompt', async () => {
+    const original = '仅删除广告，保留分隔线。'
+    let current: Settings = {
+      libraryPath: '/tmp/library',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-flash',
+      apiKeyConfigured: true,
+      reader: DEFAULT_READER_PREFS,
+      tts: DEFAULT_TTS_PREFS,
+      appearance: DEFAULT_APPEARANCE_PREFS,
+      ai: {
+        ...DEFAULT_AI_PREFS,
+        promptMode: { ...DEFAULT_AI_PREFS.promptMode, clean: 'custom' },
+        customPrompts: { clean: original },
+      },
+    }
+    const set = vi.fn(async (update: { ai?: Partial<NonNullable<Settings['ai']>> }) => {
+      if (update.ai) {
+        const promptMode = { ...current.ai!.promptMode, ...update.ai.promptMode }
+        const customPrompts = { ...current.ai!.customPrompts, ...update.ai.customPrompts }
+        for (const [kind, value] of Object.entries(customPrompts)) {
+          if (typeof value !== 'string' || !value.trim()) delete customPrompts[kind as keyof typeof customPrompts]
+        }
+        if (!customPrompts.clean && promptMode.clean === 'custom') promptMode.clean = 'builtin'
+        current = { ...current, ai: { ...current.ai!, ...update.ai, promptMode, customPrompts } }
+      }
+      return current
+    })
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        settings: { get: vi.fn(async () => current), set },
+        siteRules: { list: vi.fn(async () => ({ rules: [] })) },
+        ai: { test: vi.fn() },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const active = ref(true)
+    const app = createApp(settingsHarness(active))
+    app.mount(host)
+    unmount = () => app.unmount()
+    await flushUi()
+
+    expect(textarea().value).toBe(original)
+    button('恢复默认').click()
+    await flushUi()
+    expect(document.body.textContent).toContain('已恢复默认提示词')
+    expect(set).toHaveBeenLastCalledWith({
+      ai: expect.objectContaining({
+        promptMode: expect.objectContaining({ clean: 'builtin' }),
+        customPrompts: expect.objectContaining({ clean: '' }),
+      }),
+    })
+    expect(button('撤销')).toBeTruthy()
+
+    button('撤销').click()
+    await flushUi()
+    expect(textarea().value).toBe(original)
+    expect(set).toHaveBeenLastCalledWith({
+      ai: expect.objectContaining({
+        promptMode: expect.objectContaining({ clean: 'custom' }),
+        customPrompts: expect.objectContaining({ clean: original }),
+      }),
+    })
+    expect([...document.querySelectorAll('button')].some((item) => item.textContent?.trim() === '撤销')).toBe(false)
+
+    button('恢复默认').click()
+    await flushUi()
+    expect(button('撤销')).toBeTruthy()
+    active.value = false
+    await flushUi()
+    expect([...document.querySelectorAll('button')].some((item) => item.textContent?.trim() === '撤销')).toBe(false)
   })
 
   it('migrates a legacy DeepSeek model only after the user clicks the explicit action', async () => {
@@ -68,7 +207,7 @@ describe('Settings AI custom-origin confirmation', () => {
     })
     const host = document.createElement('div')
     document.body.appendChild(host)
-    const app = createApp(SettingsPage, { active: true })
+    const app = createApp(settingsHarness())
     app.mount(host)
     unmount = () => app.unmount()
     await flushUi()
@@ -114,7 +253,7 @@ describe('Settings AI custom-origin confirmation', () => {
 
     const host = document.createElement('div')
     document.body.appendChild(host)
-    const app = createApp(SettingsPage, { active: true })
+    const app = createApp(settingsHarness())
     app.mount(host)
     unmount = () => app.unmount()
     await flushUi()

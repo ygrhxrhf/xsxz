@@ -9,6 +9,7 @@ import type {
   AiUsage,
   ChapterStatus,
 } from '../shared/types'
+import { BUILTIN_AI_PROMPTS } from '../shared/aiPrompts'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -545,15 +546,24 @@ export async function streamChatCompletion(
   return (await streamAiTaskCompletion(config, messages, signal, onDelta, taskOptions)).text
 }
 
-export function buildStorySoFarPrompt(bookTitle: string, summaries: Array<{ title: string; text: string }>): string {
+export function buildStorySoFarPrompt(
+  bookTitle: string,
+  summaries: Array<{ title: string; text: string }>,
+  taskInstruction = BUILTIN_AI_PROMPTS.recap,
+): string {
   const context = summaries.map((item) => `【${item.title}】\n${item.text}`).join('\n\n')
-  return `你是一个小说阅读助手。请只根据以下已读章节摘要，合成为不超过 400 字的前情提要。不要剧透后续内容，只返回前情正文。\n\n书名：《${bookTitle}》\n已读摘要：\n${context}`
+  return `用户任务要求：\n${taskInstruction}\n\n固定规则：只能使用下方已经保存的已读摘要；不得推测或剧透未读内容；控制在 400 字以内；只返回前情正文。\n\n书名：《${bookTitle}》\n已读摘要：\n${context}`
 }
 
-export function buildChapterSummaryPrompt(bookTitle: string, chapterTitle: string, body: string): string {
+export function buildChapterSummaryPrompt(
+  bookTitle: string,
+  chapterTitle: string,
+  body: string,
+  taskInstruction = BUILTIN_AI_PROMPTS.chapterSummary,
+): string {
   const clipped = body.slice(0, 8000)
   const truncated = body.length > clipped.length
-  return `你是一个小说阅读助手。请只根据以下当前章节内容，写出 80–150 字的本章摘要。不要剧透后续章节，不要补充章节外信息，只返回摘要正文。
+  return `用户任务要求：\n${taskInstruction}\n\n固定规则：只能使用下方当前章节内容；不要剧透后续章节；不得补充章节外或未读信息；控制在 80–150 字；只返回摘要正文。
 
 书名：《${bookTitle}》
 章节：${chapterTitle}
@@ -566,15 +576,14 @@ export async function cleanChapterBody(
   config: AiConfig,
   chapterTitle: string,
   body: string,
+  taskInstruction = BUILTIN_AI_PROMPTS.clean,
 ): Promise<AiCleanResult> {
-  const prompt = `你是一个小说正文清理助手。请清理以下小说章节正文，去掉残留的导航文字（如"上一章"、"下一章"、"返回目录"）、广告推荐、网站水印、推荐阅读等内容，只保留小说正文本身。不要修改正文内容，不要添加内容，只删除非正文内容。
+  const prompt = `用户任务要求：\n${taskInstruction}\n\n固定规则：只能删除非正文内容；不得改写、续写或概括小说正文；保持段落顺序；只返回清理后的正文，不加解释。
 
 章节标题：${chapterTitle}
 
 原文：
-${body}
-
-请直接返回清理后的正文，不要加任何解释。`
+${body}`
 
   const cleaned = await chatCompletion(config, [
     { role: 'user', content: prompt },
@@ -645,19 +654,18 @@ export function clampSummarizeChapters<T extends SummarizeChapterInput>(
 export function buildSummarizePrompt(
   bookTitle: string,
   chapterSummaries: { title: string; body?: string }[],
+  taskInstruction = BUILTIN_AI_PROMPTS.recap,
 ): string {
   const context = chapterSummaries
     .map((c) => `【${c.title}】\n${(c.body ?? '').slice(0, 500)}`)
     .join('\n\n')
 
-  return `你是一个小说追剧摘要助手。请根据以下已读章节内容，生成一份简洁的前情提要，帮助读者回忆剧情。不要剧透后续内容。控制在300字以内。
+  return `用户任务要求：\n${taskInstruction}\n\n固定规则：只能使用下方已读章节；不得推测或剧透后续内容；控制在 300 字以内；只返回前情正文。
 
 书名：《${bookTitle}》
 
 已读章节：
-${context}
-
-请生成前情提要：`
+${context}`
 }
 
 export async function summarizeUpTo(
@@ -671,6 +679,7 @@ export async function summarizeUpTo(
     body: string
   }>,
   clamp?: SummarizeClampOptions,
+  taskInstruction = BUILTIN_AI_PROMPTS.recap,
 ): Promise<string> {
   let selected = chapterSummaries
   const canClamp = Boolean(
@@ -694,21 +703,28 @@ export async function summarizeUpTo(
     )
   }
 
-  const prompt = buildSummarizePrompt(bookTitle, selected)
+  const prompt = buildSummarizePrompt(bookTitle, selected, taskInstruction)
   return chatCompletion(config, [
     { role: 'user', content: prompt },
   ], { task: 'recap' })
 }
 
-export function buildTranslatePrompt(text: string): string {
-  return `请把下面这段文字译成通顺的现代汉语。若原文已经是现代白话，只做简短释义，不要译成外文。只返回译文或释义，不要解释。
+export function buildTranslatePrompt(
+  text: string,
+  taskInstruction = BUILTIN_AI_PROMPTS.translate,
+): string {
+  return `用户任务要求：\n${taskInstruction}\n\n固定规则：只能处理下方选中文字；不得补充小说其他内容；只返回译文或释义，不加解释。
 
 原文：
 ${text}`
 }
 
-export async function translateText(config: AiConfig, text: string): Promise<string> {
-  const prompt = buildTranslatePrompt(text)
+export async function translateText(
+  config: AiConfig,
+  text: string,
+  taskInstruction = BUILTIN_AI_PROMPTS.translate,
+): Promise<string> {
+  const prompt = buildTranslatePrompt(text, taskInstruction)
   return chatCompletion(config, [
     { role: 'user', content: prompt },
   ], { task: 'translate', inputTokenEstimate: Math.ceil(prompt.length / 2) })

@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiRequestStage, BrowseState, Settings, SiteRule } from '../shared/types'
+import type { AiPromptKind, AiRequestStage, BrowseState, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
+import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import {
   listBooks,
   getBook,
@@ -86,6 +87,10 @@ function trustedAiConfig(
     provider: resolveEffectiveAiProvider(baseUrl, ai.provider),
     thinkingEnabled: ai.thinkingEnabled,
   }
+}
+
+function aiTaskInstruction(settings: Settings, kind: AiPromptKind): string {
+  return resolveAiTaskInstruction(settings.ai ?? DEFAULT_AI_PREFS, kind)
 }
 
 function sendAiStage(jobId: string, stage: AiRequestStage, detail?: string): void {
@@ -534,7 +539,10 @@ function registerIpc(): void {
           sendAiStage(jobId, 'requesting')
           const result = await streamAiTaskCompletion(
             trustedAiConfig(settings, apiKey),
-            [{ role: 'user', content: buildStorySoFarPrompt(book.title, summaries) }], signal,
+            [{
+              role: 'user',
+              content: buildStorySoFarPrompt(book.title, summaries, aiTaskInstruction(settings, 'recap')),
+            }], signal,
             (delta) => {
               partial += delta
               mainWindow?.webContents.send('ai.chunk', { jobId, delta })
@@ -579,7 +587,15 @@ function registerIpc(): void {
           sendAiStage(jobId, 'requesting')
           const result = await streamAiTaskCompletion(
             trustedAiConfig(settings, apiKey),
-            [{ role: 'user', content: buildChapterSummaryPrompt(book.title, chapter.title, chapter.body) }],
+            [{
+              role: 'user',
+              content: buildChapterSummaryPrompt(
+                book.title,
+                chapter.title,
+                chapter.body,
+                aiTaskInstruction(settings, 'chapterSummary'),
+              ),
+            }],
             signal,
             (delta) => {
               partial += delta
@@ -618,7 +634,12 @@ function registerIpc(): void {
       const ch = await readChapter(bookId, chapterId)
       if (!ch.body) return { ok: false, message: '当前章节没有可清理的正文' }
       const exclusive = await aiJobSlot.runExclusive(() =>
-        cleanChapterBody(trustedAiConfig(settings, apiKey), ch.title, ch.body),
+        cleanChapterBody(
+          trustedAiConfig(settings, apiKey),
+          ch.title,
+          ch.body,
+          aiTaskInstruction(settings, 'clean'),
+        ),
       )
       if (!exclusive.ok) return exclusive
       return { ok: true, result: exclusive.value }
@@ -651,6 +672,7 @@ function registerIpc(): void {
         book.title,
         summaries,
         { uptoChapterId, progressChapterId },
+        aiTaskInstruction(settings, 'recap'),
       ))
       if (!exclusive.ok) return exclusive
       const storyUptoChapterId = cutoff[cutoff.length - 1]?.id ?? uptoChapterId
@@ -674,7 +696,7 @@ function registerIpc(): void {
           sendAiStage(jobId, 'requesting')
           const result = await streamAiTaskCompletion(
             trustedAiConfig(settings, apiKey),
-            [{ role: 'user', content: buildTranslatePrompt(text) }],
+            [{ role: 'user', content: buildTranslatePrompt(text, aiTaskInstruction(settings, 'translate')) }],
             signal,
             (delta) => {
               partial += delta
@@ -708,6 +730,7 @@ function registerIpc(): void {
       const exclusive = await aiJobSlot.runExclusive(() => translateText(
         trustedAiConfig(settings, apiKey),
         text,
+        aiTaskInstruction(settings, 'translate'),
       ))
       if (!exclusive.ok) return exclusive
       return { ok: true, text: exclusive.value }
