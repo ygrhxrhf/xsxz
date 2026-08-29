@@ -10,6 +10,7 @@ import type { AiChatMessage } from '../shared/types'
 describe('AI error copy', () => {
   it('maps 401 / 429 / 5xx / timeout to Chinese', () => {
     expect(formatAiRequestError(401)).toMatch(/API Key/)
+    expect(formatAiRequestError(402)).toMatch(/余额/)
     expect(formatAiRequestError(403)).toMatch(/API Key/)
     expect(formatAiRequestError(429)).toMatch(/频繁|额度/)
     expect(formatAiRequestError(408)).toMatch(/超时/)

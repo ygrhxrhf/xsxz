@@ -28,6 +28,7 @@ describe('Retry-After parsing', () => {
     expect(parseRetryAfterMs('0', 0)).toBe(0)
     expect(parseRetryAfterMs('Thu, 01 Jan 1970 00:00:03 GMT', 1_000)).toBe(2_000)
     expect(parseRetryAfterMs('invalid', 0)).toBeUndefined()
+    expect(parseRetryAfterMs('   ', 0)).toBeUndefined()
     expect(parseRetryAfterMs(null, 0)).toBeUndefined()
   })
 })
@@ -132,6 +133,19 @@ describe('single compatibility downgrade', () => {
     expect(bodies[1]).not.toHaveProperty('reasoning_effort')
     expect(bodies[1]).not.toHaveProperty('response_format')
     expect(bodies[1].max_tokens).toBe(3_000)
+  })
+
+  it('performs at most one compatibility downgrade', async () => {
+    const bodies: Record<string, unknown>[] = []
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+      return new Response('still unsupported', { status: 400 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(runAiTaskCompletion(config, messages, { task: 'memory' })).rejects.toThrow(/400/)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(bodies[0]).toHaveProperty('response_format')
+    expect(bodies[1]).not.toHaveProperty('response_format')
   })
 
   it('does not downgrade or retry a 422 when no compatibility extension was sent', async () => {

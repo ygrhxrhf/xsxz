@@ -240,7 +240,9 @@ function requestSignal(signal: AbortSignal | undefined, timeoutMs: number): Abor
 
 export function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
   if (!value) return undefined
-  const seconds = Number(value.trim())
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  const seconds = Number(trimmed)
   if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000)
   const date = Date.parse(value)
   return Number.isFinite(date) ? Math.max(0, date - now) : undefined
