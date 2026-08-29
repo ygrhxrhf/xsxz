@@ -79,6 +79,9 @@ export type ReaderKeyAction =
   | 'page-up'
   | 'font-larger'
   | 'font-smaller'
+  | 'open-catalog'
+  | 'open-appearance'
+  | 'toggle-tts'
   | 'close-drawer'
 
 export type ReaderImmersiveMode = 'normal' | 'locked'
@@ -189,6 +192,9 @@ export function resolveReaderKey(opts: {
   if (opts.key === 'ArrowRight') return 'next-chapter'
   if (opts.key === ' ') return opts.shift ? 'page-up' : 'page-down'
   if (opts.key === 'Escape') return 'close-drawer'
+  if (opts.key.toLowerCase() === 't') return 'open-catalog'
+  if (opts.key.toLowerCase() === 'a') return 'open-appearance'
+  if (opts.key.toLowerCase() === 'r') return 'toggle-tts'
   if (opts.key === '+' || opts.key === '=') return 'font-larger'
   if (opts.key === '-' || opts.key === '_') return 'font-smaller'
   return null

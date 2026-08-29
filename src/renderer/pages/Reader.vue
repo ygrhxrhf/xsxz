@@ -119,10 +119,14 @@ const {
   onChapterEnd: () => nextChapter(),
 })
 
+function readerScrollBehavior(): ScrollBehavior {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+}
+
 watch(spokenPara, (i) => {
   if (i < 0 || !contentRef.value) return
   const el = contentRef.value.querySelector(`[data-p="${i}"]`)
-  el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  el?.scrollIntoView({ block: 'center', behavior: readerScrollBehavior() })
 })
 
 // 本书内全文搜索
@@ -582,15 +586,23 @@ function toggleImmersiveLock() {
   scheduleToolHide()
 }
 
-function closeReaderOverlays() {
-  showDrawer.value = false
-  showAiResult.value = false
-  showChat.value = false
-  showSearch.value = false
-  showMarks.value = false
-  showRecap.value = false
-  activeToolPanel.value = null
-  closeSelectionTools()
+function closeTopReaderOverlay() {
+  if (showAiResult.value) showAiResult.value = false
+  else if (showChat.value) showChat.value = false
+  else if (showRecap.value) showRecap.value = false
+  else if (showSearch.value) showSearch.value = false
+  else if (showMarks.value) showMarks.value = false
+  else if (showDrawer.value) showDrawer.value = false
+  else if (activeToolPanel.value) activeToolPanel.value = null
+}
+
+function toggleTtsFromShortcut() {
+  activeToolPanel.value = 'tts'
+  revealTools(immersiveMode.value === 'locked')
+  if (!ttsSupported.value) return
+  if (!ttsSpeaking.value) ttsStart(0)
+  else if (ttsPaused.value) ttsResume()
+  else ttsPause()
 }
 
 function onReaderResize() {
@@ -600,7 +612,7 @@ function onReaderResize() {
 function pageByScreen(direction: 1 | -1) {
   const el = contentRef.value
   if (!el) return
-  el.scrollBy({ top: direction * el.clientHeight * 0.9 })
+  el.scrollBy({ top: direction * el.clientHeight * 0.9, behavior: readerScrollBehavior() })
 }
 
 function setFontSize(next: number) {
@@ -666,8 +678,19 @@ function onReaderKeydown(e: KeyboardEvent) {
     case 'font-smaller':
       setFontSize(fontSize.value - 1)
       break
+    case 'open-catalog':
+      showDrawer.value = true
+      revealTools(immersiveMode.value === 'locked')
+      break
+    case 'open-appearance':
+      activeToolPanel.value = 'appearance'
+      revealTools(immersiveMode.value === 'locked')
+      break
+    case 'toggle-tts':
+      toggleTtsFromShortcut()
+      break
     case 'close-drawer':
-      closeReaderOverlays()
+      closeTopReaderOverlay()
       revealTools(immersiveMode.value === 'locked')
       break
   }
@@ -2055,6 +2078,11 @@ onUnmounted(() => {
 .option-grid button:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 1px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .reader-wrap, .reader-toolbar, .reader-progress-fill { transition: none !important; }
+  .reader-wrap, .reader-wrap *, .reader-toolbar, .reader-progress-fill { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
+
+:deep(button:focus-visible), :deep(.n-button:focus-visible), :deep(.n-input:focus-within) {
+  outline: 2px solid var(--active-chapter);
+  outline-offset: 2px;
 }
 </style>

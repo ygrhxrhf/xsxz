@@ -83,6 +83,13 @@ describe('resolveReaderKey', () => {
     expect(resolveReaderKey({ key: ' ', shift: true })).toBe('page-up')
   })
 
+  it('maps T/A/R to catalog, appearance and reading', () => {
+    expect(resolveReaderKey({ key: 't' })).toBe('open-catalog')
+    expect(resolveReaderKey({ key: 'T' })).toBe('open-catalog')
+    expect(resolveReaderKey({ key: 'a' })).toBe('open-appearance')
+    expect(resolveReaderKey({ key: 'R' })).toBe('toggle-tts')
+  })
+
   it('maps +/-/=/_ to font size, including numpad-style =', () => {
     expect(resolveReaderKey({ key: '+' })).toBe('font-larger')
     expect(resolveReaderKey({ key: '=' })).toBe('font-larger')
@@ -94,6 +101,8 @@ describe('resolveReaderKey', () => {
     expect(resolveReaderKey({ key: ' ', targetTag: 'input' })).toBeNull()
     expect(resolveReaderKey({ key: 'ArrowRight', targetTag: 'textarea' })).toBeNull()
     expect(resolveReaderKey({ key: '-', isContentEditable: true })).toBeNull()
+    expect(resolveReaderKey({ key: 'a', targetTag: 'select' })).toBeNull()
+    expect(resolveReaderKey({ key: 'r', targetTag: 'input' })).toBeNull()
   })
 
   it('ignores ctrl/cmd combos so browser zoom keeps working', () => {
@@ -108,7 +117,7 @@ describe('resolveReaderKey', () => {
   })
 
   it('returns null for unrelated keys', () => {
-    expect(resolveReaderKey({ key: 'a' })).toBeNull()
+    expect(resolveReaderKey({ key: 'q' })).toBeNull()
     expect(resolveReaderKey({ key: 'F5' })).toBeNull()
   })
 })
