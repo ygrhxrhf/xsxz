@@ -140,6 +140,19 @@
 
 读取设置时逐字段校验，一个字段损坏不会丢弃其他合法字段。旧 `nightMode: true` 迁移为 `theme: 'night'`，`false` 迁移为 `'paper'`；未知旧字段可继续留在磁盘，但返回的正式 `ReaderPrefs` 不再包含或依赖 `nightMode`。
 
+`Settings.ai` / `SettingsUpdate.ai` 通过现有 `settings.get/set` 频道承载，不新增设置频道。A1.1 先追加兼容类型（`Settings.ai` 暂为可选，避免尚未迁移的旧主进程调用方失配）；A1.2 完成后 `settings.get` 必须始终返回规范化 `AiPrefs`：
+
+| 字段 | 类型 | 默认值 / 兼容规则 |
+|---|---|---|
+| `provider` | `'deepseek' \| 'custom'` | 新设置默认 `deepseek`；旧设置按既有 baseURL/model 保留，不静默迁移 |
+| `thinkingEnabled` | `boolean` | `true` |
+| `recapLength` | `'short' \| 'standard' \| 'detailed'` | `standard` |
+| `trustedCustomOrigins` | `string[]` | `[]`；只保存规范化 origin，非法项忽略并去重 |
+| `promptMode` | `Record<AiPromptKind, 'builtin' \| 'custom'>` | 六类均为 `builtin` |
+| `customPrompts` | `Partial<Record<AiPromptKind, string>>` | `{}`；只保存用户可编辑任务要求，不含固定安全约束 |
+
+`AiPromptKind` 固定为 `clean`、`translate`、`chapterSummary`、`recap`、`memory`、`evidenceQa`。API Key 字段和安全存储语义不变。
+
 ---
 
 ## 站点规则
@@ -189,8 +202,15 @@
 | `ai.getChat` | invoke | `{ bookId: string }` | `{ ok: true; messages: AiChatMessage[] } \| { ok: false; message: string }` |
 | `ai.clearChat` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.translateStream` | invoke | `{ text: string }` | `AiJobStart` |
+| `ai.getMemory` | invoke | `{ bookId: string }` | `{ ok: true; memory: AiMemoryFile \| CharacterCard \| null } \| { ok: false; message: string }` |
+| `ai.updateMemory` | invoke | `{ bookId: string; uptoChapterId: string }` | `AiJobStart` |
+| `ai.rebuildMemory` | invoke | `{ bookId: string; uptoChapterId: string }` | `AiJobStart` |
+| `ai.markMemoryInaccurate` | invoke | `{ bookId: string; kind: 'character' \| 'relation' \| 'foreshadow' \| 'event'; itemId: string }` | `{ ok: true; item: AiMemoryBase } \| { ok: false; message: string }` |
+| `ai.askEvidenceStream` | invoke | `{ bookId: string; chapterId: string; question: string }` | `AiJobStart` |
+| `ai.retrySave` | invoke | `{ saveToken: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.cancel` | invoke | `{ jobId?: string }` | `{ ok: true }` |
 | `ai.chunk` | 主→渲染 | — | `AiChunkEvent` |
+| `ai.stage` | 主→渲染 | — | `AiStageEvent` |
 | `ai.done` | 主→渲染 | — | `AiDoneEvent` |
 
 未配置 Key 或网络失败：返回 `{ ok: false; message }`，不得影响浏览/下载/阅读。
@@ -201,7 +221,11 @@
 
 `ai.characterCard`（人物卡 / 伏笔追踪）沿用同一夹紧规则：目录、已读摘要、最近 3 章已读正文节选进入提示词；未读内容绝不进模型。生成结果解析为 JSON 存 `<bookDir>/ai/characters.json` 并返回；解析失败保留 `raw` 兜底展示。`ai.getCharacterCard` 只读取上次保存的卡。
 
-本战役新增的流式频道统一先返回 `AiJobStart`。成功的 `jobId` 对应后续零或多个 `ai.chunk`（SSE `delta`）和恰好一个 `ai.done`；失败也只由 `ai.done` 给出 `{ ok:false, message }`。`ai.cancel` 只中断当前同 ID 的任务；遗漏或过期 ID 仍返回 `{ ok:true }`。新频道尚未实现 handler 时不得由 UI 调用，后续切片会补齐实现。
+本战役新增的流式频道统一先返回 `AiJobStart`。成功的 `jobId` 对应后续零或多个 `ai.chunk`（SSE `delta`）、阶段变化时的 `ai.stage`，以及恰好一个 `ai.done`；失败也只由 `ai.done` 给出 `{ ok:false, message }`。`AiDoneEvent` 成功分支在旧 `{ jobId, ok, text }` 上只追加可选 `usage`、`truncated`、`stopped`、`saveToken`，旧监听方保持兼容。`ai.cancel` 只中断当前同 ID 的任务；遗漏或过期 ID 仍返回 `{ ok:true }`。
+
+`AiRequestStage` 固定为 `preparing`、`rewriting`、`searching`、`requesting`、`saving`。`ai.getMemory` 在 `memory.json` 存在时只返回新记忆；不存在时可返回旧 `characters.json` 兼容视图。`ai.updateMemory` / `rebuildMemory` 的正式结果对齐 `AiMemoryUpdateResult`。`ai.retrySave` 只能使用当前主进程内存中的一次性令牌，不得重新请求模型。
+
+A1.1 只冻结以上类型、频道与白名单形状；handler 与 preload 方法由后续 A1.4/B1/C1 切片实现。未实现前 UI 不得调用。
 
 ---
 
@@ -216,7 +240,7 @@ window.api = {
   settings: { get, set },
   backup: { create, restore },
   siteRules: { list, upsert, remove },
-  ai: { clean, summarize, translate, chat, getChat, clearChat, test, characterCard, getCharacterCard, summarizeChapter, storySoFar, getSummaries, chatStream, translateStream, cancel, onChunk, onDone },
+  ai: { clean, summarize, translate, chat, getChat, clearChat, test, characterCard, getCharacterCard, summarizeChapter, storySoFar, getSummaries, chatStream, translateStream, getMemory, updateMemory, rebuildMemory, markMemoryInaccurate, askEvidenceStream, retrySave, cancel, onChunk, onStage, onDone },
   annotations: { list, add, update, remove },
 }
 ```

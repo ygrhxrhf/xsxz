@@ -17,7 +17,9 @@
       0001.json
     ai\
       summaries.json
-      characters.json      # AI 人物卡 / 伏笔追踪（见下）
+      characters.json      # 旧 AI 人物卡 / 伏笔追踪；兼容保留
+      memory.json          # 可核验小说记忆 v1（用户触发后生成）
+      chat.json            # 聊天 v1 / 证据问答 v2
 ```
 
 `library/` 目录（默认路径）已在 `.gitignore`。书库备份 zip 不含 `__trash__` / `__tmp__`。
@@ -119,22 +121,91 @@
 
 ---
 
-## ai/chat.json
+## ai/memory.json
 
-对齐 `AiChatFile`：
+对齐 `AiMemoryFile` v1。文件不存在时表示尚未生成新记忆；损坏时按无新记忆处理，不影响旧 `characters.json` 或阅读器启动。
 
 ```json
 {
   "version": 1,
+  "uptoChapterId": "c0012",
+  "characters": [
+    {
+      "id": "character-guqing-ev-c0001-p3",
+      "name": "顾清",
+      "aliases": ["阿清"],
+      "role": "主角",
+      "status": "正在寻找父亲留下的账册",
+      "summary": "顾家长女，回到旧宅调查父亲失踪前留下的线索。",
+      "sources": [
+        {
+          "id": "ev-c0001-p3",
+          "chapterId": "c0001",
+          "chapterTitle": "第一章 归来",
+          "paragraphIndex": 3,
+          "excerpt": "顾清拖着旧箱子站在顾宅门前，门环上的铜锈沾了她一手。"
+        }
+      ],
+      "accuracy": "normal",
+      "updatedAt": "ISO-8601"
+    }
+  ],
+  "relations": [],
+  "foreshadows": [],
+  "events": [],
+  "updatedAt": "ISO-8601"
+}
+```
+
+四类数组字段：
+
+- `characters`: `AiMemoryCharacter`，追加 `name`、`aliases`、`role`、`status`。
+- `relations`: `AiMemoryRelation`，追加 `from`、`to`、`relation`、`status`。
+- `foreshadows`: `AiMemoryForeshadow`，追加 `desc`、`status: open | resolved | uncertain`。
+- `events`: `AiMemoryEvent`，追加 `title`、`participants`、`result`。
+
+所有条目共享 `id`、`summary`、`sources`、`accuracy: normal | review | uncertain`、`updatedAt`。每个来源对齐 `AiCitation`，必须包含真实 `chapterId`、章节标题、纯文本段落下标和 80–160 字摘录；未知 citation id 不得入库。
+
+- 稳定 id 由类别、规范化主键和首个来源组成；同批重复先本地合并。
+- 写入同目录临时文件，完成 flush/close 后 rename 原子替换；失败清理临时文件并保留旧正式文件。
+- 新 `memory.json` 一旦存在，UI 只展示新记忆；旧 `characters.json` 不删除、不合并，可用于回退兼容读取。
+- `review` / `uncertain` 默认折叠且不得进入前情事实；模型不能覆盖用户已标记的保守状态。
+
+---
+
+## ai/chat.json
+
+旧版对齐 `AiChatFile` v1；新版证据问答对齐 `AiChatFileV2`：
+
+```json
+{
+  "version": 2,
   "messages": [
-    { "role": "user", "content": "这章讲了什么？" },
-    { "role": "assistant", "content": "……" }
+    { "role": "user", "content": "顾清为什么回到旧宅？", "uptoChapterId": "c0012" },
+    {
+      "role": "assistant",
+      "content": "她回来是为了寻找父亲留下的账册。",
+      "uptoChapterId": "c0012",
+      "stopped": false,
+      "citations": [
+        {
+          "id": "ev-c0012-p8",
+          "chapterId": "c0012",
+          "chapterTitle": "第十二章 旧宅",
+          "paragraphIndex": 8,
+          "excerpt": "她推开积灰的书房门，想起父亲信中反复提到的那本旧账。"
+        }
+      ]
+    }
   ],
   "updatedAt": "ISO-8601"
 }
 ```
 
-每书独立保存，不含 system 消息或 API Key；最多 40 条，超过时丢弃最旧条目。缺失或损坏文件按空历史处理。
+- v1 消息无 `citations` / `uptoChapterId` / `stopped`，按“旧版回答，无来源”读取；首次成功保存证据问答时升级为 v2。
+- 每书独立保存，不含 system、reasoning 或 API Key。
+- 最多 40 条；超限时删除最旧的完整问答，不能留下没有对应问题的孤立 assistant。
+- v2 正式写入必须同目录临时文件完成 flush/close 后 rename 原子替换；失败保留旧正式文件。缺失或损坏按空历史读取。
 
 ---
 
@@ -189,7 +260,7 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
 {
   "libraryPath": "D:\\spbf\\library",
   "baseUrl": "https://api.deepseek.com/v1",
-  "model": "deepseek-chat",
+  "model": "deepseek-v4-flash",
   "apiKeyEnc": "safeStorage 产出的 base64，未配置则省略",
   "reader": {
     "fontSize": 18,
@@ -206,12 +277,30 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
   },
   "appearance": {
     "skin": "sakura"
+  },
+  "ai": {
+    "provider": "deepseek",
+    "thinkingEnabled": true,
+    "recapLength": "standard",
+    "trustedCustomOrigins": [],
+    "promptMode": {
+      "clean": "builtin",
+      "translate": "builtin",
+      "chapterSummary": "builtin",
+      "recap": "builtin",
+      "memory": "builtin",
+      "evidenceQa": "builtin"
+    },
+    "customPrompts": {}
   }
 }
 ```
 
 - API Key **不得**明文写入书库或 git。
 - `settings.get` IPC 不返回明文，只返回 `apiKeyConfigured`。
+- 新安装默认 `baseUrl=https://api.deepseek.com/v1`、`model=deepseek-v4-flash`、`ai.provider=deepseek`；已有用户的 `baseUrl`、`model`、`apiKeyEnc` 原样保留，旧模型名只提示、不得静默改写。
+- 旧设置缺 `ai` 或其中字段损坏时逐字段补默认：`thinkingEnabled=true`、`recapLength=standard`、trusted 空、六类 `promptMode=builtin`、`customPrompts={}`。非法 provider/origin/prompt kind 单项忽略，不丢弃其他合法字段。
+- `trustedCustomOrigins` 只保存协议 + hostname + 有效端口组成的规范化 origin；路径变化不产生新信任项，协议或端口变化需要重新确认。
 - `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
 - `appearance.skin` 取值 `sakura`（夜樱，默认）/ `minimal`（简约），非法值回退默认。
 - `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。

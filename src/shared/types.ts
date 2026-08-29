@@ -237,6 +237,21 @@ export interface AppearancePrefs {
   skin: Skin
 }
 
+export type AiProvider = 'deepseek' | 'custom'
+export type AiPromptKind = 'clean' | 'translate' | 'chapterSummary' | 'recap' | 'memory' | 'evidenceQa'
+export type AiPromptMode = 'builtin' | 'custom'
+
+/** AI 供应商、思考模式、前情长度和用户可编辑提示词偏好。 */
+export interface AiPrefs {
+  provider: AiProvider
+  thinkingEnabled: boolean
+  recapLength: 'short' | 'standard' | 'detailed'
+  /** 已由用户确认信任的规范化 origin；不含路径、query 或 fragment。 */
+  trustedCustomOrigins: string[]
+  promptMode: Record<AiPromptKind, AiPromptMode>
+  customPrompts: Partial<Record<AiPromptKind, string>>
+}
+
 export interface Settings {
   libraryPath: string
   baseUrl: string
@@ -246,6 +261,8 @@ export interface Settings {
   reader: ReaderPrefs
   tts: TtsPrefs
   appearance: AppearancePrefs
+  /** A1.2 起主进程始终补齐；可选用于兼容尚未迁移的旧调用方。 */
+  ai?: AiPrefs
 }
 
 export interface SettingsUpdate {
@@ -257,6 +274,7 @@ export interface SettingsUpdate {
   reader?: Partial<ReaderPrefs>
   tts?: Partial<TtsPrefs>
   appearance?: Partial<AppearancePrefs>
+  ai?: Partial<AiPrefs>
 }
 
 /** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */
@@ -276,6 +294,89 @@ export interface AiCleanResult {
 export interface AiChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
+}
+
+/** 可回跳到本地纯文本正文的来源坐标。 */
+export interface AiCitation {
+  id: string
+  chapterId: string
+  chapterTitle: string
+  paragraphIndex: number
+  excerpt: string
+}
+
+export interface AiMemoryBase {
+  id: string
+  summary: string
+  sources: AiCitation[]
+  accuracy: 'normal' | 'review' | 'uncertain'
+  updatedAt: string
+}
+
+export interface AiMemoryCharacter extends AiMemoryBase {
+  name: string
+  aliases: string[]
+  role: string
+  status: string
+}
+
+export interface AiMemoryRelation extends AiMemoryBase {
+  from: string
+  to: string
+  relation: string
+  status: string
+}
+
+export interface AiMemoryForeshadow extends AiMemoryBase {
+  desc: string
+  status: 'open' | 'resolved' | 'uncertain'
+}
+
+export interface AiMemoryEvent extends AiMemoryBase {
+  title: string
+  participants: string[]
+  result: string
+}
+
+/** 每书 ai/memory.json v1。 */
+export interface AiMemoryFile {
+  version: 1
+  uptoChapterId?: string
+  characters: AiMemoryCharacter[]
+  relations: AiMemoryRelation[]
+  foreshadows: AiMemoryForeshadow[]
+  events: AiMemoryEvent[]
+  updatedAt: string
+}
+
+export interface AiMemoryUpdateResult {
+  memory: AiMemoryFile
+  processedChapters: number
+  changedItems: number
+  remainingChapters: number
+}
+
+export interface AiUsage {
+  inputTokens?: number
+  outputTokens?: number
+  cacheHitTokens?: number
+  cacheMissTokens?: number
+}
+
+export type AiRequestStage = 'preparing' | 'rewriting' | 'searching' | 'requesting' | 'saving'
+
+export interface AiStageEvent {
+  jobId: string
+  stage: AiRequestStage
+  detail?: string
+}
+
+export interface AiEvidenceChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  citations?: AiCitation[]
+  uptoChapterId?: string
+  stopped?: boolean
 }
 
 export interface AiStorySoFar {
@@ -304,15 +405,31 @@ export interface AiChunkEvent {
   delta: string
 }
 
-/** 主进程发送的流式任务终态。 */
+/** 主进程发送的流式任务终态；新增字段均为可选，旧监听方可继续只读 text。 */
 export type AiDoneEvent =
-  | { jobId: string; ok: true; text: string }
+  | {
+      jobId: string
+      ok: true
+      text: string
+      usage?: AiUsage
+      truncated?: boolean
+      stopped?: boolean
+      /** 写盘失败后仅当前主进程有效的重试令牌。 */
+      saveToken?: string
+    }
   | { jobId: string; ok: false; message: string }
 
-/** 每书 ai/chat.json 的内容；不包含 system 消息或 API Key。 */
+/** 旧 ai/chat.json v1；读取兼容，不含来源。 */
 export interface AiChatFile {
   version: 1
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  updatedAt: string
+}
+
+/** 新 ai/chat.json v2；首次成功保存证据问答时升级。 */
+export interface AiChatFileV2 {
+  version: 2
+  messages: AiEvidenceChatMessage[]
   updatedAt: string
 }
 
