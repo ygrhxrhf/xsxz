@@ -104,23 +104,12 @@ export class AiJobSlot {
 export class AiPendingSaveStore {
   private readonly entries = new Map<string, () => Promise<void>>()
   private readonly inFlight = new Set<string>()
-  private readonly maxEntries: number
-
-  constructor(maxEntries = 20) {
-    this.maxEntries = Math.max(1, Math.floor(maxEntries))
-  }
 
   get size(): number {
     return this.entries.size
   }
 
   register(save: () => Promise<void>): string {
-    while (this.entries.size >= this.maxEntries) {
-      const oldest = this.entries.keys().next().value as string | undefined
-      if (!oldest) break
-      this.entries.delete(oldest)
-      this.inFlight.delete(oldest)
-    }
     const token = `save-${randomUUID()}`
     this.entries.set(token, save)
     return token

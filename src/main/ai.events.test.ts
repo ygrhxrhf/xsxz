@@ -110,12 +110,16 @@ describe('AiPendingSaveStore', () => {
     expect(save).toHaveBeenCalledTimes(1)
   })
 
-  it('bounds process-lifetime pending results and expires the oldest token', async () => {
-    const store = new AiPendingSaveStore(2)
-    const first = store.register(async () => {})
-    store.register(async () => {})
-    store.register(async () => {})
+  it('keeps independent tokens valid for the lifetime of the process store', async () => {
+    const store = new AiPendingSaveStore()
+    const firstSave = vi.fn(async () => {})
+    const secondSave = vi.fn(async () => {})
+    const first = store.register(firstSave)
+    const second = store.register(secondSave)
     expect(store.size).toBe(2)
-    await expect(store.retry(first)).resolves.toEqual({ ok: false, message: '未保存结果已过期，请重新生成' })
+    await expect(store.retry(first)).resolves.toEqual({ ok: true })
+    await expect(store.retry(second)).resolves.toEqual({ ok: true })
+    expect(firstSave).toHaveBeenCalledTimes(1)
+    expect(secondSave).toHaveBeenCalledTimes(1)
   })
 })
