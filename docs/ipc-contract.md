@@ -188,14 +188,14 @@
 
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
-| `ai.clean` | invoke | `{ bookId: string; chapterId: string }` | `{ ok: true; result: AiCleanResult } \| { ok: false; message: string }` |
+| `ai.clean` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean }` | `{ ok: true; result: AiCleanResult; budget: AiBudgetEstimate } \| { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate } \| { ok: false; stopped?: boolean; message: string }` |
 | `ai.summarize` | invoke | `{ bookId: string; uptoChapterId: string }` | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.translate` | invoke | `{ text: string }` | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.chat` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.test` | invoke | `{ baseUrl?: string; model?: string; apiKey?: string; provider?: AiProvider; thinkingEnabled?: boolean }`（均可空，空则用已保存设置） | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.characterCard` | invoke | `{ bookId: string; uptoChapterId: string }` | `{ ok: true; card: CharacterCard } \| { ok: false; message: string }` |
 | `ai.getCharacterCard` | invoke | `{ bookId: string }` | `{ ok: true; card: CharacterCard \| null } \| { ok: false; message: string }` |
-| `ai.summarizeChapter` | invoke | `{ bookId: string; chapterId: string }` | `AiJobStart` |
+| `ai.summarizeChapter` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string }` | `AiJobStart` |
 | `ai.getSummaries` | invoke | `{ bookId: string }` | `{ ok: true; summaries: AiSummaries } \| { ok: false; message: string }` |
 | `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart` |
@@ -217,11 +217,13 @@
 
 `ai.test` 发一条最小 chat completions 探活。401/403、429、超时、5xx 返回中文分级文案。
 
+`AiBudgetEstimate` 统计 Unicode 字符；token 估算按中日韩字符数 ÷ 1.5、其他字符数 ÷ 4，合计乘 1.1 后向上取整，不计算金额。`ai.clean` 的完整未分批请求超过 30000 字且 `confirmOverBudget` 不为 true 时，必须在任何模型请求前返回 `confirmationRequired` 与缩减后的实际发送范围。确认后按规范化段落分批，每批仅携带目标前后各一段只读上下文；只合并模型返回的目标段。任一批失败、取消或截断时不返回可应用的 `AiCleanResult`。
+
 `ai.summarize` 把截止夹紧到已存阅读进度 `book.progress.chapterId`（若有）：只读该截止内 `ready` 章正文，再取其中最近 10 章。不得把进度之后的未读章送进模型。无进度时以请求的 `uptoChapterId` 为截止。
 
 `ai.characterCard`（人物卡 / 伏笔追踪）沿用同一夹紧规则：目录、已读摘要、最近 3 章已读正文节选进入提示词；未读内容绝不进模型。生成结果解析为 JSON 存 `<bookDir>/ai/characters.json` 并返回；解析失败保留 `raw` 兜底展示。`ai.getCharacterCard` 只读取上次保存的卡。
 
-本战役新增的流式频道统一先返回 `AiJobStart`。成功的 `jobId` 对应后续零或多个 `ai.chunk`（SSE `delta`）、阶段变化时的 `ai.stage`，以及恰好一个 `ai.done`；失败也只由 `ai.done` 给出 `{ ok:false, message }`。`AiDoneEvent` 成功分支在旧 `{ jobId, ok, text }` 上只追加可选 `usage`、`truncated`、`stopped`、`citations`、`uptoChapterId`、`memoryUpdate`、`saveToken`，旧监听方保持兼容。`ai.cancel` 只中断当前同 ID 的任务；遗漏或过期 ID 仍返回 `{ ok:true }`。
+本战役新增的流式频道统一先返回 `AiJobStart`。成功的 `jobId` 对应后续零或多个 `ai.chunk`（SSE `delta`）、阶段变化时的 `ai.stage`，以及恰好一个 `ai.done`；失败也只由 `ai.done` 给出 `{ ok:false, message }`。`AiDoneEvent` 成功分支在旧 `{ jobId, ok, text }` 上只追加可选 `usage`、`truncated`、`stopped`、`citations`、`uptoChapterId`、`memoryUpdate`、`saveToken`，旧监听方保持兼容。`ai.cancel` 提供 `jobId` 时只中断当前同 ID 的任务；省略 `jobId` 时用于中断当前非流式独占任务；过期或不匹配 ID 仍返回 `{ ok:true }`。
 
 `AiRequestStage` 固定为 `preparing`、`rewriting`、`searching`、`requesting`、`saving`。`ai.getMemory` 在 `memory.json` 存在时只返回新记忆；不存在时可返回旧 `characters.json` 兼容视图。`ai.updateMemory` / `rebuildMemory` 成功时通过 `ai.done.memoryUpdate` 传递 `AiMemoryUpdateResult`；生成成功但保存失败时仍返回 `ok:true`、完整 `memoryUpdate` 和 `saveToken`，旧正式文件不变；取消或模型/解析失败返回 `ok:false`，不得携带可误认为正式结果的 `memoryUpdate`。`ai.retrySave` 只能使用当前主进程内存中的一次性令牌，不得重新请求模型。
 

@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  AiBudgetEstimate,
   AiChatMessage,
   AiChunkEvent,
+  AiCleanResult,
   AiDoneEvent,
   AiJobStart,
   AiProvider,
@@ -129,7 +131,12 @@ const api = {
       ipcRenderer.invoke('siteRules.remove', { host }) as Promise<{ ok: true } | { ok: false; message: string }>,
   },
   ai: {
-    clean: (bookId: string, chapterId: string) => ipcRenderer.invoke('ai.clean', { bookId, chapterId }),
+    clean: (bookId: string, chapterId: string, confirmOverBudget = false) =>
+      ipcRenderer.invoke('ai.clean', { bookId, chapterId, confirmOverBudget }) as Promise<
+        | { ok: true; result: AiCleanResult; budget: AiBudgetEstimate }
+        | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
+        | { ok: false; stopped?: boolean; message: string }
+      >,
     summarize: (bookId: string, uptoChapterId: string) =>
       ipcRenderer.invoke('ai.summarize', { bookId, uptoChapterId }),
     translate: (text: string) => ipcRenderer.invoke('ai.translate', { text }),
@@ -155,8 +162,10 @@ const api = {
         | { ok: true; card: import('../shared/types').CharacterCard | null }
         | { ok: false; message: string }
       >,
-    summarizeChapter: (bookId: string, chapterId: string) =>
-      ipcRenderer.invoke('ai.summarizeChapter', { bookId, chapterId }) as Promise<AiJobStart>,
+    summarizeChapter: (bookId: string, chapterId: string, confirmOverBudget = false) =>
+      ipcRenderer.invoke('ai.summarizeChapter', { bookId, chapterId, confirmOverBudget }) as Promise<
+        AiJobStart | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
+      >,
     storySoFar: (bookId: string, uptoChapterId: string) =>
       ipcRenderer.invoke('ai.storySoFar', { bookId, uptoChapterId }) as Promise<AiJobStart>,
     getSummaries: (bookId: string) =>

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  AiBudgetEstimate,
   AiChatMessage,
   AiCleanResult,
   AiDoneEvent,
@@ -10,6 +11,12 @@ import type {
   ChapterStatus,
 } from '../shared/types'
 import { BUILTIN_AI_PROMPTS } from '../shared/aiPrompts'
+import {
+  AI_INPUT_CHARACTER_BUDGET,
+  countTextCharacters,
+  estimateAiTokens,
+  normalizeAiParagraphs,
+} from './aiBudget'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -86,12 +93,15 @@ export class AiJobSlot {
     return { ok: true, jobId }
   }
 
-  async runExclusive<T>(run: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; message: string }> {
+  async runExclusive<T>(
+    run: (signal: AbortSignal, jobId: string) => Promise<T>,
+  ): Promise<{ ok: true; value: T } | { ok: false; message: string }> {
     if (this.current) return { ok: false, message: AI_BUSY_MESSAGE }
     const jobId = `ai-${Date.now()}-${++nextAiJobId}`
-    this.current = { jobId, controller: new AbortController() }
+    const controller = new AbortController()
+    this.current = { jobId, controller }
     try {
-      return { ok: true, value: await run() }
+      return { ok: true, value: await run(controller.signal, jobId) }
     } finally {
       if (this.current?.jobId === jobId) this.current = null
     }
@@ -560,9 +570,10 @@ export function buildChapterSummaryPrompt(
   chapterTitle: string,
   body: string,
   taskInstruction = BUILTIN_AI_PROMPTS.chapterSummary,
+  bodyCharacterLimit = 8_000,
 ): string {
-  const clipped = body.slice(0, 8000)
-  const truncated = body.length > clipped.length
+  const clipped = Array.from(body).slice(0, bodyCharacterLimit).join('')
+  const truncated = countTextCharacters(body) > bodyCharacterLimit
   return `用户任务要求：\n${taskInstruction}\n\n固定规则：只能使用下方当前章节内容；不要剧透后续章节；不得补充章节外或未读信息；控制在 80–150 字；只返回摘要正文。
 
 书名：《${bookTitle}》
@@ -572,24 +583,156 @@ ${truncated ? '提示：正文过长，以下内容已截断。\n' : ''}
 ${clipped}`
 }
 
-export async function cleanChapterBody(
-  config: AiConfig,
+export function planChapterSummaryRequest(
+  bookTitle: string,
+  chapterTitle: string,
+  body: string,
+  taskInstruction = BUILTIN_AI_PROMPTS.chapterSummary,
+): { prompt: string; budget: AiBudgetEstimate; requiresConfirmation: boolean } {
+  const fullPrompt = buildChapterSummaryPrompt(
+    bookTitle,
+    chapterTitle,
+    body,
+    taskInstruction,
+    Number.POSITIVE_INFINITY,
+  )
+  const prompt = buildChapterSummaryPrompt(bookTitle, chapterTitle, body, taskInstruction)
+  return {
+    prompt,
+    requiresConfirmation: countTextCharacters(fullPrompt) > AI_INPUT_CHARACTER_BUDGET,
+    budget: {
+      originalCharacters: countTextCharacters(fullPrompt),
+      sentCharacters: countTextCharacters(prompt),
+      estimatedTokens: estimateAiTokens(prompt),
+      chapterCount: 1,
+      paragraphCount: normalizeAiParagraphs(body).length,
+      batchCount: 1,
+      range: '当前章节正文前 8000 字，用于生成本章摘要；其余正文本次不发送。',
+    },
+  }
+}
+
+export interface AiCleanBatch {
+  targetParagraphs: string[]
+  prompt: string
+}
+
+export interface AiCleanPlan {
+  batches: AiCleanBatch[]
+  budget: AiBudgetEstimate
+  requiresConfirmation: boolean
+}
+
+export function buildCleanPrompt(
   chapterTitle: string,
   body: string,
   taskInstruction = BUILTIN_AI_PROMPTS.clean,
-): Promise<AiCleanResult> {
-  const prompt = `用户任务要求：\n${taskInstruction}\n\n固定规则：只能删除非正文内容；不得改写、续写或概括小说正文；保持段落顺序；只返回清理后的正文，不加解释。
+): string {
+  return `用户任务要求：\n${taskInstruction}\n\n固定规则：只能删除非正文内容；不得改写、续写或概括小说正文；保持段落顺序；只返回清理后的正文，不加解释。
 
 章节标题：${chapterTitle}
 
 原文：
 ${body}`
+}
 
-  const cleaned = await chatCompletion(config, [
-    { role: 'user', content: prompt },
-  ], { task: 'clean', inputTokenEstimate: Math.ceil(prompt.length / 2) })
+export function buildCleanBatchPrompt(
+  chapterTitle: string,
+  previousParagraph: string | undefined,
+  targetParagraphs: string[],
+  nextParagraph: string | undefined,
+  taskInstruction = BUILTIN_AI_PROMPTS.clean,
+): string {
+  return `用户任务要求：\n${taskInstruction}\n\n固定规则：只清理“目标段落”；前后文仅供判断边界，绝不能出现在输出；只能删除非正文内容；不得改写、续写或概括小说正文；保持目标段落顺序；只返回清理后的目标段落，不加解释。
 
-  return { original: body, cleaned: cleaned.trim() }
+章节标题：${chapterTitle}
+
+只读前文：
+${previousParagraph ?? '（无）'}
+
+目标段落：
+${targetParagraphs.join('\n\n')}
+
+只读后文：
+${nextParagraph ?? '（无）'}`
+}
+
+export function planCleanChapterRequest(
+  chapterTitle: string,
+  body: string,
+  taskInstruction = BUILTIN_AI_PROMPTS.clean,
+): AiCleanPlan {
+  const paragraphs = normalizeAiParagraphs(body)
+  const originalPrompt = buildCleanPrompt(chapterTitle, body, taskInstruction)
+  const batches: AiCleanBatch[] = []
+  let start = 0
+  while (start < paragraphs.length) {
+    let end = start
+    let selectedPrompt = ''
+    while (end < paragraphs.length) {
+      const candidate = buildCleanBatchPrompt(
+        chapterTitle,
+        start > 0 ? paragraphs[start - 1] : undefined,
+        paragraphs.slice(start, end + 1),
+        end + 1 < paragraphs.length ? paragraphs[end + 1] : undefined,
+        taskInstruction,
+      )
+      if (countTextCharacters(candidate) > AI_INPUT_CHARACTER_BUDGET && end > start) break
+      selectedPrompt = candidate
+      end += 1
+    }
+    const targetEnd = Math.max(start + 1, end)
+    batches.push({
+      targetParagraphs: paragraphs.slice(start, targetEnd),
+      prompt: selectedPrompt || buildCleanBatchPrompt(
+        chapterTitle,
+        start > 0 ? paragraphs[start - 1] : undefined,
+        [paragraphs[start]!],
+        start + 1 < paragraphs.length ? paragraphs[start + 1] : undefined,
+        taskInstruction,
+      ),
+    })
+    start = targetEnd
+  }
+  const sentCharacters = batches.reduce((total, batch) => total + countTextCharacters(batch.prompt), 0)
+  return {
+    batches,
+    requiresConfirmation: countTextCharacters(originalPrompt) > AI_INPUT_CHARACTER_BUDGET,
+    budget: {
+      originalCharacters: countTextCharacters(originalPrompt),
+      sentCharacters,
+      estimatedTokens: batches.reduce((total, batch) => total + estimateAiTokens(batch.prompt), 0),
+      chapterCount: 1,
+      paragraphCount: paragraphs.length,
+      batchCount: batches.length,
+      range: `当前章节全文，按 ${batches.length} 批清理；每批仅携带目标前后各一段只读上下文。`,
+    },
+  }
+}
+
+export async function cleanChapterBody(
+  config: AiConfig,
+  chapterTitle: string,
+  body: string,
+  taskInstruction = BUILTIN_AI_PROMPTS.clean,
+  signal?: AbortSignal,
+  plan = planCleanChapterRequest(chapterTitle, body, taskInstruction),
+): Promise<AiCleanResult> {
+  const cleanedBatches: string[] = []
+  for (const batch of plan.batches) {
+    const result = await runAiTaskCompletion(
+      config,
+      [{ role: 'user', content: batch.prompt }],
+      {
+        task: 'clean',
+        inputTokenEstimate: estimateAiTokens(batch.prompt),
+        signal,
+      },
+    )
+    if (result.truncated) throw new Error('模型输出被截断，未生成可应用的清理预览')
+    cleanedBatches.push(result.text.trim())
+  }
+  return { original: body, cleaned: cleanedBatches.join('\n\n') }
 }
 
 /** Chapter row used to clamp summarize input. Compatible with Book.chapters + optional body. */

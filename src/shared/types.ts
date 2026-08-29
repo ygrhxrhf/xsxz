@@ -363,6 +363,16 @@ export interface AiUsage {
   cacheMissTokens?: number
 }
 
+export interface AiBudgetEstimate {
+  originalCharacters: number
+  sentCharacters: number
+  estimatedTokens: number
+  chapterCount: number
+  paragraphCount: number
+  batchCount: number
+  range: string
+}
+
 export type AiRequestStage = 'preparing' | 'rewriting' | 'searching' | 'requesting' | 'saving'
 
 export interface AiStageEvent {

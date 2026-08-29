@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  AiJobSlot,
   AiPendingSaveStore,
   aiCompletionDoneEvent,
   aiStoppedDoneEvent,
@@ -11,6 +12,18 @@ import {
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+})
+
+describe('AI exclusive slot cancellation', () => {
+  it('passes the shared abort signal into non-stream work', async () => {
+    const slot = new AiJobSlot()
+    const running = slot.runExclusive((signal) => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    }))
+    slot.cancel()
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' })
+    expect(slot.busy).toBe(false)
+  })
 })
 
 describe('AI done event helpers', () => {

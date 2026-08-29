@@ -3,6 +3,7 @@ import {
   buildChapterSummaryPrompt,
   buildSummarizePrompt,
   clampSummarizeChapters,
+  planChapterSummaryRequest,
   summarizeUpTo,
 } from './ai'
 import type { ChapterStatus } from '../shared/types'
@@ -91,6 +92,15 @@ describe('buildChapterSummaryPrompt', () => {
     expect(prompt).toContain('正文过长，以下内容已截断')
     expect(prompt).toContain('甲'.repeat(8000))
     expect(prompt).not.toContain('未送入模型')
+  })
+
+  it('requires confirmation from the complete request before sending the reduced 8000-character range', () => {
+    const plan = planChapterSummaryRequest('测试书', '超长章', '甲'.repeat(40_000))
+    expect(plan.requiresConfirmation).toBe(true)
+    expect(plan.budget.originalCharacters).toBeGreaterThan(30_000)
+    expect(plan.budget.sentCharacters).toBeLessThan(10_000)
+    expect(plan.budget.range).toContain('前 8000 字')
+    expect(plan.prompt).toContain('正文过长，以下内容已截断')
   })
 })
 

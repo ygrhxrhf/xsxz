@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace, NPopconfirm, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
 import type {
+  AiBudgetEstimate,
   AiChatMessage,
   Book,
   ChapterMeta,
@@ -29,6 +30,7 @@ import type { ReaderImmersiveMode } from './readerHelpers'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { decorateText, relocateRange } from '@shared/paragraphSearch'
 import type { Annotation, BookSearchHit } from '@shared/types'
+import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 
 const props = defineProps<{ bookId?: string }>()
 const emit = defineEmits<{
@@ -63,15 +65,21 @@ const nightMode = computed({
 
 // AI state
 const aiLoading = ref(false)
+const cleanRunning = ref(false)
 const aiResult = ref('')
 const aiResultTitle = ref('')
 const showAiResult = ref(false)
+const cleanBudget = ref<AiBudgetEstimate | null>(null)
+const showCleanBudgetConfirm = ref(false)
+const lastCleanBudget = ref<AiBudgetEstimate | null>(null)
 const showChat = ref(false)
 const showRecap = ref(false)
 const recapText = ref('')
 const recapJobId = ref('')
 const recapJobKind = ref<'chapter' | 'story' | ''>('')
 const recapStopping = ref(false)
+const chapterSummaryBudget = ref<AiBudgetEstimate | null>(null)
+const showChapterSummaryBudgetConfirm = ref(false)
 const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
@@ -961,21 +969,52 @@ async function loadPrefs() {
 }
 
 // AI actions
-async function aiCleanBody() {
+async function runCleanBody(confirmOverBudget: boolean) {
   if (!book.value || !currentChapter.value) return
+  if (!confirmOverBudget) lastCleanBudget.value = null
   aiLoading.value = true
+  cleanRunning.value = true
   aiResultTitle.value = '清正文'
   try {
-    const res = await window.api.ai.clean(book.value.id, currentChapter.value.id)
-    if (res.ok && res.result) {
+    const res = await window.api.ai.clean(book.value.id, currentChapter.value.id, confirmOverBudget)
+    if (res.ok) {
       aiResult.value = res.result.cleaned
+      lastCleanBudget.value = res.budget
       showAiResult.value = true
-    } else {
-      message.error(res.message || '清正文失败')
+      return
     }
+    if ('confirmationRequired' in res && res.confirmationRequired) {
+      cleanBudget.value = res.budget
+      showCleanBudgetConfirm.value = true
+      return
+    }
+    if (res.stopped) {
+      message.info('已停止生成')
+      return
+    }
+    message.error(res.message || '清正文失败')
   } finally {
     aiLoading.value = false
+    cleanRunning.value = false
   }
+}
+
+async function aiCleanBody() {
+  await runCleanBody(false)
+}
+
+async function confirmOverBudgetClean() {
+  showCleanBudgetConfirm.value = false
+  await runCleanBody(true)
+}
+
+function cancelOverBudgetClean() {
+  showCleanBudgetConfirm.value = false
+  cleanBudget.value = null
+}
+
+async function stopCleanBody() {
+  await window.api.ai.cancel()
 }
 
 async function applyCleanedBody() {
@@ -1034,17 +1073,23 @@ async function openRecap() {
   if (!recapLoading.value) await loadStoredRecap()
 }
 
-async function startRecap(kind: 'chapter' | 'story') {
+async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) {
   if (!book.value || !currentChapter.value) return
+  if (kind === 'story' || !confirmOverBudget) chapterSummaryBudget.value = null
   const uptoChapterId = kind === 'chapter' ? currentChapter.value.id : book.value.progress?.chapterId
   if (!uptoChapterId) {
     recapText.value = '还没有阅读进度，打开阅读器读几章再来。'
     return
   }
   const res = kind === 'chapter'
-    ? await window.api.ai.summarizeChapter(book.value.id, uptoChapterId)
+    ? await window.api.ai.summarizeChapter(book.value.id, uptoChapterId, confirmOverBudget)
     : await window.api.ai.storySoFar(book.value.id, uptoChapterId)
   if (!res.ok) {
+    if ('confirmationRequired' in res && res.confirmationRequired) {
+      chapterSummaryBudget.value = res.budget
+      showChapterSummaryBudgetConfirm.value = true
+      return
+    }
     message.error(res.message)
     return
   }
@@ -1053,6 +1098,16 @@ async function startRecap(kind: 'chapter' | 'story') {
   recapJobKind.value = kind
   recapText.value = ''
   showRecap.value = true
+}
+
+async function confirmOverBudgetChapterSummary() {
+  showChapterSummaryBudgetConfirm.value = false
+  await startRecap('chapter', true)
+}
+
+function cancelOverBudgetChapterSummary() {
+  showChapterSummaryBudgetConfirm.value = false
+  chapterSummaryBudget.value = null
 }
 
 function stopRecap() {
@@ -1338,7 +1393,7 @@ onUnmounted(() => {
           </template>
           <template v-else>
             <strong>AI</strong>
-            <n-space vertical :size="6"><n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCleanBody">清正文</n-button><n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button><n-button size="tiny" block @click="openRecap">看到这里</n-button><n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCharacterCard">人物卡</n-button><n-button size="tiny" block :disabled="!chapterReady" @click="showChat = true">聊书</n-button></n-space>
+            <n-space vertical :size="6"><n-button size="tiny" block :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button><n-button v-if="cleanRunning" size="tiny" block type="warning" @click="stopCleanBody">停止清正文</n-button><n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button><n-button size="tiny" block @click="openRecap">看到这里</n-button><n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCharacterCard">人物卡</n-button><n-button size="tiny" block :disabled="!chapterReady" @click="showChat = true">聊书</n-button></n-space>
           </template>
         </div>
       </div>
@@ -1403,6 +1458,10 @@ onUnmounted(() => {
       <!-- AI result drawer -->
       <n-drawer v-model:show="showAiResult" placement="right" :width="420">
         <n-drawer-content :title="aiResultTitle" closable>
+          <div v-if="aiResultTitle === '清正文' && lastCleanBudget" class="ai-budget-status">
+            预计发送：{{ lastCleanBudget.chapterCount }} 章 / {{ lastCleanBudget.paragraphCount }} 段，约
+            {{ lastCleanBudget.sentCharacters }} 字 / {{ lastCleanBudget.estimatedTokens }} tokens（估算）
+          </div>
           <div class="ai-result">{{ aiResult }}</div>
           <template #footer>
             <n-space v-if="aiResultTitle === '清正文'">
@@ -1414,8 +1473,26 @@ onUnmounted(() => {
         </n-drawer-content>
       </n-drawer>
 
+      <ai-budget-confirm
+        :show="showCleanBudgetConfirm"
+        :budget="cleanBudget"
+        :loading="cleanRunning"
+        @confirm="confirmOverBudgetClean"
+        @cancel="cancelOverBudgetClean"
+      />
+      <ai-budget-confirm
+        :show="showChapterSummaryBudgetConfirm"
+        :budget="chapterSummaryBudget"
+        @confirm="confirmOverBudgetChapterSummary"
+        @cancel="cancelOverBudgetChapterSummary"
+      />
+
       <n-drawer v-model:show="showRecap" placement="right" :width="420">
         <n-drawer-content title="看到这里" closable>
+          <div v-if="chapterSummaryBudget" class="ai-budget-status">
+            预计发送：{{ chapterSummaryBudget.chapterCount }} 章 / {{ chapterSummaryBudget.paragraphCount }} 段，约
+            {{ chapterSummaryBudget.sentCharacters }} 字 / {{ chapterSummaryBudget.estimatedTokens }} tokens（估算）
+          </div>
           <div class="ai-result">{{ recapText }}</div>
           <template #footer>
             <n-space>
@@ -1860,6 +1937,15 @@ onUnmounted(() => {
 .ch-item.active {
   color: var(--active-chapter);
   font-weight: 600;
+}
+
+.ai-budget-status {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel-soft, rgba(127, 127, 127, 0.1));
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .ai-result {

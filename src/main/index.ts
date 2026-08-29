@@ -38,10 +38,11 @@ import {
   aiCompletionDoneEvent,
   aiStoppedDoneEvent,
   buildBookChatMessages,
-  buildChapterSummaryPrompt,
   buildStorySoFarPrompt,
   buildTranslatePrompt,
   cleanChapterBody,
+  planChapterSummaryRequest,
+  planCleanChapterRequest,
   summarizeUpTo,
   streamAiTaskCompletion,
   translateText,
@@ -569,17 +570,31 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.summarizeChapter', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {
+  ipcMain.handle('ai.summarizeChapter', async (_e, args: {
+    bookId: string
+    chapterId: string
+    confirmOverBudget?: boolean
+  }) => {
     try {
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const book = await getBook(bookId)
-      if (!book.chapters.some((chapter) => chapter.id === chapterId)) {
+      const book = await getBook(args.bookId)
+      if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) {
         return { ok: false, message: '章节不存在' }
       }
-      const chapter = await readChapter(bookId, chapterId)
+      const chapter = await readChapter(args.bookId, args.chapterId)
       if (!chapter.body.trim()) return { ok: false, message: '当前章节没有可摘要的正文' }
+      const instruction = aiTaskInstruction(settings, 'chapterSummary')
+      const plan = planChapterSummaryRequest(book.title, chapter.title, chapter.body, instruction)
+      if (plan.requiresConfirmation && args.confirmOverBudget !== true) {
+        return {
+          ok: false,
+          confirmationRequired: true,
+          message: '预计输入超过 30000 字。是否按上方缩减范围继续？',
+          budget: plan.budget,
+        }
+      }
       return aiJobSlot.start(async (jobId, signal) => {
         let partial = ''
         sendAiStage(jobId, 'preparing')
@@ -589,12 +604,7 @@ function registerIpc(): void {
             trustedAiConfig(settings, apiKey),
             [{
               role: 'user',
-              content: buildChapterSummaryPrompt(
-                book.title,
-                chapter.title,
-                chapter.body,
-                aiTaskInstruction(settings, 'chapterSummary'),
-              ),
+              content: plan.prompt,
             }],
             signal,
             (delta) => {
@@ -606,7 +616,7 @@ function registerIpc(): void {
           await saveAiDone(
             jobId,
             aiCompletionDoneEvent(jobId, result),
-            () => writeChapterSummary(bookId, chapterId, result.text, { signal }),
+            () => writeChapterSummary(args.bookId, args.chapterId, result.text, { signal }),
             { signal, stoppedEvent: aiStoppedDoneEvent(jobId, partial) },
           )
         } catch (e: unknown) {
@@ -626,24 +636,49 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.clean', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {
+  ipcMain.handle('ai.clean', async (_e, args: {
+    bookId: string
+    chapterId: string
+    confirmOverBudget?: boolean
+  }) => {
     try {
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const ch = await readChapter(bookId, chapterId)
+      const ch = await readChapter(args.bookId, args.chapterId)
       if (!ch.body) return { ok: false, message: '当前章节没有可清理的正文' }
-      const exclusive = await aiJobSlot.runExclusive(() =>
-        cleanChapterBody(
-          trustedAiConfig(settings, apiKey),
-          ch.title,
-          ch.body,
-          aiTaskInstruction(settings, 'clean'),
-        ),
-      )
+      const instruction = aiTaskInstruction(settings, 'clean')
+      const plan = planCleanChapterRequest(ch.title, ch.body, instruction)
+      if (!plan.batches.length) return { ok: false, message: '当前章节没有可清理的正文' }
+      if (plan.requiresConfirmation && args.confirmOverBudget !== true) {
+        return {
+          ok: false,
+          confirmationRequired: true,
+          message: '预计输入超过 30000 字。是否按上方缩减范围继续？',
+          budget: plan.budget,
+        }
+      }
+      const exclusive = await aiJobSlot.runExclusive(async (signal) => {
+        try {
+          return await cleanChapterBody(
+            trustedAiConfig(settings, apiKey),
+            ch.title,
+            ch.body,
+            instruction,
+            signal,
+            plan,
+          )
+        } catch (error) {
+          if (signal.aborted) throw new DOMException('aborted', 'AbortError')
+          throw error
+        }
+      })
       if (!exclusive.ok) return exclusive
-      return { ok: true, result: exclusive.value }
+      return { ok: true, result: exclusive.value, budget: plan.budget }
     } catch (e: unknown) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        return { ok: false, stopped: true, message: '已停止生成' }
+      }
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
