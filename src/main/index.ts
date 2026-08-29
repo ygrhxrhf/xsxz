@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { BrowseState, SiteRule } from '../shared/types'
+import type { AiDoneEvent, AiRequestStage, BrowseState, SiteRule } from '../shared/types'
 import {
   listBooks,
   getBook,
@@ -30,7 +30,25 @@ import { exportBook } from './exportBook'
 import { searchInBook } from './search'
 import { createBackup, restoreBackup } from './backup'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
-import { AiJobSlot, buildBookChatMessages, buildChapterSummaryPrompt, buildStorySoFarPrompt, buildTranslatePrompt, cleanChapterBody, summarizeUpTo, streamChatCompletion, translateText, chatAboutBook, clampSummarizeChapters, generateCharacterCard, parseCharacterCard, testConnection } from './ai'
+import {
+  AiJobSlot,
+  AiPendingSaveStore,
+  aiCompletionDoneEvent,
+  aiStoppedDoneEvent,
+  buildBookChatMessages,
+  buildChapterSummaryPrompt,
+  buildStorySoFarPrompt,
+  buildTranslatePrompt,
+  cleanChapterBody,
+  summarizeUpTo,
+  streamAiTaskCompletion,
+  translateText,
+  chatAboutBook,
+  clampSummarizeChapters,
+  generateCharacterCard,
+  parseCharacterCard,
+  testConnection,
+} from './ai'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -40,6 +58,28 @@ let browseView: WebContentsView | null = null
 let browseVisible = false
 let lastBounds = { x: SIDEBAR_WIDTH, y: 52, width: 900, height: 700 }
 const aiJobSlot = new AiJobSlot()
+const aiPendingSaves = new AiPendingSaveStore()
+
+type AiSuccessDoneEvent = Extract<AiDoneEvent, { ok: true }>
+
+function sendAiStage(jobId: string, stage: AiRequestStage, detail?: string): void {
+  mainWindow?.webContents.send('ai.stage', { jobId, stage, ...(detail ? { detail } : {}) })
+}
+
+async function saveAiDone(
+  jobId: string,
+  event: AiSuccessDoneEvent,
+  save: () => Promise<void>,
+): Promise<void> {
+  sendAiStage(jobId, 'saving')
+  try {
+    await save()
+    mainWindow?.webContents.send('ai.done', event)
+  } catch {
+    const saveToken = aiPendingSaves.register(save)
+    mainWindow?.webContents.send('ai.done', { ...event, saveToken })
+  }
+}
 
 function novelSession() {
   return session.fromPartition(PARTITION)
@@ -424,6 +464,16 @@ function registerIpc(): void {
     }
   })
 
+  ipcMain.handle('ai.retrySave', async (_e, payload?: unknown) => {
+    const saveToken = payload && typeof payload === 'object' && 'saveToken' in payload
+      ? (payload as { saveToken?: unknown }).saveToken
+      : undefined
+    if (typeof saveToken !== 'string' || !saveToken.trim() || saveToken.length > 200) {
+      return { ok: false, message: '未保存结果已过期，请重新生成' }
+    }
+    return aiPendingSaves.retry(saveToken)
+  })
+
   ipcMain.handle('ai.cancel', (_e, payload?: { jobId?: string }) => {
     aiJobSlot.cancel(payload?.jobId)
     return { ok: true }
@@ -446,8 +496,11 @@ function registerIpc(): void {
       if (!summaries.length) return { ok: false, message: '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。' }
       const missing = read.length - summaries.length
       return aiJobSlot.start(async (jobId, signal) => {
+        let partial = ''
+        sendAiStage(jobId, 'preparing')
         try {
-          const generated = await streamChatCompletion(
+          sendAiStage(jobId, 'requesting')
+          const result = await streamAiTaskCompletion(
             {
               baseUrl: settings.baseUrl,
               model: settings.model,
@@ -456,18 +509,23 @@ function registerIpc(): void {
               thinkingEnabled: settings.ai?.thinkingEnabled,
             },
             [{ role: 'user', content: buildStorySoFarPrompt(book.title, summaries) }], signal,
-            (delta) => mainWindow?.webContents.send('ai.chunk', { jobId, delta }),
+            (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
             { task: 'recap', recapLength: settings.ai?.recapLength },
           )
-          const text = `${missing > 0 ? `以下仅根据已有摘要的章节整理，另有 ${missing} 章尚未生成本章摘要。\n\n` : ''}${generated}`
-          try {
-            await writeStorySoFar(bookId, book.chapters[cutoff]!.id, text)
-          } catch {
-            mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
+          const text = `${missing > 0 ? `以下仅根据已有摘要的章节整理，另有 ${missing} 章尚未生成本章摘要。\n\n` : ''}${result.text}`
+          await saveAiDone(
+            jobId,
+            aiCompletionDoneEvent(jobId, result, text),
+            () => writeStorySoFar(bookId, book.chapters[cutoff]!.id, text),
+          )
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
             return
           }
-          mainWindow?.webContents.send('ai.done', { jobId, ok: true, text })
-        } catch (e: unknown) {
           mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: e instanceof Error ? e.message : String(e) })
         }
       })
@@ -488,8 +546,11 @@ function registerIpc(): void {
       const chapter = await readChapter(bookId, chapterId)
       if (!chapter.body.trim()) return { ok: false, message: '当前章节没有可摘要的正文' }
       return aiJobSlot.start(async (jobId, signal) => {
+        let partial = ''
+        sendAiStage(jobId, 'preparing')
         try {
-          const text = await streamChatCompletion(
+          sendAiStage(jobId, 'requesting')
+          const result = await streamAiTaskCompletion(
             {
               baseUrl: settings.baseUrl,
               model: settings.model,
@@ -499,17 +560,22 @@ function registerIpc(): void {
             },
             [{ role: 'user', content: buildChapterSummaryPrompt(book.title, chapter.title, chapter.body) }],
             signal,
-            (delta) => mainWindow?.webContents.send('ai.chunk', { jobId, delta }),
+            (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
             { task: 'chapterSummary' },
           )
-          try {
-            await writeChapterSummary(bookId, chapterId, text)
-          } catch {
-            mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
+          await saveAiDone(
+            jobId,
+            aiCompletionDoneEvent(jobId, result),
+            () => writeChapterSummary(bookId, chapterId, result.text),
+          )
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
             return
           }
-          mainWindow?.webContents.send('ai.done', { jobId, ok: true, text })
-        } catch (e: unknown) {
           mainWindow?.webContents.send('ai.done', {
             jobId,
             ok: false,
@@ -564,21 +630,22 @@ function registerIpc(): void {
           /* skip */
         }
       }
-      const text = await summarizeUpTo(
+      const exclusive = await aiJobSlot.runExclusive(() => summarizeUpTo(
         {
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              provider: settings.ai?.provider,
-              thinkingEnabled: settings.ai?.thinkingEnabled,
-            },
+          baseUrl: settings.baseUrl,
+          model: settings.model,
+          apiKey,
+          provider: settings.ai?.provider,
+          thinkingEnabled: settings.ai?.thinkingEnabled,
+        },
         book.title,
         summaries,
         { uptoChapterId, progressChapterId },
-      )
+      ))
+      if (!exclusive.ok) return exclusive
       const storyUptoChapterId = cutoff[cutoff.length - 1]?.id ?? uptoChapterId
-      await writeStorySoFar(bookId, storyUptoChapterId, text)
-      return { ok: true, text }
+      await writeStorySoFar(bookId, storyUptoChapterId, exclusive.value)
+      return { ok: true, text: exclusive.value }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
@@ -592,8 +659,10 @@ function registerIpc(): void {
       if (text.length > 2000) return { ok: false, message: '选中过长，请缩短后再问' }
       return aiJobSlot.start(async (jobId, signal) => {
         let partial = ''
+        sendAiStage(jobId, 'preparing')
         try {
-          const translated = await streamChatCompletion(
+          sendAiStage(jobId, 'requesting')
+          const result = await streamAiTaskCompletion(
             {
               baseUrl: settings.baseUrl,
               model: settings.model,
@@ -609,10 +678,10 @@ function registerIpc(): void {
             },
             { task: 'translate', inputTokenEstimate: Math.ceil(text.length / 2) },
           )
-          mainWindow?.webContents.send('ai.done', { jobId, ok: true, text: translated })
+          mainWindow?.webContents.send('ai.done', aiCompletionDoneEvent(jobId, result))
         } catch (e: unknown) {
           if (signal.aborted) {
-            mainWindow?.webContents.send('ai.done', { jobId, ok: true, text: partial })
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
             return
           }
           mainWindow?.webContents.send('ai.done', {
@@ -632,14 +701,15 @@ function registerIpc(): void {
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const result = await translateText({
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              provider: settings.ai?.provider,
-              thinkingEnabled: settings.ai?.thinkingEnabled,
-            }, text)
-      return { ok: true, text: result }
+      const exclusive = await aiJobSlot.runExclusive(() => translateText({
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+        apiKey,
+        provider: settings.ai?.provider,
+        thinkingEnabled: settings.ai?.thinkingEnabled,
+      }, text))
+      if (!exclusive.ok) return exclusive
+      return { ok: true, text: exclusive.value }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
@@ -670,6 +740,7 @@ function registerIpc(): void {
         args.messages,
       )
       return aiJobSlot.start(async (jobId, signal) => {
+        sendAiStage(jobId, 'preparing')
         try {
           await writeChat(args.bookId, persistedMessages)
         } catch {
@@ -679,7 +750,8 @@ function registerIpc(): void {
 
         let partial = ''
         try {
-          const text = await streamChatCompletion(
+          sendAiStage(jobId, 'requesting')
+          const result = await streamAiTaskCompletion(
             {
               baseUrl: settings.baseUrl,
               model: settings.model,
@@ -694,24 +766,20 @@ function registerIpc(): void {
               mainWindow?.webContents.send('ai.chunk', { jobId, delta })
             },
           )
-          try {
-            await writeChat(args.bookId, [...persistedMessages, { role: 'assistant', content: text }])
-          } catch {
-            mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
-            return
-          }
-          mainWindow?.webContents.send('ai.done', { jobId, ok: true, text })
+          await saveAiDone(
+            jobId,
+            aiCompletionDoneEvent(jobId, result),
+            () => writeChat(args.bookId, [...persistedMessages, { role: 'assistant', content: result.text }]),
+          )
         } catch (e: unknown) {
           if (signal.aborted) {
-            try {
-              await writeChat(args.bookId, partial
+            await saveAiDone(
+              jobId,
+              aiStoppedDoneEvent(jobId, partial),
+              () => writeChat(args.bookId, partial
                 ? [...persistedMessages, { role: 'assistant', content: partial }]
-                : persistedMessages)
-            } catch {
-              mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
-              return
-            }
-            mainWindow?.webContents.send('ai.done', { jobId, ok: true, text: partial })
+                : persistedMessages),
+            )
             return
           }
           mainWindow?.webContents.send('ai.done', {
@@ -744,23 +812,24 @@ function registerIpc(): void {
         .map((c) => stored.byChapter[c.id])
         .filter(Boolean)
         .join('\n\n')
-      const text = await chatAboutBook(
+      const exclusive = await aiJobSlot.runExclusive(() => chatAboutBook(
         {
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              provider: settings.ai?.provider,
-              thinkingEnabled: settings.ai?.thinkingEnabled,
-            },
+          baseUrl: settings.baseUrl,
+          model: settings.model,
+          apiKey,
+          provider: settings.ai?.provider,
+          thinkingEnabled: settings.ai?.thinkingEnabled,
+        },
         book.title,
         ch.title,
         ch.body,
         catalogSummary,
         readSummary,
         args.messages,
-      )
-      await writeChat(args.bookId, [...args.messages.filter((message) => message.role !== 'system'), { role: 'assistant', content: text }])
-      return { ok: true, text }
+      ))
+      if (!exclusive.ok) return exclusive
+      await writeChat(args.bookId, [...args.messages.filter((message) => message.role !== 'system'), { role: 'assistant', content: exclusive.value }])
+      return { ok: true, text: exclusive.value }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
@@ -773,12 +842,13 @@ function registerIpc(): void {
         const stored = await getApiKey()
         const apiKey = (payload?.apiKey || '').trim() || stored
         if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-        const text = await testConnection({
+        const exclusive = await aiJobSlot.runExclusive(() => testConnection({
           baseUrl: (payload?.baseUrl || settings.baseUrl).trim() || settings.baseUrl,
           model: (payload?.model || settings.model).trim() || settings.model,
           apiKey,
-        })
-        return { ok: true, text }
+        }))
+        if (!exclusive.ok) return exclusive
+        return { ok: true, text: exclusive.value }
       } catch (e: unknown) {
         return { ok: false, message: e instanceof Error ? e.message : String(e) }
       }

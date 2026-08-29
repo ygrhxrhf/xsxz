@@ -4,6 +4,7 @@ import type {
   AiChunkEvent,
   AiDoneEvent,
   AiJobStart,
+  AiStageEvent,
   AiSummaries,
   BookListItem,
   BrowseState,
@@ -160,8 +161,12 @@ const api = {
       ipcRenderer.invoke('ai.chatStream', { bookId, chapterId, messages }) as Promise<AiJobStart>,
     translateStream: (text: string) =>
       ipcRenderer.invoke('ai.translateStream', { text }) as Promise<AiJobStart>,
+    retrySave: (saveToken: string) => ipcRenderer.invoke('ai.retrySave', { saveToken }) as Promise<
+      { ok: true } | { ok: false; message: string }
+    >,
     cancel: (jobId?: string) => ipcRenderer.invoke('ai.cancel', { jobId }) as Promise<{ ok: true }>,
     onChunk: (handler: (payload: AiChunkEvent) => void) => on('ai.chunk', handler),
+    onStage: (handler: (payload: AiStageEvent) => void) => on('ai.stage', handler),
     onDone: (handler: (payload: AiDoneEvent) => void) => on('ai.done', handler),
   },
 }

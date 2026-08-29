@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import type {
   AiChatMessage,
   AiCleanResult,
+  AiDoneEvent,
   AiJobStart,
   AiProvider,
   AiUsage,
@@ -99,6 +101,47 @@ export class AiJobSlot {
   }
 }
 
+export class AiPendingSaveStore {
+  private readonly entries = new Map<string, () => Promise<void>>()
+  private readonly inFlight = new Set<string>()
+  private readonly maxEntries: number
+
+  constructor(maxEntries = 20) {
+    this.maxEntries = Math.max(1, Math.floor(maxEntries))
+  }
+
+  get size(): number {
+    return this.entries.size
+  }
+
+  register(save: () => Promise<void>): string {
+    while (this.entries.size >= this.maxEntries) {
+      const oldest = this.entries.keys().next().value as string | undefined
+      if (!oldest) break
+      this.entries.delete(oldest)
+      this.inFlight.delete(oldest)
+    }
+    const token = `save-${randomUUID()}`
+    this.entries.set(token, save)
+    return token
+  }
+
+  async retry(saveToken: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    const save = this.entries.get(saveToken)
+    if (!save) return { ok: false, message: '未保存结果已过期，请重新生成' }
+    if (this.inFlight.has(saveToken)) return { ok: false, message: '正在重试保存，请稍候' }
+    this.inFlight.add(saveToken)
+    try {
+      await save()
+      this.entries.delete(saveToken)
+      return { ok: true }
+    } catch {
+      return { ok: false, message: '仍然无法保存，请检查磁盘空间和权限' }
+    } finally {
+      this.inFlight.delete(saveToken)
+    }
+  }
+}
 
 export function formatAiRequestError(status: number, bodyText = ''): string {
   const snippet = bodyText.slice(0, 200)
@@ -400,6 +443,24 @@ export async function runAiTaskCompletion(
   }
 }
 
+export function aiCompletionDoneEvent(
+  jobId: string,
+  result: AiCompletionResult,
+  text = result.text,
+): AiDoneEvent {
+  return {
+    jobId,
+    ok: true,
+    text,
+    usage: result.usage,
+    truncated: result.truncated,
+  }
+}
+
+export function aiStoppedDoneEvent(jobId: string, text: string): AiDoneEvent {
+  return { jobId, ok: true, text, stopped: true }
+}
+
 async function chatCompletion(
   config: AiConfig,
   messages: ChatMessage[],
@@ -408,7 +469,22 @@ async function chatCompletion(
   return (await runAiTaskCompletion(config, messages, taskOptions)).text
 }
 
-/** Backward-compatible text-only stream wrapper; task-aware callers use runAiTaskCompletion. */
+export async function streamAiTaskCompletion(
+  config: AiConfig,
+  messages: ChatMessage[],
+  signal: AbortSignal,
+  onDelta: (delta: string) => void,
+  taskOptions: Pick<AiTaskOptions, 'task' | 'inputTokenEstimate' | 'recapLength'> = { task: 'legacy' },
+): Promise<AiCompletionResult> {
+  return runAiTaskCompletion(config, messages, {
+    ...taskOptions,
+    stream: true,
+    signal,
+    onDelta,
+  })
+}
+
+/** Backward-compatible text-only stream wrapper. */
 export async function streamChatCompletion(
   config: AiConfig,
   messages: ChatMessage[],
@@ -416,12 +492,7 @@ export async function streamChatCompletion(
   onDelta: (delta: string) => void,
   taskOptions: Pick<AiTaskOptions, 'task' | 'inputTokenEstimate' | 'recapLength'> = { task: 'legacy' },
 ): Promise<string> {
-  return (await runAiTaskCompletion(config, messages, {
-    ...taskOptions,
-    stream: true,
-    signal,
-    onDelta,
-  })).text
+  return (await streamAiTaskCompletion(config, messages, signal, onDelta, taskOptions)).text
 }
 
 export function buildStorySoFarPrompt(bookTitle: string, summaries: Array<{ title: string; text: string }>): string {
