@@ -20,6 +20,7 @@ export type AiTaskKind =
   | 'clean'
   | 'translate'
   | 'chapterSummary'
+  | 'characterCard'
   | 'queryRewrite'
   | 'recap'
   | 'memory'
@@ -140,6 +141,8 @@ export function getAiTaskPolicy(
       return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: clampOutputTokens(estimate, 6_000), mode: 'fast', structured: false }
     case 'chapterSummary':
       return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: 300, mode: 'fast', structured: false }
+    case 'characterCard':
+      return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 3_000, mode: 'high', structured: false }
     case 'queryRewrite':
       return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: 200, mode: 'fast', structured: true }
     case 'recap': {
@@ -156,9 +159,9 @@ export function getAiTaskPolicy(
 }
 
 function resolveProvider(config: AiConfig): AiProvider {
-  if (config.provider) return config.provider
   try {
-    return new URL(config.baseUrl).hostname.toLowerCase() === 'api.deepseek.com' ? 'deepseek' : 'custom'
+    const officialHost = new URL(config.baseUrl).hostname.toLowerCase() === 'api.deepseek.com'
+    return officialHost && config.provider !== 'custom' ? 'deepseek' : 'custom'
   } catch {
     return 'custom'
   }
@@ -648,5 +651,5 @@ export async function generateCharacterCard(
 ): Promise<string> {
   return chatCompletion(config, [
     { role: 'user', content: buildCharacterCardPrompt(material) },
-  ], { task: 'memory' })
+  ], { task: 'characterCard' })
 }

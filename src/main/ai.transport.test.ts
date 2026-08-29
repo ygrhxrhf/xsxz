@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AI_DEEP_REQUEST_TIMEOUT_MS,
   AI_REQUEST_TIMEOUT_MS,
+  generateCharacterCard,
   getAiTaskPolicy,
   parseAiJsonObject,
   runAiTaskCompletion,
@@ -37,6 +38,7 @@ describe('AI task policy matrix', () => {
     ['clean', AI_REQUEST_TIMEOUT_MS, 1_200, 'fast', false],
     ['translate', AI_REQUEST_TIMEOUT_MS, 1_200, 'fast', false],
     ['chapterSummary', AI_REQUEST_TIMEOUT_MS, 300, 'fast', false],
+    ['characterCard', AI_DEEP_REQUEST_TIMEOUT_MS, 3_000, 'high', false],
     ['queryRewrite', AI_REQUEST_TIMEOUT_MS, 200, 'fast', true],
     ['recap', AI_DEEP_REQUEST_TIMEOUT_MS, 900, 'high', false],
     ['memory', AI_DEEP_REQUEST_TIMEOUT_MS, 3_000, 'high', true],
@@ -102,6 +104,40 @@ describe('task-aware request bodies', () => {
       return new Response(JSON.stringify({ choices: [{ message: { content: '前情' }, finish_reason: 'stop' }] }), { status: 200 })
     }))
     await summarizeUpTo({ ...deepseek, thinkingEnabled: false }, '测试书', [{ title: '第一章', body: '正文' }])
+  })
+
+  it('safely downgrades a deepseek provider flag on a non-official host', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      expect(body).not.toHaveProperty('reasoning_effort')
+      expect(body).not.toHaveProperty('response_format')
+      expect(body).not.toHaveProperty('temperature')
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"events":[]}' }, finish_reason: 'stop' }] }), { status: 200 })
+    }))
+    await runAiTaskCompletion({
+      baseUrl: 'https://legacy-custom.example/v1',
+      model: 'old-custom-model',
+      apiKey: 'custom-key',
+      provider: 'deepseek',
+    }, messages, { task: 'memory' })
+  })
+
+  it('preserves legacy character-card raw fallback and thinking preference', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      expect(body.max_tokens).toBe(3_000)
+      expect(body).not.toHaveProperty('reasoning_effort')
+      expect(body).not.toHaveProperty('response_format')
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'not valid json' }, finish_reason: 'stop' }] }), { status: 200 })
+    }))
+    const raw = await generateCharacterCard({ ...deepseek, thinkingEnabled: false }, {
+      bookTitle: '测试书',
+      uptoChapterTitle: '第一章',
+      catalogTitles: ['第一章'],
+      chapterSummaries: [],
+      recentBodies: [],
+    })
+    expect(raw).toBe('not valid json')
   })
 
   it('sends only OpenAI-compatible core fields to custom services', async () => {
