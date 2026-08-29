@@ -459,6 +459,7 @@ describe('startDownloadFromPage', () => {
     if (!result.ok) return
     expect(result.bookId).toBe(bookIdFromUrl('example.com', 'https://example.com/book/index.html'))
     expect(result.bookId).not.toBe(bookIdFromUrl('evil.example', draftUrl))
+    await waitForIdle()
     expect(loadedUrls.every((u) => !u.includes('uncommitted-draft'))).toBe(true)
   })
 
@@ -793,6 +794,21 @@ describe('checkUpdate', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
+  async function readStoredChapter(bookId: string, chapterId: string): Promise<{ status: string; body: string }> {
+    const book = JSON.parse(await readFile(join(dir, bookId, 'book.json'), 'utf-8')) as {
+      chapters: Array<{ id: string; file: string; status: string }>
+    }
+    const meta = book.chapters.find((chapter) => chapter.id === chapterId)
+    if (!meta) throw new Error(`missing chapter ${chapterId}`)
+    const file = JSON.parse(await readFile(join(dir, bookId, meta.file), 'utf-8')) as {
+      status: string
+      body: string
+    }
+    expect(meta.status).toBe('ready')
+    expect(file.status).toBe('ready')
+    return file
+  }
+
   async function seedSixChapterBook(opts?: { failSixth?: boolean }): Promise<{
     bookId: string
     readySnapshots: Array<{ id: string; body: string; url?: string }>
@@ -827,7 +843,7 @@ describe('checkUpdate', () => {
     }
     const readySnapshots = []
     for (const ch of (await loadBook(started.bookId!)).chapters.filter((c) => c.status === 'ready')) {
-      const file = await readChapter(started.bookId!, ch.id)
+      const file = await readStoredChapter(started.bookId!, ch.id)
       readySnapshots.push({ id: ch.id, body: file.body, url: ch.url })
     }
     loadedUrls.length = 0
@@ -1098,7 +1114,7 @@ describe('checkUpdate', () => {
     const listed = await listBooks()
     expect(listed[0].id).toBe(bookId)
     for (const snap of readySnapshots) {
-      const file = await readChapter(bookId, snap.id)
+      const file = await readStoredChapter(bookId, snap.id)
       expect(file.body).toBe(snap.body)
     }
     loadedUrls.length = 0
