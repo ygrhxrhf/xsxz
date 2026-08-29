@@ -379,6 +379,11 @@ export interface AiEvidenceChatMessage {
   stopped?: boolean
 }
 
+/** ai.getChat 的兼容响应：旧 handler 可暂不返回 version，消息字段保持可读。 */
+export type AiGetChatResult =
+  | { ok: true; version?: 1 | 2; messages: AiEvidenceChatMessage[] }
+  | { ok: false; message: string }
+
 export interface AiStorySoFar {
   /** 合成前情的已读截止章节 */
   uptoChapterId: string
@@ -414,6 +419,12 @@ export type AiDoneEvent =
       usage?: AiUsage
       truncated?: boolean
       stopped?: boolean
+      /** 证据问答终态的白名单引用；保存失败时也必须保留。 */
+      citations?: AiCitation[]
+      /** 本次回答严格夹紧的已读截止。 */
+      uptoChapterId?: string
+      /** 记忆更新/重建的结构化结果与处理统计。 */
+      memoryUpdate?: AiMemoryUpdateResult
       /** 写盘失败后仅当前主进程有效的重试令牌。 */
       saveToken?: string
     }
@@ -456,5 +467,5 @@ export const DEFAULT_APPEARANCE_PREFS: AppearancePrefs = {
 
 export const DEFAULT_AI_PLACEHOLDER = {
   baseUrl: 'https://api.deepseek.com/v1',
-  model: 'deepseek-chat',
+  model: 'deepseek-v4-flash',
 }

@@ -167,7 +167,7 @@
 所有条目共享 `id`、`summary`、`sources`、`accuracy: normal | review | uncertain`、`updatedAt`。每个来源对齐 `AiCitation`，必须包含真实 `chapterId`、章节标题、纯文本段落下标和 80–160 字摘录；未知 citation id 不得入库。
 
 - 稳定 id 由类别、规范化主键和首个来源组成；同批重复先本地合并。
-- 写入同目录临时文件，完成 flush/close 后 rename 原子替换；失败清理临时文件并保留旧正式文件。
+- 写入同目录临时文件，完成 fsync/close 后 rename 原子替换；失败清理临时文件并保留旧正式文件。
 - 新 `memory.json` 一旦存在，UI 只展示新记忆；旧 `characters.json` 不删除、不合并，可用于回退兼容读取。
 - `review` / `uncertain` 默认折叠且不得进入前情事实；模型不能覆盖用户已标记的保守状态。
 
@@ -205,7 +205,7 @@
 - v1 消息无 `citations` / `uptoChapterId` / `stopped`，按“旧版回答，无来源”读取；首次成功保存证据问答时升级为 v2。
 - 每书独立保存，不含 system、reasoning 或 API Key。
 - 最多 40 条；超限时删除最旧的完整问答，不能留下没有对应问题的孤立 assistant。
-- v2 正式写入必须同目录临时文件完成 flush/close 后 rename 原子替换；失败保留旧正式文件。缺失或损坏按空历史读取。
+- v2 正式写入必须同目录临时文件完成 fsync/close 后 rename 原子替换；失败保留旧正式文件。缺失或损坏按空历史读取。
 
 ---
 

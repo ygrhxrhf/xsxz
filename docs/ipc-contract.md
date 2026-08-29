@@ -199,7 +199,7 @@
 | `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string }` | `AiJobStart` |
 | `ai.getSummaries` | invoke | `{ bookId: string }` | `{ ok: true; summaries: AiSummaries } \| { ok: false; message: string }` |
 | `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart` |
-| `ai.getChat` | invoke | `{ bookId: string }` | `{ ok: true; messages: AiChatMessage[] } \| { ok: false; message: string }` |
+| `ai.getChat` | invoke | `{ bookId: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省） |
 | `ai.clearChat` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.translateStream` | invoke | `{ text: string }` | `AiJobStart` |
 | `ai.getMemory` | invoke | `{ bookId: string }` | `{ ok: true; memory: AiMemoryFile \| CharacterCard \| null } \| { ok: false; message: string }` |
@@ -221,9 +221,11 @@
 
 `ai.characterCard`（人物卡 / 伏笔追踪）沿用同一夹紧规则：目录、已读摘要、最近 3 章已读正文节选进入提示词；未读内容绝不进模型。生成结果解析为 JSON 存 `<bookDir>/ai/characters.json` 并返回；解析失败保留 `raw` 兜底展示。`ai.getCharacterCard` 只读取上次保存的卡。
 
-本战役新增的流式频道统一先返回 `AiJobStart`。成功的 `jobId` 对应后续零或多个 `ai.chunk`（SSE `delta`）、阶段变化时的 `ai.stage`，以及恰好一个 `ai.done`；失败也只由 `ai.done` 给出 `{ ok:false, message }`。`AiDoneEvent` 成功分支在旧 `{ jobId, ok, text }` 上只追加可选 `usage`、`truncated`、`stopped`、`saveToken`，旧监听方保持兼容。`ai.cancel` 只中断当前同 ID 的任务；遗漏或过期 ID 仍返回 `{ ok:true }`。
+本战役新增的流式频道统一先返回 `AiJobStart`。成功的 `jobId` 对应后续零或多个 `ai.chunk`（SSE `delta`）、阶段变化时的 `ai.stage`，以及恰好一个 `ai.done`；失败也只由 `ai.done` 给出 `{ ok:false, message }`。`AiDoneEvent` 成功分支在旧 `{ jobId, ok, text }` 上只追加可选 `usage`、`truncated`、`stopped`、`citations`、`uptoChapterId`、`memoryUpdate`、`saveToken`，旧监听方保持兼容。`ai.cancel` 只中断当前同 ID 的任务；遗漏或过期 ID 仍返回 `{ ok:true }`。
 
-`AiRequestStage` 固定为 `preparing`、`rewriting`、`searching`、`requesting`、`saving`。`ai.getMemory` 在 `memory.json` 存在时只返回新记忆；不存在时可返回旧 `characters.json` 兼容视图。`ai.updateMemory` / `rebuildMemory` 的正式结果对齐 `AiMemoryUpdateResult`。`ai.retrySave` 只能使用当前主进程内存中的一次性令牌，不得重新请求模型。
+`AiRequestStage` 固定为 `preparing`、`rewriting`、`searching`、`requesting`、`saving`。`ai.getMemory` 在 `memory.json` 存在时只返回新记忆；不存在时可返回旧 `characters.json` 兼容视图。`ai.updateMemory` / `rebuildMemory` 成功时通过 `ai.done.memoryUpdate` 传递 `AiMemoryUpdateResult`；生成成功但保存失败时仍返回 `ok:true`、完整 `memoryUpdate` 和 `saveToken`，旧正式文件不变；取消或模型/解析失败返回 `ok:false`，不得携带可误认为正式结果的 `memoryUpdate`。`ai.retrySave` 只能使用当前主进程内存中的一次性令牌，不得重新请求模型。
+
+`ai.askEvidenceStream` 成功时通过 `ai.done` 同时返回 `text`、候选白名单内的 `citations`、`uptoChapterId` 与 `stopped`。保存失败仍保留这些字段并追加 `saveToken`；重开后 `ai.getChat` 返回 `AiGetChatResult`，v1 消息按无来源兼容读取，v2 消息保留引用、已读截止和停止状态。
 
 A1.1 只冻结以上类型、频道与白名单形状；handler 与 preload 方法由后续 A1.4/B1/C1 切片实现。未实现前 UI 不得调用。
 
@@ -245,4 +247,4 @@ window.api = {
 }
 ```
 
-`on*` 返回取消订阅函数。
+`on*` 返回取消订阅函数。计划 preload 中 `getChat` 的 Promise 返回 `AiGetChatResult`，`onDone` 监听 `AiDoneEvent`，因此 v2 引用/截止/停止状态和 `AiMemoryUpdateResult` 都有明确的 renderer 通道。
