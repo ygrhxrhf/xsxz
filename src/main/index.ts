@@ -448,9 +448,16 @@ function registerIpc(): void {
       return aiJobSlot.start(async (jobId, signal) => {
         try {
           const generated = await streamChatCompletion(
-            { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+            {
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              provider: settings.ai?.provider,
+              thinkingEnabled: settings.ai?.thinkingEnabled,
+            },
             [{ role: 'user', content: buildStorySoFarPrompt(book.title, summaries) }], signal,
             (delta) => mainWindow?.webContents.send('ai.chunk', { jobId, delta }),
+            { task: 'recap', recapLength: settings.ai?.recapLength },
           )
           const text = `${missing > 0 ? `以下仅根据已有摘要的章节整理，另有 ${missing} 章尚未生成本章摘要。\n\n` : ''}${generated}`
           try {
@@ -483,10 +490,17 @@ function registerIpc(): void {
       return aiJobSlot.start(async (jobId, signal) => {
         try {
           const text = await streamChatCompletion(
-            { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+            {
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              provider: settings.ai?.provider,
+              thinkingEnabled: settings.ai?.thinkingEnabled,
+            },
             [{ role: 'user', content: buildChapterSummaryPrompt(book.title, chapter.title, chapter.body) }],
             signal,
             (delta) => mainWindow?.webContents.send('ai.chunk', { jobId, delta }),
+            { task: 'chapterSummary' },
           )
           try {
             await writeChapterSummary(bookId, chapterId, text)
@@ -516,7 +530,13 @@ function registerIpc(): void {
       const ch = await readChapter(bookId, chapterId)
       if (!ch.body) return { ok: false, message: '当前章节没有可清理的正文' }
       const exclusive = await aiJobSlot.runExclusive(() =>
-        cleanChapterBody({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, ch.title, ch.body),
+        cleanChapterBody({
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              provider: settings.ai?.provider,
+              thinkingEnabled: settings.ai?.thinkingEnabled,
+            }, ch.title, ch.body),
       )
       if (!exclusive.ok) return exclusive
       return { ok: true, result: exclusive.value }
@@ -545,7 +565,13 @@ function registerIpc(): void {
         }
       }
       const text = await summarizeUpTo(
-        { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+        {
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              provider: settings.ai?.provider,
+              thinkingEnabled: settings.ai?.thinkingEnabled,
+            },
         book.title,
         summaries,
         { uptoChapterId, progressChapterId },
@@ -568,13 +594,20 @@ function registerIpc(): void {
         let partial = ''
         try {
           const translated = await streamChatCompletion(
-            { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+            {
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              provider: settings.ai?.provider,
+              thinkingEnabled: settings.ai?.thinkingEnabled,
+            },
             [{ role: 'user', content: buildTranslatePrompt(text) }],
             signal,
             (delta) => {
               partial += delta
               mainWindow?.webContents.send('ai.chunk', { jobId, delta })
             },
+            { task: 'translate', inputTokenEstimate: Math.ceil(text.length / 2) },
           )
           mainWindow?.webContents.send('ai.done', { jobId, ok: true, text: translated })
         } catch (e: unknown) {
@@ -599,7 +632,13 @@ function registerIpc(): void {
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const result = await translateText({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, text)
+      const result = await translateText({
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              provider: settings.ai?.provider,
+              thinkingEnabled: settings.ai?.thinkingEnabled,
+            }, text)
       return { ok: true, text: result }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
@@ -641,7 +680,13 @@ function registerIpc(): void {
         let partial = ''
         try {
           const text = await streamChatCompletion(
-            { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+            {
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              provider: settings.ai?.provider,
+              thinkingEnabled: settings.ai?.thinkingEnabled,
+            },
             apiMessages,
             signal,
             (delta) => {
@@ -700,7 +745,13 @@ function registerIpc(): void {
         .filter(Boolean)
         .join('\n\n')
       const text = await chatAboutBook(
-        { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+        {
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              provider: settings.ai?.provider,
+              thinkingEnabled: settings.ai?.thinkingEnabled,
+            },
         book.title,
         ch.title,
         ch.body,
@@ -766,7 +817,13 @@ function registerIpc(): void {
         }
       }
       const exclusive = await aiJobSlot.runExclusive(() => generateCharacterCard(
-        { baseUrl: settings.baseUrl, model: settings.model, apiKey },
+        {
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              provider: settings.ai?.provider,
+              thinkingEnabled: settings.ai?.thinkingEnabled,
+            },
         {
           bookTitle: book.title,
           uptoChapterTitle: book.chapters[cutIdx]?.title || '',

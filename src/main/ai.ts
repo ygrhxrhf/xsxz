@@ -1,15 +1,54 @@
-import type { AiChatMessage, AiCleanResult, AiJobStart, ChapterStatus } from '../shared/types'
+import type {
+  AiChatMessage,
+  AiCleanResult,
+  AiJobStart,
+  AiProvider,
+  AiUsage,
+  ChapterStatus,
+} from '../shared/types'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
 }
 
-interface ChatResponse {
-  choices: { message: { content: string } }[]
+export const AI_REQUEST_TIMEOUT_MS = 120_000
+export const AI_DEEP_REQUEST_TIMEOUT_MS = 300_000
+
+export type AiTaskKind =
+  | 'legacy'
+  | 'clean'
+  | 'translate'
+  | 'chapterSummary'
+  | 'queryRewrite'
+  | 'recap'
+  | 'memory'
+  | 'evidenceQa'
+
+export interface AiTaskPolicy {
+  timeoutMs: number
+  maxTokens?: number
+  mode: 'fast' | 'high'
+  structured: boolean
 }
 
-export const AI_REQUEST_TIMEOUT_MS = 120_000
+export interface AiTaskOptions {
+  task: AiTaskKind
+  stream?: boolean
+  signal?: AbortSignal
+  onDelta?: (delta: string) => void
+  inputTokenEstimate?: number
+  recapLength?: 'short' | 'standard' | 'detailed'
+}
+
+export interface AiCompletionResult {
+  text: string
+  usage?: AiUsage
+  finishReason?: string
+  truncated: boolean
+  json?: Record<string, unknown>
+}
+
 export const AI_CHAT_HISTORY_LIMIT = 8
 export const AI_BUSY_MESSAGE = '请先停止当前生成'
 
@@ -77,96 +116,231 @@ export function formatAiTransportError(e: unknown): string {
   return msg || 'AI 请求失败'
 }
 
+export interface AiConfig {
+  baseUrl: string
+  model: string
+  apiKey: string
+  provider?: AiProvider
+  thinkingEnabled?: boolean
+}
+
+function clampOutputTokens(estimate: number, max: number): number {
+  return Math.min(max, Math.max(512, Math.ceil(Math.max(0, estimate) * 1.2)))
+}
+
+export function getAiTaskPolicy(
+  task: AiTaskKind,
+  options: Pick<AiTaskOptions, 'inputTokenEstimate' | 'recapLength'> = {},
+): AiTaskPolicy {
+  const estimate = options.inputTokenEstimate ?? 0
+  switch (task) {
+    case 'clean':
+      return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: clampOutputTokens(estimate, 12_000), mode: 'fast', structured: false }
+    case 'translate':
+      return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: clampOutputTokens(estimate, 6_000), mode: 'fast', structured: false }
+    case 'chapterSummary':
+      return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: 300, mode: 'fast', structured: false }
+    case 'queryRewrite':
+      return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: 200, mode: 'fast', structured: true }
+    case 'recap': {
+      const maxTokens = options.recapLength === 'short' ? 400 : options.recapLength === 'detailed' ? 1_600 : 900
+      return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens, mode: 'high', structured: false }
+    }
+    case 'memory':
+      return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 3_000, mode: 'high', structured: true }
+    case 'evidenceQa':
+      return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 2_000, mode: 'high', structured: true }
+    default:
+      return { timeoutMs: AI_REQUEST_TIMEOUT_MS, mode: 'fast', structured: false }
+  }
+}
+
+function resolveProvider(config: AiConfig): AiProvider {
+  if (config.provider) return config.provider
+  try {
+    return new URL(config.baseUrl).hostname.toLowerCase() === 'api.deepseek.com' ? 'deepseek' : 'custom'
+  } catch {
+    return 'custom'
+  }
+}
+
+function readToken(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function parseUsage(value: unknown): AiUsage | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const usage = value as Record<string, unknown>
+  const parsed: AiUsage = {
+    inputTokens: readToken(usage.prompt_tokens),
+    outputTokens: readToken(usage.completion_tokens),
+    cacheHitTokens: readToken(usage.prompt_cache_hit_tokens),
+    cacheMissTokens: readToken(usage.prompt_cache_miss_tokens),
+  }
+  return Object.values(parsed).some((item) => item !== undefined) ? parsed : undefined
+}
+
+export function parseAiJsonObject(text: string): Record<string, unknown> {
+  const trimmed = text.trim()
+  const stripped = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
+  const candidates = [stripped]
+  const start = stripped.indexOf('{')
+  const end = stripped.lastIndexOf('}')
+  if (start >= 0 && end > start) candidates.push(stripped.slice(start, end + 1))
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      // Try the next bounded candidate.
+    }
+  }
+  throw new Error('模型返回的结构化内容无法识别，原有数据未改变')
+}
+
+function buildRequestBody(
+  config: AiConfig,
+  messages: ChatMessage[],
+  policy: AiTaskPolicy,
+  stream: boolean,
+): Record<string, unknown> {
+  const provider = resolveProvider(config)
+  const body: Record<string, unknown> = { model: config.model, messages, stream }
+  if (policy.maxTokens !== undefined) body.max_tokens = policy.maxTokens
+  if (provider === 'deepseek') {
+    if (policy.mode === 'fast') body.temperature = 0.3
+    if (policy.mode === 'high' && config.thinkingEnabled !== false) body.reasoning_effort = 'high'
+    if (policy.structured) body.response_format = { type: 'json_object' }
+    if (stream) body.stream_options = { include_usage: true }
+  }
+  return body
+}
+
+function requestSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  return signal ? AbortSignal.any([signal, timeout]) : timeout
+}
+
+function finishResult(
+  text: string,
+  finishReason: string | undefined,
+  usage: AiUsage | undefined,
+  policy: AiTaskPolicy,
+): AiCompletionResult {
+  if (!text.trim()) throw new Error('模型服务未返回有效内容，请重试')
+  const truncated = finishReason === 'length'
+  if (policy.structured && truncated) throw new Error('结构化结果因输出上限而截断，原有数据未改变')
+  return {
+    text,
+    usage,
+    finishReason,
+    truncated,
+    json: policy.structured ? parseAiJsonObject(text) : undefined,
+  }
+}
+
+async function readStreamResult(
+  response: Response,
+  policy: AiTaskPolicy,
+  onDelta: (delta: string) => void,
+): Promise<AiCompletionResult> {
+  if (!response.body) throw new Error('模型服务未返回流式内容')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let pending = ''
+  let text = ''
+  let finishReason: string | undefined
+  let usage: AiUsage | undefined
+  const consume = (line: string) => {
+    const value = line.trim()
+    if (!value.startsWith('data:')) return
+    const raw = value.slice(5).trim()
+    if (!raw || raw === '[DONE]') return
+    try {
+      const frame = JSON.parse(raw) as Record<string, unknown>
+      usage = parseUsage(frame.usage) ?? usage
+      const choice = Array.isArray(frame.choices) ? frame.choices[0] as Record<string, unknown> | undefined : undefined
+      if (choice && typeof choice.finish_reason === 'string') finishReason = choice.finish_reason
+      const delta = choice?.delta && typeof choice.delta === 'object' ? choice.delta as Record<string, unknown> : undefined
+      const content = delta?.content
+      // reasoning_content is intentionally ignored and never forwarded or persisted.
+      if (typeof content === 'string' && content) {
+        text += content
+        onDelta(content)
+      }
+    } catch {
+      // Bad provider frames are ignored without corrupting accumulated content.
+    }
+  }
+  while (true) {
+    const { done, value } = await reader.read()
+    pending += decoder.decode(value, { stream: !done })
+    const lines = pending.split(/\r?\n/)
+    pending = lines.pop() ?? ''
+    lines.forEach(consume)
+    if (done) break
+  }
+  if (pending) consume(pending)
+  return finishResult(text, finishReason, usage, policy)
+}
+
+export async function runAiTaskCompletion(
+  config: AiConfig,
+  messages: ChatMessage[],
+  options: AiTaskOptions,
+): Promise<AiCompletionResult> {
+  const policy = getAiTaskPolicy(options.task, options)
+  const stream = options.stream === true
+  try {
+    const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+      body: JSON.stringify(buildRequestBody(config, messages, policy, stream)),
+      signal: requestSignal(options.signal, policy.timeoutMs),
+    })
+    if (!response.ok) {
+      throw new Error(formatAiRequestError(response.status, await response.text().catch(() => '')))
+    }
+    if (stream) return readStreamResult(response, policy, options.onDelta ?? (() => {}))
+
+    const data = await response.json() as Record<string, unknown>
+    const choice = Array.isArray(data.choices) ? data.choices[0] as Record<string, unknown> | undefined : undefined
+    const message = choice?.message && typeof choice.message === 'object' ? choice.message as Record<string, unknown> : undefined
+    const content = typeof message?.content === 'string' ? message.content : ''
+    // reasoning_content is intentionally ignored and never returned.
+    const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined
+    return finishResult(content, finishReason, parseUsage(data.usage), policy)
+  } catch (error: unknown) {
+    throw new Error(formatAiTransportError(error))
+  }
+}
+
 async function chatCompletion(
   baseUrl: string,
   apiKey: string,
   model: string,
   messages: ChatMessage[],
+  taskOptions: Pick<AiTaskOptions, 'task' | 'inputTokenEstimate' | 'recapLength'> = { task: 'legacy' },
 ): Promise<string> {
-  const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`
-  const ac = new AbortController()
-  const timer = setTimeout(() => ac.abort(), AI_REQUEST_TIMEOUT_MS)
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({ model, messages, temperature: 0.3 }),
-      signal: ac.signal,
-    })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      throw new Error(formatAiRequestError(res.status, text))
-    }
-    const data: ChatResponse = await res.json()
-    return data.choices?.[0]?.message?.content || ''
-  } catch (e: unknown) {
-    throw new Error(formatAiTransportError(e))
-  } finally {
-    clearTimeout(timer)
-  }
+  return (await runAiTaskCompletion({ baseUrl, apiKey, model }, messages, taskOptions)).text
 }
 
-export interface AiConfig {
-  baseUrl: string
-  model: string
-  apiKey: string
-}
-
-/** Parse OpenAI-compatible SSE `data:` lines into deltas. */
+/** Backward-compatible text-only stream wrapper; task-aware callers use runAiTaskCompletion. */
 export async function streamChatCompletion(
   config: AiConfig,
   messages: ChatMessage[],
   signal: AbortSignal,
   onDelta: (delta: string) => void,
+  taskOptions: Pick<AiTaskOptions, 'task' | 'inputTokenEstimate' | 'recapLength'> = { task: 'legacy' },
 ): Promise<string> {
-  const timeout = AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS)
-  const requestSignal = AbortSignal.any([signal, timeout])
-  try {
-    const res = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-      body: JSON.stringify({ model: config.model, messages, temperature: 0.3, stream: true }),
-      signal: requestSignal,
-    })
-    if (!res.ok) throw new Error(formatAiRequestError(res.status, await res.text().catch(() => '')))
-    if (!res.body) throw new Error('模型服务未返回流式内容')
-
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let pending = ''
-    let text = ''
-    const consume = (line: string) => {
-      const value = line.trim()
-      if (!value.startsWith('data:')) return
-      const data = value.slice(5).trim()
-      if (!data || data === '[DONE]') return
-      try {
-        const delta = (JSON.parse(data) as { choices?: Array<{ delta?: { content?: unknown } }> })
-          .choices?.[0]?.delta?.content
-        if (typeof delta === 'string' && delta) {
-          text += delta
-          onDelta(delta)
-        }
-      } catch {
-        // Ignore malformed provider frames instead of corrupting accumulated text.
-      }
-    }
-    while (true) {
-      const { done, value } = await reader.read()
-      pending += decoder.decode(value, { stream: !done })
-      const lines = pending.split(/\r?\n/)
-      pending = lines.pop() ?? ''
-      lines.forEach(consume)
-      if (done) break
-    }
-    if (pending) consume(pending)
-    return text
-  } catch (e: unknown) {
-    throw new Error(formatAiTransportError(e))
-  }
+  return (await runAiTaskCompletion(config, messages, {
+    ...taskOptions,
+    stream: true,
+    signal,
+    onDelta,
+  })).text
 }
 
 export function buildStorySoFarPrompt(bookTitle: string, summaries: Array<{ title: string; text: string }>): string {
@@ -202,7 +376,7 @@ ${body}
 
   const cleaned = await chatCompletion(config.baseUrl, config.apiKey, config.model, [
     { role: 'user', content: prompt },
-  ])
+  ], { task: 'clean', inputTokenEstimate: Math.ceil(prompt.length / 2) })
 
   return { original: body, cleaned: cleaned.trim() }
 }
@@ -321,7 +495,7 @@ export async function summarizeUpTo(
   const prompt = buildSummarizePrompt(bookTitle, selected)
   return chatCompletion(config.baseUrl, config.apiKey, config.model, [
     { role: 'user', content: prompt },
-  ])
+  ], { task: 'recap' })
 }
 
 export function buildTranslatePrompt(text: string): string {
@@ -332,9 +506,10 @@ ${text}`
 }
 
 export async function translateText(config: AiConfig, text: string): Promise<string> {
+  const prompt = buildTranslatePrompt(text)
   return chatCompletion(config.baseUrl, config.apiKey, config.model, [
-    { role: 'user', content: buildTranslatePrompt(text) },
-  ])
+    { role: 'user', content: prompt },
+  ], { task: 'translate', inputTokenEstimate: Math.ceil(prompt.length / 2) })
 }
 
 export function buildBookChatMessages(
@@ -477,5 +652,5 @@ export async function generateCharacterCard(
 ): Promise<string> {
   return chatCompletion(config.baseUrl, config.apiKey, config.model, [
     { role: 'user', content: buildCharacterCardPrompt(material) },
-  ])
+  ], { task: 'memory' })
 }
