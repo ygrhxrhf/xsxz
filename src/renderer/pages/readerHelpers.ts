@@ -6,6 +6,36 @@ export function chapterIndexOf(chapters: Array<Pick<ChapterMeta, 'id'>>, chapter
   return chapters.findIndex((c) => c.id === chapterId)
 }
 
+export function clampRatio(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(1, value))
+}
+
+export function scrollableDistance(scrollHeight: number, clientHeight: number): number {
+  if (!Number.isFinite(scrollHeight) || !Number.isFinite(clientHeight)) return 0
+  return Math.max(0, scrollHeight - clientHeight)
+}
+
+export function chapterScrollRatio(scrollTop: number, scrollHeight: number, clientHeight: number): number {
+  const distance = scrollableDistance(scrollHeight, clientHeight)
+  if (distance === 0 || !Number.isFinite(scrollTop)) return 0
+  return clampRatio(scrollTop / distance)
+}
+
+export function scrollTopFromRatio(ratio: number, scrollHeight: number, clientHeight: number): number {
+  return clampRatio(ratio) * scrollableDistance(scrollHeight, clientHeight)
+}
+
+export function approximateBookRatio(
+  chapters: Array<Pick<ChapterMeta, 'id'>>,
+  chapterId?: string | null,
+  chapterRatio = 0,
+): number {
+  if (chapters.length === 0) return 0
+  const chapterIndex = Math.max(0, chapterIndexOf(chapters, chapterId))
+  return clampRatio((chapterIndex + clampRatio(chapterRatio)) / chapters.length)
+}
+
 export function remainingChapterCount(
   chapters: Array<Pick<ChapterMeta, 'id'>>,
   chapterId?: string | null,
@@ -23,7 +53,7 @@ export function readerProgressLabel(
   const i = chapterIndexOf(chapters, chapterId)
   const ordinal =
     i >= 0 ? formatChapterOrdinal(chapterId, chapters[i]?.index || i + 1) : formatChapterOrdinal(chapterId)
-  const pct = Math.round(Math.max(0, Math.min(1, scrollRatio)) * 100)
+  const pct = Math.round(clampRatio(scrollRatio) * 100)
   const left = remainingChapterCount(chapters, chapterId)
   return `${ordinal} · 本章 ${pct}% · 还剩 ${left} 章`
 }

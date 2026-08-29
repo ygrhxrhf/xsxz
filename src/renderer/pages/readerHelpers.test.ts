@@ -1,5 +1,53 @@
 import { describe, expect, it } from 'vitest'
-import { failAdvice, formatCharacterCard, resolveReaderKey } from './readerHelpers'
+import {
+  approximateBookRatio,
+  chapterScrollRatio,
+  failAdvice,
+  formatCharacterCard,
+  remainingChapterCount,
+  resolveReaderKey,
+  scrollableDistance,
+  scrollTopFromRatio,
+} from './readerHelpers'
+
+describe('reader progress helpers', () => {
+  const chapters = [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }]
+
+  it('uses only the scrollable distance', () => {
+    expect(scrollableDistance(1800, 800)).toBe(1000)
+    expect(scrollableDistance(600, 800)).toBe(0)
+    expect(chapterScrollRatio(0, 1800, 800)).toBe(0)
+    expect(chapterScrollRatio(500, 1800, 800)).toBe(0.5)
+    expect(chapterScrollRatio(1000, 1800, 800)).toBe(1)
+  })
+
+  it('clamps invalid and out-of-range ratios', () => {
+    expect(chapterScrollRatio(-50, 1800, 800)).toBe(0)
+    expect(chapterScrollRatio(1200, 1800, 800)).toBe(1)
+    expect(chapterScrollRatio(Number.NaN, 1800, 800)).toBe(0)
+    expect(chapterScrollRatio(100, 800, 800)).toBe(0)
+    expect(chapterScrollRatio(100, Number.POSITIVE_INFINITY, 800)).toBe(0)
+  })
+
+  it('restores scrollTop from the same distance formula', () => {
+    expect(scrollTopFromRatio(0.5, 1800, 800)).toBe(500)
+    expect(scrollTopFromRatio(1, 1800, 800)).toBe(1000)
+    expect(scrollTopFromRatio(2, 1800, 800)).toBe(1000)
+    expect(scrollTopFromRatio(Number.NaN, 1800, 800)).toBe(0)
+    expect(scrollTopFromRatio(0.5, 600, 800)).toBe(0)
+  })
+
+  it('computes approximate whole-book progress and remaining chapters', () => {
+    expect(approximateBookRatio([], null, 1)).toBe(0)
+    expect(approximateBookRatio(chapters, 'c1', 0)).toBe(0)
+    expect(approximateBookRatio(chapters, 'c2', 0.5)).toBe(0.5)
+    expect(approximateBookRatio(chapters, 'c3', 1)).toBe(1)
+    expect(approximateBookRatio(chapters, 'missing', Number.NaN)).toBe(0)
+    expect(remainingChapterCount(chapters, 'c1')).toBe(2)
+    expect(remainingChapterCount(chapters, 'c3')).toBe(0)
+    expect(remainingChapterCount(chapters, 'missing')).toBe(3)
+  })
+})
 
 describe('resolveReaderKey', () => {
   it('maps arrow keys to chapter navigation', () => {

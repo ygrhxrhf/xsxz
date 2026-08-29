@@ -3,7 +3,15 @@ import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace, NPopconfirm, useMessage } from 'naive-ui'
 import { FAIL_CODE_ZH } from '@shared/types'
 import type { Book, ChapterMeta, AiChatMessage } from '@shared/types'
-import { failAdvice, filterCatalogChapters, formatCharacterCard, readerProgressLabel, resolveReaderKey } from './readerHelpers'
+import {
+  chapterScrollRatio,
+  failAdvice,
+  filterCatalogChapters,
+  formatCharacterCard,
+  readerProgressLabel,
+  resolveReaderKey,
+  scrollTopFromRatio,
+} from './readerHelpers'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { decorateText, relocateRange } from '@shared/paragraphSearch'
 import type { Annotation, BookSearchHit } from '@shared/types'
@@ -538,14 +546,14 @@ function scrollToRatio(ratio: number) {
   const el = contentRef.value
   if (!el) return
   requestAnimationFrame(() => {
-    el.scrollTop = el.scrollHeight * Math.max(0, Math.min(1, ratio))
+    el.scrollTop = scrollTopFromRatio(ratio, el.scrollHeight, el.clientHeight)
   })
 }
 
 function saveProgress() {
   if (!book.value || !currentChapter.value || !contentRef.value) return
   const el = contentRef.value
-  const scrollRatio = el.scrollHeight > 0 ? el.scrollTop / el.scrollHeight : 0
+  const scrollRatio = chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight)
   void window.api.library.setProgress(book.value.id, {
     chapterId: currentChapter.value.id,
     scrollRatio,
@@ -555,7 +563,7 @@ function saveProgress() {
 
 function onScroll() {
   const el = contentRef.value
-  if (el && el.scrollHeight > 0) scrollRatioView.value = el.scrollTop / el.scrollHeight
+  if (el) scrollRatioView.value = chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight)
   if (scrollTimer) clearTimeout(scrollTimer)
   scrollTimer = setTimeout(saveProgress, 1000)
 }
