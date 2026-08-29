@@ -1,8 +1,17 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace, NPopconfirm, useMessage } from 'naive-ui'
-import { FAIL_CODE_ZH } from '@shared/types'
-import type { Book, ChapterMeta, AiChatMessage } from '@shared/types'
+import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
+import type {
+  AiChatMessage,
+  Book,
+  ChapterMeta,
+  ReaderContentWidth,
+  ReaderFontFamily,
+  ReaderParagraphSpacing,
+  ReaderPrefs,
+  ReaderTheme,
+} from '@shared/types'
 import {
   chapterScrollRatio,
   failAdvice,
@@ -37,9 +46,17 @@ const contentRef = ref<HTMLElement | null>(null)
 const showDrawer = ref(false)
 
 // Reader prefs (from settings)
-const fontSize = ref(18)
-const lineHeight = ref(1.8)
-const nightMode = ref(false)
+const fontSize = ref(DEFAULT_READER_PREFS.fontSize)
+const lineHeight = ref(DEFAULT_READER_PREFS.lineHeight)
+const theme = ref<ReaderTheme>(DEFAULT_READER_PREFS.theme)
+const fontFamily = ref<ReaderFontFamily>(DEFAULT_READER_PREFS.fontFamily)
+const contentWidth = ref<ReaderContentWidth>(DEFAULT_READER_PREFS.contentWidth)
+const paragraphSpacing = ref<ReaderParagraphSpacing>(DEFAULT_READER_PREFS.paragraphSpacing)
+const paragraphIndent = ref(DEFAULT_READER_PREFS.paragraphIndent)
+const nightMode = computed({
+  get: () => theme.value === 'night',
+  set: (enabled: boolean) => { theme.value = enabled ? 'night' : 'paper' },
+})
 
 // AI state
 const aiLoading = ref(false)
@@ -74,6 +91,10 @@ let lastToolActivityAt = Date.now()
 let toolHideTimer: ReturnType<typeof setTimeout> | null = null
 
 const prefsReady = ref(false)
+let prefsSaveTimer: ReturnType<typeof setTimeout> | null = null
+let pendingReaderPrefs: ReaderPrefs | null = null
+let prefsSaveChain: Promise<void> = Promise.resolve()
+let prefsFailureNotified = false
 
 // TTS 朗读
 const ttsRate = ref(1)
@@ -595,9 +616,33 @@ let unsubAiChunk: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
 
 const nightClass = computed(() => (nightMode.value ? 'night' : ''))
+const themeTokens: Record<ReaderTheme, { paper: string; text: string; outer: string }> = {
+  paper: { paper: '#F7F3E8', text: '#2F2A24', outer: '#E9E3D7' },
+  sepia: { paper: '#F3E2B8', text: '#3A2F22', outer: '#E6D2A4' },
+  gray: { paper: '#E5E7E6', text: '#252A2D', outer: '#D6D9D8' },
+  night: { paper: '#1B1D20', text: '#D8D2C7', outer: '#111316' },
+}
+const fontStacks: Record<ReaderFontFamily, string> = {
+  serif: '"STSong", "Songti SC", "SimSun", serif',
+  system: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
+  mono: '"Cascadia Mono", "Consolas", monospace',
+}
+const widthValues: Record<ReaderContentWidth, string> = { narrow: '32em', medium: '38em', wide: '46em' }
+const spacingValues: Record<ReaderParagraphSpacing, string> = { compact: '0.2em', normal: '0.45em', relaxed: '0.8em' }
+const readerThemeStyle = computed(() => ({
+  '--reader-paper': themeTokens[theme.value].paper,
+  '--reader-paper-text': themeTokens[theme.value].text,
+  '--reader-outer': themeTokens[theme.value].outer,
+}))
 const contentStyle = computed(() => ({
   fontSize: fontSize.value + 'px',
   lineHeight: lineHeight.value,
+  fontFamily: fontStacks[fontFamily.value],
+  width: `min(100%, ${widthValues[contentWidth.value]})`,
+  maxWidth: widthValues[contentWidth.value],
+  flexBasis: widthValues[contentWidth.value],
+  '--paragraph-spacing': spacingValues[paragraphSpacing.value],
+  '--paragraph-indent': paragraphIndent.value ? '2em' : '0',
 }))
 const chapterReady = computed(() => Boolean(currentChapter.value && currentChapter.value.status === 'ready' && chapterBody.value))
 const canRetryChapter = computed(() => {
@@ -736,11 +781,68 @@ function goToChapterId(chId: string) {
   if (ch) openChapter(ch, 0)
 }
 
+function currentReaderPrefs(): ReaderPrefs {
+  return {
+    fontSize: fontSize.value,
+    lineHeight: lineHeight.value,
+    theme: theme.value,
+    fontFamily: fontFamily.value,
+    contentWidth: contentWidth.value,
+    paragraphSpacing: paragraphSpacing.value,
+    paragraphIndent: paragraphIndent.value,
+  }
+}
+
+async function saveReaderPrefsSnapshot(snapshot: ReaderPrefs) {
+  try {
+    await window.api.settings.set({ reader: snapshot })
+    prefsFailureNotified = false
+  } catch {
+    if (!prefsFailureNotified) {
+      prefsFailureNotified = true
+      message.error('阅读设置保存失败，重启后可能无法保留。')
+    }
+  }
+}
+
+function flushReaderPrefsSave() {
+  if (prefsSaveTimer) {
+    clearTimeout(prefsSaveTimer)
+    prefsSaveTimer = null
+  }
+  const snapshot = pendingReaderPrefs
+  pendingReaderPrefs = null
+  if (!snapshot) return prefsSaveChain
+  prefsSaveChain = prefsSaveChain.then(() => saveReaderPrefsSnapshot(snapshot))
+  return prefsSaveChain
+}
+
+function scheduleReaderPrefsSave() {
+  pendingReaderPrefs = currentReaderPrefs()
+  if (prefsSaveTimer) clearTimeout(prefsSaveTimer)
+  prefsSaveTimer = setTimeout(() => { void flushReaderPrefsSave() }, 300)
+}
+
+function restoreDefaultReaderPrefs() {
+  fontSize.value = DEFAULT_READER_PREFS.fontSize
+  lineHeight.value = DEFAULT_READER_PREFS.lineHeight
+  theme.value = DEFAULT_READER_PREFS.theme
+  fontFamily.value = DEFAULT_READER_PREFS.fontFamily
+  contentWidth.value = DEFAULT_READER_PREFS.contentWidth
+  paragraphSpacing.value = DEFAULT_READER_PREFS.paragraphSpacing
+  paragraphIndent.value = DEFAULT_READER_PREFS.paragraphIndent
+  message.success('已恢复默认阅读设置')
+}
+
 async function loadPrefs() {
   const s = await window.api.settings.get()
   fontSize.value = s.reader.fontSize
   lineHeight.value = s.reader.lineHeight
-  nightMode.value = s.reader.theme === 'night'
+  theme.value = s.reader.theme
+  fontFamily.value = s.reader.fontFamily
+  contentWidth.value = s.reader.contentWidth
+  paragraphSpacing.value = s.reader.paragraphSpacing
+  paragraphIndent.value = s.reader.paragraphIndent
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
 }
@@ -961,12 +1063,13 @@ async function aiCharacterCard() {
   }
 }
 
-watch([fontSize, lineHeight, nightMode], () => {
-  if (!prefsReady.value) return
-  void window.api.settings.set({
-    reader: { fontSize: fontSize.value, lineHeight: lineHeight.value, theme: nightMode.value ? 'night' : 'paper' },
-  })
-})
+watch(
+  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent],
+  () => {
+    if (!prefsReady.value) return
+    scheduleReaderPrefsSave()
+  },
+)
 
 watch([ttsRate, ttsAutoNext], () => {
   if (!prefsReady.value) return
@@ -1065,6 +1168,7 @@ onUnmounted(() => {
   ttsStop()
   if (scrollTimer) clearTimeout(scrollTimer)
   clearToolHideTimer()
+  void flushReaderPrefsSave()
   unsubDownload?.()
   unsubAiChunk?.()
   unsubAiDone?.()
@@ -1073,7 +1177,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" @mousemove="onReaderPointerMove">
+  <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove">
     <!-- No book selected -->
     <div v-if="!book" class="page placeholder">
       <h2>阅读</h2>
@@ -1101,9 +1205,18 @@ onUnmounted(() => {
         <div v-if="activeToolPanel" class="tool-panel" @click.stop>
           <template v-if="activeToolPanel === 'appearance'">
             <strong>阅读外观</strong>
+            <div class="control-label">主题</div>
+            <div class="option-grid four"><button v-for="item in [{v:'paper',l:'纸白'},{v:'sepia',l:'暖黄'},{v:'gray',l:'柔灰'},{v:'night',l:'夜间'}]" :key="item.v" :class="{ active: theme === item.v }" @click="theme = item.v as ReaderTheme">{{ item.l }}</button></div>
+            <div class="control-label">字体</div>
+            <div class="option-grid"><button v-for="item in [{v:'serif',l:'宋体阅读'},{v:'system',l:'系统黑体'},{v:'mono',l:'等宽'}]" :key="item.v" :class="{ active: fontFamily === item.v }" @click="fontFamily = item.v as ReaderFontFamily">{{ item.l }}</button></div>
             <div class="control-label">字号 {{ fontSize }}</div><n-slider v-model:value="fontSize" :min="12" :max="36" :step="1" />
             <div class="control-label">行距 {{ lineHeight.toFixed(1) }}</div><n-slider v-model:value="lineHeight" :min="1.2" :max="3" :step="0.1" />
-            <div class="control-label"><n-switch v-model:value="nightMode" /> 夜间</div>
+            <div class="control-label">列宽</div>
+            <div class="option-grid"><button v-for="item in [{v:'narrow',l:'窄'},{v:'medium',l:'中'},{v:'wide',l:'宽'}]" :key="item.v" :class="{ active: contentWidth === item.v }" @click="contentWidth = item.v as ReaderContentWidth">{{ item.l }}</button></div>
+            <div class="control-label">段间距</div>
+            <div class="option-grid"><button v-for="item in [{v:'compact',l:'紧凑'},{v:'normal',l:'标准'},{v:'relaxed',l:'宽松'}]" :key="item.v" :class="{ active: paragraphSpacing === item.v }" @click="paragraphSpacing = item.v as ReaderParagraphSpacing">{{ item.l }}</button></div>
+            <div class="control-label"><n-switch v-model:value="paragraphIndent" /> 首行缩进</div>
+            <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
           </template>
           <template v-else-if="activeToolPanel === 'tts'">
             <strong>朗读</strong>
@@ -1703,7 +1816,9 @@ onUnmounted(() => {
   position: absolute;
   top: calc(100% + 8px);
   right: 48px;
-  width: 248px;
+  width: 280px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1718,7 +1833,7 @@ onUnmounted(() => {
   padding: 28px clamp(16px, 5vw, 72px) 20px;
   justify-content: center;
   overflow: hidden;
-  background: var(--reader-bg, transparent);
+  background: var(--reader-outer);
 }
 
 .reader-content {
@@ -1748,6 +1863,23 @@ onUnmounted(() => {
 }
 
 .reader-wrap.immersive-locked .reader-progress-track { opacity: 1; }
+.reader-wrap.night .reader-content { background: var(--reader-paper); color: var(--reader-paper-text); }
+.para { text-indent: var(--paragraph-indent, 2em); margin-bottom: var(--paragraph-spacing, .45em); }
+
+.option-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.option-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.option-grid button {
+  min-height: 30px;
+  padding: 4px 5px;
+  border: 1px solid var(--r-line);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+}
+.option-grid button.active { border-color: var(--active-chapter); background: rgba(127, 127, 127, .14); }
+.option-grid button:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 1px; }
 
 @media (prefers-reduced-motion: reduce) {
   .reader-wrap, .reader-toolbar, .reader-progress-fill { transition: none !important; }
