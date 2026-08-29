@@ -75,7 +75,7 @@ export const AI_BUSY_MESSAGE = '请先停止当前生成'
 
 let nextAiJobId = 0
 
-/** Main-process single slot for every streaming AI request. */
+/** Main-process single slot shared by streaming and non-streaming AI requests. */
 export class AiJobSlot {
   private current: { jobId: string; controller: AbortController; mode: 'stream' | 'exclusive' } | null = null
 
