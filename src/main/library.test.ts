@@ -19,17 +19,23 @@ import {
   listBooks,
   markChapterStatus,
   readChapter,
+  readAiMemory,
+  readAiMemoryCompat,
   readChat,
   readSummaries,
   refreshBookStatus,
   rebuildIndex,
   saveBook,
   setProgress,
+  stableAiMemoryId,
+  markAiMemoryAccuracy,
+  writeAiMemory,
+  writeCharacterCard,
   writeChapterFile,
   writeChapterSummary,
   writeChat,
 } from './library'
-import type { Book, CatalogChapter } from '../shared/types'
+import type { AiMemoryFile, Book, CatalogChapter } from '../shared/types'
 
 function book(partial?: Partial<Book>): Book {
   return {
@@ -471,6 +477,121 @@ describe('setLibraryPath + createBookFromBootstrap', () => {
     const after = await loadBook('d_prog')
     expect(after.chapters[0].status).toBe('ready')
     expect(after.progress?.chapterId).toBe('c0001')
+  })
+})
+
+describe('novel memory v1 storage', () => {
+  let dir: string
+  let memory: AiMemoryFile
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-memory-'))
+    await setLibraryPath(dir)
+    await createBookFromBootstrap({
+      bookId: 'd_memory',
+      title: '记忆测试',
+      author: '',
+      importType: 'download',
+      chapterTitles: ['第一章'],
+    })
+    memory = {
+      version: 1,
+      uptoChapterId: 'c0001',
+      characters: [{
+        id: stableAiMemoryId('character', ' 顾 清 ', 'ev-c0001-p3'),
+        name: '顾清',
+        aliases: ['阿清'],
+        role: '主角',
+        status: '调查账册',
+        summary: '顾家长女。',
+        sources: [{
+          id: 'ev-c0001-p3', chapterId: 'c0001', chapterTitle: '第一章',
+          paragraphIndex: 3, excerpt: `顾清回到旧宅，开始调查父亲失踪前留下的账册。${'旧宅门前的铜环仍覆着青绿色锈迹。'.repeat(5)}`,
+        }],
+        accuracy: 'normal',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }],
+      relations: [],
+      foreshadows: [],
+      events: [],
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('uses stable ids across Unicode and whitespace normalization', () => {
+    expect(stableAiMemoryId('character', ' 顾  清 ', 'ev-c0001-p3'))
+      .toBe(stableAiMemoryId('character', '顾 清', 'ev-c0001-p3'))
+    expect(stableAiMemoryId('event', '顾 清', 'ev-c0001-p3'))
+      .not.toBe(stableAiMemoryId('character', '顾 清', 'ev-c0001-p3'))
+  })
+
+  it('atomically writes and strictly reads memory v1', async () => {
+    await writeAiMemory('d_memory', memory)
+    expect(await readAiMemory('d_memory')).toEqual(memory)
+    await writeFile(join(dir, 'd_memory', 'ai', 'memory.json'), '{broken', 'utf-8')
+    expect(await readAiMemory('d_memory')).toBeNull()
+  })
+
+  it('prefers valid new memory and otherwise falls back to the legacy character card', async () => {
+    await writeCharacterCard('d_memory', {
+      version: 1,
+      characters: [{ name: '旧人物' }],
+      foreshadows: [],
+      raw: '',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+    expect((await readAiMemoryCompat('d_memory') as { characters: Array<{ name: string }> }).characters[0]?.name)
+      .toBe('旧人物')
+    await writeAiMemory('d_memory', memory)
+    const current = await readAiMemoryCompat('d_memory')
+    expect(current).toEqual(memory)
+    await writeFile(join(dir, 'd_memory', 'ai', 'memory.json'), '{}', 'utf-8')
+    expect((await readAiMemoryCompat('d_memory') as { characters: Array<{ name: string }> }).characters[0]?.name)
+      .toBe('旧人物')
+  })
+
+  it('persists review and uncertain accuracy without changing the stable id', async () => {
+    await writeAiMemory('d_memory', memory)
+    const id = memory.characters[0]!.id
+    const review = await markAiMemoryAccuracy('d_memory', 'characters', id, 'review')
+    expect(review.id).toBe(id)
+    expect(review.accuracy).toBe('review')
+    const uncertain = await markAiMemoryAccuracy('d_memory', 'characters', id, 'uncertain')
+    expect(uncertain.accuracy).toBe('uncertain')
+    expect((await readAiMemory('d_memory'))?.characters[0]?.accuracy).toBe('uncertain')
+  })
+
+  it('keeps the prior accuracy when marking fails before the atomic commit', async () => {
+    await writeAiMemory('d_memory', memory)
+    await expect(markAiMemoryAccuracy(
+      'd_memory',
+      'characters',
+      memory.characters[0]!.id,
+      'review',
+      { hooks: { rename: async () => { throw new Error('rename failed') } } },
+    )).rejects.toThrow('rename failed')
+    expect((await readAiMemory('d_memory'))?.characters[0]?.accuracy).toBe('normal')
+  })
+
+  it('preserves the old formal memory when atomic rename fails', async () => {
+    await writeAiMemory('d_memory', memory)
+    const replacement: AiMemoryFile = { ...memory, uptoChapterId: 'c0002' }
+    await expect(writeAiMemory('d_memory', replacement, {
+      hooks: { rename: async () => { throw new Error('rename failed') } },
+    })).rejects.toThrow('rename failed')
+    expect((await readAiMemory('d_memory'))?.uptoChapterId).toBe('c0001')
+    expect((await readdir(join(dir, 'd_memory', 'ai'))).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('rejects malformed memory before replacing the formal file', async () => {
+    await writeAiMemory('d_memory', memory)
+    const malformed = { ...memory, characters: [{ ...memory.characters[0], accuracy: 'wrong' }] } as unknown as AiMemoryFile
+    await expect(writeAiMemory('d_memory', malformed)).rejects.toThrow('小说记忆数据格式无效')
+    expect((await readAiMemory('d_memory'))?.characters[0]?.accuracy).toBe('normal')
   })
 })
 

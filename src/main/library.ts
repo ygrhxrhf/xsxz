@@ -4,6 +4,8 @@ import { basename, dirname, extname, join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import type {
   AiChatFile,
+  AiMemoryBase,
+  AiMemoryFile,
   AiSummaries,
   Book,
   BookListItem,
@@ -634,6 +636,112 @@ export async function writeChat(
   await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
   const data: AiChatFile = { version: 1, messages: messages.slice(-40), updatedAt: now() }
   await atomicWriteText(join(bookDir(bookId), 'ai', 'chat.json'), JSON.stringify(data, null, 2), options)
+}
+
+export type AiMemoryCollection = 'characters' | 'relations' | 'foreshadows' | 'events'
+export type AiMemoryIdKind = 'character' | 'relation' | 'foreshadow' | 'event'
+
+function isAiCitation(value: unknown): boolean {
+  return isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.chapterId === 'string' &&
+    typeof value.chapterTitle === 'string' &&
+    Number.isSafeInteger(value.paragraphIndex) && Number(value.paragraphIndex) >= 0 &&
+    typeof value.excerpt === 'string' &&
+    Array.from(value.excerpt).length >= 80 && Array.from(value.excerpt).length <= 160
+}
+
+function isAiMemoryBase(value: unknown): value is AiMemoryBase {
+  return isRecord(value) &&
+    typeof value.id === 'string' && value.id.length > 0 &&
+    typeof value.summary === 'string' &&
+    Array.isArray(value.sources) && value.sources.length > 0 && value.sources.every(isAiCitation) &&
+    (value.accuracy === 'normal' || value.accuracy === 'review' || value.accuracy === 'uncertain') &&
+    typeof value.updatedAt === 'string'
+}
+
+export function isAiMemoryFile(value: unknown): value is AiMemoryFile {
+  if (!isRecord(value) || value.version !== 1 || typeof value.updatedAt !== 'string') return false
+  if (value.uptoChapterId !== undefined && typeof value.uptoChapterId !== 'string') return false
+  if (!Array.isArray(value.characters) || !value.characters.every((item) =>
+    isAiMemoryBase(item) && typeof item.name === 'string' && Array.isArray(item.aliases) &&
+    item.aliases.every((alias) => typeof alias === 'string') && typeof item.role === 'string' &&
+    typeof item.status === 'string')) return false
+  if (!Array.isArray(value.relations) || !value.relations.every((item) =>
+    isAiMemoryBase(item) && typeof item.from === 'string' && typeof item.to === 'string' &&
+    typeof item.relation === 'string' && typeof item.status === 'string')) return false
+  if (!Array.isArray(value.foreshadows) || !value.foreshadows.every((item) =>
+    isAiMemoryBase(item) && typeof item.desc === 'string' &&
+    (item.status === 'open' || item.status === 'resolved' || item.status === 'uncertain'))) return false
+  if (!Array.isArray(value.events) || !value.events.every((item) =>
+    isAiMemoryBase(item) && typeof item.title === 'string' && Array.isArray(item.participants) &&
+    item.participants.every((participant) => typeof participant === 'string') &&
+    typeof item.result === 'string')) return false
+  const ids = [...value.characters, ...value.relations, ...value.foreshadows, ...value.events]
+    .map((item) => item.id)
+  return new Set(ids).size === ids.length
+}
+
+export function stableAiMemoryId(
+  kind: AiMemoryIdKind,
+  primaryKey: string,
+  firstSourceId: string,
+): string {
+  const normalizedKey = primaryKey.normalize('NFKC').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, ' ')
+  const normalizedSource = firstSourceId.normalize('NFKC').trim()
+  const digest = createHash('sha256')
+    .update(`${kind}\0${normalizedKey}\0${normalizedSource}`)
+    .digest('hex')
+    .slice(0, 16)
+  return `${kind}-${digest}`
+}
+
+export async function readAiMemory(bookId: string): Promise<AiMemoryFile | null> {
+  try {
+    const value: unknown = JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'memory.json'), 'utf-8'))
+    return isAiMemoryFile(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+export async function readAiMemoryCompat(bookId: string): Promise<AiMemoryFile | CharacterCard | null> {
+  const memory = await readAiMemory(bookId)
+  return memory ?? readCharacterCard(bookId)
+}
+
+export async function writeAiMemory(
+  bookId: string,
+  memory: AiMemoryFile,
+  options: AtomicWriteOptions = {},
+): Promise<void> {
+  if (!isAiMemoryFile(memory)) throw new Error('小说记忆数据格式无效')
+  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+  await atomicWriteText(
+    join(bookDir(bookId), 'ai', 'memory.json'),
+    JSON.stringify(memory, null, 2),
+    options,
+  )
+}
+
+export async function markAiMemoryAccuracy(
+  bookId: string,
+  collection: AiMemoryCollection,
+  itemId: string,
+  accuracy: Exclude<AiMemoryBase['accuracy'], 'normal'>,
+  options: AtomicWriteOptions = {},
+): Promise<AiMemoryBase> {
+  if (accuracy !== 'review' && accuracy !== 'uncertain') throw new Error('记忆准确性状态无效')
+  const memory = await readAiMemory(bookId)
+  if (!memory) throw new Error('尚未生成小说记忆')
+  const item = memory[collection].find((candidate) => candidate.id === itemId)
+  if (!item) throw new Error('记忆条目不存在')
+  const updatedAt = now()
+  item.accuracy = accuracy
+  item.updatedAt = updatedAt
+  memory.updatedAt = updatedAt
+  await writeAiMemory(bookId, memory, options)
+  return item
 }
 
 export async function readCharacterCard(bookId: string): Promise<CharacterCard | null> {
