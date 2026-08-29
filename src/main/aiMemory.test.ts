@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { applyAiMemoryExtraction, buildAiMemoryCandidates } from './aiMemory'
+import { isAiMemoryFile } from './library'
 
 function raw(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return { characters: [], relations: [], foreshadows: [], events: [], reviewDecisions: [], ...overrides }
@@ -18,9 +19,18 @@ describe('memory evidence candidates', () => {
     expect(buildAiMemoryCandidates('c0001', '第一章', BODY)).toEqual(candidates)
   })
 
+  it.each([
+    [80, [80]],
+    [160, [160]],
+    [161, [81, 80]],
+    [320, [160, 160]],
+    [321, [107, 107, 107]],
+  ])('balances %i Unicode characters without invalid chunk lengths', (count, expected) => {
+    expect(buildAiMemoryCandidates('c-edge', '边界章', '😀'.repeat(count))
+      .map((item) => Array.from(item.excerpt).length)).toEqual(expected)
+  })
+
   it('counts surrogate pairs as one character and omits chapters too short for a valid citation', () => {
-    const candidates = buildAiMemoryCandidates('c0002', '表情章', '😀'.repeat(161))
-    expect(candidates.map((item) => Array.from(item.excerpt).length)).toEqual([81, 80])
     expect(buildAiMemoryCandidates('c0003', '短章', '短'.repeat(79))).toEqual([])
   })
 })
@@ -44,6 +54,7 @@ describe('strict memory extraction whitelist and merge', () => {
     expect(result.memory.events[0]?.sources.map((item) => item.id)).toEqual([first.id, second.id])
     expect(result.memory.events[0]?.sources[0]).not.toHaveProperty('text')
     expect(result.memory.uptoChapterId).toBe('c0001')
+    expect(isAiMemoryFile(result.memory)).toBe(true)
     expect(result.changedItems).toBe(4)
   })
 
