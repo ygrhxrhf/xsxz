@@ -5,6 +5,7 @@ import type {
   AiDoneEvent,
   AiJobStart,
   AiProvider,
+  AiRequestStage,
   AiUsage,
   ChapterStatus,
 } from '../shared/types'
@@ -130,6 +131,66 @@ export class AiPendingSaveStore {
       this.inFlight.delete(saveToken)
     }
   }
+}
+
+export type AiSuccessDoneEvent = Extract<AiDoneEvent, { ok: true }>
+
+export interface AiSaveFinalizeOptions {
+  signal?: AbortSignal
+  stoppedEvent?: AiSuccessDoneEvent
+  saveStopped?: () => Promise<void>
+}
+
+export async function finalizeAiSave(
+  store: AiPendingSaveStore,
+  event: AiSuccessDoneEvent,
+  save: () => Promise<void>,
+  options: AiSaveFinalizeOptions = {},
+): Promise<AiSuccessDoneEvent> {
+  const savedOrToken = async (
+    targetEvent: AiSuccessDoneEvent,
+    targetSave: () => Promise<void>,
+  ): Promise<AiSuccessDoneEvent> => {
+    try {
+      await targetSave()
+      return targetEvent
+    } catch {
+      return { ...targetEvent, saveToken: store.register(targetSave) }
+    }
+  }
+  const finishStopped = (): Promise<AiSuccessDoneEvent> | undefined => {
+    if (!options.stoppedEvent) return undefined
+    return options.saveStopped
+      ? savedOrToken(options.stoppedEvent, options.saveStopped)
+      : Promise.resolve(options.stoppedEvent)
+  }
+  if (options.signal?.aborted) {
+    const stopped = finishStopped()
+    if (stopped) return stopped
+  }
+  try {
+    await save()
+    return event
+  } catch {
+    if (options.signal?.aborted) {
+      const stopped = finishStopped()
+      if (stopped) return stopped
+    }
+    return { ...event, saveToken: store.register(save) }
+  }
+}
+
+export async function runAiSaveStage(
+  store: AiPendingSaveStore,
+  jobId: string,
+  event: AiSuccessDoneEvent,
+  save: () => Promise<void>,
+  options: AiSaveFinalizeOptions,
+  emitStage: (jobId: string, stage: AiRequestStage) => void,
+  emitDone: (event: AiSuccessDoneEvent) => void,
+): Promise<void> {
+  emitStage(jobId, 'saving')
+  emitDone(await finalizeAiSave(store, event, save, options))
 }
 
 export function formatAiRequestError(status: number, bodyText = ''): string {

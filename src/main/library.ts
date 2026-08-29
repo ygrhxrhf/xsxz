@@ -1,7 +1,7 @@
-import { mkdir, readFile, writeFile, readdir, rm, rename, stat, cp } from 'node:fs/promises'
+import { mkdir, open, readFile, writeFile, readdir, rm, rename, stat, cp } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
-import { basename, extname, join } from 'node:path'
-import { createHash } from 'node:crypto'
+import { basename, dirname, extname, join } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
 import type {
   AiChatFile,
   AiSummaries,
@@ -23,6 +23,38 @@ import { canonicalizeUrl } from '../shared/urlHash'
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+export interface AtomicWriteOptions {
+  signal?: AbortSignal
+  /** 仅供原子提交故障与取消测试注入；生产调用不传。 */
+  hooks?: {
+    beforeCommit?: () => void | Promise<void>
+    rename?: (source: string, destination: string) => Promise<void>
+  }
+}
+
+export async function atomicWriteText(
+  filePath: string,
+  content: string,
+  options: AtomicWriteOptions = {},
+): Promise<void> {
+  const temporaryPath = join(dirname(filePath), `.${basename(filePath)}.${randomUUID()}.tmp`)
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    handle = await open(temporaryPath, 'wx', 0o600)
+    await handle.writeFile(content, { encoding: 'utf-8' })
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await options.hooks?.beforeCommit?.()
+    if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    await (options.hooks?.rename ?? rename)(temporaryPath, filePath)
+  } catch (error: unknown) {
+    await handle?.close().catch(() => {})
+    await rm(temporaryPath, { force: true }).catch(() => {})
+    throw error
+  }
+}
 
 let currentLibraryPath = DEFAULT_LIBRARY_PATH
 
@@ -552,21 +584,31 @@ export async function readSummaries(bookId: string): Promise<AiSummaries> {
   return migrateSummariesV1(bookId, byChapter)
 }
 
-export async function writeChapterSummary(bookId: string, chapterId: string, text: string): Promise<void> {
+export async function writeChapterSummary(
+  bookId: string,
+  chapterId: string,
+  text: string,
+  options: AtomicWriteOptions = {},
+): Promise<void> {
   await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
   const data = await readSummaries(bookId)
   data.byChapter[chapterId] = text
   data.updatedAt = now()
-  await writeFile(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), 'utf-8')
+  await atomicWriteText(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), options)
 }
 
-export async function writeStorySoFar(bookId: string, uptoChapterId: string, text: string): Promise<void> {
+export async function writeStorySoFar(
+  bookId: string,
+  uptoChapterId: string,
+  text: string,
+  options: AtomicWriteOptions = {},
+): Promise<void> {
   await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
   const data = await readSummaries(bookId)
   const updatedAt = now()
   data.storySoFar = { uptoChapterId, text, updatedAt }
   data.updatedAt = updatedAt
-  await writeFile(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), 'utf-8')
+  await atomicWriteText(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), options)
 }
 
 export async function readChat(bookId: string): Promise<AiChatFile> {
@@ -584,10 +626,14 @@ export async function readChat(bookId: string): Promise<AiChatFile> {
   }
 }
 
-export async function writeChat(bookId: string, messages: AiChatFile['messages']): Promise<void> {
+export async function writeChat(
+  bookId: string,
+  messages: AiChatFile['messages'],
+  options: AtomicWriteOptions = {},
+): Promise<void> {
   await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
   const data: AiChatFile = { version: 1, messages: messages.slice(-40), updatedAt: now() }
-  await writeFile(join(bookDir(bookId), 'ai', 'chat.json'), JSON.stringify(data, null, 2), 'utf-8')
+  await atomicWriteText(join(bookDir(bookId), 'ai', 'chat.json'), JSON.stringify(data, null, 2), options)
 }
 
 export async function readCharacterCard(bookId: string): Promise<CharacterCard | null> {
@@ -598,12 +644,16 @@ export async function readCharacterCard(bookId: string): Promise<CharacterCard |
   }
 }
 
-export async function writeCharacterCard(bookId: string, card: CharacterCard): Promise<void> {
+export async function writeCharacterCard(
+  bookId: string,
+  card: CharacterCard,
+  options: AtomicWriteOptions = {},
+): Promise<void> {
   await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
-  await writeFile(
+  await atomicWriteText(
     join(bookDir(bookId), 'ai', 'characters.json'),
     JSON.stringify({ ...card, version: 1, updatedAt: now() }, null, 2),
-    'utf-8',
+    options,
   )
 }
 

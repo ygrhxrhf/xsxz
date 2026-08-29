@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiDoneEvent, AiRequestStage, BrowseState, SiteRule } from '../shared/types'
+import type { AiRequestStage, BrowseState, SiteRule } from '../shared/types'
 import {
   listBooks,
   getBook,
@@ -46,8 +46,10 @@ import {
   chatAboutBook,
   clampSummarizeChapters,
   generateCharacterCard,
+  runAiSaveStage,
   parseCharacterCard,
   testConnection,
+  type AiSuccessDoneEvent,
 } from './ai'
 
 const PARTITION = 'persist:novel'
@@ -60,8 +62,6 @@ let lastBounds = { x: SIDEBAR_WIDTH, y: 52, width: 900, height: 700 }
 const aiJobSlot = new AiJobSlot()
 const aiPendingSaves = new AiPendingSaveStore()
 
-type AiSuccessDoneEvent = Extract<AiDoneEvent, { ok: true }>
-
 function sendAiStage(jobId: string, stage: AiRequestStage, detail?: string): void {
   mainWindow?.webContents.send('ai.stage', { jobId, stage, ...(detail ? { detail } : {}) })
 }
@@ -70,15 +70,21 @@ async function saveAiDone(
   jobId: string,
   event: AiSuccessDoneEvent,
   save: () => Promise<void>,
+  options: {
+    signal?: AbortSignal
+    stoppedEvent?: AiSuccessDoneEvent
+    saveStopped?: () => Promise<void>
+  } = {},
 ): Promise<void> {
-  sendAiStage(jobId, 'saving')
-  try {
-    await save()
-    mainWindow?.webContents.send('ai.done', event)
-  } catch {
-    const saveToken = aiPendingSaves.register(save)
-    mainWindow?.webContents.send('ai.done', { ...event, saveToken })
-  }
+  await runAiSaveStage(
+    aiPendingSaves,
+    jobId,
+    event,
+    save,
+    options,
+    sendAiStage,
+    (done) => mainWindow?.webContents.send('ai.done', done),
+  )
 }
 
 function novelSession() {
@@ -519,7 +525,8 @@ function registerIpc(): void {
           await saveAiDone(
             jobId,
             aiCompletionDoneEvent(jobId, result, text),
-            () => writeStorySoFar(bookId, book.chapters[cutoff]!.id, text),
+            () => writeStorySoFar(bookId, book.chapters[cutoff]!.id, text, { signal }),
+            { signal, stoppedEvent: aiStoppedDoneEvent(jobId, partial) },
           )
         } catch (e: unknown) {
           if (signal.aborted) {
@@ -569,7 +576,8 @@ function registerIpc(): void {
           await saveAiDone(
             jobId,
             aiCompletionDoneEvent(jobId, result),
-            () => writeChapterSummary(bookId, chapterId, result.text),
+            () => writeChapterSummary(bookId, chapterId, result.text, { signal }),
+            { signal, stoppedEvent: aiStoppedDoneEvent(jobId, partial) },
           )
         } catch (e: unknown) {
           if (signal.aborted) {
@@ -744,7 +752,11 @@ function registerIpc(): void {
         try {
           await writeChat(args.bookId, persistedMessages)
         } catch {
-          mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))
+          } else {
+            mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
+          }
           return
         }
 
@@ -766,10 +778,16 @@ function registerIpc(): void {
               mainWindow?.webContents.send('ai.chunk', { jobId, delta })
             },
           )
+          const completedMessages = [...persistedMessages, { role: 'assistant' as const, content: result.text }]
           await saveAiDone(
             jobId,
             aiCompletionDoneEvent(jobId, result),
-            () => writeChat(args.bookId, [...persistedMessages, { role: 'assistant', content: result.text }]),
+            () => writeChat(args.bookId, completedMessages, { signal }),
+            {
+              signal,
+              stoppedEvent: aiStoppedDoneEvent(jobId, partial),
+              saveStopped: () => writeChat(args.bookId, completedMessages),
+            },
           )
         } catch (e: unknown) {
           if (signal.aborted) {

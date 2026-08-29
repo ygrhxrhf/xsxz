@@ -3,6 +3,8 @@ import {
   AiPendingSaveStore,
   aiCompletionDoneEvent,
   aiStoppedDoneEvent,
+  finalizeAiSave,
+  runAiSaveStage,
   streamAiTaskCompletion,
 } from './ai'
 
@@ -64,6 +66,88 @@ describe('AI done event helpers', () => {
     })
     expect(deltas).toEqual(['部分'])
     expect(result.text).not.toContain('secret')
+  })
+})
+
+describe('AI save finalization', () => {
+  it('turns a pre-commit story cancellation into one stopped result without saving', async () => {
+    const store = new AiPendingSaveStore()
+    const controller = new AbortController()
+    controller.abort()
+    const save = vi.fn(async () => {})
+    const done = await finalizeAiSave(
+      store,
+      { jobId: 'story', ok: true, text: '完整' },
+      save,
+      { signal: controller.signal, stoppedEvent: aiStoppedDoneEvent('story', '部分') },
+    )
+    expect(done).toEqual({ jobId: 'story', ok: true, text: '部分', stopped: true })
+    expect(save).not.toHaveBeenCalled()
+    expect(store.size).toBe(0)
+  })
+
+  it('saves chat partial after cancellation during the atomic commit preparation', async () => {
+    const store = new AiPendingSaveStore()
+    const controller = new AbortController()
+    const primarySave = vi.fn(async () => {
+      controller.abort()
+      throw new DOMException('Aborted', 'AbortError')
+    })
+    const stoppedSave = vi.fn(async () => {})
+    const done = await finalizeAiSave(
+      store,
+      { jobId: 'chat', ok: true, text: '完整' },
+      primarySave,
+      {
+        signal: controller.signal,
+        stoppedEvent: aiStoppedDoneEvent('chat', '已有部分'),
+        saveStopped: stoppedSave,
+      },
+    )
+    expect(done).toEqual({ jobId: 'chat', ok: true, text: '已有部分', stopped: true })
+    expect(primarySave).toHaveBeenCalledTimes(1)
+    expect(stoppedSave).toHaveBeenCalledTimes(1)
+  })
+
+  it('emits saving then exactly one stopped done when cancellation wins before commit', async () => {
+    const store = new AiPendingSaveStore()
+    const controller = new AbortController()
+    controller.abort()
+    const events: unknown[] = []
+    await runAiSaveStage(
+      store,
+      'story',
+      { jobId: 'story', ok: true, text: '完整' },
+      async () => { throw new Error('must not save') },
+      { signal: controller.signal, stoppedEvent: aiStoppedDoneEvent('story', '部分') },
+      (jobId, stage) => events.push({ jobId, stage }),
+      (done) => events.push(done),
+    )
+    expect(events).toEqual([
+      { jobId: 'story', stage: 'saving' },
+      { jobId: 'story', ok: true, text: '部分', stopped: true },
+    ])
+  })
+
+  it('keeps a stopped chat result and save token when partial persistence fails', async () => {
+    const store = new AiPendingSaveStore()
+    const controller = new AbortController()
+    controller.abort()
+    const stoppedSave = vi.fn(async () => { throw new Error('/private/path') })
+    const done = await finalizeAiSave(
+      store,
+      { jobId: 'chat', ok: true, text: '完整' },
+      async () => {},
+      {
+        signal: controller.signal,
+        stoppedEvent: aiStoppedDoneEvent('chat', '已有部分'),
+        saveStopped: stoppedSave,
+      },
+    )
+    expect(done).toMatchObject({ jobId: 'chat', ok: true, text: '已有部分', stopped: true })
+    expect(done.saveToken).toMatch(/^save-/)
+    expect(JSON.stringify(done)).not.toContain('/private/path')
+    expect(store.size).toBe(1)
   })
 })
 

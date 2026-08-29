@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   assertImportable,
+  atomicWriteText,
   bookIdFromUrl,
   deleteBook,
   listTrash,
@@ -473,6 +474,40 @@ describe('setLibraryPath + createBookFromBootstrap', () => {
   })
 })
 
+describe('atomic AI file writes', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-atomic-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('preserves the old file and cleans the temporary file when rename fails', async () => {
+    const target = join(dir, 'state.json')
+    await writeFile(target, 'old-content', 'utf-8')
+    await expect(atomicWriteText(target, 'new-content', {
+      hooks: { rename: async () => { throw new Error('rename failed') } },
+    })).rejects.toThrow(/rename failed/)
+    expect(await readFile(target, 'utf-8')).toBe('old-content')
+    expect((await readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('checks cancellation after fsync and before the atomic rename commit', async () => {
+    const target = join(dir, 'state.json')
+    await writeFile(target, 'old-content', 'utf-8')
+    const controller = new AbortController()
+    await expect(atomicWriteText(target, 'new-content', {
+      signal: controller.signal,
+      hooks: { beforeCommit: () => controller.abort() },
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await readFile(target, 'utf-8')).toBe('old-content')
+    expect((await readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+})
+
 describe('summaries v2 migration', () => {
   let dir: string
 
@@ -527,6 +562,16 @@ describe('summaries v2 migration', () => {
 
     await expect(readSummaries('d_summary')).resolves.toMatchObject({ version: 2, byChapter: {} })
   })
+
+  it('keeps the previous summaries file intact when the atomic commit fails', async () => {
+    const file = join(dir, 'd_summary', 'ai', 'summaries.json')
+    const previous = JSON.stringify({ version: 2, byChapter: { c0001: '旧摘要' }, updatedAt: 'old' })
+    await writeFile(file, previous, 'utf-8')
+    await expect(writeChapterSummary('d_summary', 'c0002', '新摘要', {
+      hooks: { rename: async () => { throw new Error('disk commit failed') } },
+    })).rejects.toThrow(/disk commit failed/)
+    expect(await readFile(file, 'utf-8')).toBe(previous)
+  })
 })
 
 describe('chat storage', () => {
@@ -542,6 +587,16 @@ describe('chat storage', () => {
     expect(saved.messages[0]?.content).toBe('m1')
     await writeFile(join(dir, 'd_chat', 'ai', 'chat.json'), '{ bad', 'utf-8')
     await expect(readChat('d_chat')).resolves.toMatchObject({ version: 1, messages: [] })
+  })
+
+  it('keeps the previous chat file intact when the atomic commit fails', async () => {
+    const file = join(dir, 'd_chat', 'ai', 'chat.json')
+    const previous = JSON.stringify({ version: 1, messages: [{ role: 'user', content: '旧消息' }], updatedAt: 'old' })
+    await writeFile(file, previous, 'utf-8')
+    await expect(writeChat('d_chat', [{ role: 'assistant', content: '新消息' }], {
+      hooks: { rename: async () => { throw new Error('disk commit failed') } },
+    })).rejects.toThrow(/disk commit failed/)
+    expect(await readFile(file, 'utf-8')).toBe(previous)
   })
 })
 
