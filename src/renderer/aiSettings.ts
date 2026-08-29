@@ -15,11 +15,7 @@ export function normalizeAiServiceOrigin(value: string): string | null {
 }
 
 export function isOfficialDeepSeekUrl(value: string): boolean {
-  try {
-    return new URL(value.trim()).hostname.toLowerCase() === 'api.deepseek.com'
-  } catch {
-    return false
-  }
+  return normalizeAiServiceOrigin(value) === 'https://api.deepseek.com'
 }
 
 export function inferAiProvider(baseUrl: string, storedProvider: AiProvider | undefined): AiProvider {

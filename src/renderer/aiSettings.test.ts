@@ -27,6 +27,8 @@ describe('AI settings origin safety', () => {
   it('treats legacy custom URLs as custom even when old prefs defaulted to deepseek', () => {
     expect(inferAiProvider('https://api.deepseek.com/v1', 'deepseek')).toBe('deepseek')
     expect(inferAiProvider('https://legacy.example/v1', 'deepseek')).toBe('custom')
+    expect(inferAiProvider('http://api.deepseek.com/v1', 'deepseek')).toBe('custom')
+    expect(inferAiProvider('https://api.deepseek.com:8443/v1', 'deepseek')).toBe('custom')
     expect(inferAiProvider('https://api.deepseek.com/v1', 'custom')).toBe('custom')
   })
 

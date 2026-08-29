@@ -122,6 +122,20 @@ describe('task-aware request bodies', () => {
     }, messages, { task: 'memory' })
   })
 
+  it.each([
+    'http://api.deepseek.com/v1',
+    'https://api.deepseek.com:8443/v1',
+  ])('does not send DeepSeek extensions to a non-official protocol or port: %s', async (baseUrl) => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      expect(body).not.toHaveProperty('reasoning_effort')
+      expect(body).not.toHaveProperty('response_format')
+      expect(body).not.toHaveProperty('temperature')
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"events":[]}' }, finish_reason: 'stop' }] }), { status: 200 })
+    }))
+    await runAiTaskCompletion({ ...deepseek, baseUrl }, messages, { task: 'memory' })
+  })
+
   it('preserves legacy character-card raw fallback and thinking preference', async () => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>

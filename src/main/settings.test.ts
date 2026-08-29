@@ -103,6 +103,8 @@ describe('AI endpoint trust guard', () => {
   it('allows official DeepSeek but blocks untrusted custom endpoints and malformed URLs', () => {
     expect(() => assertTrustedAiEndpoint('https://api.deepseek.com/v1', DEFAULT_AI_PREFS)).not.toThrow()
     expect(() => assertTrustedAiEndpoint('https://custom.example/v1', DEFAULT_AI_PREFS)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
+    expect(() => assertTrustedAiEndpoint('http://api.deepseek.com/v1', DEFAULT_AI_PREFS)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
+    expect(() => assertTrustedAiEndpoint('https://api.deepseek.com:8443/v1', DEFAULT_AI_PREFS)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
     expect(() => assertTrustedAiEndpoint('not a URL', DEFAULT_AI_PREFS)).toThrow(AI_CUSTOM_SERVICE_NOTICE)
   })
 

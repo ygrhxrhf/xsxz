@@ -262,8 +262,8 @@ export function getAiTaskPolicy(
 
 function resolveProvider(config: AiConfig): AiProvider {
   try {
-    const officialHost = new URL(config.baseUrl).hostname.toLowerCase() === 'api.deepseek.com'
-    return officialHost && config.provider !== 'custom' ? 'deepseek' : 'custom'
+    const officialOrigin = new URL(config.baseUrl).origin === 'https://api.deepseek.com'
+    return officialOrigin && config.provider !== 'custom' ? 'deepseek' : 'custom'
   } catch {
     return 'custom'
   }

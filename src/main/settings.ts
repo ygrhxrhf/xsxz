@@ -81,7 +81,7 @@ export const AI_CUSTOM_SERVICE_NOTICE = 'API Key 和你主动选择的正文内�
 export function assertTrustedAiEndpoint(baseUrl: string, ai: AiPrefs): void {
   const origin = normalizeCustomOrigin(baseUrl)
   if (!origin) throw new Error(AI_CUSTOM_SERVICE_NOTICE)
-  const officialDeepSeek = new URL(origin).hostname.toLowerCase() === 'api.deepseek.com'
+  const officialDeepSeek = origin === 'https://api.deepseek.com'
   const usesCustomTransport = ai.provider === 'custom' || !officialDeepSeek
   if (usesCustomTransport && !ai.trustedCustomOrigins.includes(origin)) {
     throw new Error(AI_CUSTOM_SERVICE_NOTICE)
