@@ -76,6 +76,20 @@ function emptyRaw(): Record<string, unknown> {
   return { characters: [], relations: [], foreshadows: [], events: [], reviewDecisions: [] }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function filterReviewDecisions(raw: unknown, reviewItemIds: ReadonlySet<string>): unknown {
+  if (!reviewItemIds.size || !isRecord(raw) || !Array.isArray(raw.reviewDecisions)) return raw
+  return {
+    ...raw,
+    reviewDecisions: raw.reviewDecisions.filter((decision) =>
+      isRecord(decision) && typeof decision.itemId === 'string' &&
+      typeof decision.confirmed === 'boolean' && reviewItemIds.has(decision.itemId.trim())),
+  }
+}
+
 function promptText(
   bookTitle: string,
   instruction: string,
@@ -180,7 +194,7 @@ export async function executeMemoryOrchestration(
   let reviewsPending = options.includeReviews === true
   let processedChapters = 0
 
-  const batches = chapterBatches.length ? chapterBatches : [[]]
+  const batches = chapterBatches
   for (const batch of batches) {
     if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const candidates = batch.flatMap((chapter) =>
@@ -190,7 +204,8 @@ export async function executeMemoryOrchestration(
     for (const request of requests) {
       if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       const raw = await complete(request, options.signal)
-      const applied = applyAiMemoryExtraction(memory, raw, request.candidates, {
+      const trustedRaw = filterReviewDecisions(raw, request.reviewItemIds)
+      const applied = applyAiMemoryExtraction(memory, trustedRaw, request.candidates, {
         reviewItemIds: request.reviewItemIds,
         updatedAt,
       })
