@@ -140,6 +140,9 @@ const selPopupX = ref(0)
 const selPopupY = ref(0)
 const showSelPopup = ref(false)
 const selectedExcerpt = ref('')
+const selectedRange = ref<{ start: number; end: number; text: string } | null>(null)
+const showDirectNote = ref(false)
+const directNoteDraft = ref('')
 const restoringChat = ref(false)
 const editingNoteId = ref('')
 const noteDraft = ref('')
@@ -252,17 +255,69 @@ function onContentMouseup(e: MouseEvent) {
     if (!sel) {
       showSelPopup.value = false
       selectedExcerpt.value = ''
+      selectedRange.value = null
       return
     }
+    selectedRange.value = sel
     selectedExcerpt.value = sel.text.trim()
-    selPopupX.value = Math.min(window.innerWidth - 260, Math.max(8, e.clientX - 90))
+    selPopupX.value = Math.max(8, Math.min(window.innerWidth - 360, e.clientX - 120))
     selPopupY.value = Math.min(window.innerHeight - 60, e.clientY + 12)
     showSelPopup.value = true
   }, 0)
 }
 
+function closeSelectionTools(clearBrowserSelection = true) {
+  showSelPopup.value = false
+  showDirectNote.value = false
+  directNoteDraft.value = ''
+  selectedExcerpt.value = ''
+  selectedRange.value = null
+  if (clearBrowserSelection) window.getSelection()?.removeAllRanges()
+}
+
+async function copySelectedText() {
+  const excerpt = selectedExcerpt.value
+  if (!excerpt) return
+  try {
+    await navigator.clipboard.writeText(excerpt)
+    message.success('已复制')
+    closeSelectionTools()
+  } catch {
+    message.error('复制失败，请重试')
+  }
+}
+
+function openDirectNote() {
+  if (!selectedRange.value) return
+  showSelPopup.value = false
+  showDirectNote.value = true
+  directNoteDraft.value = ''
+}
+
+async function saveDirectNote() {
+  const selection = selectedRange.value
+  const note = directNoteDraft.value.trim()
+  if (!selection || !note || !book.value || !currentChapter.value) return
+  const res = await window.api.annotations.add({
+    bookId: book.value.id,
+    chapterId: currentChapter.value.id,
+    kind: 'highlight',
+    start: selection.start,
+    end: selection.end,
+    excerpt: selection.text,
+    note,
+  })
+  if (res.ok) {
+    annotations.value.push(res.item)
+    message.success('备注已保存')
+    closeSelectionTools()
+  } else {
+    message.error(res.message || '保存失败')
+  }
+}
+
 async function addHighlight() {
-  const sel = selectionOffsets()
+  const sel = selectedRange.value ?? selectionOffsets()
   showSelPopup.value = false
   if (!sel || !book.value || !currentChapter.value) return
   const res = await window.api.annotations.add({
@@ -279,8 +334,7 @@ async function addHighlight() {
   } else {
     message.error(res.message || '划线失败')
   }
-  window.getSelection()?.removeAllRanges()
-  selectedExcerpt.value = ''
+  closeSelectionTools()
 }
 
 async function askSelectedText() {
@@ -305,8 +359,7 @@ async function askSelectedText() {
   if (history.ok) chatMessages.value = history.messages
   restoringChat.value = false
   chatInput.value = `这段话是什么意思？结合剧情解释一下。\n\n「${excerpt}」`
-  selectedExcerpt.value = ''
-  window.getSelection()?.removeAllRanges()
+  closeSelectionTools()
   await sendChat()
 }
 
@@ -379,6 +432,12 @@ async function saveNote(a: Annotation) {
   editingNoteId.value = ''
 }
 
+function deleteConfirmText(annotation: Annotation): string {
+  if (annotation.kind === 'bookmark') return '删除这条书签？删除后无法恢复。'
+  if (annotation.note) return '删除这条划线与备注？删除后无法恢复。'
+  return '删除这条划线？删除后无法恢复。'
+}
+
 async function deleteAnnotation(a: Annotation) {
   if (!book.value) return
   const res = await window.api.annotations.remove(book.value.id, a.id)
@@ -443,7 +502,7 @@ function anyDrawerOpen() {
 }
 
 function selectionOpen() {
-  return showSelPopup.value || Boolean(selectedExcerpt.value)
+  return showSelPopup.value || showDirectNote.value || Boolean(selectedExcerpt.value)
 }
 
 function clearToolHideTimer() {
@@ -531,8 +590,11 @@ function closeReaderOverlays() {
   showMarks.value = false
   showRecap.value = false
   activeToolPanel.value = null
-  showSelPopup.value = false
-  selectedExcerpt.value = ''
+  closeSelectionTools()
+}
+
+function onReaderResize() {
+  if (selectionOpen()) closeSelectionTools()
 }
 
 function pageByScreen(direction: 1 | -1) {
@@ -556,10 +618,9 @@ function onReaderKeydown(e: KeyboardEvent) {
     revealTools(immersiveMode.value === 'locked')
     return
   }
-  if (!isTextEntry && e.key === 'Escape' && selectionOpen()) {
+  if (e.key === 'Escape' && selectionOpen()) {
     e.preventDefault()
-    showSelPopup.value = false
-    selectedExcerpt.value = ''
+    closeSelectionTools()
     revealTools(immersiveMode.value === 'locked')
     return
   }
@@ -699,6 +760,7 @@ async function loadBook(bookId: string) {
 
 async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
   if (!book.value) return
+  closeSelectionTools()
   ttsStop()
   if (currentChapter.value && currentChapter.value.id !== ch.id) saveProgress()
   chapterLoading.value = true
@@ -754,6 +816,7 @@ function saveProgress() {
 }
 
 function onScroll() {
+  if (selectionOpen()) closeSelectionTools()
   const el = contentRef.value
   if (el) scrollRatioView.value = chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight)
   if (scrollTimer) clearTimeout(scrollTimer)
@@ -1005,8 +1068,7 @@ async function translateSelectedText() {
   aiResultTitle.value = '翻译'
   aiResult.value = ''
   showAiResult.value = true
-  selectedExcerpt.value = ''
-  window.getSelection()?.removeAllRanges()
+  closeSelectionTools()
 }
 
 function stopTranslate() {
@@ -1123,6 +1185,7 @@ watch(
 
 onMounted(async () => {
   window.addEventListener('keydown', onReaderKeydown)
+  window.addEventListener('resize', onReaderResize)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => {
     if (jobId === recapJobId.value) recapText.value += delta
     if (jobId === translateJobId.value) aiResult.value += delta
@@ -1187,6 +1250,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onReaderKeydown)
+  window.removeEventListener('resize', onReaderResize)
   ttsStop()
   if (scrollTimer) clearTimeout(scrollTimer)
   clearToolHideTimer()
@@ -1388,18 +1452,31 @@ onUnmounted(() => {
         class="sel-popup"
         :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }"
       >
+        <n-button size="tiny" @click="copySelectedText">复制</n-button>
         <n-button size="tiny" type="primary" @click="addHighlight">划线</n-button>
-        <n-button size="tiny" @click="askSelectedText">问这段</n-button>
+        <n-button size="tiny" @click="openDirectNote">备注</n-button>
         <n-button size="tiny" @click="translateSelectedText">翻译</n-button>
-        <n-button size="tiny" @click="showSelPopup = false; selectedExcerpt = ''">取消</n-button>
+        <n-button size="tiny" @click="askSelectedText">问 AI</n-button>
+      </div>
+
+      <div v-if="showDirectNote" class="direct-note-editor" :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }">
+        <strong>添加备注</strong>
+        <div class="direct-note-excerpt">{{ selectedExcerpt }}</div>
+        <n-input v-model:value="directNoteDraft" type="textarea" :rows="3" placeholder="写下对这段文字的备注…" autofocus />
+        <n-space justify="end">
+          <n-button size="small" @click="closeSelectionTools()">取消</n-button>
+          <n-button size="small" type="primary" :disabled="!directNoteDraft.trim()" @click="saveDirectNote">保存备注</n-button>
+        </n-space>
       </div>
 
       <!-- Marks drawer -->
       <n-drawer v-model:show="showMarks" placement="left" :width="340">
         <n-drawer-content title="标记" closable>
-          <n-button block :type="chapterBookmark ? 'warning' : 'primary'" :disabled="!currentChapter" style="margin-bottom:12px" @click="toggleBookmark">
-            {{ chapterBookmark ? '移除本章书签' : '给本章加书签' }}
-          </n-button>
+          <n-popconfirm v-if="chapterBookmark" positive-text="删除" negative-text="取消" @positive-click="toggleBookmark">
+            删除这条书签？删除后无法恢复。
+            <template #trigger><n-button block type="warning" style="margin-bottom:12px">移除本章书签</n-button></template>
+          </n-popconfirm>
+          <n-button v-else block type="primary" :disabled="!currentChapter" style="margin-bottom:12px" @click="toggleBookmark">给本章加书签</n-button>
           <div v-if="!sortedMarks.length" class="control-label" style="text-align:center;padding:24px 0">
             还没有标记。选中正文可添加划线或备注。
           </div>
@@ -1416,7 +1493,10 @@ onUnmounted(() => {
               <div v-if="a.note && editingNoteId !== a.id" class="mark-note" @click="jumpToAnnotation(a)">备注：{{ a.note }}</div>
               <div class="mark-actions">
                 <n-button size="tiny" quaternary @click.stop="editingNoteId = a.id; noteDraft = a.note ?? ''">备注</n-button>
-                <n-button size="tiny" quaternary type="error" @click.stop="deleteAnnotation(a)">删除</n-button>
+                <n-popconfirm positive-text="删除" negative-text="取消" @positive-click="deleteAnnotation(a)">
+                  {{ deleteConfirmText(a) }}
+                  <template #trigger><n-button size="tiny" quaternary type="error" @click.stop>删除</n-button></template>
+                </n-popconfirm>
               </div>
               <div v-if="editingNoteId === a.id" class="mark-note-edit">
                 <n-input v-model:value="noteDraft" type="textarea" :rows="2" placeholder="写点备注…" />
@@ -1613,6 +1693,30 @@ onUnmounted(() => {
   border-radius: 10px;
   padding: 6px 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5), var(--popover-ring);
+}
+
+.direct-note-editor {
+  position: fixed;
+  z-index: 1001;
+  width: min(340px, calc(100vw - 16px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--r-line);
+  border-radius: 10px;
+  background: var(--popover-bg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .28);
+}
+.direct-note-excerpt {
+  max-height: 72px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, .1);
+  color: var(--r-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .mark-list {
