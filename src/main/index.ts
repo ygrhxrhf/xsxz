@@ -1006,6 +1006,13 @@ function registerIpc(): void {
               uptoChapterId: result.uptoChapterId,
             },
           ]
+          const stoppedMessages: import('../shared/types').AiEvidenceChatMessage[] = [
+            ...persistedMessages,
+            {
+              role: 'assistant', content: result.text, citations: result.citations,
+              uptoChapterId: result.uptoChapterId, stopped: true,
+            },
+          ]
           const retrySave = () => writeChat(args.bookId, completedMessages)
           await saveAiDone(jobId, {
             jobId, ok: true, text: result.text, usage: result.usage,
@@ -1013,7 +1020,11 @@ function registerIpc(): void {
             truncated: result.kind === 'answer' ? result.truncated : false,
           }, () => writeChat(args.bookId, completedMessages, { signal }), {
             signal,
-            stoppedEvent: aiStoppedDoneEvent(jobId, ''),
+            stoppedEvent: {
+              jobId, ok: true, text: result.text, stopped: true,
+              citations: result.citations, uptoChapterId: result.uptoChapterId,
+            },
+            saveStopped: () => writeChat(args.bookId, stoppedMessages),
             retrySave,
           })
         } catch (e: unknown) {
