@@ -43,7 +43,6 @@ import {
   aiCompletionDoneEvent,
   aiStoppedDoneEvent,
   buildBookChatMessages,
-  buildStorySoFarPrompt,
   buildTranslatePrompt,
   cleanChapterBody,
   planChapterSummaryRequest,
@@ -63,6 +62,7 @@ import {
 } from './ai'
 import { executeMemoryOrchestration, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
 import { finalizeMemoryUpdate } from './aiMemorySave'
+import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
 import {
   parseMemoryBookPayload,
   parseMemoryMarkPayload,
@@ -644,22 +644,40 @@ function registerIpc(): void {
     return { ok: true }
   })
 
-  ipcMain.handle('ai.storySoFar', async (_e, { bookId, uptoChapterId }: { bookId: string; uptoChapterId: string }) => {
+  ipcMain.handle('ai.storySoFar', async (_e, unsafePayload?: unknown) => {
     try {
+      const payload = parseMemoryRunPayload(unsafePayload)
+      const book = await getBook(payload.bookId)
+      const stored = await readSummaries(payload.bookId)
+      const memory = await readAiMemory(payload.bookId)
       const settings = await getSettings()
+      const recapLength = settings.ai?.recapLength ?? 'standard'
+      const materials = selectRecapMaterials(
+        book.chapters,
+        payload.uptoChapterId,
+        book.progress?.chapterId,
+        stored,
+        memory,
+      )
+      const plan = planAiRecap(
+        book.title,
+        aiTaskInstruction(settings, 'recap'),
+        recapLength,
+        materials,
+      )
+      const confirmOverBudget = unsafePayload && typeof unsafePayload === 'object' &&
+        'confirmOverBudget' in unsafePayload &&
+        (unsafePayload as { confirmOverBudget?: unknown }).confirmOverBudget === true
+      if (plan.requiresConfirmation && !confirmOverBudget) {
+        return {
+          ok: false,
+          confirmationRequired: true,
+          message: '预计输入超过 30000 字。是否按上方缩减范围继续？',
+          budget: plan.budget,
+        }
+      }
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const book = await getBook(bookId)
-      if (!book.progress?.chapterId) return { ok: false, message: '还没有阅读进度，打开阅读器读几章再来。' }
-      const requested = book.chapters.findIndex((chapter) => chapter.id === uptoChapterId)
-      const progressed = book.chapters.findIndex((chapter) => chapter.id === book.progress!.chapterId)
-      const cutoff = Math.min(requested, progressed)
-      if (cutoff < 0) return { ok: false, message: '章节不存在' }
-      const stored = await readSummaries(bookId)
-      const read = book.chapters.slice(0, cutoff + 1).filter((chapter) => chapter.status === 'ready')
-      const summaries = read.map((chapter) => ({ title: chapter.title, text: stored.byChapter[chapter.id] || '' })).filter((item) => item.text)
-      if (!summaries.length) return { ok: false, message: '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。' }
-      const missing = read.length - summaries.length
       return aiJobSlot.start(async (jobId, signal) => {
         let partial = ''
         sendAiStage(jobId, 'preparing')
@@ -667,21 +685,19 @@ function registerIpc(): void {
           sendAiStage(jobId, 'requesting')
           const result = await streamAiTaskCompletion(
             trustedAiConfig(settings, apiKey),
-            [{
-              role: 'user',
-              content: buildStorySoFarPrompt(book.title, summaries, aiTaskInstruction(settings, 'recap')),
-            }], signal,
+            [{ role: 'user', content: plan.prompt }],
+            signal,
             (delta) => {
               partial += delta
               mainWindow?.webContents.send('ai.chunk', { jobId, delta })
             },
-            { task: 'recap', recapLength: settings.ai?.recapLength },
+            { task: 'recap', recapLength },
           )
-          const text = `${missing > 0 ? `以下仅根据已有摘要的章节整理，另有 ${missing} 章尚未生成本章摘要。\n\n` : ''}${result.text}`
+          const text = validateAiRecapOutput(result.text, recapLength)
           await saveAiDone(
             jobId,
             aiCompletionDoneEvent(jobId, result, text),
-            () => writeStorySoFar(bookId, book.chapters[cutoff]!.id, text, { signal }),
+            () => writeStorySoFar(payload.bookId, plan.uptoChapterId, text, { signal }),
             { signal, stoppedEvent: aiStoppedDoneEvent(jobId, partial) },
           )
         } catch (e: unknown) {
@@ -689,7 +705,11 @@ function registerIpc(): void {
             mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
             return
           }
-          mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: e instanceof Error ? e.message : String(e) })
+          mainWindow?.webContents.send('ai.done', {
+            jobId,
+            ok: false,
+            message: e instanceof Error ? e.message : String(e),
+          })
         }
       })
     } catch (e: unknown) {

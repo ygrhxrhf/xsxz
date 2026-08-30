@@ -80,6 +80,7 @@ const recapJobKind = ref<'chapter' | 'story' | ''>('')
 const recapStopping = ref(false)
 const chapterSummaryBudget = ref<AiBudgetEstimate | null>(null)
 const showChapterSummaryBudgetConfirm = ref(false)
+const recapBudgetConfirmKind = ref<'chapter' | 'story'>('chapter')
 const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
@@ -1083,9 +1084,10 @@ async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) 
   }
   const res = kind === 'chapter'
     ? await window.api.ai.summarizeChapter(book.value.id, uptoChapterId, confirmOverBudget)
-    : await window.api.ai.storySoFar(book.value.id, uptoChapterId)
+    : await window.api.ai.storySoFar(book.value.id, uptoChapterId, confirmOverBudget)
   if (!res.ok) {
     if ('confirmationRequired' in res && res.confirmationRequired) {
+      recapBudgetConfirmKind.value = kind
       chapterSummaryBudget.value = res.budget
       showChapterSummaryBudgetConfirm.value = true
       return
@@ -1102,7 +1104,7 @@ async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) 
 
 async function confirmOverBudgetChapterSummary() {
   showChapterSummaryBudgetConfirm.value = false
-  await startRecap('chapter', true)
+  await startRecap(recapBudgetConfirmKind.value, true)
 }
 
 function cancelOverBudgetChapterSummary() {

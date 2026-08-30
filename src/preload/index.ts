@@ -168,8 +168,10 @@ const api = {
       ipcRenderer.invoke('ai.summarizeChapter', { bookId, chapterId, confirmOverBudget }) as Promise<
         AiJobStart | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
       >,
-    storySoFar: (bookId: string, uptoChapterId: string) =>
-      ipcRenderer.invoke('ai.storySoFar', { bookId, uptoChapterId }) as Promise<AiJobStart>,
+    storySoFar: (bookId: string, uptoChapterId: string, confirmOverBudget = false) =>
+      ipcRenderer.invoke('ai.storySoFar', { bookId, uptoChapterId, confirmOverBudget }) as Promise<
+        AiJobStart | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
+      >,
     getSummaries: (bookId: string) =>
       ipcRenderer.invoke('ai.getSummaries', { bookId }) as Promise<
         | { ok: true; summaries: AiSummaries }

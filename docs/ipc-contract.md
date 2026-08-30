@@ -196,7 +196,7 @@
 | `ai.characterCard` | invoke | `{ bookId: string; uptoChapterId: string }` | `{ ok: true; card: CharacterCard } \| { ok: false; message: string }` |
 | `ai.getCharacterCard` | invoke | `{ bookId: string }` | `{ ok: true; card: CharacterCard \| null } \| { ok: false; message: string }` |
 | `ai.summarizeChapter` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
-| `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string }` | `AiJobStart` |
+| `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.getSummaries` | invoke | `{ bookId: string }` | `{ ok: true; summaries: AiSummaries } \| { ok: false; message: string }` |
 | `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart` |
 | `ai.getChat` | invoke | `{ bookId: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省） |
@@ -217,7 +217,7 @@
 
 `ai.test` 发一条最小 chat completions 探活。401/403、429、超时、5xx 返回中文分级文案。
 
-`AiBudgetEstimate` 统计 Unicode 字符；token 估算按中日韩字符数 ÷ 1.5、其他字符数 ÷ 4，合计乘 1.1 后向上取整，不计算金额。`ai.clean` 的完整未分批请求超过 30000 字且 `confirmOverBudget` 不为 true 时，必须在任何模型请求前返回 `confirmationRequired` 与缩减后的实际发送范围。确认后按规范化段落分批，每批仅携带目标前后各一段只读上下文；只合并模型返回的目标段。任一批失败、取消或截断时不返回可应用的 `AiCleanResult`。
+`AiBudgetEstimate` 统计 Unicode 字符；token 估算按中日韩字符数 ÷ 1.5、其他字符数 ÷ 4，合计乘 1.1 后向上取整，不计算金额。`ai.clean` 的完整未分批请求超过 30000 字且 `confirmOverBudget` 不为 true 时，必须在任何模型请求前返回 `confirmationRequired` 与缩减后的实际发送范围。确认后按规范化段落分批，每批仅携带目标前后各一段只读上下文；只合并模型返回的目标段。任一批失败、取消或截断时不返回可应用的 `AiCleanResult`。`ai.storySoFar` 使用同一确认门禁：只缩减已存摘要和正常记忆材料，不读取正文；确认前不得读取 Key、创建任务或联网。
 
 `ai.summarize` 把截止夹紧到已存阅读进度 `book.progress.chapterId`（若有）：只读该截止内 `ready` 章正文，再取其中最近 10 章。不得把进度之后的未读章送进模型。无进度时以请求的 `uptoChapterId` 为截止。
 
