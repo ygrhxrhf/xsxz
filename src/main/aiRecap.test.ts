@@ -123,6 +123,25 @@ describe('three-length recap planning', () => {
     expect(plan.budget.range).toContain(`已选 ${plan.summaries.length} 章已存摘要`)
   })
 
+  it('Unicode-safely truncates but never drops the latest available summary', () => {
+    const plan = planAiRecap('长书', '整理前情。', 'standard', {
+      uptoChapterId: 'c0002',
+      summaries: [
+        { chapterId: 'c0001', title: '第一章', text: '旧摘要' },
+        { chapterId: 'c0002', title: '第二章', text: '😀'.repeat(31_000) },
+      ],
+      memoryFacts: [{
+        id: 'character-0123456789abcdef', kind: '人物', title: '顾清', summary: '正常记忆',
+        status: '调查', sourceChapters: ['第一章'],
+      }],
+    })
+    expect(plan.requiresConfirmation).toBe(true)
+    expect(plan.summaries.some((item) => item.chapterId === 'c0002')).toBe(true)
+    expect(plan.summaries.find((item) => item.chapterId === 'c0002')?.text).toContain('摘要过长，已截断')
+    expect(countTextCharacters(plan.prompt)).toBeLessThanOrEqual(30_000)
+    expect(plan.prompt).not.toContain('\ud83d\n')
+  })
+
   it('rejects fixed/custom requirements that leave no material room', () => {
     expect(() => planAiRecap('测试书', '要求'.repeat(20_000), 'standard', materials))
       .toThrow('AI 请求固定内容过长，无法在 30000 字预算内发送')

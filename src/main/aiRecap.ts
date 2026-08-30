@@ -149,6 +149,26 @@ export function planAiRecap(
   let summaries: AiRecapPlan['summaries'] = []
   let memoryFacts: RecapMemoryFact[] = []
   const recentSummaries = [...materials.summaries].reverse()
+  if (recentSummaries[0]) {
+    const latest = recentSummaries.shift()!
+    let fitted = latest
+    if (countTextCharacters(buildPrompt(bookTitle, instruction, length, [latest], [])) > AI_INPUT_CHARACTER_BUDGET) {
+      const marker = '\n（摘要过长，已截断）'
+      const characters = Array.from(latest.text)
+      let limit = characters.length
+      while (limit > 0) {
+        const candidate = { ...latest, text: `${characters.slice(0, limit).join('')}${marker}` }
+        const overflow = countTextCharacters(buildPrompt(bookTitle, instruction, length, [candidate], [])) - AI_INPUT_CHARACTER_BUDGET
+        if (overflow <= 0) {
+          fitted = candidate
+          break
+        }
+        limit = Math.max(0, limit - Math.max(1, overflow))
+      }
+      if (limit < 1) throw new Error('AI 请求固定内容过长，无法在 30000 字预算内发送')
+    }
+    summaries = [fitted]
+  }
   const facts = [...materials.memoryFacts].sort((left, right) => left.id.localeCompare(right.id))
   const candidates: Array<{ kind: 'summary'; value: AiRecapPlan['summaries'][number] } | { kind: 'memory'; value: RecapMemoryFact }> = []
   const lengthMax = Math.max(recentSummaries.length, facts.length)
