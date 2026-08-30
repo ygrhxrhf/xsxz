@@ -942,7 +942,11 @@ function registerIpc(): void {
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const config = trustedAiConfig(settings, apiKey)
       const existingChat = await readChat(args.bookId)
-      const persistedMessages = args.messages.filter((message) => message.role !== 'system') as import('../shared/types').AiEvidenceChatMessage[]
+      const persistedMessages: import('../shared/types').AiEvidenceChatMessage[] = [...existingChat.messages]
+      const latest = persistedMessages.at(-1)
+      if (latest?.role !== 'user' || latest.content !== question) {
+        persistedMessages.push({ role: 'user', content: question })
+      }
       return aiJobSlot.start(async (jobId, signal) => {
         sendAiStage(jobId, 'preparing')
         try {

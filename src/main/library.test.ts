@@ -718,6 +718,23 @@ describe('chat storage', () => {
     expect(saved.messages.at(-1)).toEqual({ role: 'user', content: 'm40' })
   })
 
+  it('keeps a continuous newest suffix instead of backfilling an older short unit', async () => {
+    const messages = [
+      { role: 'user' as const, content: 'old-single' },
+      ...Array.from({ length: 20 }, (_, index) => [
+        { role: 'user' as const, content: `q${index}` },
+        { role: 'assistant' as const, content: `a${index}` },
+      ]).flat(),
+      { role: 'user' as const, content: 'latest-single' },
+    ]
+    await writeChat('d_chat', messages)
+    const saved = await readChat('d_chat')
+    expect(saved.messages).toHaveLength(39)
+    expect(saved.messages[0]?.content).toBe('q1')
+    expect(saved.messages.map((item) => item.content)).not.toContain('old-single')
+    expect(saved.messages.at(-1)?.content).toBe('latest-single')
+  })
+
   it('reads v1 compatibly and preserves v2 citations, cutoff, and stopped state', async () => {
     const file = join(dir, 'd_chat', 'ai', 'chat.json')
     await writeFile(file, JSON.stringify({ version: 1, messages: [
@@ -739,6 +756,12 @@ describe('chat storage', () => {
         { role: 'assistant', content: '部分回答', citations: [citation], uptoChapterId: 'c0001', stopped: true },
       ],
     })
+    await writeFile(file, JSON.stringify({ version: 3, messages: [{ role: 'user', content: '未来格式' }] }), 'utf-8')
+    await expect(readChat('d_chat')).resolves.toMatchObject({ version: 1, messages: [] })
+    await writeFile(file, JSON.stringify({ version: 2, messages: [
+      { role: 'user', content: 'Q1' }, { role: 'user' }, { role: 'assistant', content: 'A2' },
+    ] }), 'utf-8')
+    await expect(readChat('d_chat')).resolves.toMatchObject({ version: 1, messages: [] })
     await writeFile(file, '{ bad', 'utf-8')
     await expect(readChat('d_chat')).resolves.toMatchObject({ version: 1, messages: [] })
   })

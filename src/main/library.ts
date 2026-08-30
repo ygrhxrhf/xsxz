@@ -629,7 +629,7 @@ function trimChatPairs(messages: readonly AiEvidenceChatMessage[], limit = 40): 
   let count = 0
   for (let index = units.length - 1; index >= 0; index -= 1) {
     const unit = units[index]!
-    if (count + unit.length > limit) continue
+    if (count + unit.length > limit) break
     kept.unshift(unit)
     count += unit.length
   }
@@ -647,18 +647,29 @@ function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | 
   if (!isRecord(value) || (value.role !== 'user' && value.role !== 'assistant') || typeof value.content !== 'string') return null
   const message: AiEvidenceChatMessage = { role: value.role, content: value.content }
   if (!v2 || value.role !== 'assistant') return message
-  if (Array.isArray(value.citations) && value.citations.every(isChatCitation)) message.citations = value.citations
-  if (typeof value.uptoChapterId === 'string') message.uptoChapterId = value.uptoChapterId
-  if (value.stopped === true) message.stopped = true
+  if ('citations' in value) {
+    if (!Array.isArray(value.citations) || !value.citations.every(isChatCitation)) return null
+    message.citations = value.citations
+  }
+  if ('uptoChapterId' in value) {
+    if (typeof value.uptoChapterId !== 'string') return null
+    message.uptoChapterId = value.uptoChapterId
+  }
+  if ('stopped' in value) {
+    if (typeof value.stopped !== 'boolean') return null
+    if (value.stopped) message.stopped = true
+  }
   return message
 }
 
 export async function readChat(bookId: string): Promise<AiChatFile | AiChatFileV2> {
   try {
     const data: unknown = JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'chat.json'), 'utf-8'))
-    if (!isRecord(data) || !Array.isArray(data.messages)) throw new Error('invalid chat')
+    if (!isRecord(data) || (data.version !== 1 && data.version !== 2) || !Array.isArray(data.messages)) throw new Error('invalid chat')
     const v2 = data.version === 2
-    const messages = trimChatPairs(data.messages.map((message) => parseChatMessage(message, v2)).filter((message): message is AiEvidenceChatMessage => Boolean(message)))
+    const parsed = data.messages.map((message) => parseChatMessage(message, v2))
+    if (parsed.some((message) => message === null)) throw new Error('invalid chat message')
+    const messages = trimChatPairs(parsed as AiEvidenceChatMessage[])
     return v2
       ? { version: 2, messages, updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : now() }
       : { version: 1, messages: messages.map(({ role, content }) => ({ role, content })), updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : now() }
