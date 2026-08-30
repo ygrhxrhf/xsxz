@@ -285,3 +285,72 @@ describe('Settings AI custom-origin confirmation', () => {
     }))
   })
 })
+
+describe('Settings section content visibility', () => {
+  let unmount: (() => void) | undefined
+
+  afterEach(() => {
+    unmount?.()
+    unmount = undefined
+    document.body.innerHTML = ''
+    vi.restoreAllMocks()
+  })
+
+  it('keeps all established operations reachable in their fixed sections', async () => {
+    const current: Settings = {
+      libraryPath: '/tmp/library',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-flash',
+      apiKeyConfigured: true,
+      reader: DEFAULT_READER_PREFS,
+      tts: DEFAULT_TTS_PREFS,
+      appearance: DEFAULT_APPEARANCE_PREFS,
+      ai: { ...DEFAULT_AI_PREFS },
+    }
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        settings: { get: vi.fn(async () => current), set: vi.fn(async () => current) },
+        siteRules: { list: vi.fn(async () => ({ rules: [] })) },
+        ai: { test: vi.fn() },
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(settingsHarness())
+    app.mount(host)
+    unmount = () => app.unmount()
+    await flushUi()
+
+    const navLabels = [...document.querySelectorAll('.settings-nav-item')].map((item) => item.textContent?.trim())
+    expect(navLabels).toEqual(['外观', '书库', 'AI', '站点规则', '备份与恢复', '关于'])
+    const visibleCard = (text: string) => {
+      const card = [...document.querySelectorAll('.settings-card')]
+        .find((item) => item.textContent?.includes(text)) as HTMLElement | undefined
+      expect(card).toBeTruthy()
+      expect(getComputedStyle(card!).display).not.toBe('none')
+      return card!
+    }
+    const select = async (label: string) => {
+      const nav = [...document.querySelectorAll('.settings-nav-item')]
+        .find((item) => item.textContent?.trim() === label) as HTMLButtonElement
+      nav.click()
+      await flushUi()
+      return nav
+    }
+    expect(visibleCard('阅读偏好').textContent).toContain('字体、行距、主题和列宽请在阅读器的“外观”面板中调整。')
+    expect((await select('书库')).getAttribute('aria-current')).toBe('page')
+    expect(visibleCard('书库路径').textContent).toContain('保存路径')
+    await select('AI')
+    expect(visibleCard('AI 配置').textContent).toContain('测试连接')
+    expect(visibleCard('AI 配置').textContent).toContain('AI 提示词')
+    await select('站点规则')
+    expect(visibleCard('站点规则').textContent).toContain('书名选择器')
+    expect(visibleCard('站点规则').textContent).toContain('还没有站点规则')
+    await select('备份与恢复')
+    expect(visibleCard('备份与恢复').textContent).toContain('备份书库…')
+    expect(visibleCard('备份与恢复').textContent).toContain('从备份恢复…')
+    await select('关于')
+    expect(visibleCard('技术栈：Electron + Vue 3 + Naive UI').textContent).toContain('技术栈：Electron + Vue 3 + Naive UI')
+  })
+})
