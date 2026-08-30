@@ -155,6 +155,8 @@ export interface AiSaveFinalizeOptions {
   signal?: AbortSignal
   stoppedEvent?: AiSuccessDoneEvent
   saveStopped?: () => Promise<void>
+  /** Optional durable retry closure that must not capture the completed job's AbortSignal. */
+  retrySave?: () => Promise<void>
 }
 
 export async function finalizeAiSave(
@@ -192,7 +194,7 @@ export async function finalizeAiSave(
       const stopped = finishStopped()
       if (stopped) return stopped
     }
-    return { ...event, saveToken: store.register(save) }
+    return { ...event, saveToken: store.register(options.retrySave ?? save) }
   }
 }
 

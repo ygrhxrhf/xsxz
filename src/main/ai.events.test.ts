@@ -158,6 +158,24 @@ describe('AI save finalization', () => {
     ])
   })
 
+  it('retries an ordinary failed save without the completed job signal', async () => {
+    const store = new AiPendingSaveStore()
+    const controller = new AbortController()
+    const primarySave = vi.fn(async () => { throw new Error('disk full') })
+    const retrySave = vi.fn(async () => {})
+    const done = await finalizeAiSave(
+      store,
+      { jobId: 'recap', ok: true, text: '已验证前情' },
+      primarySave,
+      { signal: controller.signal, retrySave },
+    )
+    expect(done.saveToken).toMatch(/^save-/)
+    controller.abort()
+    await expect(store.retry(done.saveToken!)).resolves.toEqual({ ok: true })
+    expect(primarySave).toHaveBeenCalledOnce()
+    expect(retrySave).toHaveBeenCalledOnce()
+  })
+
   it('keeps a stopped chat result and save token when partial persistence fails', async () => {
     const store = new AiPendingSaveStore()
     const controller = new AbortController()

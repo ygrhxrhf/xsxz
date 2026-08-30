@@ -699,7 +699,11 @@ function registerIpc(): void {
             jobId,
             aiCompletionDoneEvent(jobId, result, text),
             () => writeStorySoFar(payload.bookId, plan.uptoChapterId, text, { signal }),
-            { signal, stoppedEvent: aiStoppedDoneEvent(jobId, partial) },
+            {
+              signal,
+              stoppedEvent: aiStoppedDoneEvent(jobId, partial),
+              retrySave: () => writeStorySoFar(payload.bookId, plan.uptoChapterId, text),
+            },
           )
         } catch (e: unknown) {
           if (signal.aborted) {
