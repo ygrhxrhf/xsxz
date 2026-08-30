@@ -1781,7 +1781,7 @@ onUnmounted(() => {
                   <section v-if="memoryData.characters.length" class="memory-section">
                     <h3>人物</h3>
                     <details v-for="item in memoryData.characters" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
-                      <summary><strong>{{ item.name }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag></summary>
+                      <summary><strong>{{ item.name }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}</p><p>{{ item.summary }}</p>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
@@ -1790,7 +1790,7 @@ onUnmounted(() => {
                   <section v-if="memoryData.relations.length" class="memory-section">
                     <h3>关系</h3>
                     <details v-for="item in memoryData.relations" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
-                      <summary><strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag></summary>
+                      <summary><strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
                     </details>
@@ -1798,7 +1798,7 @@ onUnmounted(() => {
                   <section v-if="memoryData.foreshadows.length" class="memory-section">
                     <h3>伏笔</h3>
                     <details v-for="item in memoryData.foreshadows" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
-                      <summary><strong>{{ item.desc }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag></summary>
+                      <summary><strong>{{ item.desc }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
                     </details>
@@ -1806,7 +1806,7 @@ onUnmounted(() => {
                   <section v-if="memoryData.events.length" class="memory-section">
                     <h3>关键事件</h3>
                     <details v-for="item in memoryData.events" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
-                      <summary><strong>{{ item.title }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag></summary>
+                      <summary><strong>{{ item.title }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
                     </details>
@@ -2304,8 +2304,15 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 
-.memory-item strong + .n-tag {
+.memory-accuracy-tag {
+  display: inline-block;
   margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(240, 160, 32, .16);
+  color: #b66a00;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .memory-item p {

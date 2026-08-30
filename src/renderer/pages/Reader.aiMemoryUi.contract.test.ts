@@ -42,6 +42,8 @@ describe('Reader recap and memory UI contract', () => {
     expect(source.match(/<details v-for=/g)).toHaveLength(4)
     expect(source.match(/:open="item\.accuracy === 'normal'"/g)).toHaveLength(4)
     expect(source.match(/<summary>/g)).toHaveLength(4)
+    expect(source.match(/class="memory-accuracy-tag"/g)).toHaveLength(4)
+    expect(source).not.toMatch(/<summary>[^\n]*<n-tag/)
     expect(source).toContain('还没有人物与剧情记忆。')
     expect(source).toContain('更新记忆后，可按人物、关系、伏笔和关键事件查看已读剧情。')
     expect(source).not.toContain('v-html')
