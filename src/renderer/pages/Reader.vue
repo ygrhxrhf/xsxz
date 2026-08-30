@@ -4,8 +4,8 @@ import { NButton, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPo
 import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
 import type {
   AiBudgetEstimate,
-  AiChatMessage,
   AiCitation,
+  AiEvidenceChatMessage,
   AiMemoryBase,
   AiMemoryFile,
   AiRequestStage,
@@ -113,7 +113,7 @@ const recapBudgetConfirmKind = ref<'chapter' | 'story'>('chapter')
 const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
-const chatMessages = ref<AiChatMessage[]>([])
+const chatMessages = ref<AiEvidenceChatMessage[]>([])
 const chatInput = ref('')
 const chatLoading = ref(false)
 const chatStarting = ref(false)
@@ -1486,7 +1486,12 @@ onMounted(async () => {
       const assistantIndex = chatAssistantIndex.value
       const assistant = chatMessages.value[assistantIndex]
       if (event.ok) {
-        if (assistant) assistant.content = event.text
+        if (assistant) {
+          assistant.content = event.text
+          assistant.citations = event.citations
+          assistant.uptoChapterId = event.uptoChapterId
+          assistant.stopped = event.stopped === true
+        }
         if (!event.text && assistantIndex >= 0) chatMessages.value.splice(assistantIndex, 1)
       } else if (assistant) {
         assistant.content = `错误：${event.message}`
@@ -1812,6 +1817,14 @@ onUnmounted(() => {
               <div class="chat-messages">
                 <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
                   <div class="chat-bubble">{{ msg.content }}</div>
+                  <template v-if="msg.role === 'assistant'">
+                    <n-tag v-if="msg.stopped" size="small" type="warning">生成已停止</n-tag>
+                    <div v-if="msg.citations?.length" class="chat-evidence">
+                      <strong>依据</strong>
+                      <button v-for="citation in msg.citations" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
+                    </div>
+                    <div v-else-if="msg.citations === undefined && !msg.content.startsWith('错误：')" class="chat-legacy">旧版回答，无来源</div>
+                  </template>
                 </div>
                 <div v-if="chatMessages.length === 0 && !chatLoading" class="chat-empty">
                   可询问已读内容，回答会附上可回到原文的依据。
@@ -1824,7 +1837,7 @@ onUnmounted(() => {
                     <n-button :disabled="chatLoading || assistantSaveRetrying || chatMessages.length === 0">清空聊天</n-button>
                   </template>
                 </n-popconfirm>
-                <n-input v-model:value="chatInput" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="assistantBusy || assistantSaveRetrying" @keyup.enter="sendChat" />
+                <n-input v-model:value="chatInput" type="textarea" :rows="2" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="assistantBusy || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
                 <n-button v-if="chatLoading" type="warning" @click="stopChat">停止生成</n-button>
                 <n-button v-else type="primary" :disabled="!chatInput.trim() || assistantBusy || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
               </div>
@@ -2328,7 +2341,23 @@ onUnmounted(() => {
 }
 
 .chat-msg.assistant {
+  flex-direction: column;
+  align-items: flex-start;
   justify-content: flex-start;
+  gap: 6px;
+}
+
+.chat-evidence {
+  width: 85%;
+  padding: 8px 10px;
+  border-left: 2px solid var(--active-chapter);
+  color: var(--r-muted);
+  font-size: 12px;
+}
+
+.chat-legacy {
+  color: var(--r-muted);
+  font-size: 12px;
 }
 
 .chat-bubble {
