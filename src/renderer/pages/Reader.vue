@@ -35,6 +35,13 @@ import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { decorateText, relocateRange } from '@shared/paragraphSearch'
 import type { Annotation, BookSearchHit } from '@shared/types'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
+import {
+  assistantKindForJob,
+  clearRetriedAssistantSaveToken,
+  currentAssistantStage as resolveAssistantStage,
+  removeAssistantStage,
+  updateAssistantSaveToken,
+} from './aiAssistantStatus'
 
 const props = defineProps<{ bookId?: string }>()
 const emit = defineEmits<{
@@ -93,7 +100,7 @@ const assistantStages = ref<Record<string, AiRequestStage>>({})
 const lastAssistantUsage = ref<AiUsage | null>(null)
 const assistantCompleted = ref(false)
 const lastAssistantTruncated = ref(false)
-const assistantSaveToken = ref('')
+const assistantSaveState = ref<{ token: string; kind: 'recap' | 'memory' | 'qa' | '' }>({ token: '', kind: '' })
 const assistantSaveRetrying = ref(false)
 const chapterSummaryBudget = ref<AiBudgetEstimate | null>(null)
 const showChapterSummaryBudgetConfirm = ref(false)
@@ -106,12 +113,16 @@ const chatInput = ref('')
 const chatLoading = ref(false)
 const chatJobId = ref('')
 const chatAssistantIndex = ref(-1)
-const currentAssistantJobId = computed(() => aiAssistantTab.value === 'recap'
-  ? recapJobId.value
-  : aiAssistantTab.value === 'memory'
-    ? memoryJobId.value
-    : chatJobId.value)
-const currentAssistantStage = computed(() => assistantStages.value[currentAssistantJobId.value])
+const assistantJobIds = computed(() => ({
+  recap: recapJobId.value,
+  memory: memoryJobId.value,
+  qa: chatJobId.value,
+}))
+const currentAssistantStage = computed(() => resolveAssistantStage(
+  assistantStages.value,
+  aiAssistantTab.value,
+  assistantJobIds.value,
+))
 const assistantStageText = computed(() => {
   const labels: Partial<Record<AiRequestStage, string>> = {
     preparing: '正在准备已读材料…',
@@ -1181,12 +1192,13 @@ async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'e
 }
 
 async function retryAssistantSave() {
-  if (!assistantSaveToken.value || assistantSaveRetrying.value) return
+  const token = assistantSaveState.value.token
+  if (!token || assistantSaveRetrying.value) return
   assistantSaveRetrying.value = true
   try {
-    const result = await window.api.ai.retrySave(assistantSaveToken.value)
+    const result = await window.api.ai.retrySave(token)
     if (result.ok) {
-      assistantSaveToken.value = ''
+      assistantSaveState.value = clearRetriedAssistantSaveToken(assistantSaveState.value, token)
       message.success('结果已保存')
     } else {
       message.error(result.message)
@@ -1400,14 +1412,14 @@ onMounted(async () => {
     assistantStages.value = { ...assistantStages.value, [jobId]: stage }
   })
   unsubAiDone = window.api.ai.onDone((event) => {
-    const assistantJob = event.jobId === recapJobId.value ||
-      event.jobId === memoryJobId.value || event.jobId === chatJobId.value
-    if (assistantJob) {
+    const assistantKind = assistantKindForJob(event.jobId, assistantJobIds.value)
+    if (assistantKind) {
       assistantCompleted.value = true
       lastAssistantUsage.value = event.ok ? event.usage ?? null : null
       lastAssistantTruncated.value = event.ok ? event.truncated === true : false
-      assistantSaveToken.value = event.ok ? event.saveToken ?? '' : ''
+      assistantSaveState.value = updateAssistantSaveToken(assistantSaveState.value, assistantKind, event)
     }
+    assistantStages.value = removeAssistantStage(assistantStages.value, event.jobId)
     if (event.jobId === translateJobId.value) {
       translateJobId.value = ''
       aiResult.value = event.ok ? event.text : `错误：${event.message}`
@@ -1657,7 +1669,7 @@ onUnmounted(() => {
             <div class="subtle">实际费用以模型服务商的计费规则为准。</div>
           </div>
           <n-tag v-if="lastAssistantTruncated" type="warning">回答可能因输出上限而截断。</n-tag>
-          <div v-if="assistantSaveToken" class="ai-save-warning">
+          <div v-if="assistantSaveState.token" class="ai-save-warning">
             结果已生成，但未能保存到书库。
             <n-button size="small" :loading="assistantSaveRetrying" @click="retryAssistantSave">重试保存</n-button>
           </div>
