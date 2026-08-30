@@ -693,6 +693,7 @@ function registerIpc(): void {
             },
             { task: 'recap', recapLength },
           )
+          if (result.truncated) throw new Error('模型输出被截断，原有前情未改变')
           const text = validateAiRecapOutput(result.text, recapLength)
           await saveAiDone(
             jobId,

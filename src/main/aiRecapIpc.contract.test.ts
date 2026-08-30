@@ -24,6 +24,7 @@ describe('storySoFar trusted recap contract', () => {
     expect(block.indexOf('plan.requiresConfirmation')).toBeLessThan(block.indexOf('getApiKey()'))
     expect(block.indexOf('getApiKey()')).toBeLessThan(block.indexOf('aiJobSlot.start'))
     expect(block).toContain("{ task: 'recap', recapLength }")
+    expect(block.indexOf('result.truncated')).toBeLessThan(block.indexOf('validateAiRecapOutput'))
     expect(block.indexOf('validateAiRecapOutput')).toBeLessThan(block.indexOf('writeStorySoFar'))
     expect(block).toContain('plan.uptoChapterId')
   })
