@@ -91,6 +91,16 @@ describe('three-length recap planning', () => {
     expect(plan.prompt).not.toContain('旧前情')
   })
 
+  it('keeps every material without confirmation when the complete prompt is within budget', () => {
+    const snapshot = structuredClone(materials)
+    const plan = planAiRecap('测试书', '整理前情。', 'standard', materials)
+    expect(plan.requiresConfirmation).toBe(false)
+    expect(plan.summaries).toHaveLength(materials.summaries.length)
+    expect(plan.memoryFacts).toHaveLength(materials.memoryFacts.length)
+    expect(plan.budget.originalCharacters).toBe(plan.budget.sentCharacters)
+    expect(materials).toEqual(snapshot)
+  })
+
   it('rejects empty saved material before any model call', () => {
     const empty = selectRecapMaterials(chapters, 'c0002', 'c0002', { ...stored, byChapter: {} }, null)
     expect(() => planAiRecap('测试书', '整理前情。', 'standard', empty)).toThrow('还没有可整理的材料')
