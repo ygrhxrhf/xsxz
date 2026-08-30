@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiPromptKind, AiRequestStage, BrowseState, Settings, SiteRule } from '../shared/types'
+import type { AiPromptKind, AiRequestStage, AiUsage, BrowseState, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import {
@@ -21,7 +21,12 @@ import {
   readChat,
   readCharacterCard,
   writeCharacterCard,
+  readAiMemory,
+  readAiMemoryCompat,
+  writeAiMemory,
+  markAiMemoryAccuracy,
   assertImportable,
+  type AiMemoryCollection,
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
@@ -50,11 +55,14 @@ import {
   clampSummarizeChapters,
   generateCharacterCard,
   runAiSaveStage,
+  runAiTaskCompletion,
   parseCharacterCard,
   testConnection,
   type AiConfig,
   type AiSuccessDoneEvent,
 } from './ai'
+import { executeMemoryOrchestration, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
+import { finalizeMemoryUpdate } from './aiMemorySave'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -499,6 +507,127 @@ function registerIpc(): void {
       return { ok: true }
     } catch {
       return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
+    }
+  })
+
+  ipcMain.handle('ai.getMemory', async (_e, payload?: { bookId?: string }) => {
+    try {
+      if (typeof payload?.bookId !== 'string' || !payload.bookId) throw new Error('书籍不存在')
+      return { ok: true, memory: await readAiMemoryCompat(payload.bookId) }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  const startMemoryUpdate = async (
+    mode: 'update' | 'rebuild',
+    payload?: { bookId?: string; uptoChapterId?: string },
+  ) => {
+    try {
+      if (typeof payload?.bookId !== 'string' || !payload.bookId ||
+        typeof payload.uptoChapterId !== 'string' || !payload.uptoChapterId) {
+        return { ok: false, message: '章节不存在' }
+      }
+      const book = await getBook(payload.bookId)
+      const existing = mode === 'update' ? await readAiMemory(payload.bookId) : null
+      const selection = selectMemoryChapterBatches(
+        book.chapters,
+        payload.uptoChapterId,
+        book.progress?.chapterId,
+        existing?.uptoChapterId,
+        mode,
+      )
+      if (!selection.batches.length) return { ok: false, message: '已更新到当前阅读进度' }
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const batches = []
+      for (const batch of selection.batches) {
+        const loaded = []
+        for (const chapter of batch) {
+          const file = await readChapter(payload.bookId, chapter.id)
+          loaded.push({ ...chapter, body: file.body })
+        }
+        batches.push(loaded)
+      }
+      const config = trustedAiConfig(settings, apiKey)
+      const instruction = aiTaskInstruction(settings, 'memory')
+      return aiJobSlot.start(async (jobId, signal) => {
+        sendAiStage(jobId, 'preparing')
+        let usage: AiUsage | undefined
+        try {
+          const memoryUpdate = await executeMemoryOrchestration(
+            book.title,
+            existing,
+            batches,
+            selection.remainingChapters,
+            instruction,
+            async (request, requestSignal) => {
+              sendAiStage(jobId, 'requesting')
+              const completion = await runAiTaskCompletion(
+                config,
+                [{ role: 'user', content: request.prompt }],
+                { task: 'memory', signal: requestSignal },
+              )
+              if (!completion.json) throw new Error('模型返回的记忆 JSON 无法识别，原有记忆未改变')
+              if (completion.usage) {
+                usage = {
+                  inputTokens: (usage?.inputTokens ?? 0) + (completion.usage.inputTokens ?? 0),
+                  outputTokens: (usage?.outputTokens ?? 0) + (completion.usage.outputTokens ?? 0),
+                  cacheHitTokens: (usage?.cacheHitTokens ?? 0) + (completion.usage.cacheHitTokens ?? 0),
+                  cacheMissTokens: (usage?.cacheMissTokens ?? 0) + (completion.usage.cacheMissTokens ?? 0),
+                }
+              }
+              return completion.json
+            },
+            {
+              includeReviews: mode === 'update',
+              reviewChapterIds: new Set(selection.eligibleChapterIds),
+              signal,
+            },
+          )
+          const snapshot = structuredClone(memoryUpdate.memory)
+          await finalizeMemoryUpdate(jobId, memoryUpdate, usage, signal, {
+            save: (saveSignal) => writeAiMemory(payload.bookId!, snapshot, { signal: saveSignal }),
+            retrySave: () => writeAiMemory(payload.bookId!, snapshot),
+            registerRetry: (save) => aiPendingSaves.register(save),
+            emitStage: () => sendAiStage(jobId, 'saving'),
+            emitDone: (event) => mainWindow?.webContents.send('ai.done', event),
+          })
+        } catch (e: unknown) {
+          mainWindow?.webContents.send('ai.done', {
+            jobId,
+            ok: false,
+            message: signal.aborted ? '已停止生成' : e instanceof Error ? e.message : String(e),
+          })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
+  ipcMain.handle('ai.updateMemory', (_e, payload?: { bookId?: string; uptoChapterId?: string }) =>
+    startMemoryUpdate('update', payload))
+  ipcMain.handle('ai.rebuildMemory', (_e, payload?: { bookId?: string; uptoChapterId?: string }) =>
+    startMemoryUpdate('rebuild', payload))
+
+  ipcMain.handle('ai.markMemoryInaccurate', async (_e, payload?: {
+    bookId?: string
+    kind?: 'character' | 'relation' | 'foreshadow' | 'event'
+    itemId?: string
+  }) => {
+    try {
+      if (typeof payload?.bookId !== 'string' || typeof payload.itemId !== 'string') throw new Error('记忆条目不存在')
+      const collections: Record<NonNullable<typeof payload.kind>, AiMemoryCollection> = {
+        character: 'characters', relation: 'relations', foreshadow: 'foreshadows', event: 'events',
+      }
+      const collection = payload.kind ? collections[payload.kind] : undefined
+      if (!collection) throw new Error('记忆类型无效')
+      const item = await markAiMemoryAccuracy(payload.bookId, collection, payload.itemId, 'review')
+      return { ok: true, item }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
 

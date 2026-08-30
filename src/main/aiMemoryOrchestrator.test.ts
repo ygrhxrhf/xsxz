@@ -65,6 +65,19 @@ describe('memory prompt planning', () => {
       .toEqual(candidates.map((item) => item.id))
   })
 
+  it('never sends a review source beyond the current eligible chapter whitelist', () => {
+    const candidate = buildAiMemoryCandidates('c0002', '第二章', '甲'.repeat(100))[0]!
+    const memory: AiMemoryFile = {
+      version: 1,
+      characters: [{
+        id: 'character-review', name: '顾清', aliases: [], role: '主角', status: '调查',
+        summary: '待复核', sources: [{ ...candidate }], accuracy: 'review', updatedAt: '2026-01-01T00:00:00.000Z',
+      }],
+      relations: [], foreshadows: [], events: [], updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+    expect(planMemoryPromptRequests('测试书', '复核。', [], memory, true, new Set(['c0001']))).toEqual([])
+  })
+
   it('rejects a custom instruction that leaves no room for one evidence candidate', () => {
     const candidates = buildAiMemoryCandidates('c0001', '第一章', '甲'.repeat(100))
     expect(() => planMemoryPromptRequests('测试书', '要求'.repeat(20_000), candidates, null, false))

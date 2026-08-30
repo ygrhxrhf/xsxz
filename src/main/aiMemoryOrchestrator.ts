@@ -118,10 +118,12 @@ export function planMemoryPromptRequests(
   candidates: readonly AiMemoryCandidate[],
   memory: AiMemoryFile | null,
   includeReviews: boolean,
+  reviewChapterIds?: ReadonlySet<string>,
 ): MemoryPromptRequest[] {
   const requests: MemoryPromptRequest[] = []
   if (includeReviews) {
     for (const item of reviewItems(memory)) {
+      if (reviewChapterIds && item.sources.some((source) => !reviewChapterIds.has(source.chapterId))) continue
       const sources = [...new Map(item.sources.map((source) => [source.id, source])).values()]
         .map((source) => ({ ...source, text: source.excerpt }))
       const prompt = promptText(bookTitle, instruction, sources, item)
@@ -187,7 +189,12 @@ export async function executeMemoryOrchestration(
   remainingChapters: number,
   instruction: string,
   complete: MemoryCompletion,
-  options: { includeReviews?: boolean; signal?: AbortSignal; updatedAt?: string } = {},
+  options: {
+    includeReviews?: boolean
+    reviewChapterIds?: ReadonlySet<string>
+    signal?: AbortSignal
+    updatedAt?: string
+  } = {},
 ): Promise<AiMemoryUpdateResult> {
   const updatedAt = options.updatedAt ?? new Date().toISOString()
   let memory = initialMemory ? structuredClone(initialMemory) : null
@@ -199,7 +206,9 @@ export async function executeMemoryOrchestration(
     if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const candidates = batch.flatMap((chapter) =>
       buildAiMemoryCandidates(chapter.id, chapter.title, chapter.body ?? ''))
-    const requests = planMemoryPromptRequests(bookTitle, instruction, candidates, memory, reviewsPending)
+    const requests = planMemoryPromptRequests(
+      bookTitle, instruction, candidates, memory, reviewsPending, options.reviewChapterIds,
+    )
     reviewsPending = false
     for (const request of requests) {
       if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')

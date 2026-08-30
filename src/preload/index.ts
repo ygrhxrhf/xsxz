@@ -6,6 +6,8 @@ import type {
   AiCleanResult,
   AiDoneEvent,
   AiJobStart,
+  AiMemoryBase,
+  AiMemoryFile,
   AiProvider,
   AiStageEvent,
   AiSummaries,
@@ -177,6 +179,21 @@ const api = {
       ipcRenderer.invoke('ai.chatStream', { bookId, chapterId, messages }) as Promise<AiJobStart>,
     translateStream: (text: string) =>
       ipcRenderer.invoke('ai.translateStream', { text }) as Promise<AiJobStart>,
+    getMemory: (bookId: string) => ipcRenderer.invoke('ai.getMemory', { bookId }) as Promise<
+      | { ok: true; memory: AiMemoryFile | import('../shared/types').CharacterCard | null }
+      | { ok: false; message: string }
+    >,
+    updateMemory: (bookId: string, uptoChapterId: string) =>
+      ipcRenderer.invoke('ai.updateMemory', { bookId, uptoChapterId }) as Promise<AiJobStart>,
+    rebuildMemory: (bookId: string, uptoChapterId: string) =>
+      ipcRenderer.invoke('ai.rebuildMemory', { bookId, uptoChapterId }) as Promise<AiJobStart>,
+    markMemoryInaccurate: (
+      bookId: string,
+      kind: 'character' | 'relation' | 'foreshadow' | 'event',
+      itemId: string,
+    ) => ipcRenderer.invoke('ai.markMemoryInaccurate', { bookId, kind, itemId }) as Promise<
+      { ok: true; item: AiMemoryBase } | { ok: false; message: string }
+    >,
     retrySave: (saveToken: string) => ipcRenderer.invoke('ai.retrySave', { saveToken }) as Promise<
       { ok: true } | { ok: false; message: string }
     >,
