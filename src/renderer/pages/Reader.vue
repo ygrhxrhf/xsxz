@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NList, NListItem, NSlider, NSwitch, NTag, NInput, NSpace, NPopconfirm, useMessage } from 'naive-ui'
+import { NButton, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPopconfirm, NRadioButton, NRadioGroup, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
 import type {
   AiBudgetEstimate,
   AiChatMessage,
+  AiMemoryBase,
+  AiMemoryFile,
   Book,
   ChapterMeta,
   ReaderContentWidth,
@@ -78,6 +80,11 @@ const recapText = ref('')
 const recapJobId = ref('')
 const recapJobKind = ref<'chapter' | 'story' | ''>('')
 const recapStopping = ref(false)
+const recapLength = ref<'short' | 'standard' | 'detailed'>('standard')
+const memoryData = ref<AiMemoryFile | null>(null)
+const memoryJobId = ref('')
+const memoryJobKind = ref<'update' | 'rebuild' | ''>('')
+const memoryLoading = computed(() => Boolean(memoryJobId.value))
 const chapterSummaryBudget = ref<AiBudgetEstimate | null>(null)
 const showChapterSummaryBudgetConfirm = ref(false)
 const recapBudgetConfirmKind = ref<'chapter' | 'story'>('chapter')
@@ -972,6 +979,7 @@ async function loadPrefs() {
   paragraphIndent.value = s.reader.paragraphIndent
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
+  recapLength.value = s.ai?.recapLength ?? 'standard'
 }
 
 // AI actions
@@ -1073,17 +1081,67 @@ async function loadStoredRecap() {
   recapText.value = res.ok ? (res.summaries.storySoFar?.text || '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。') : res.message
 }
 
+function isStructuredMemory(value: unknown): value is AiMemoryFile {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<AiMemoryFile>
+  return candidate.version === 1 &&
+    Array.isArray(candidate.characters) && Array.isArray(candidate.relations) &&
+    Array.isArray(candidate.foreshadows) && Array.isArray(candidate.events)
+}
+
+async function loadStoredMemory() {
+  if (!book.value) return
+  const result = await window.api.ai.getMemory(book.value.id)
+  if (!result.ok) {
+    message.warning(result.message)
+    return
+  }
+  memoryData.value = isStructuredMemory(result.memory) ? result.memory : null
+}
+
 async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
   if (!book.value) return
   aiAssistantTab.value = tab
   showAiAssistant.value = true
   await Promise.allSettled([
     recapLoading.value ? Promise.resolve() : loadStoredRecap(),
-    window.api.ai.getMemory(book.value.id),
+    loadStoredMemory(),
     chatLoading.value || restoringChat.value
       ? Promise.resolve()
       : window.api.ai.getChat(book.value.id).then((res) => { if (res.ok) chatMessages.value = res.messages }),
   ])
+}
+
+async function startMemoryJob(kind: 'update' | 'rebuild') {
+  if (!book.value?.progress?.chapterId || memoryLoading.value) return
+  const start = kind === 'update' ? window.api.ai.updateMemory : window.api.ai.rebuildMemory
+  const result = await start(book.value.id, book.value.progress.chapterId)
+  if (!result.ok) {
+    message.warning(result.message)
+    return
+  }
+  memoryJobId.value = result.jobId
+  memoryJobKind.value = kind
+}
+
+function stopMemoryJob() {
+  if (memoryJobId.value) void window.api.ai.cancel(memoryJobId.value)
+}
+
+async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'event', item: AiMemoryBase) {
+  if (!book.value || item.accuracy !== 'normal') return
+  const result = await window.api.ai.markMemoryInaccurate(book.value.id, kind, item.id)
+  if (!result.ok) {
+    message.warning(result.message)
+    return
+  }
+  item.accuracy = result.item.accuracy
+  message.success('已标记，将在下次更新时复核。')
+}
+
+async function setRecapLength(value: 'short' | 'standard' | 'detailed') {
+  recapLength.value = value
+  await window.api.settings.set({ ai: { recapLength: value } })
 }
 
 async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) {
@@ -1293,6 +1351,22 @@ onMounted(async () => {
       chatLoading.value = false
       return
     }
+    if (event.jobId === memoryJobId.value) {
+      const kind = memoryJobKind.value
+      memoryJobId.value = ''
+      memoryJobKind.value = ''
+      if (event.ok && event.memoryUpdate) {
+        memoryData.value = event.memoryUpdate.memory
+        message.success(kind === 'rebuild'
+          ? '小说记忆已重建'
+          : `本次处理 ${event.memoryUpdate.processedChapters} 章，新增或更新 ${event.memoryUpdate.changedItems} 条记忆。`)
+      } else if (event.ok && event.stopped) {
+        message.info('更新已停止，原有记忆未改变。')
+      } else if (!event.ok) {
+        message.error(event.message)
+      }
+      return
+    }
     if (event.jobId !== recapJobId.value) return
     const kind = recapJobKind.value
     const stopped = recapStopping.value
@@ -1500,6 +1574,12 @@ onUnmounted(() => {
                 预计发送：{{ chapterSummaryBudget.chapterCount }} 章 / {{ chapterSummaryBudget.paragraphCount }} 段，约
                 {{ chapterSummaryBudget.sentCharacters }} 字 / {{ chapterSummaryBudget.estimatedTokens }} tokens（估算）
               </div>
+              <n-radio-group :value="recapLength" size="small" @update:value="setRecapLength">
+                <n-radio-button value="short">简短 · 约 200 字</n-radio-button>
+                <n-radio-button value="standard">标准 · 约 500 字</n-radio-button>
+                <n-radio-button value="detailed">详细 · 约 1000 字</n-radio-button>
+              </n-radio-group>
+              <p class="subtle">前情只根据已经生成的本章摘要和小说记忆整理。</p>
               <div class="ai-result">{{ recapText || '还没有前情提要。' }}</div>
               <n-space>
                 <n-button :disabled="!book?.progress?.chapterId || recapLoading" type="primary" @click="startRecap('story')">刷新前情</n-button>
@@ -1507,9 +1587,64 @@ onUnmounted(() => {
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="memory" tab="记忆">
-              <n-empty description="还没有人物与剧情记忆。">
-                <template #extra>更新记忆后，可按人物、关系、伏笔和关键事件查看已读剧情。</template>
-              </n-empty>
+              <n-space vertical>
+                <n-space>
+                  <n-button type="primary" :disabled="!book?.progress?.chapterId || memoryLoading" @click="startMemoryJob('update')">更新记忆</n-button>
+                  <n-popconfirm
+                    positive-text="继续重建"
+                    negative-text="取消"
+                    @positive-click="startMemoryJob('rebuild')"
+                  >
+                    全部重建会删除现有 AI 记忆，并重新分析第一章到当前已读章节。旧记忆会在新结果完整保存后替换。确定继续吗？
+                    <template #trigger><n-button :disabled="!book?.progress?.chapterId || memoryLoading">全部重建</n-button></template>
+                  </n-popconfirm>
+                  <n-button v-if="memoryLoading" type="warning" @click="stopMemoryJob">停止生成</n-button>
+                </n-space>
+                <div v-if="memoryData?.uptoChapterId" class="subtle">
+                  已更新到：{{ book?.chapters.find((chapter) => chapter.id === memoryData?.uptoChapterId)?.title || memoryData.uptoChapterId }}
+                </div>
+                <n-empty
+                  v-if="!memoryData || !(memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length)"
+                  description="还没有人物与剧情记忆。"
+                >
+                  <template #extra>更新记忆后，可按人物、关系、伏笔和关键事件查看已读剧情。</template>
+                </n-empty>
+                <template v-else>
+                  <section v-if="memoryData.characters.length" class="memory-section">
+                    <h3>人物</h3>
+                    <article v-for="item in memoryData.characters" :key="item.id" class="memory-item">
+                      <strong>{{ item.name }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
+                      <p>{{ item.role }} · {{ item.status }}</p><p>{{ item.summary }}</p>
+                      <p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
+                      <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('character', item)">标记不准确</n-button>
+                    </article>
+                  </section>
+                  <section v-if="memoryData.relations.length" class="memory-section">
+                    <h3>关系</h3>
+                    <article v-for="item in memoryData.relations" :key="item.id" class="memory-item">
+                      <strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
+                      <p>{{ item.status }} · {{ item.summary }}</p><p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
+                      <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('relation', item)">标记不准确</n-button>
+                    </article>
+                  </section>
+                  <section v-if="memoryData.foreshadows.length" class="memory-section">
+                    <h3>伏笔</h3>
+                    <article v-for="item in memoryData.foreshadows" :key="item.id" class="memory-item">
+                      <strong>{{ item.desc }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
+                      <p>{{ item.status }} · {{ item.summary }}</p><p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
+                      <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
+                    </article>
+                  </section>
+                  <section v-if="memoryData.events.length" class="memory-section">
+                    <h3>关键事件</h3>
+                    <article v-for="item in memoryData.events" :key="item.id" class="memory-item">
+                      <strong>{{ item.title }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
+                      <p>{{ item.result }} · {{ item.summary }}</p><p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
+                      <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('event', item)">标记不准确</n-button>
+                    </article>
+                  </section>
+                </template>
+              </n-space>
             </n-tab-pane>
             <n-tab-pane name="qa" tab="问答">
               <div class="chat-messages">
@@ -1946,6 +2081,39 @@ onUnmounted(() => {
   line-height: 1.8;
   font-size: 14px;
   padding: 0 4px;
+}
+
+.ai-assistant-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  color: var(--r-muted);
+}
+
+.memory-section h3 {
+  margin: 12px 0 6px;
+}
+
+.memory-item {
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--r-line);
+  border-radius: 8px;
+}
+
+.memory-item strong + .n-tag {
+  margin-left: 6px;
+}
+
+.memory-item p {
+  margin: 6px 0;
+  white-space: pre-wrap;
+}
+
+.memory-source {
+  color: var(--r-muted);
+  font-size: 12px;
 }
 
 .chat-messages {
