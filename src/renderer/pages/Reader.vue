@@ -39,6 +39,7 @@ import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
+import { displayAiServiceOrigin } from './aiAssistantTransparency'
 import {
   assistantKindForJob,
   clearRetriedAssistantSaveToken,
@@ -1028,11 +1029,7 @@ async function loadPrefs() {
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
   recapLength.value = s.ai?.recapLength ?? 'standard'
-  try {
-    aiServiceOrigin.value = new URL(s.baseUrl).origin
-  } catch {
-    aiServiceOrigin.value = s.baseUrl
-  }
+  aiServiceOrigin.value = displayAiServiceOrigin(s.baseUrl)
 }
 
 // AI actions
