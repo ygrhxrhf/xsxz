@@ -13,6 +13,8 @@ describe('memory IPC main-process contract', () => {
     expect(source).toContain("aiTaskInstruction(settings, 'memory')")
     expect(source).toContain("{ task: 'memory', signal: requestSignal }")
     expect(source).toContain('selectMemoryChapterBatches(')
+    expect(source).toContain("const hasReviewItems = mode === 'update'")
+    expect(source).toContain('if (!selection.batches.length && !hasReviewItems)')
     expect(source).toContain('executeMemoryOrchestration(')
     expect(source).toContain('finalizeMemoryUpdate(')
     expect(source).toContain("markAiMemoryAccuracy(payload.bookId, collection, payload.itemId, 'review')")

@@ -543,7 +543,15 @@ function registerIpc(): void {
         existing?.uptoChapterId,
         mode,
       )
-      if (!selection.batches.length) return { ok: false, message: '已更新到当前阅读进度' }
+      const eligibleChapterIds = new Set(selection.eligibleChapterIds)
+      const hasReviewItems = mode === 'update' && Boolean(existing) && [
+        ...(existing?.characters ?? []),
+        ...(existing?.relations ?? []),
+        ...(existing?.foreshadows ?? []),
+        ...(existing?.events ?? []),
+      ].some((item) => item.accuracy === 'review'
+        && item.sources.every((source) => eligibleChapterIds.has(source.chapterId)))
+      if (!selection.batches.length && !hasReviewItems) return { ok: false, message: '已更新到当前阅读进度' }
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }

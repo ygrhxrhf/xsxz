@@ -98,18 +98,23 @@ describe('memory orchestration', () => {
     expect(isAiMemoryFile(result.memory)).toBe(true)
   })
 
-  it('waits to review flagged items until a later batch has a new ready chapter', async () => {
+  it('reviews flagged items on the next update even when there are no new chapters', async () => {
     const candidate = buildAiMemoryCandidates('c0001', '第一章', '甲'.repeat(100))[0]!
     const initial = (await executeMemoryOrchestration('测试书', null, [[{
       id: 'c0001', index: 1, title: '第一章', status: 'ready', body: '甲'.repeat(100),
     }]], 0, '抽取记忆。', async () => rawCharacter(candidate.id))).memory
     initial.characters[0]!.accuracy = 'review'
-    const complete = vi.fn()
+    const complete = vi.fn(async (request: { reviewItemIds: Set<string> }) => ({
+      characters: [], relations: [], foreshadows: [], events: [],
+      reviewDecisions: [{ itemId: [...request.reviewItemIds][0], confirmed: true }],
+    }))
     const result = await executeMemoryOrchestration('测试书', initial, [], 0, '复核记忆。', complete, {
       includeReviews: true,
+      reviewChapterIds: new Set(['c0001']),
     })
-    expect(complete).not.toHaveBeenCalled()
-    expect(result.memory.characters[0]?.accuracy).toBe('review')
+    expect(complete).toHaveBeenCalledOnce()
+    expect(result.processedChapters).toBe(0)
+    expect(result.memory.characters[0]?.accuracy).toBe('normal')
   })
 
   it('processes short chapters without a model call and still advances the durable cutoff', async () => {

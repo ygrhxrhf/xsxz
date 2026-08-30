@@ -198,18 +198,9 @@ export async function executeMemoryOrchestration(
 ): Promise<AiMemoryUpdateResult> {
   const updatedAt = options.updatedAt ?? new Date().toISOString()
   let memory = initialMemory ? structuredClone(initialMemory) : null
-  let reviewsPending = options.includeReviews === true
   let processedChapters = 0
 
-  const batches = chapterBatches
-  for (const batch of batches) {
-    if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    const candidates = batch.flatMap((chapter) =>
-      buildAiMemoryCandidates(chapter.id, chapter.title, chapter.body ?? ''))
-    const requests = planMemoryPromptRequests(
-      bookTitle, instruction, candidates, memory, reviewsPending, options.reviewChapterIds,
-    )
-    reviewsPending = false
+  const applyRequests = async (requests: MemoryPromptRequest[]) => {
     for (const request of requests) {
       if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       const raw = await complete(request, options.signal)
@@ -223,6 +214,22 @@ export async function executeMemoryOrchestration(
         if (!applied.reviewedItemIds.includes(itemId)) markUnresolvedReviewUncertain(memory, itemId, updatedAt)
       }
     }
+  }
+
+  if (options.includeReviews === true) {
+    await applyRequests(planMemoryPromptRequests(
+      bookTitle, instruction, [], memory, true, options.reviewChapterIds,
+    ))
+  }
+
+  const batches = chapterBatches
+  for (const batch of batches) {
+    if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    const candidates = batch.flatMap((chapter) =>
+      buildAiMemoryCandidates(chapter.id, chapter.title, chapter.body ?? ''))
+    await applyRequests(planMemoryPromptRequests(
+      bookTitle, instruction, candidates, memory, false, options.reviewChapterIds,
+    ))
     processedChapters += batch.length
     const uptoChapterId = batch.at(-1)?.id
     if (uptoChapterId) {
