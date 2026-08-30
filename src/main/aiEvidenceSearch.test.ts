@@ -68,6 +68,42 @@ describe('local read-range evidence selection', () => {
     expect(new Set(first.citations.map((item) => item.id)).size).toBe(first.citations.length)
   })
 
+  it('matches collapsed whitespace and maps lowercase expansion back to the original excerpt', () => {
+    const special = [
+      chapter('c0001', 1, '顾清   找到\t账册'),
+      chapter('c0002', 2, `${'İ'.repeat(220)}TARGET${'😀'.repeat(120)}`),
+    ]
+    const whitespace = selectLocalEvidence(special, { originalQuestion: '顾清 找到 账册', corePhrase: '顾清 找到 账册' }, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002', currentChapterId: 'c0001', excerptCharacters: 80,
+    })
+    expect(whitespace.citations[0]?.excerpt).toContain('顾清   找到\t账册')
+    const expanded = selectLocalEvidence(special, { originalQuestion: 'target', corePhrase: 'target' }, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002', currentChapterId: 'c0002', excerptCharacters: 80,
+    })
+    expect(expanded.citations[0]?.excerpt).toContain('TARGET')
+    expect(Array.from(expanded.citations[0]!.excerpt).length).toBeLessThanOrEqual(80)
+  })
+
+  it('falls back from non-finite option values while preserving the 8-result and 6-chapter caps', () => {
+    const many = Array.from({ length: 10 }, (_, index) => chapter(
+      `c${String(index + 1).padStart(4, '0')}`, index + 1, '目标词',
+    ))
+    const result = selectLocalEvidence(many, { originalQuestion: '目标词', corePhrase: '目标词' }, {
+      requestedUptoChapterId: 'c0010', progressChapterId: 'c0010', maxResults: Number.NaN,
+      maxChapters: Number.POSITIVE_INFINITY, excerptCharacters: Number.NaN,
+    })
+    expect(result.citations).toHaveLength(6)
+    expect(new Set(result.citations.map((item) => item.chapterId)).size).toBe(6)
+  })
+
+  it('rejects duplicate chapter ids before producing ambiguous citation ids', () => {
+    expect(() => selectLocalEvidence([
+      chapter('duplicate', 1, '目标词'), chapter('duplicate', 2, '目标词'),
+    ], { originalQuestion: '目标词' }, {
+      requestedUptoChapterId: 'duplicate', progressChapterId: 'duplicate',
+    })).toThrow('章节 ID 重复')
+  })
+
   it('returns an empty local result without model behavior when nothing matches', () => {
     expect(selectLocalEvidence(chapters, { originalQuestion: '不存在的人名' }, {
       requestedUptoChapterId: 'c0002', progressChapterId: 'c0002', currentChapterId: 'c0002',
