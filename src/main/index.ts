@@ -42,7 +42,6 @@ import {
   AiPendingSaveStore,
   aiCompletionDoneEvent,
   aiStoppedDoneEvent,
-  buildBookChatMessages,
   buildTranslatePrompt,
   cleanChapterBody,
   planChapterSummaryRequest,
@@ -50,7 +49,6 @@ import {
   summarizeUpTo,
   streamAiTaskCompletion,
   translateText,
-  chatAboutBook,
   clampSummarizeChapters,
   generateCharacterCard,
   runAiSaveStage,
@@ -1019,40 +1017,8 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.chat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
-    try {
-      const settings = await getSettings()
-      const apiKey = await getApiKey()
-      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const book = await getBook(args.bookId)
-      const ch = await readChapter(args.bookId, args.chapterId)
-      const uptoIdx = book.chapters.findIndex((c) => c.id === args.chapterId)
-      const catalogSummary = book.chapters
-        .slice(0, uptoIdx + 1)
-        .map((c) => c.title)
-        .join('、')
-      const stored = await readSummaries(args.bookId)
-      const readSummary = book.chapters
-        .slice(0, uptoIdx + 1)
-        .map((c) => stored.byChapter[c.id])
-        .filter(Boolean)
-        .join('\n\n')
-      const exclusive = await aiJobSlot.runExclusive(() => chatAboutBook(
-        trustedAiConfig(settings, apiKey),
-        book.title,
-        ch.title,
-        ch.body,
-        catalogSummary,
-        readSummary,
-        args.messages,
-      ))
-      if (!exclusive.ok) return exclusive
-      await writeChat(args.bookId, [...args.messages.filter((message) => message.role !== 'system'), { role: 'assistant', content: exclusive.value }])
-      return { ok: true, text: exclusive.value }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
+  // Kept for preload/backward compatibility, but deliberately cannot bypass evidence-grounded chatStream.
+  ipcMain.handle('ai.chat', async () => ({ ok: false, message: '请使用已读证据问答' }))
   ipcMain.handle(
     'ai.test',
     async (_e, payload?: {

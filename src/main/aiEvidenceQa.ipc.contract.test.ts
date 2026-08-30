@@ -15,6 +15,17 @@ describe('evidence QA IPC contract', () => {
     expect(block).not.toContain('readSummaries(')
   })
 
+  it('keeps the legacy channel compatible but disables its unsafe direct-book path', async () => {
+    const source = await readFile(new URL('./index.ts', import.meta.url), 'utf-8')
+    expect(source).toContain("ipcMain.handle('ai.chat', async () => ({ ok: false, message: '请使用已读证据问答' }))")
+    const start = source.indexOf("ipcMain.handle('ai.chat', async () =>")
+    const end = source.indexOf("ipcMain.handle(\n    'ai.test'", start)
+    const block = source.slice(start, end)
+    expect(block).not.toContain('readChapter(')
+    expect(block).not.toContain('chatAboutBook(')
+    expect(block).not.toContain('runAiTaskCompletion(')
+  })
+
   it('uses a detached retry snapshot and an empty stopped terminal during save', async () => {
     const source = await readFile(new URL('./index.ts', import.meta.url), 'utf-8')
     const start = source.indexOf("ipcMain.handle('ai.chatStream'")
