@@ -49,5 +49,6 @@ export function parseMemoryMarkPayload(payload: unknown): MemoryMarkPayload {
     case 'event': kind = 'event'; break
     default: throw new Error('记忆类型无效')
   }
+  if (!payload.itemId.startsWith(`${kind}-`)) throw new Error('记忆条目不存在')
   return { bookId, kind, itemId: payload.itemId }
 }

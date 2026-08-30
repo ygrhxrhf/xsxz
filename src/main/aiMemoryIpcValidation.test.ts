@@ -41,8 +41,8 @@ describe('memory IPC payload boundary', () => {
       .toThrow('记忆类型无效')
   })
 
-  it.each(['../item', 'character-x', '', null, 1])
-  ('rejects an unsafe memory item id: %j', (itemId) => {
+  it.each(['../item', 'character-x', 'relation-0123456789abcdef', '', null, 1])
+  ('rejects an unsafe or kind-mismatched memory item id: %j', (itemId) => {
     expect(() => parseMemoryMarkPayload({ bookId, kind: 'character', itemId }))
       .toThrow('记忆条目不存在')
   })
