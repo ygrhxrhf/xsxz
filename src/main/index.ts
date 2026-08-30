@@ -62,7 +62,7 @@ import { executeMemoryOrchestration, planMemoryPromptRequests, selectMemoryChapt
 import { buildAiMemoryCandidates } from './aiMemory'
 import { finalizeMemoryUpdate } from './aiMemorySave'
 import { selectLocalEvidence, type EvidenceSearchChapter } from './aiEvidenceSearch'
-import { buildEvidenceAnswerMessages, executeEvidenceQaPipeline, planEvidenceChapterReads } from './aiEvidenceQa'
+import { buildEvidenceAnswerMessages, buildEvidenceQueryRewriteMessages, executeEvidenceQaPipeline, planEvidenceChapterReads } from './aiEvidenceQa'
 import { countTextCharacters, estimateAiTokens } from './aiBudget'
 import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
 import {
@@ -599,16 +599,14 @@ function registerIpc(): void {
       const extractionRequests = candidateGroups.flatMap((candidates) =>
         planMemoryPromptRequests(book.title, instruction, candidates, existing, false, eligibleChapterIds))
       const memoryRequests = [...reviewRequests, ...extractionRequests]
-      const materialChapters = [
-        ...batches.flat().map((chapter) => ({ id: chapter.id, title: chapter.title })),
-        ...reviewRequests.flatMap((request) => request.candidates.map((candidate) => ({
-          id: candidate.chapterId, title: candidate.chapterTitle,
-        }))),
-      ]
+      const materialChapters = memoryRequests.flatMap((request) => request.candidates.map((candidate) => ({
+        id: candidate.chapterId, title: candidate.chapterTitle,
+      })))
       const memoryBudget = promptBudget(
         memoryRequests.map((request) => request.prompt),
         materialChapters,
         memoryRequests.reduce((total, request) => total + request.candidates.length, 0),
+        memoryRequests.length ? undefined : '无模型请求',
       )
       return aiJobSlot.start(async (jobId, signal) => {
         sendAiBudget(jobId, 'memory', memoryBudget)
@@ -807,6 +805,7 @@ function registerIpc(): void {
       }
       return aiJobSlot.start(async (jobId, signal) => {
         let partial = ''
+        sendAiBudget(jobId, 'recap', plan.budget)
         sendAiStage(jobId, 'preparing')
         try {
           sendAiStage(jobId, 'requesting')
@@ -1047,16 +1046,22 @@ function registerIpc(): void {
               })
             },
             onEvidenceSelected: (citations) => {
-              const messages = citations.length
+              const rewriteMessages = buildEvidenceQueryRewriteMessages(question)
+              const answerMessages = citations.length
                 ? buildEvidenceAnswerMessages(question, citations, taskInstruction)
                 : []
+              const citedChapterIds = new Set(citations.map((citation) => citation.chapterId))
+              const citedChapters = book.chapters
+                .filter((chapter) => citedChapterIds.has(chapter.id))
+                .sort((left, right) => left.index - right.index)
+                .map((chapter) => ({ id: chapter.id, title: chapter.title }))
               sendAiBudget(jobId, 'qa', promptBudget(
-                messages.map((message) => message.content),
-                citations.map((citation) => ({ id: citation.chapterId, title: citation.chapterTitle })),
+                [...rewriteMessages, ...answerMessages].map((message) => message.content),
+                citedChapters,
                 citations.length,
                 citations.length
-                  ? `${citations[0]!.chapterTitle} → ${citations.at(-1)!.chapterTitle}`
-                  : '0 条本地证据',
+                  ? `${citedChapters[0]!.title} → ${citedChapters.at(-1)!.title}`
+                  : '仅发送查询改写；0 条本地证据，未请求最终回答',
               ))
             },
             answer: (messages) => runAiTaskCompletion(config, messages, { task: 'evidenceQa', signal }),

@@ -826,6 +826,7 @@ const progressSummary = computed(() =>
 const chapterFailHint = computed(() => failAdvice(currentChapter.value?.failCode))
 
 async function loadBook(bookId: string) {
+  assistantBudgets.value = {}
   const previousChapterId = currentChapter.value?.id
   saveProgress()
   const res = await window.api.library.get(bookId)

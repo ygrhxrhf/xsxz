@@ -5,10 +5,13 @@ describe('assistant budget transparency IPC contract', () => {
   it('publishes recap, memory, and evidence budgets without prompt text', async () => {
     const source = await readFile(new URL('./index.ts', import.meta.url), 'utf-8')
     expect(source).toContain("webContents.send('ai.budget', { jobId, task, budget })")
-    expect(source).toContain("sendAiBudget(jobId, 'recap', plan.budget)")
+    expect(source.match(/sendAiBudget\(jobId, 'recap', plan\.budget\)/g)).toHaveLength(2)
     expect(source).toContain("sendAiBudget(jobId, 'memory', memoryBudget)")
     expect(source).toContain("sendAiBudget(jobId, 'qa', promptBudget(")
-    expect(source).toContain("'0 条本地证据'")
+    expect(source).toContain('buildEvidenceQueryRewriteMessages(question)')
+    expect(source).toContain("'仅发送查询改写；0 条本地证据，未请求最终回答'")
+    expect(source).toContain("memoryRequests.length ? undefined : '无模型请求'")
+    expect(source).toContain('.sort((left, right) => left.index - right.index)')
     expect(source).not.toMatch(/webContents\.send\('ai\.budget'[^\n]*(?:prompt|apiKey)/)
   })
 
@@ -21,6 +24,7 @@ describe('assistant budget transparency IPC contract', () => {
     expect(types).toContain('export interface AiBudgetEvent')
     expect(preload).toContain("onBudget: (handler: (payload: AiBudgetEvent) => void) => on('ai.budget', handler)")
     expect(reader).toContain('window.api.ai.onBudget(({ task, budget }) =>')
+    expect(reader).toContain('async function loadBook(bookId: string) {\n  assistantBudgets.value = {}')
     expect(reader).toContain('<strong>本次发送范围</strong>')
     expect(reader).toContain('currentAssistantBudget.sentCharacters')
     expect(reader).toContain('currentAssistantBudget.estimatedTokens')
