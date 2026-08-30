@@ -95,6 +95,7 @@ const recapStopping = ref(false)
 const recapStarting = ref(false)
 const recapLength = ref<'short' | 'standard' | 'detailed'>('standard')
 const memoryData = ref<AiMemoryFile | null>(null)
+const memorySourceJumping = ref(false)
 const memoryJobId = ref('')
 const memoryJobKind = ref<'update' | 'rebuild' | ''>('')
 const memoryStarting = ref(false)
@@ -1187,27 +1188,39 @@ async function stopMemoryJob() {
 }
 
 async function jumpToMemorySource(source: AiCitation) {
-  if (!book.value) return
-  const chapter = chapters.value.find((item) => item.id === source.chapterId)
-  if (!chapter) {
-    message.warning('来源章节不存在')
-    return
-  }
-  const result = await window.api.library.readChapter(book.value.id, source.chapterId)
-  if (!result.chapter || result.chapter.status !== 'ready' || !result.chapter.body) {
-    message.warning('来源章节正文不可用')
-    return
-  }
-  const location = locateMemorySourceParagraph(
-    splitIntoParagraphs(result.chapter.body),
-    source.paragraphIndex,
-    source.excerpt,
-  )
-  pendingScrollPara = location.paragraphIndex
-  showAiAssistant.value = false
-  await openChapter(chapter, 0)
-  if (location.mode === 'fallback') {
-    message.warning('原段落已变化，已跳到该章开头。')
+  if (!book.value || memorySourceJumping.value) return
+  memorySourceJumping.value = true
+  try {
+    const chapter = chapters.value.find((item) => item.id === source.chapterId)
+    if (!chapter) {
+      message.warning('来源章节不存在')
+      return
+    }
+    const result = await window.api.library.readChapter(book.value.id, source.chapterId)
+    if (!result.chapter || result.chapter.status !== 'ready' || !result.chapter.body) {
+      message.warning('来源章节正文不可用')
+      return
+    }
+    const location = locateMemorySourceParagraph(
+      splitIntoParagraphs(result.chapter.body),
+      source.paragraphIndex,
+      source.excerpt,
+    )
+    pendingScrollPara = location.paragraphIndex
+    showAiAssistant.value = false
+    try {
+      await openChapter(chapter, 0)
+    } finally {
+      pendingScrollPara = -1
+    }
+    if (location.mode === 'fallback') {
+      message.warning('原段落已变化，已跳到该章开头。')
+    }
+  } catch {
+    pendingScrollPara = -1
+    message.error('无法打开来源章节')
+  } finally {
+    memorySourceJumping.value = false
   }
 }
 
@@ -1764,7 +1777,7 @@ onUnmounted(() => {
                     <article v-for="item in memoryData.characters" :key="item.id" class="memory-item">
                       <strong>{{ item.name }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
                       <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}</p><p>{{ item.summary }}</p>
-                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
+                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
                     </article>
                   </section>
@@ -1772,7 +1785,7 @@ onUnmounted(() => {
                     <h3>关系</h3>
                     <article v-for="item in memoryData.relations" :key="item.id" class="memory-item">
                       <strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
-                      <p>{{ item.status }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
+                      <p>{{ item.status }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
                     </article>
                   </section>
@@ -1780,7 +1793,7 @@ onUnmounted(() => {
                     <h3>伏笔</h3>
                     <article v-for="item in memoryData.foreshadows" :key="item.id" class="memory-item">
                       <strong>{{ item.desc }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
-                      <p>{{ item.status }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
+                      <p>{{ item.status }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
                     </article>
                   </section>
@@ -1788,7 +1801,7 @@ onUnmounted(() => {
                     <h3>关键事件</h3>
                     <article v-for="item in memoryData.events" :key="item.id" class="memory-item">
                       <strong>{{ item.title }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
-                      <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
+                      <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
                     </article>
                   </section>
