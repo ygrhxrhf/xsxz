@@ -16,6 +16,7 @@ import {
   NSwitch,
   NTag,
   NModal,
+  NSpin,
   useMessage,
 } from 'naive-ui'
 import type { AiPromptKind, AiPromptMode, AiProvider, Settings, SiteRule, Skin } from '@shared/types'
@@ -38,6 +39,17 @@ const emit = defineEmits<{
   (e: 'change-skin', skin: Skin): void
 }>()
 const message = useMessage()
+type SettingsSection = 'appearance' | 'library' | 'ai' | 'siteRules' | 'backup' | 'about'
+const activeSection = ref<SettingsSection>('appearance')
+const settingsLoading = ref(true)
+const sectionOptions: { id: SettingsSection; label: string }[] = [
+  { id: 'appearance', label: '外观' },
+  { id: 'library', label: '书库' },
+  { id: 'ai', label: 'AI' },
+  { id: 'siteRules', label: '站点规则' },
+  { id: 'backup', label: '备份与恢复' },
+  { id: 'about', label: '关于' },
+]
 
 const skinOptions: { id: Skin; name: string; desc: string; mark: string }[] = [
   { id: 'sakura', name: '夜樱', desc: '深色 · 樱粉 × 紫罗兰', mark: '🌸' },
@@ -117,17 +129,22 @@ async function loadRules() {
 }
 
 async function load() {
-  settings.value = await window.api.settings.get()
-  baseUrl.value = settings.value.baseUrl
-  model.value = settings.value.model
-  const ai = settings.value.ai ?? DEFAULT_AI_PREFS
-  provider.value = inferAiProvider(settings.value.baseUrl, ai.provider)
-  thinkingEnabled.value = ai.thinkingEnabled
-  trustedCustomOrigins.value = [...ai.trustedCustomOrigins]
-  promptMode.value = { ...ai.promptMode }
-  customPrompts.value = { ...ai.customPrompts }
-  libraryPath.value = settings.value.libraryPath
-  await loadRules()
+  settingsLoading.value = true
+  try {
+    settings.value = await window.api.settings.get()
+    baseUrl.value = settings.value.baseUrl
+    model.value = settings.value.model
+    const ai = settings.value.ai ?? DEFAULT_AI_PREFS
+    provider.value = inferAiProvider(settings.value.baseUrl, ai.provider)
+    thinkingEnabled.value = ai.thinkingEnabled
+    trustedCustomOrigins.value = [...ai.trustedCustomOrigins]
+    promptMode.value = { ...ai.promptMode }
+    customPrompts.value = { ...ai.customPrompts }
+    libraryPath.value = settings.value.libraryPath
+    await loadRules()
+  } finally {
+    settingsLoading.value = false
+  }
 }
 
 async function pickLibrary() {
@@ -475,7 +492,8 @@ watch(
 watch(
   () => props.prefillNonce,
   () => {
-    if (props.prefillHost) ruleHost.value = props.prefillHost
+    ruleHost.value = props.prefillHost ?? ''
+    activeSection.value = 'siteRules'
   },
 )
 
@@ -483,10 +501,30 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page" style="max-width:600px">
-    <h2>设置</h2>
-
-    <n-card title="外观" style="margin-bottom:16px">
+  <div class="page settings-page">
+    <header class="settings-header">
+      <h2 class="page-title">设置</h2>
+      <p>管理外观、书库、AI 与本机阅读环境。</p>
+    </header>
+    <div class="settings-layout">
+      <nav class="settings-nav" aria-label="设置分类">
+        <button
+          v-for="section in sectionOptions"
+          :key="section.id"
+          type="button"
+          class="settings-nav-item"
+          :class="{ active: activeSection === section.id }"
+          :aria-current="activeSection === section.id ? 'page' : undefined"
+          @click="activeSection = section.id"
+        >{{ section.label }}</button>
+      </nav>
+      <main class="settings-content">
+        <div v-if="settingsLoading" class="settings-loading" role="status" aria-label="正在加载设置">
+          <n-spin size="medium" />
+          <span>正在加载设置</span>
+        </div>
+        <template v-else>
+    <n-card v-show="activeSection === 'appearance'" title="外观" class="settings-card">
       <div class="skin-grid">
         <button
           v-for="s in skinOptions"
@@ -510,21 +548,21 @@ onMounted(load)
       </div>
     </n-card>
 
-    <n-card title="书库" style="margin-bottom:16px">
+    <n-card v-show="activeSection === 'library'" title="书库" class="settings-card">
       <n-space vertical :size="12">
         <n-input-group>
           <n-input-group-label style="width:80px">书库路径</n-input-group-label>
           <n-input v-model:value="libraryPath" placeholder="D:\spbf\library" />
           <n-button @click="pickLibrary">选择目录</n-button>
         </n-input-group>
-        <p style="color:#888;font-size:13px;margin:0">
+        <p style="color:var(--text-muted);font-size:13px;margin:0">
           保存后立即使用新路径，不会把旧书拷过去。旧目录里的文件仍留在原处。
         </p>
         <n-button type="primary" :loading="saving" @click="saveLibrary">保存路径</n-button>
       </n-space>
     </n-card>
 
-    <n-card title="AI 配置" style="margin-bottom:16px">
+    <n-card v-show="activeSection === 'ai'" title="AI 配置" class="settings-card">
       <n-alert v-if="settings?.apiKeyConfigured" type="success" style="margin-bottom:12px">
         API Key 已配置（安全存储）
       </n-alert>
@@ -628,8 +666,8 @@ onMounted(load)
       <div v-if="msg" class="form-msg" :class="msgType">{{ msg }}</div>
     </n-card>
 
-    <n-card title="站点规则" style="margin-bottom:16px">
-      <p style="color:#888;font-size:13px;margin:0 0 12px">
+    <n-card v-show="activeSection === 'siteRules'" title="站点规则" class="settings-card">
+      <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">
         按域名配置四条可选 CSS。保存时不检查选择器是否合法。空选择器走通用提取。
       </p>
       <n-space vertical :size="12">
@@ -684,8 +722,8 @@ onMounted(load)
       </div>
     </n-card>
 
-    <n-card title="备份与恢复" style="margin-bottom:16px">
-      <p style="color:#888;font-size:13px;margin:0 0 12px">
+    <n-card v-show="activeSection === 'backup'" title="备份与恢复" class="settings-card">
+      <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">
         备份把整个书库（不含回收站）打包成 zip 存到你选的文件夹。恢复是整库覆盖：会先清空当前书库再导入备份。
       </p>
       <n-space>
@@ -694,17 +732,20 @@ onMounted(load)
       </n-space>
     </n-card>
 
-    <n-card title="阅读偏好" style="margin-bottom:16px">
-      <p style="color:#888;font-size:13px">字体大小、行距、夜间模式请在阅读器中调整（实时保存）。</p>
+    <n-card v-show="activeSection === 'appearance'" title="阅读偏好" class="settings-card">
+      <p style="color:var(--text-muted);font-size:13px">字体、行距、主题和列宽请在阅读器的“外观”面板中调整。</p>
     </n-card>
 
-    <n-card title="关于">
-      <p style="color:#888;font-size:13px">
+    <n-card v-show="activeSection === 'about'" title="关于" class="settings-card">
+      <p style="color:var(--text-muted);font-size:13px">
         小说浏览器 v0.1.0 · 当前书库：{{ settings?.libraryPath }}<br>
         技术栈：Electron + Vue 3 + Naive UI
       </p>
     </n-card>
 
+        </template>
+      </main>
+    </div>
     <n-modal
       :show="trustModalVisible"
       preset="card"
@@ -726,6 +767,90 @@ onMounted(load)
 </template>
 
 <style scoped>
+.settings-page {
+  max-width: 1040px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.settings-header {
+  margin-bottom: var(--space-4);
+}
+
+.settings-header p {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: var(--space-6);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-self: start;
+}
+
+.settings-nav-item {
+  position: relative;
+  min-height: 38px;
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 0 var(--space-3);
+  color: var(--text-secondary);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav-item::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.settings-nav-item:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.settings-nav-item.active {
+  color: var(--text-primary);
+  background: var(--surface-3);
+  font-weight: 700;
+}
+
+.settings-nav-item.active::before {
+  background: var(--accent);
+}
+
+.settings-content {
+  min-width: 0;
+}
+
+.settings-card + .settings-card {
+  margin-top: var(--space-4);
+}
+
+.settings-loading {
+  min-height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+}
+
 .prompt-settings {
   margin-top: 22px;
   padding-top: 18px;
@@ -743,7 +868,7 @@ onMounted(load)
 }
 
 .field-help {
-  color: #888;
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -756,8 +881,9 @@ onMounted(load)
 }
 
 .skin-grid {
-  display: flex;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
 }
 
 .skin-card {
@@ -910,5 +1036,23 @@ onMounted(load)
   font-size: 12px;
   color: var(--muted);
   line-height: 1.5;
+}
+
+@media (max-width: 1180px) {
+  .settings-layout {
+    grid-template-columns: 160px minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+}
+
+@media (max-width: 720px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>
