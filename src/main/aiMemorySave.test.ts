@@ -47,6 +47,19 @@ describe('memory update save finalization', () => {
     expect(retrySave).toHaveBeenCalledOnce()
   })
 
+  it('reports success when cancellation arrives only after the atomic save has committed', async () => {
+    const controller = new AbortController()
+    const emitDone = vi.fn()
+    await finalizeMemoryUpdate('job-committed', memoryUpdate, undefined, controller.signal, {
+      save: vi.fn(async () => { controller.abort() }),
+      retrySave: vi.fn(),
+      registerRetry: vi.fn(),
+      emitStage: vi.fn(),
+      emitDone,
+    })
+    expect(emitDone).toHaveBeenCalledWith(expect.objectContaining({ ok: true, memoryUpdate }))
+  })
+
   it('never emits an applicable result or registers retry when cancellation wins during save', async () => {
     const controller = new AbortController()
     const emitDone = vi.fn()
