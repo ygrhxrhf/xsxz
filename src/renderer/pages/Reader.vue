@@ -7,6 +7,8 @@ import type {
   AiChatMessage,
   AiMemoryBase,
   AiMemoryFile,
+  AiRequestStage,
+  AiUsage,
   Book,
   ChapterMeta,
   ReaderContentWidth,
@@ -87,6 +89,12 @@ const memoryJobKind = ref<'update' | 'rebuild' | ''>('')
 const memoryStarting = ref(false)
 const memoryStopping = ref(false)
 const memoryLoading = computed(() => memoryStarting.value || Boolean(memoryJobId.value))
+const assistantStages = ref<Record<string, AiRequestStage>>({})
+const lastAssistantUsage = ref<AiUsage | null>(null)
+const assistantCompleted = ref(false)
+const lastAssistantTruncated = ref(false)
+const assistantSaveToken = ref('')
+const assistantSaveRetrying = ref(false)
 const chapterSummaryBudget = ref<AiBudgetEstimate | null>(null)
 const showChapterSummaryBudgetConfirm = ref(false)
 const recapBudgetConfirmKind = ref<'chapter' | 'story'>('chapter')
@@ -98,6 +106,22 @@ const chatInput = ref('')
 const chatLoading = ref(false)
 const chatJobId = ref('')
 const chatAssistantIndex = ref(-1)
+const currentAssistantJobId = computed(() => aiAssistantTab.value === 'recap'
+  ? recapJobId.value
+  : aiAssistantTab.value === 'memory'
+    ? memoryJobId.value
+    : chatJobId.value)
+const currentAssistantStage = computed(() => assistantStages.value[currentAssistantJobId.value])
+const assistantStageText = computed(() => {
+  const labels: Partial<Record<AiRequestStage, string>> = {
+    preparing: '正在准备已读材料…',
+    rewriting: '正在改写检索问题…',
+    searching: '正在检索本地已读内容…',
+    requesting: '正在请求模型服务…',
+    saving: '正在保存到本地书库…',
+  }
+  return currentAssistantStage.value ? labels[currentAssistantStage.value] ?? '' : ''
+})
 const catalogQuery = ref('')
 const scrollRatioView = ref(0)
 const retryingChapter = ref(false)
@@ -723,6 +747,7 @@ function onReaderKeydown(e: KeyboardEvent) {
 let scrollTimer: ReturnType<typeof setTimeout> | null = null
 let unsubDownload: (() => void) | null = null
 let unsubAiChunk: (() => void) | null = null
+let unsubAiStage: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
 
 const nightClass = computed(() => (nightMode.value ? 'night' : ''))
@@ -1155,6 +1180,24 @@ async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'e
   message.success('已标记，将在下次更新时复核。')
 }
 
+async function retryAssistantSave() {
+  if (!assistantSaveToken.value || assistantSaveRetrying.value) return
+  assistantSaveRetrying.value = true
+  try {
+    const result = await window.api.ai.retrySave(assistantSaveToken.value)
+    if (result.ok) {
+      assistantSaveToken.value = ''
+      message.success('结果已保存')
+    } else {
+      message.error(result.message)
+    }
+  } catch {
+    message.error('重试保存失败')
+  } finally {
+    assistantSaveRetrying.value = false
+  }
+}
+
 async function setRecapLength(value: 'short' | 'standard' | 'detailed') {
   const previous = recapLength.value
   recapLength.value = value
@@ -1353,7 +1396,18 @@ onMounted(async () => {
       if (assistant) assistant.content += delta
     }
   })
+  unsubAiStage = window.api.ai.onStage(({ jobId, stage }) => {
+    assistantStages.value = { ...assistantStages.value, [jobId]: stage }
+  })
   unsubAiDone = window.api.ai.onDone((event) => {
+    const assistantJob = event.jobId === recapJobId.value ||
+      event.jobId === memoryJobId.value || event.jobId === chatJobId.value
+    if (assistantJob) {
+      assistantCompleted.value = true
+      lastAssistantUsage.value = event.ok ? event.usage ?? null : null
+      lastAssistantTruncated.value = event.ok ? event.truncated === true : false
+      assistantSaveToken.value = event.ok ? event.saveToken ?? '' : ''
+    }
     if (event.jobId === translateJobId.value) {
       translateJobId.value = ''
       aiResult.value = event.ok ? event.text : `错误：${event.message}`
@@ -1434,6 +1488,7 @@ onUnmounted(() => {
   void flushReaderPrefsSave()
   unsubDownload?.()
   unsubAiChunk?.()
+  unsubAiStage?.()
   unsubAiDone?.()
   saveProgress()
 })
@@ -1591,6 +1646,20 @@ onUnmounted(() => {
           <div class="ai-assistant-heading">
             <strong>{{ book?.title }}</strong>
             <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
+          </div>
+          <div v-if="assistantStageText" class="ai-assistant-status">{{ assistantStageText }}</div>
+          <div v-if="assistantCompleted" class="ai-assistant-status">
+            <template v-if="lastAssistantUsage && (lastAssistantUsage.inputTokens !== undefined || lastAssistantUsage.outputTokens !== undefined)">
+              最近一次：输入 {{ lastAssistantUsage.inputTokens ?? 0 }} / 输出 {{ lastAssistantUsage.outputTokens ?? 0 }} tokens
+              <span v-if="lastAssistantUsage.cacheHitTokens !== undefined"> · 缓存命中 {{ lastAssistantUsage.cacheHitTokens }} tokens</span>
+            </template>
+            <template v-else>服务未返回 token 用量。</template>
+            <div class="subtle">实际费用以模型服务商的计费规则为准。</div>
+          </div>
+          <n-tag v-if="lastAssistantTruncated" type="warning">回答可能因输出上限而截断。</n-tag>
+          <div v-if="assistantSaveToken" class="ai-save-warning">
+            结果已生成，但未能保存到书库。
+            <n-button size="small" :loading="assistantSaveRetrying" @click="retryAssistantSave">重试保存</n-button>
           </div>
           <n-tabs v-model:value="aiAssistantTab" type="line" animated>
             <n-tab-pane name="recap" tab="前情">
@@ -2113,6 +2182,23 @@ onUnmounted(() => {
   gap: 4px;
   margin-bottom: 10px;
   color: var(--r-muted);
+}
+
+.ai-assistant-status,
+.ai-save-warning {
+  margin-bottom: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--r-panel-bg);
+  color: var(--r-muted);
+  font-size: 12px;
+}
+
+.ai-save-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .memory-section h3 {
