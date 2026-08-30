@@ -4,6 +4,8 @@ import { basename, dirname, extname, join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import type {
   AiChatFile,
+  AiChatFileV2,
+  AiEvidenceChatMessage,
   AiMemoryBase,
   AiMemoryFile,
   AiSummaries,
@@ -613,16 +615,53 @@ export async function writeStorySoFar(
   await atomicWriteText(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), options)
 }
 
-export async function readChat(bookId: string): Promise<AiChatFile> {
+function trimChatPairs(messages: readonly AiEvidenceChatMessage[], limit = 40): AiEvidenceChatMessage[] {
+  const units: AiEvidenceChatMessage[][] = []
+  for (const message of messages) {
+    if (message.role === 'user') {
+      units.push([message])
+    } else {
+      const latest = units.at(-1)
+      if (latest?.length === 1 && latest[0]?.role === 'user') latest.push(message)
+    }
+  }
+  const kept: AiEvidenceChatMessage[][] = []
+  let count = 0
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const unit = units[index]!
+    if (count + unit.length > limit) continue
+    kept.unshift(unit)
+    count += unit.length
+  }
+  return kept.flat()
+}
+
+function isChatCitation(value: unknown): boolean {
+  return isRecord(value) && typeof value.id === 'string' && value.id.length > 0 &&
+    typeof value.chapterId === 'string' && value.chapterId.length > 0 &&
+    typeof value.chapterTitle === 'string' && Number.isSafeInteger(value.paragraphIndex) &&
+    Number(value.paragraphIndex) >= 0 && typeof value.excerpt === 'string' && value.excerpt.length > 0
+}
+
+function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | null {
+  if (!isRecord(value) || (value.role !== 'user' && value.role !== 'assistant') || typeof value.content !== 'string') return null
+  const message: AiEvidenceChatMessage = { role: value.role, content: value.content }
+  if (!v2 || value.role !== 'assistant') return message
+  if (Array.isArray(value.citations) && value.citations.every(isChatCitation)) message.citations = value.citations
+  if (typeof value.uptoChapterId === 'string') message.uptoChapterId = value.uptoChapterId
+  if (value.stopped === true) message.stopped = true
+  return message
+}
+
+export async function readChat(bookId: string): Promise<AiChatFile | AiChatFileV2> {
   try {
     const data: unknown = JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'chat.json'), 'utf-8'))
     if (!isRecord(data) || !Array.isArray(data.messages)) throw new Error('invalid chat')
-    const messages = data.messages
-      .filter((message): message is Record<string, unknown> => isRecord(message))
-      .filter((message) => (message.role === 'user' || message.role === 'assistant') && typeof message.content === 'string')
-      .map((message) => ({ role: message.role as 'user' | 'assistant', content: message.content as string }))
-      .slice(-40)
-    return { version: 1, messages, updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : now() }
+    const v2 = data.version === 2
+    const messages = trimChatPairs(data.messages.map((message) => parseChatMessage(message, v2)).filter((message): message is AiEvidenceChatMessage => Boolean(message)))
+    return v2
+      ? { version: 2, messages, updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : now() }
+      : { version: 1, messages: messages.map(({ role, content }) => ({ role, content })), updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : now() }
   } catch {
     return { version: 1, messages: [], updatedAt: now() }
   }
@@ -630,11 +669,15 @@ export async function readChat(bookId: string): Promise<AiChatFile> {
 
 export async function writeChat(
   bookId: string,
-  messages: AiChatFile['messages'],
-  options: AtomicWriteOptions = {},
+  messages: readonly AiEvidenceChatMessage[],
+  options: AtomicWriteOptions & { version?: 1 | 2 } = {},
 ): Promise<void> {
   await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
-  const data: AiChatFile = { version: 1, messages: messages.slice(-40), updatedAt: now() }
+  const trimmed = trimChatPairs(messages)
+  const version = options.version ?? 2
+  const data: AiChatFile | AiChatFileV2 = version === 1
+    ? { version: 1, messages: trimmed.map(({ role, content }) => ({ role, content })), updatedAt: now() }
+    : { version: 2, messages: trimmed, updatedAt: now() }
   await atomicWriteText(join(bookDir(bookId), 'ai', 'chat.json'), JSON.stringify(data, null, 2), options)
 }
 

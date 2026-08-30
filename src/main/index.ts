@@ -503,7 +503,10 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('ai.getChat', async (_e, { bookId }: { bookId: string }) => {
-    try { return { ok: true, messages: (await readChat(bookId)).messages } }
+    try {
+      const chat = await readChat(bookId)
+      return { ok: true, version: chat.version, messages: chat.messages }
+    }
     catch (e: unknown) { return { ok: false, message: e instanceof Error ? e.message : String(e) } }
   })
 
@@ -938,11 +941,12 @@ function registerIpc(): void {
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const config = trustedAiConfig(settings, apiKey)
-      const persistedMessages = args.messages.filter((message) => message.role !== 'system')
+      const existingChat = await readChat(args.bookId)
+      const persistedMessages = args.messages.filter((message) => message.role !== 'system') as import('../shared/types').AiEvidenceChatMessage[]
       return aiJobSlot.start(async (jobId, signal) => {
         sendAiStage(jobId, 'preparing')
         try {
-          await writeChat(args.bookId, persistedMessages)
+          await writeChat(args.bookId, persistedMessages, { version: existingChat.version })
         } catch {
           mainWindow?.webContents.send('ai.done', signal.aborted
             ? aiStoppedDoneEvent(jobId, '')
@@ -989,7 +993,15 @@ function registerIpc(): void {
             mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))
             return
           }
-          const completedMessages = [...persistedMessages, { role: 'assistant' as const, content: result.text }]
+          const completedMessages: import('../shared/types').AiEvidenceChatMessage[] = [
+            ...persistedMessages,
+            {
+              role: 'assistant',
+              content: result.text,
+              citations: result.citations,
+              uptoChapterId: result.uptoChapterId,
+            },
+          ]
           const retrySave = () => writeChat(args.bookId, completedMessages)
           await saveAiDone(jobId, {
             jobId, ok: true, text: result.text, usage: result.usage,

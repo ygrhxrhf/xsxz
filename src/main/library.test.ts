@@ -707,13 +707,39 @@ describe('chat storage', () => {
   beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'spbf-chat-')); await setLibraryPath(dir); await createBookFromBootstrap({ bookId: 'd_chat', title: '聊书', author: '', importType: 'download', chapterTitles: ['一'] }) })
   afterEach(async () => { await rm(dir, { recursive: true, force: true }) })
 
-  it('keeps the newest 40 user or assistant messages and treats damaged files as empty', async () => {
+  it('clips the newest messages by user-assistant units without orphan assistants', async () => {
     const messages = Array.from({ length: 41 }, (_, i) => ({ role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant', content: `m${i}` }))
     await writeChat('d_chat', messages)
     const saved = await readChat('d_chat')
-    expect(saved.messages).toHaveLength(40)
-    expect(saved.messages[0]?.content).toBe('m1')
-    await writeFile(join(dir, 'd_chat', 'ai', 'chat.json'), '{ bad', 'utf-8')
+    expect(saved.version).toBe(2)
+    expect(saved.messages).toHaveLength(39)
+    expect(saved.messages[0]?.content).toBe('m2')
+    expect(saved.messages[0]?.role).toBe('user')
+    expect(saved.messages.at(-1)).toEqual({ role: 'user', content: 'm40' })
+  })
+
+  it('reads v1 compatibly and preserves v2 citations, cutoff, and stopped state', async () => {
+    const file = join(dir, 'd_chat', 'ai', 'chat.json')
+    await writeFile(file, JSON.stringify({ version: 1, messages: [
+      { role: 'assistant', content: 'orphan' },
+      { role: 'user', content: '旧问题' }, { role: 'assistant', content: '旧回答', citations: [{ id: 'ignored' }] },
+    ], updatedAt: 'old' }), 'utf-8')
+    await expect(readChat('d_chat')).resolves.toEqual({
+      version: 1, messages: [{ role: 'user', content: '旧问题' }, { role: 'assistant', content: '旧回答' }], updatedAt: 'old',
+    })
+    const citation = { id: 'qa-c0001-p0', chapterId: 'c0001', chapterTitle: '一', paragraphIndex: 0, excerpt: '证据' }
+    await writeChat('d_chat', [
+      { role: 'user', content: '新问题' },
+      { role: 'assistant', content: '部分回答', citations: [citation], uptoChapterId: 'c0001', stopped: true },
+    ])
+    await expect(readChat('d_chat')).resolves.toMatchObject({
+      version: 2,
+      messages: [
+        { role: 'user', content: '新问题' },
+        { role: 'assistant', content: '部分回答', citations: [citation], uptoChapterId: 'c0001', stopped: true },
+      ],
+    })
+    await writeFile(file, '{ bad', 'utf-8')
     await expect(readChat('d_chat')).resolves.toMatchObject({ version: 1, messages: [] })
   })
 
