@@ -211,6 +211,7 @@
 | `ai.cancel` | invoke | `{ jobId?: string }` | `{ ok: true }` |
 | `ai.chunk` | 主→渲染 | — | `AiChunkEvent` |
 | `ai.stage` | 主→渲染 | — | `AiStageEvent` |
+| `ai.budget` | 主→渲染 | — | `AiBudgetEvent`（增量兼容；仅含 jobId、任务和估算，不含 prompt、Key 或正文） |
 | `ai.done` | 主→渲染 | — | `AiDoneEvent` |
 
 未配置 Key 或网络失败：返回 `{ ok: false; message }`，不得影响浏览/下载/阅读。
