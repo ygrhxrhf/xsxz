@@ -17,6 +17,9 @@ function completion(json: Record<string, unknown>, usage = { inputTokens: 1, out
 }
 
 describe('evidence QA prompts and citation whitelist', () => {
+  it('keeps the fixed no-evidence copy', () => {
+    expect(NO_LOCAL_EVIDENCE_MESSAGE).toBe('在已读内容中未找到可核验依据。请换一种问法或使用更具体的人名、地点和事件。')
+  })
   it('sends only the question and candidate evidence to the final request', () => {
     const messages = buildEvidenceAnswerMessages('账册在哪里？', [citation], '仅根据证据回答。')
     expect(messages[1]!.content).toBe(JSON.stringify({

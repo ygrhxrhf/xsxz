@@ -2,7 +2,7 @@ import type { AiCitation, AiRequestStage, AiUsage } from '../shared/types'
 import type { AiCompletionResult } from './ai'
 import type { EvidenceSearchQuery } from './aiEvidenceSearch'
 
-export const NO_LOCAL_EVIDENCE_MESSAGE = '在已读内容中没有找到足够证据。'
+export const NO_LOCAL_EVIDENCE_MESSAGE = '在已读内容中未找到可核验依据。请换一种问法或使用更具体的人名、地点和事件。'
 
 function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
