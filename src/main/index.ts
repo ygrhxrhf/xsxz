@@ -63,6 +63,11 @@ import {
 } from './ai'
 import { executeMemoryOrchestration, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
 import { finalizeMemoryUpdate } from './aiMemorySave'
+import {
+  parseMemoryBookPayload,
+  parseMemoryMarkPayload,
+  parseMemoryRunPayload,
+} from './aiMemoryIpcValidation'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -510,10 +515,10 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.getMemory', async (_e, payload?: { bookId?: string }) => {
+  ipcMain.handle('ai.getMemory', async (_e, payload?: unknown) => {
     try {
-      if (typeof payload?.bookId !== 'string' || !payload.bookId) throw new Error('书籍不存在')
-      return { ok: true, memory: await readAiMemoryCompat(payload.bookId) }
+      const { bookId } = parseMemoryBookPayload(payload)
+      return { ok: true, memory: await readAiMemoryCompat(bookId) }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
@@ -521,13 +526,10 @@ function registerIpc(): void {
 
   const startMemoryUpdate = async (
     mode: 'update' | 'rebuild',
-    payload?: { bookId?: string; uptoChapterId?: string },
+    unsafePayload?: unknown,
   ) => {
     try {
-      if (typeof payload?.bookId !== 'string' || !payload.bookId ||
-        typeof payload.uptoChapterId !== 'string' || !payload.uptoChapterId) {
-        return { ok: false, message: '章节不存在' }
-      }
+      const payload = parseMemoryRunPayload(unsafePayload)
       const book = await getBook(payload.bookId)
       const existing = mode === 'update' ? await readAiMemory(payload.bookId) : null
       const selection = selectMemoryChapterBatches(
@@ -607,23 +609,19 @@ function registerIpc(): void {
     }
   }
 
-  ipcMain.handle('ai.updateMemory', (_e, payload?: { bookId?: string; uptoChapterId?: string }) =>
-    startMemoryUpdate('update', payload))
-  ipcMain.handle('ai.rebuildMemory', (_e, payload?: { bookId?: string; uptoChapterId?: string }) =>
-    startMemoryUpdate('rebuild', payload))
+  ipcMain.handle('ai.updateMemory', (_e, payload?: unknown) => startMemoryUpdate('update', payload))
+  ipcMain.handle('ai.rebuildMemory', (_e, payload?: unknown) => startMemoryUpdate('rebuild', payload))
 
-  ipcMain.handle('ai.markMemoryInaccurate', async (_e, payload?: {
-    bookId?: string
-    kind?: 'character' | 'relation' | 'foreshadow' | 'event'
-    itemId?: string
-  }) => {
+  ipcMain.handle('ai.markMemoryInaccurate', async (_e, unsafePayload?: unknown) => {
     try {
-      if (typeof payload?.bookId !== 'string' || typeof payload.itemId !== 'string') throw new Error('记忆条目不存在')
-      const collections: Record<NonNullable<typeof payload.kind>, AiMemoryCollection> = {
-        character: 'characters', relation: 'relations', foreshadow: 'foreshadows', event: 'events',
+      const payload = parseMemoryMarkPayload(unsafePayload)
+      let collection: AiMemoryCollection
+      switch (payload.kind) {
+        case 'character': collection = 'characters'; break
+        case 'relation': collection = 'relations'; break
+        case 'foreshadow': collection = 'foreshadows'; break
+        case 'event': collection = 'events'; break
       }
-      const collection = payload.kind ? collections[payload.kind] : undefined
-      if (!collection) throw new Error('记忆类型无效')
       const item = await markAiMemoryAccuracy(payload.bookId, collection, payload.itemId, 'review')
       return { ok: true, item }
     } catch (e: unknown) {

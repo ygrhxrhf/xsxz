@@ -7,6 +7,9 @@ describe('memory IPC main-process contract', () => {
     for (const channel of ['ai.getMemory', 'ai.updateMemory', 'ai.rebuildMemory', 'ai.markMemoryInaccurate']) {
       expect(source).toContain(`ipcMain.handle('${channel}'`)
     }
+    expect(source).toContain('const { bookId } = parseMemoryBookPayload(payload)')
+    expect(source).toContain('const payload = parseMemoryRunPayload(unsafePayload)')
+    expect(source).toContain('const payload = parseMemoryMarkPayload(unsafePayload)')
     expect(source).toContain("aiTaskInstruction(settings, 'memory')")
     expect(source).toContain("{ task: 'memory', signal: requestSignal }")
     expect(source).toContain('selectMemoryChapterBatches(')
