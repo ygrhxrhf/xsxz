@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NProgress, NTag } from 'naive-ui'
+import { NButton, NDrawer, NDrawerContent, NProgress, NTag, useMessage } from 'naive-ui'
 import type { BrowseState, DownloadProgress } from '@shared/types'
 
 const props = defineProps<{
@@ -13,6 +13,7 @@ const emit = defineEmits<{
   (e: 'open-book', bookId: string): void
   (e: 'edit-site-rule', host: string): void
 }>()
+const message = useMessage()
 
 const address = ref('')
 const state = ref<BrowseState>({
@@ -45,10 +46,15 @@ function currentHost(): string {
   }
 }
 
+const siteLabel = computed(() => {
+  const host = currentHost()
+  return host ? `当前站点：${host}` : '尚未打开网页'
+})
+
 function editCurrentSiteRule() {
   const host = currentHost()
   if (!host) {
-    window.alert('请先打开一个有效网址')
+    message.warning('请先打开一个有效网址')
     return
   }
   emit('edit-site-rule', host)
@@ -97,7 +103,7 @@ watch(
 async function go() {
   const res = await window.api.browse.load(address.value)
   if (!res.ok) {
-    window.alert(res.message)
+    message.error(res.message)
   }
 }
 
@@ -123,7 +129,7 @@ async function startDownload() {
   showProgress.value = true
   const res = await window.api.download.start()
   if (!res.ok) {
-    window.alert(res.message || '下载失败')
+    message.error(res.message || '下载失败')
     downloading.value = false
     showProgress.value = false
     downloadProgress.value = null
@@ -172,34 +178,55 @@ onUnmounted(() => {
 
 <template>
   <div class="page browse-page">
-    <form class="chrome" @submit="onSubmit">
-      <button type="button" :disabled="!state.canGoBack" @click="back">后退</button>
-      <button type="button" :disabled="!state.canGoForward" @click="forward">前进</button>
-      <button type="button" @click="state.loading ? stop() : reload()">
-        {{ state.loading ? '停止' : '刷新' }}
-      </button>
-      <input v-model="address" placeholder="粘贴或输入网址，回车打开" spellcheck="false" />
-      <button type="submit">打开</button>
-      <n-button
-        type="primary"
-        size="small"
-        :disabled="downloading || !address"
-        :loading="downloading"
-        @click.prevent="startDownload"
-      >
-        下载本书
-      </n-button>
-      <n-button size="small" quaternary :disabled="!currentHost()" @click.prevent="editCurrentSiteRule">
-        配置本站规则
-      </n-button>
-      <n-button
-        v-if="downloadProgress && !showProgress"
-        size="small"
-        tertiary
-        @click.prevent="restoreProgressDrawer"
-      >
-        下载进度
-      </n-button>
+    <form class="browse-toolbar" @submit="onSubmit">
+      <div class="browser-nav-row">
+        <button class="browser-icon-button" type="button" title="后退" aria-label="后退" :disabled="!state.canGoBack" @click="back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+        </button>
+        <button class="browser-icon-button" type="button" title="前进" aria-label="前进" :disabled="!state.canGoForward" @click="forward">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+        </button>
+        <button
+          class="browser-icon-button"
+          type="button"
+          :title="state.loading ? '停止加载' : '刷新'"
+          :aria-label="state.loading ? '停止加载' : '刷新'"
+          @click="state.loading ? stop() : reload()"
+        >
+          <svg v-if="state.loading" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z" /></svg>
+          <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66" /><path d="M20 4v7h-7" /></svg>
+        </button>
+        <input v-model="address" aria-label="网页地址" placeholder="粘贴或输入网址，回车打开" spellcheck="false" />
+        <button class="browser-open-button" type="submit">打开</button>
+      </div>
+      <div class="browser-action-row">
+        <div class="site-status" :class="{ inactive: !currentHost() }" :title="siteLabel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg>
+          <span>{{ siteLabel }}</span>
+        </div>
+        <div class="browser-actions">
+          <n-button
+            type="primary"
+            size="small"
+            :disabled="downloading || !address"
+            :loading="downloading"
+            @click.prevent="startDownload"
+          >
+            下载本书
+          </n-button>
+          <n-button size="small" secondary :disabled="!currentHost()" @click.prevent="editCurrentSiteRule">
+            配置本站规则
+          </n-button>
+          <n-button
+            v-if="downloadProgress && !showProgress"
+            size="small"
+            tertiary
+            @click.prevent="restoreProgressDrawer"
+          >
+            下载进度
+          </n-button>
+        </div>
+      </div>
     </form>
     <div ref="slot" class="browse-slot" />
 
@@ -255,47 +282,172 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.browse-toolbar {
+  position: relative;
+  z-index: 2;
+  height: auto;
+  display: block;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--chrome-bg);
+}
+
+.browser-nav-row,
+.browser-action-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.browser-nav-row {
+  min-height: 52px;
+}
+
+.browser-action-row {
+  min-height: 44px;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.browser-nav-row input {
+  min-width: 120px;
+  height: 36px;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 0 var(--space-3);
+  color: var(--text-primary);
+  background: var(--input-bg);
+  transition: border-color var(--motion-duration), box-shadow var(--motion-duration);
+}
+
+.browser-nav-row input:focus {
+  border-color: var(--focus);
+  box-shadow: var(--input-ring);
+}
+
+.browser-nav-row input:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.browser-icon-button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  background: var(--chip-bg);
+  cursor: pointer;
+  transition: border-color var(--motion-duration), background var(--motion-duration), color var(--motion-duration);
+}
+
+.browser-icon-button:hover:not(:disabled),
+.browser-open-button:hover:not(:disabled) {
+  border-color: var(--hover-line);
+  background: var(--chip-hover-bg);
+}
+
+.browser-icon-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.browser-icon-button svg,
+.site-status svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.browser-open-button {
+  height: 36px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 0 var(--space-3);
+  color: var(--text-primary);
+  background: var(--chip-bg);
+  cursor: pointer;
+  transition: border-color var(--motion-duration), background var(--motion-duration), color var(--motion-duration);
+}
+
+.site-status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.site-status.inactive {
+  color: var(--text-muted);
+}
+
+.site-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .dl-progress {
-  padding: 8px 0;
+  padding: var(--space-2) 0;
 }
 
 .dl-waiting {
   color: var(--muted);
   text-align: center;
-  padding: 24px;
+  padding: var(--space-6);
 }
 
 .dl-title {
   font-size: 15px;
   font-weight: 600;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 
 .dl-stats {
   font-size: 13px;
   color: var(--muted);
-  margin-top: 6px;
+  margin-top: var(--space-2);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .dl-current {
   font-size: 12px;
   color: var(--muted);
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 .dl-error {
   font-size: 12px;
   color: var(--danger);
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 .dl-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 </style>
