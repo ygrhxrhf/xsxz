@@ -63,7 +63,7 @@ import {
 import { executeMemoryOrchestration, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
 import { finalizeMemoryUpdate } from './aiMemorySave'
 import { selectLocalEvidence, type EvidenceSearchChapter } from './aiEvidenceSearch'
-import { executeEvidenceQaPipeline } from './aiEvidenceQa'
+import { executeEvidenceQaPipeline, planEvidenceChapterReads } from './aiEvidenceQa'
 import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
 import {
   parseMemoryBookPayload,
@@ -121,6 +121,7 @@ async function saveAiDone(
     signal?: AbortSignal
     stoppedEvent?: AiSuccessDoneEvent
     saveStopped?: () => Promise<void>
+    retrySave?: () => Promise<void>
   } = {},
 ): Promise<void> {
   await runAiSaveStage(
@@ -952,8 +953,7 @@ function registerIpc(): void {
         }
 
         try {
-          const progressIndex = book.chapters.findIndex((chapter) => chapter.id === progressChapterId)
-          if (progressIndex < 0) throw new Error('还没有阅读进度，先阅读一章再使用已读内容分析。')
+          const readPlan = planEvidenceChapterReads(book.chapters, progressChapterId)
           const result = await executeEvidenceQaPipeline({
             question,
             taskInstruction: aiTaskInstruction(settings, 'evidenceQa'),
@@ -962,10 +962,10 @@ function registerIpc(): void {
             rewrite: (messages) => runAiTaskCompletion(config, messages, { task: 'queryRewrite', signal }),
             search: async (query) => {
               const searchChapters: EvidenceSearchChapter[] = []
-              for (let index = 0; index < book.chapters.length; index += 1) {
-                const chapter = book.chapters[index]!
+              for (let index = 0; index < readPlan.ordered.length; index += 1) {
+                const chapter = readPlan.ordered[index]!
                 if (signal.aborted) break
-                if (index > progressIndex) {
+                if (index > readPlan.progressPosition) {
                   searchChapters.push({ ...chapter, body: '' })
                   continue
                 }
@@ -992,11 +992,16 @@ function registerIpc(): void {
             return
           }
           const completedMessages = [...persistedMessages, { role: 'assistant' as const, content: result.text }]
+          const retrySave = () => writeChat(args.bookId, completedMessages)
           await saveAiDone(jobId, {
             jobId, ok: true, text: result.text, usage: result.usage,
             citations: result.citations, uptoChapterId: result.uptoChapterId,
             truncated: result.kind === 'answer' ? result.truncated : false,
-          }, () => writeChat(args.bookId, completedMessages, { signal }), { signal })
+          }, () => writeChat(args.bookId, completedMessages, { signal }), {
+            signal,
+            stoppedEvent: aiStoppedDoneEvent(jobId, ''),
+            retrySave,
+          })
         } catch (e: unknown) {
           if (signal.aborted) {
             mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))

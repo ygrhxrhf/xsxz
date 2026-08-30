@@ -5,6 +5,7 @@ import {
   buildEvidenceAnswerMessages,
   executeEvidenceQaPipeline,
   parseEvidenceAnswer,
+  planEvidenceChapterReads,
 } from './aiEvidenceQa'
 
 const citation: AiCitation = {
@@ -20,7 +21,7 @@ describe('evidence QA prompts and citation whitelist', () => {
     const messages = buildEvidenceAnswerMessages('账册在哪里？', [citation], '仅根据证据回答。')
     expect(messages[1]!.content).toBe(JSON.stringify({
       question: '账册在哪里？',
-      evidence: [{ id: citation.id, chapterTitle: citation.chapterTitle, excerpt: citation.excerpt }],
+      evidence: [{ id: citation.id, title: citation.chapterTitle, excerpt: citation.excerpt }],
     }))
     expect(messages[0]!.content).toContain('citations 只能填写候选证据中存在的 id')
   })
@@ -31,6 +32,16 @@ describe('evidence QA prompts and citation whitelist', () => {
     expect(() => parseEvidenceAnswer({ answer: '回答', citations: [] }, [citation])).toThrow('缺少证据引用')
     expect(parseEvidenceAnswer({ answer: '回答', citations: [citation.id, citation.id] }, [citation]))
       .toEqual({ answer: '回答', citations: [citation] })
+  })
+})
+
+describe('evidence chapter read planning', () => {
+  it('sorts catalog metadata before clamping and never includes unread positions in the read slice', () => {
+    const plan = planEvidenceChapterReads([
+      { id: 'c3', index: 3 }, { id: 'c2', index: 2 }, { id: 'c1', index: 1 },
+    ], 'c2')
+    expect(plan.ordered.map((item) => item.id)).toEqual(['c1', 'c2', 'c3'])
+    expect(plan.ordered.slice(0, plan.progressPosition + 1).map((item) => item.id)).toEqual(['c1', 'c2'])
   })
 })
 
