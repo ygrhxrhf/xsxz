@@ -3,6 +3,66 @@ import type { BookListItem, FailCode } from '@shared/types'
 export type LibraryStatusFilter = 'all' | 'downloading' | 'ready' | 'partial'
 export type LibrarySortKey = 'updated' | 'title' | 'author'
 
+const CJK_CHARACTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
+const LATIN_OR_NUMBER_CHARACTER = /[\p{Script=Latin}\p{Number}]/u
+const COVER_CHARACTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Latin}\p{Number}]/u
+
+export function libraryCoverHue(id: string): number {
+  let hue = 0
+  for (let i = 0; i < id.length; i += 1) hue = (hue * 31 + id.charCodeAt(i)) % 360
+  return hue
+}
+
+export function libraryCoverHues(id: string): { primary: number; secondary: number } {
+  const primary = libraryCoverHue(id)
+  return { primary, secondary: (primary + 36) % 360 }
+}
+
+export function libraryCoverText(title: string): string {
+  const normalized = title
+    .trim()
+    .replace(/^[《〈「『【〔（(]+|[》〉」』】〕）)]+$/gu, '')
+    .trim()
+  const first = COVER_CHARACTER.exec(normalized)
+  if (!first || first.index === undefined) return '书'
+  if (CJK_CHARACTER.test(first[0])) return first[0]
+  if (!LATIN_OR_NUMBER_CHARACTER.test(first[0])) return '书'
+  return normalized.slice(first.index).match(/^[\p{Script=Latin}\p{Number}]{1,2}/u)?.[0].toUpperCase() || '书'
+}
+
+export function createLibraryRefreshTracker(): {
+  begin: () => number
+  isLatest: (requestId: number) => boolean
+  end: () => void
+  readonly loading: boolean
+} {
+  let latestRequestId = 0
+  let activeRequests = 0
+  return {
+    begin() {
+      activeRequests += 1
+      latestRequestId += 1
+      return latestRequestId
+    },
+    isLatest(requestId) {
+      return requestId === latestRequestId
+    },
+    end() {
+      activeRequests = Math.max(0, activeRequests - 1)
+    },
+    get loading() {
+      return activeRequests > 0
+    },
+  }
+}
+
+export function libraryFailureLabel(
+  book: Pick<BookListItem, 'status' | 'readyCount' | 'chapterCount'>,
+): string {
+  if (!hasFailedChapters(book)) return ''
+  return `${Math.max(1, book.chapterCount - book.readyCount)} 章下载失败`
+}
+
 export function isDownloadBook(b: Pick<BookListItem, 'importType'>): boolean {
   return b.importType === 'download'
 }

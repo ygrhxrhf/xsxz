@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, useMessage } from 'naive-ui'
+import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, TrashItem } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
@@ -8,11 +8,15 @@ import {
   applyAddedChapterCount,
   checkUpdateMessage,
   checkUpdateNeedsBrowse,
+  createLibraryRefreshTracker,
   filterLibraryBooks,
   formatChapterOrdinal,
   formatLibraryProgress,
   hasFailedChapters,
   isDownloadBook,
+  libraryCoverHues,
+  libraryCoverText,
+  libraryFailureLabel,
   sortLibraryBooks,
   type LibrarySortKey,
   type LibraryStatusFilter,
@@ -27,7 +31,7 @@ const emit = defineEmits<{
 
 const message = useMessage()
 const books = ref<BookListItem[]>([])
-const loading = ref(false)
+const loading = ref(true)
 const retryingId = ref<string | null>(null)
 const checkingId = ref<string | null>(null)
 const exportingId = ref<string | null>(null)
@@ -50,10 +54,13 @@ let unsubCheckAll: (() => void) | null = null
 let unsubAiChunk: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
 let lastErrorToast = ''
+const refreshTracker = createLibraryRefreshTracker()
 
 const visibleBooks = computed(() =>
   sortLibraryBooks(filterLibraryBooks(books.value, { q: query.value, status: statusFilter.value }), sortKey.value),
 )
+const initialLoading = computed(() => loading.value && books.value.length === 0)
+const hasActiveFilter = computed(() => Boolean(query.value.trim()) || statusFilter.value !== 'all')
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
@@ -68,12 +75,14 @@ const sortOptions = [
 ]
 
 async function refresh() {
-  loading.value = true
+  const requestId = refreshTracker.begin()
+  loading.value = refreshTracker.loading
   try {
     const res = await window.api.library.list()
-    books.value = res.books
+    if (refreshTracker.isLatest(requestId)) books.value = res.books
   } finally {
-    loading.value = false
+    refreshTracker.end()
+    loading.value = refreshTracker.loading
   }
 }
 
@@ -85,7 +94,7 @@ async function handleImport() {
     await refresh()
     emit('open-book', res.bookId!)
   } else {
-    window.alert(res.message || '导入失败')
+    message.error(res.message || '导入失败')
   }
 }
 
@@ -257,11 +266,24 @@ function statusLabel(status: BookListItem['status']): string {
   return '部分'
 }
 
-/** 按书 id 稳定映射一个色相，让每本书的封面渐变色不同 */
-function coverHue(id: string): string {
-  let h = 0
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360
-  return String(h)
+function coverStyle(id: string): Record<string, string> {
+  const hues = libraryCoverHues(id)
+  return {
+    '--cover-hue': String(hues.primary),
+    '--cover-hue-secondary': String(hues.secondary),
+  }
+}
+
+function clearFilters() {
+  query.value = ''
+  statusFilter.value = 'all'
+}
+
+function cardTaskLabel(book: BookListItem): string {
+  if (checkingId.value === book.id) return '正在检查更新…'
+  if (retryingId.value === book.id) return '正在重试失败章…'
+  if (exportingId.value === book.id) return '正在导出…'
+  return checkMsg.value[book.id] || libraryFailureLabel(book)
 }
 
 function statusType(status: BookListItem['status']): 'info' | 'success' | 'warning' {
@@ -367,48 +389,82 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px">
-      <h2 style="margin:0">书库</h2>
-      <n-space align="center">
+  <div class="page library-page">
+    <header class="library-header">
+      <div>
+        <h2 class="page-title">我的书库</h2>
+        <p class="library-subtitle">收藏、阅读并维护保存在本机的书。</p>
+      </div>
+      <div class="library-header-actions">
+        <span v-if="loading && books.length" class="library-refresh-status" role="status" aria-label="正在加载书库">
+          <n-spin size="small" />
+          正在刷新
+        </span>
         <span v-if="checkAllStatus" class="checkall-status">{{ checkAllStatus }}</span>
         <n-button v-if="checkAllLoading" size="small" @click="handleCancelCheckAll">停止</n-button>
         <n-button v-else :disabled="!books.length" @click="handleCheckAll">全部检查更新</n-button>
         <n-button @click="openTrash">回收站</n-button>
         <n-button type="primary" @click="handleImport">导入 txt / epub</n-button>
-      </n-space>
-    </div>
+      </div>
+    </header>
     <div v-if="books.length" class="lib-toolbar">
       <n-input v-model:value="query" clearable placeholder="按书名或作者筛选" style="max-width:240px" />
       <n-select v-model:value="statusFilter" :options="statusOptions" style="width:120px" />
       <n-select v-model:value="sortKey" :options="sortOptions" style="width:132px" />
     </div>
-    <n-empty v-if="!books.length && !loading" description="还没有书，去浏览页下一本或导入文件" />
-    <n-empty v-else-if="!visibleBooks.length && !loading" description="没有符合筛选的书" />
+
+    <div v-if="initialLoading" class="book-grid library-skeletons" role="status" aria-label="正在加载书库">
+      <div v-for="index in 6" :key="index" class="book-card skeleton-card" aria-hidden="true">
+        <div class="skeleton-block skeleton-cover" />
+        <div class="skeleton-block skeleton-title" />
+        <div class="skeleton-block skeleton-line" />
+        <div class="skeleton-block skeleton-line short" />
+      </div>
+    </div>
+
+    <section v-else-if="!books.length" class="library-empty empty-state">
+      <h3>书库还是空的</h3>
+      <p>从网页下载一本书，或导入本地 txt / epub。</p>
+      <div class="empty-actions">
+        <n-button type="primary" @click="emit('go-browse')">去浏览找书</n-button>
+        <n-button secondary @click="handleImport">导入本地书</n-button>
+      </div>
+    </section>
+
+    <section v-else-if="!visibleBooks.length" class="library-empty empty-state">
+      <p>没有找到符合条件的书。</p>
+      <n-button v-if="hasActiveFilter" @click="clearFilters">清除筛选</n-button>
+    </section>
+
     <div v-else class="book-grid">
-      <n-card
-        v-for="b in visibleBooks"
-        :key="b.id"
-        hoverable
-        class="book-card"
-        @click="emit('open-book', b.id)"
-      >
-        <div class="book-cover" :style="{ '--hue': coverHue(b.id) }">📖</div>
-        <div class="book-title">{{ b.title }}</div>
-        <div class="book-meta">
-          <span v-if="b.author">{{ b.author }}</span>
-          <n-tag size="small" :type="statusType(b.status)">
-            {{ statusLabel(b.status) }}
-          </n-tag>
-        </div>
-        <div class="book-progress">{{ fmtProgress(b) }}</div>
-        <div v-if="checkMsg[b.id]" class="check-msg" :class="{ error: checkErr[b.id] }">{{ checkMsg[b.id] }}</div>
-        <n-space justify="end" style="margin-top:8px">
+      <n-card v-for="b in visibleBooks" :key="b.id" hoverable class="book-card">
+        <button class="book-open-area" type="button" :aria-label="`打开《${b.title}》`" @click="emit('open-book', b.id)">
+          <div class="book-cover" :style="coverStyle(b.id)" aria-hidden="true">
+            <span>{{ libraryCoverText(b.title) }}</span>
+          </div>
+          <div class="book-title" :title="b.title">{{ b.title }}</div>
+          <div v-if="b.author" class="book-author" :title="b.author">{{ b.author }}</div>
+          <div class="book-meta">
+            <n-tag size="small" :type="statusType(b.status)">
+              {{ statusLabel(b.status) }}
+            </n-tag>
+          </div>
+          <div class="book-progress" :title="fmtProgress(b)">{{ fmtProgress(b) }}</div>
+          <div
+            v-if="cardTaskLabel(b)"
+            class="check-msg"
+            :class="{ error: checkErr[b.id] }"
+            :title="cardTaskLabel(b)"
+          >
+            {{ cardTaskLabel(b) }}
+          </div>
+        </button>
+        <n-space class="legacy-card-actions" justify="end">
           <n-button
             v-if="isDownloadBook(b)"
             size="tiny"
             :loading="checkingId === b.id"
-            @click.stop="handleCheckUpdate(b.id)"
+            @click="handleCheckUpdate(b.id)"
           >
             检查更新
           </n-button>
@@ -417,28 +473,28 @@ onUnmounted(() => {
             size="tiny"
             type="warning"
             :loading="retryingId === b.id"
-            @click.stop="handleRetry(b.id)"
+            @click="handleRetry(b.id)"
           >
             重试失败章
           </n-button>
           <n-button
             v-if="hasFailedChapters(b)"
             size="tiny"
-            @click.stop="openFailedList(b.id, b.title)"
+            @click="openFailedList(b.id, b.title)"
           >
             失败章
           </n-button>
-          <n-button size="tiny" @click.stop="openRecap(b)">前情提要</n-button>
+          <n-button size="tiny" @click="openRecap(b)">前情提要</n-button>
           <n-dropdown
             trigger="click"
             :options="[{ label: '导出 txt', key: 'txt' }, { label: '导出 epub', key: 'epub' }]"
             @select="(key: string) => handleExport(b.id, key as 'txt' | 'epub')"
           >
-            <n-button size="tiny" :loading="exportingId === b.id" @click.stop>导出</n-button>
+            <n-button size="tiny" :loading="exportingId === b.id">导出</n-button>
           </n-dropdown>
           <n-popconfirm @positive-click="handleDelete(b.id)">
             <template #trigger>
-              <n-button size="tiny" quaternary @click.stop>删除</n-button>
+              <n-button size="tiny" quaternary>删除</n-button>
             </template>
             把《{{ b.title }}》移入回收站？之后可在回收站还原。
           </n-popconfirm>
@@ -517,84 +573,263 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.library-page {
+  overflow: auto;
+}
+
+.library-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.library-subtitle {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.library-header-actions,
+.library-refresh-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.library-header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.library-refresh-status {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .lib-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
 }
 
 .checkall-status {
+  max-width: 280px;
+  overflow: hidden;
+  color: var(--text-muted);
   font-size: 12px;
-  color: var(--muted);
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .book-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--space-4);
 }
 
 .book-card {
-  cursor: pointer;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  min-width: 0;
+  border-radius: var(--radius-card);
+  transition: transform var(--motion-duration), box-shadow var(--motion-duration), border-color var(--motion-duration);
 }
 
 .book-card:hover {
-  transform: translateY(-4px);
+  transform: translateY(-2px);
   border-color: var(--card-hover-border);
   box-shadow: var(--card-hover-shadow);
 }
 
-.book-cover {
-  height: 96px;
-  margin-bottom: 10px;
+:deep(.book-card > .n-card__content) {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 42px;
-  border-radius: 10px;
-  background: var(--cover-background);
+  height: 100%;
+  flex-direction: column;
+  padding: var(--space-4);
+}
+
+.book-open-area {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: stretch;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.book-cover {
+  position: relative;
+  width: 104px;
+  height: 142px;
+  flex: 0 0 142px;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  margin-bottom: var(--space-3);
+  border-radius: var(--radius-control);
+  color: #fff7fc;
+  background: linear-gradient(
+    135deg,
+    hsl(calc(var(--cover-hue) * 1deg) 68% 34%),
+    hsl(calc(var(--cover-hue-secondary) * 1deg) 72% 52%)
+  );
   box-shadow: var(--cover-ring);
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
+.book-cover::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  border-right: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.book-cover::after {
+  content: '';
+  position: absolute;
+  inset: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+:global(body[data-skin='minimal']) .book-cover {
+  color: hsl(calc(var(--cover-hue) * 1deg) 34% 24%);
+  background: linear-gradient(
+    135deg,
+    hsl(calc(var(--cover-hue) * 1deg) 30% 88%),
+    hsl(calc(var(--cover-hue-secondary) * 1deg) 34% 76%)
+  );
+  text-shadow: none;
 }
 
 .book-title {
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.4;
+  min-height: 42px;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
   overflow: hidden;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.book-author,
+.book-progress,
+.check-msg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-author {
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .book-meta {
-  font-size: 12px;
-  color: var(--muted);
-  margin-top: 6px;
+  min-height: 22px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 .book-progress {
+  margin-top: var(--space-2);
+  color: var(--text-muted);
   font-size: 12px;
-  color: var(--muted);
-  opacity: 0.85;
-  margin-top: 4px;
 }
 
 .check-msg {
-  font-size: 12px;
+  margin-top: var(--space-2);
   color: var(--success);
-  margin-top: 6px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
 .check-msg.error {
-  color: var(--danger);
+  color: var(--error);
+}
+
+.legacy-card-actions {
+  margin-top: var(--space-3);
+}
+
+.library-empty {
+  min-height: 280px;
+  align-content: center;
+}
+
+.library-empty h3,
+.library-empty p {
+  margin: 0;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.library-skeletons {
+  pointer-events: none;
+}
+
+.skeleton-card {
+  min-height: 330px;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.skeleton-cover {
+  width: 104px;
+  height: 142px;
+  margin: 0 auto var(--space-3);
+}
+
+.skeleton-title {
+  width: 78%;
+  height: 20px;
+  margin-bottom: var(--space-3);
+}
+
+.skeleton-line {
+  width: 100%;
+  height: 12px;
+  margin-top: var(--space-2);
+}
+
+.skeleton-line.short {
+  width: 58%;
+}
+
+@media (max-width: 1180px) {
+  .library-header {
+    flex-direction: column;
+  }
+
+  .library-header-actions {
+    justify-content: flex-start;
+  }
 }
 
 .fail-list {

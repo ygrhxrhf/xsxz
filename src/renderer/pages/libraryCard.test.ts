@@ -3,14 +3,62 @@ import {
   applyAddedChapterCount,
   checkUpdateMessage,
   checkUpdateNeedsBrowse,
+  createLibraryRefreshTracker,
   filterLibraryBooks,
   formatChapterOrdinal,
   formatLibraryProgress,
   hasFailedChapters,
   isDownloadBook,
+  libraryCoverHue,
+  libraryCoverHues,
+  libraryCoverText,
+  libraryFailureLabel,
   sortLibraryBooks,
 } from './libraryCard'
 import { failAdvice, filterCatalogChapters, readerProgressLabel, remainingChapterCount } from './readerHelpers'
+
+describe('library cover helpers', () => {
+  it('creates stable paired hues exactly 36 degrees apart', () => {
+    expect(libraryCoverHue('book-1')).toBe(libraryCoverHue('book-1'))
+    expect(libraryCoverHue('book-1')).not.toBe(libraryCoverHue('book-2'))
+    const hues = libraryCoverHues('book-1')
+    expect(hues.primary).toBeGreaterThanOrEqual(0)
+    expect(hues.primary).toBeLessThan(360)
+    expect(hues.secondary).toBe((hues.primary + 36) % 360)
+  })
+
+  it('uses the fixed CJK, latin, numeric, bracket, and empty title rules', () => {
+    expect(libraryCoverText('《万古神帝》')).toBe('万')
+    expect(libraryCoverText('  「 東京物语 」 ')).toBe('東')
+    expect(libraryCoverText('deep seek')).toBe('DE')
+    expect(libraryCoverText('  #a9故事')).toBe('A9')
+    expect(libraryCoverText('123 书')).toBe('12')
+    expect(libraryCoverText('éclair')).toBe('ÉC')
+    expect(libraryCoverText('１２三')).toBe('１２')
+    expect(libraryCoverText('📚𠀀故事')).toBe('𠀀')
+    expect(libraryCoverText('…É9混合')).toBe('É9')
+    expect(libraryCoverText('《 》')).toBe('书')
+    expect(libraryCoverText('---')).toBe('书')
+  })
+
+  it('keeps overlapping refreshes loading and only applies the latest response', () => {
+    const tracker = createLibraryRefreshTracker()
+    const first = tracker.begin()
+    const second = tracker.begin()
+    expect(tracker.loading).toBe(true)
+    expect(tracker.isLatest(first)).toBe(false)
+    expect(tracker.isLatest(second)).toBe(true)
+    tracker.end()
+    expect(tracker.loading).toBe(true)
+    tracker.end()
+    expect(tracker.loading).toBe(false)
+  })
+
+  it('creates an explicit failure line only for books with missing ready chapters', () => {
+    expect(libraryFailureLabel({ status: 'partial', readyCount: 7, chapterCount: 10 })).toBe('3 章下载失败')
+    expect(libraryFailureLabel({ status: 'ready', readyCount: 10, chapterCount: 10 })).toBe('')
+  })
+})
 
 describe('library check-update card helpers', () => {
   it('shows 检查更新 only for download books', () => {
