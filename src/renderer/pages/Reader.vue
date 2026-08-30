@@ -38,6 +38,7 @@ import type { Annotation, BookSearchHit } from '@shared/types'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
+import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
 import {
   assistantKindForJob,
   clearRetriedAssistantSaveToken,
@@ -422,7 +423,7 @@ async function askSelectedText() {
   showAiAssistant.value = true
   try {
     const history = await window.api.ai.getChat(book.value.id)
-    if (history.ok) chatMessages.value = history.messages
+    if (history.ok) chatMessages.value = normalizeEvidenceChatHistory(history.messages)
     else message.warning(history.message)
   } catch {
     message.warning('读取本地问答记录失败，将继续发送当前问题')
@@ -1153,7 +1154,7 @@ async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
     loadStoredMemory(),
     chatLoading.value || restoringChat.value
       ? Promise.resolve()
-      : window.api.ai.getChat(book.value.id).then((res) => { if (res.ok) chatMessages.value = res.messages }),
+      : window.api.ai.getChat(book.value.id).then((res) => { if (res.ok) chatMessages.value = normalizeEvidenceChatHistory(res.messages) }),
   ])
 }
 
@@ -1818,7 +1819,7 @@ onUnmounted(() => {
                 <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
                   <div class="chat-bubble">{{ msg.content }}</div>
                   <template v-if="msg.role === 'assistant'">
-                    <n-tag v-if="msg.stopped" size="small" type="warning">生成已停止</n-tag>
+                    <n-tag v-if="msg.stopped" size="small" type="warning">已停止，以下为停止前生成的部分回答。</n-tag>
                     <div v-if="msg.citations?.length" class="chat-evidence">
                       <strong>依据</strong>
                       <button v-for="citation in msg.citations" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>

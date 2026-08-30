@@ -5,6 +5,7 @@ describe('Reader evidence QA UI contract', () => {
   it('keeps v2 evidence metadata in memory when the matching job completes', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
     expect(source).toContain('const chatMessages = ref<AiEvidenceChatMessage[]>([])')
+    expect(source.match(/normalizeEvidenceChatHistory\([^)]*\.messages\)/g)).toHaveLength(2)
     expect(source).toContain('assistant.citations = event.citations')
     expect(source).toContain('assistant.uptoChapterId = event.uptoChapterId')
     expect(source).toContain('assistant.stopped = event.stopped === true')
@@ -17,7 +18,7 @@ describe('Reader evidence QA UI contract', () => {
     expect(source).toContain('v-for="citation in msg.citations"')
     expect(source).toContain('@click="jumpToMemorySource(citation)"')
     expect(source).toContain('旧版回答，无来源')
-    expect(source).toContain('生成已停止')
+    expect(source).toContain('已停止，以下为停止前生成的部分回答。')
     expect(source).not.toContain('v-html')
   })
 
