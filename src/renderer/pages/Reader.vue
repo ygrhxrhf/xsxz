@@ -1972,6 +1972,9 @@ onUnmounted(() => {
   --r-bar-bg: var(--bar-bg);
   --r-line: var(--line);
   --r-muted: var(--muted);
+  --r-surface: var(--surface-2);
+  --r-hover: color-mix(in srgb, var(--reader-paper-text) 12%, transparent);
+  --r-focus: var(--focus);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -1979,7 +1982,7 @@ onUnmounted(() => {
   overflow: hidden;
   background: transparent;
   color: var(--text);
-  transition: background .2s, color .2s;
+  transition: background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
 }
 
 .reader-wrap.night {
@@ -2444,12 +2447,12 @@ onUnmounted(() => {
   gap: 4px;
   padding: 6px 10px;
   border: 1px solid var(--r-line);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--r-bar-bg) 94%, transparent);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--r-bar-bg) 94%, var(--r-surface));
   box-shadow: 0 8px 28px rgba(0, 0, 0, .16);
   opacity: 0;
   pointer-events: none;
-  transition: opacity .2s ease, transform .2s ease;
+  transition: opacity var(--motion-duration) var(--motion-easing), transform var(--motion-duration) var(--motion-easing);
 }
 
 .reader-toolbar.visible {
@@ -2466,14 +2469,14 @@ onUnmounted(() => {
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   color: inherit;
   background: transparent;
   cursor: pointer;
 }
 
-.tool-button:hover { background: rgba(127, 127, 127, .14); }
-.tool-button:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
+.tool-button:hover { background: var(--r-hover); }
+.tool-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .tool-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .reader-toolbar .reader-book-title { min-width: 0; }
 
@@ -2489,7 +2492,7 @@ onUnmounted(() => {
   gap: 8px;
   padding: 14px;
   border: 1px solid var(--r-line);
-  border-radius: 12px;
+  border-radius: var(--radius-overlay);
   background: var(--popover-bg);
   box-shadow: 0 12px 32px rgba(0, 0, 0, .24);
 }
@@ -2507,7 +2510,7 @@ onUnmounted(() => {
   max-width: 38em;
   flex: 0 1 38em;
   padding: 64px clamp(24px, 5vw, 56px) 100px;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--radius-control) var(--radius-control) 0 0;
   box-shadow: 0 2px 18px rgba(0, 0, 0, .08);
 }
 
@@ -2518,7 +2521,7 @@ onUnmounted(() => {
   right: 0;
   bottom: 0;
   height: 3px;
-  background: rgba(127, 127, 127, .16);
+  background: var(--r-surface);
   pointer-events: none;
 }
 
@@ -2546,10 +2549,10 @@ onUnmounted(() => {
 }
 .chapter-hotzone.left { left: 0; }
 .chapter-hotzone.right { right: 0; }
-.chapter-hotzone:not(:disabled):hover, .chapter-hotzone:not(:disabled):focus-visible { opacity: 1; background: rgba(127, 127, 127, .12); }
+.chapter-hotzone:not(:disabled):hover, .chapter-hotzone:not(:disabled):focus-visible { opacity: 1; background: var(--r-hover); }
 .chapter-hotzone:disabled { cursor: default; }
 .chapter-hotzone span { font-size: 36px; line-height: 1; }
-.chapter-hotzone:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: -3px; }
+.chapter-hotzone:focus-visible { outline: 2px solid var(--r-focus); outline-offset: -3px; }
 
 .chapter-end-card {
   width: 100%;
@@ -2580,8 +2583,8 @@ onUnmounted(() => {
   cursor: pointer;
   font-size: 12px;
 }
-.option-grid button.active { border-color: var(--active-chapter); background: rgba(127, 127, 127, .14); }
-.option-grid button:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 1px; }
+.option-grid button.active { border-color: var(--active-chapter); background: var(--r-hover); }
+.option-grid button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 1px; }
 
 @media (prefers-reduced-motion: reduce) {
   .reader-wrap, .reader-wrap *, .reader-toolbar, .reader-progress-fill { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
