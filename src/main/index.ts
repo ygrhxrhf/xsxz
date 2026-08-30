@@ -62,6 +62,8 @@ import {
 } from './ai'
 import { executeMemoryOrchestration, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
 import { finalizeMemoryUpdate } from './aiMemorySave'
+import { selectLocalEvidence, type EvidenceSearchChapter } from './aiEvidenceSearch'
+import { executeEvidenceQaPipeline } from './aiEvidenceQa'
 import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
 import {
   parseMemoryBookPayload,
@@ -927,74 +929,77 @@ function registerIpc(): void {
   })
   ipcMain.handle('ai.chatStream', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
     try {
+      const book = await getBook(args.bookId)
+      const progressChapterId = book.progress?.chapterId
+      if (!progressChapterId) return { ok: false, message: '还没有阅读进度，先阅读一章再使用已读内容分析。' }
+      if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) return { ok: false, message: '章节不存在' }
+      const question = [...args.messages].reverse().find((message) => message.role === 'user')?.content.trim() ?? ''
+      if (!question) return { ok: false, message: '请输入问题' }
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const book = await getBook(args.bookId)
-      const ch = await readChapter(args.bookId, args.chapterId)
-      const uptoIdx = book.chapters.findIndex((chapter) => chapter.id === args.chapterId)
-      if (uptoIdx < 0) return { ok: false, message: '章节不存在' }
-      const catalogSummary = book.chapters.slice(0, uptoIdx + 1).map((chapter) => chapter.title).join('、')
-      const stored = await readSummaries(args.bookId)
-      const readSummary = book.chapters
-        .slice(0, uptoIdx + 1)
-        .map((chapter) => stored.byChapter[chapter.id])
-        .filter(Boolean)
-        .join('\n\n')
+      const config = trustedAiConfig(settings, apiKey)
       const persistedMessages = args.messages.filter((message) => message.role !== 'system')
-      const apiMessages = buildBookChatMessages(
-        book.title,
-        ch.title,
-        ch.body,
-        catalogSummary,
-        readSummary,
-        args.messages,
-      )
       return aiJobSlot.start(async (jobId, signal) => {
         sendAiStage(jobId, 'preparing')
         try {
           await writeChat(args.bookId, persistedMessages)
         } catch {
-          if (signal.aborted) {
-            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))
-          } else {
-            mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
-          }
+          mainWindow?.webContents.send('ai.done', signal.aborted
+            ? aiStoppedDoneEvent(jobId, '')
+            : { jobId, ok: false, message: '无法保存到书库，请检查磁盘空间和权限' })
           return
         }
 
-        let partial = ''
         try {
-          sendAiStage(jobId, 'requesting')
-          const result = await streamAiTaskCompletion(
-            trustedAiConfig(settings, apiKey),
-            apiMessages,
-            signal,
-            (delta) => {
-              partial += delta
-              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+          const progressIndex = book.chapters.findIndex((chapter) => chapter.id === progressChapterId)
+          if (progressIndex < 0) throw new Error('还没有阅读进度，先阅读一章再使用已读内容分析。')
+          const result = await executeEvidenceQaPipeline({
+            question,
+            taskInstruction: aiTaskInstruction(settings, 'evidenceQa'),
+            stopped: () => signal.aborted,
+            onStage: (stage) => sendAiStage(jobId, stage),
+            rewrite: (messages) => runAiTaskCompletion(config, messages, { task: 'queryRewrite', signal }),
+            search: async (query) => {
+              const searchChapters: EvidenceSearchChapter[] = []
+              for (let index = 0; index < book.chapters.length; index += 1) {
+                const chapter = book.chapters[index]!
+                if (signal.aborted) break
+                if (index > progressIndex) {
+                  searchChapters.push({ ...chapter, body: '' })
+                  continue
+                }
+                const local = await readChapter(args.bookId, chapter.id)
+                searchChapters.push({
+                  id: chapter.id,
+                  index: chapter.index,
+                  title: chapter.title,
+                  status: local.status,
+                  body: local.body,
+                })
+              }
+              if (signal.aborted) return { citations: [], uptoChapterId: progressChapterId }
+              return selectLocalEvidence(searchChapters, query, {
+                requestedUptoChapterId: progressChapterId,
+                progressChapterId,
+                currentChapterId: args.chapterId,
+              })
             },
-          )
+            answer: (messages) => runAiTaskCompletion(config, messages, { task: 'evidenceQa', signal }),
+          })
+          if (result.kind === 'stopped') {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))
+            return
+          }
           const completedMessages = [...persistedMessages, { role: 'assistant' as const, content: result.text }]
-          await saveAiDone(
-            jobId,
-            aiCompletionDoneEvent(jobId, result),
-            () => writeChat(args.bookId, completedMessages, { signal }),
-            {
-              signal,
-              stoppedEvent: aiStoppedDoneEvent(jobId, partial),
-              saveStopped: () => writeChat(args.bookId, completedMessages),
-            },
-          )
+          await saveAiDone(jobId, {
+            jobId, ok: true, text: result.text, usage: result.usage,
+            citations: result.citations, uptoChapterId: result.uptoChapterId,
+            truncated: result.kind === 'answer' ? result.truncated : false,
+          }, () => writeChat(args.bookId, completedMessages, { signal }), { signal })
         } catch (e: unknown) {
           if (signal.aborted) {
-            await saveAiDone(
-              jobId,
-              aiStoppedDoneEvent(jobId, partial),
-              () => writeChat(args.bookId, partial
-                ? [...persistedMessages, { role: 'assistant', content: partial }]
-                : persistedMessages),
-            )
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))
             return
           }
           mainWindow?.webContents.send('ai.done', {
