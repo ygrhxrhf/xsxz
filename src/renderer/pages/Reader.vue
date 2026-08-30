@@ -1080,10 +1080,6 @@ async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
   ])
 }
 
-async function openRecap() {
-  await openAiAssistant('recap')
-}
-
 async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) {
   if (!book.value || !currentChapter.value) return
   if (kind === 'story' || !confirmOverBudget) chapterSummaryBudget.value = null
