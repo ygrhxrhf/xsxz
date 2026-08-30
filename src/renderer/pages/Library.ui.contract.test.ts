@@ -52,13 +52,30 @@ describe('Library comfortable card contract', () => {
     expect(source).toContain('loading.value = refreshTracker.loading')
   })
 
-  it('preserves the existing management operations for the dependent menu slice', async () => {
+  it('routes the fixed more menu without hiding card running state', async () => {
     const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
-    for (const text of ['检查更新', '重试失败章', '失败章', '前情提要', '导出 txt', '导出 epub', '删除']) {
+    for (const text of ['前情提要', '检查更新', '重试失败章', '查看失败章', '移入回收站']) {
       expect(source).toContain(text)
     }
-    expect(source).toContain('handleDelete(b.id)')
-    expect(source).toContain('handleExport(b.id')
-    expect(source).toContain('openFailedList(b.id, b.title)')
+    expect(source).toContain("const format = entry === 'export-txt' ? 'txt' : 'epub'")
+    expect(source).toContain('`导出 ${format}`')
+    expect(source).toContain(':options="cardMenuOptions(b)"')
+    expect(source).toContain(':aria-label="`更多操作：《${b.title}》`"')
+    expect(source).toContain("if (action === 'recap') void openRecap(book)")
+    expect(source).toContain("else if (action === 'check-update') void handleCheckUpdate(book.id)")
+    expect(source).toContain("else if (action === 'retry-failed') void handleRetry(book.id)")
+    expect(source).toContain("else if (action === 'view-failed') void openFailedList(book.id, book.title)")
+    expect(source).toContain("else if (action === 'export-txt') void handleExport(book.id, 'txt')")
+    expect(source).toContain("else if (action === 'export-epub') void handleExport(book.id, 'epub')")
+    expect(source).toContain("else if (action === 'trash') deleteConfirmId.value = book.id")
+    expect(source).toContain('disabled: running')
+    expect(source).toContain('preset="dialog"')
+    expect(source).toContain('把《{{ deleteConfirmBook?.title }}》移入回收站？之后可在回收站还原。')
+    expect(source).toContain('@positive-click="deleteConfirmId && confirmDelete(deleteConfirmId)"')
+    expect(source).toContain(':loading="hasTask(retryingIds, failedBookId)"')
+    expect(source).toContain(':disabled="hasTask(activeDownloadIds, failedBookId)"')
+    expect(source).not.toMatch(/retryingId(?!s)/)
+    expect(source).not.toContain('<n-popconfirm\n          :show="deleteConfirmId === b.id"')
+    expect(source).not.toContain('legacy-card-actions')
   })
 })

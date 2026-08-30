@@ -2,6 +2,15 @@ import type { BookListItem, FailCode } from '@shared/types'
 
 export type LibraryStatusFilter = 'all' | 'downloading' | 'ready' | 'partial'
 export type LibrarySortKey = 'updated' | 'title' | 'author'
+export type LibraryMenuKey =
+  | 'recap'
+  | 'check-update'
+  | 'retry-failed'
+  | 'view-failed'
+  | 'export-txt'
+  | 'export-epub'
+  | 'trash'
+export type LibraryMenuEntry = LibraryMenuKey | 'divider-export' | 'divider-trash'
 
 const CJK_CHARACTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
 const LATIN_OR_NUMBER_CHARACTER = /[\p{Script=Latin}\p{Number}]/u
@@ -69,6 +78,16 @@ export function isDownloadBook(b: Pick<BookListItem, 'importType'>): boolean {
 
 export function hasFailedChapters(b: Pick<BookListItem, 'status' | 'readyCount' | 'chapterCount'>): boolean {
   return b.status === 'partial' && b.readyCount < b.chapterCount
+}
+
+export function libraryMenuEntries(
+  book: Pick<BookListItem, 'importType' | 'status' | 'readyCount' | 'chapterCount'>,
+): LibraryMenuEntry[] {
+  const entries: LibraryMenuEntry[] = ['recap']
+  if (isDownloadBook(book)) entries.push('check-update')
+  if (hasFailedChapters(book)) entries.push('retry-failed', 'view-failed')
+  entries.push('divider-export', 'export-txt', 'export-epub', 'divider-trash', 'trash')
+  return entries
 }
 
 export function checkUpdateMessage(

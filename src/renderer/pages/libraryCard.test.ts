@@ -13,6 +13,7 @@ import {
   libraryCoverHues,
   libraryCoverText,
   libraryFailureLabel,
+  libraryMenuEntries,
   sortLibraryBooks,
 } from './libraryCard'
 import { failAdvice, filterCatalogChapters, readerProgressLabel, remainingChapterCount } from './readerHelpers'
@@ -77,6 +78,38 @@ describe('library check-update card helpers', () => {
     expect(
       hasFailedChapters({ status: 'partial', readyCount: 6, chapterCount: 6 }),
     ).toBe(false)
+  })
+
+  it('keeps the fixed more-menu order while hiding inapplicable maintenance items', () => {
+    expect(libraryMenuEntries({
+      importType: 'download',
+      status: 'partial',
+      readyCount: 2,
+      chapterCount: 6,
+    })).toEqual([
+      'recap',
+      'check-update',
+      'retry-failed',
+      'view-failed',
+      'divider-export',
+      'export-txt',
+      'export-epub',
+      'divider-trash',
+      'trash',
+    ])
+    expect(libraryMenuEntries({
+      importType: 'txt',
+      status: 'ready',
+      readyCount: 2,
+      chapterCount: 2,
+    })).toEqual([
+      'recap',
+      'divider-export',
+      'export-txt',
+      'export-epub',
+      'divider-trash',
+      'trash',
+    ])
   })
 
   it('maps checkUpdate results to exact Chinese strings', () => {

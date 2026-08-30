@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, useMessage } from 'naive-ui'
+import type { DropdownOption } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, TrashItem } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
@@ -12,12 +13,12 @@ import {
   filterLibraryBooks,
   formatChapterOrdinal,
   formatLibraryProgress,
-  hasFailedChapters,
-  isDownloadBook,
   libraryCoverHues,
   libraryCoverText,
   libraryFailureLabel,
+  libraryMenuEntries,
   sortLibraryBooks,
+  type LibraryMenuKey,
   type LibrarySortKey,
   type LibraryStatusFilter,
 } from './libraryCard'
@@ -32,9 +33,11 @@ const emit = defineEmits<{
 const message = useMessage()
 const books = ref<BookListItem[]>([])
 const loading = ref(true)
-const retryingId = ref<string | null>(null)
-const checkingId = ref<string | null>(null)
-const exportingId = ref<string | null>(null)
+const retryingIds = ref<string[]>([])
+const checkingIds = ref<string[]>([])
+const exportingIds = ref<string[]>([])
+const activeDownloadIds = ref<string[]>([])
+const deleteConfirmId = ref<string | null>(null)
 const checkMsg = ref<Record<string, string>>({})
 const checkErr = ref<Record<string, boolean>>({})
 const query = ref('')
@@ -61,6 +64,7 @@ const visibleBooks = computed(() =>
 )
 const initialLoading = computed(() => loading.value && books.value.length === 0)
 const hasActiveFilter = computed(() => Boolean(query.value.trim()) || statusFilter.value !== 'all')
+const deleteConfirmBook = computed(() => books.value.find((book) => book.id === deleteConfirmId.value) || null)
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
@@ -205,21 +209,36 @@ async function openFailedList(bookId: string, title: string) {
   failedRows.value = (res.book?.chapters || []).filter((c) => c.status === 'failed' || c.status === 'empty')
 }
 
+function hasTask(ids: string[], bookId: string): boolean {
+  return ids.includes(bookId)
+}
+
+function startTask(ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds, bookId: string) {
+  if (!ids.value.includes(bookId)) ids.value = [...ids.value, bookId]
+}
+
+function endTask(ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds, bookId: string) {
+  ids.value = ids.value.filter((id) => id !== bookId)
+}
+
 async function handleRetry(bookId: string) {
-  retryingId.value = bookId
+  if (hasTask(retryingIds.value, bookId) || hasTask(activeDownloadIds.value, bookId)) return
+  startTask(retryingIds, bookId)
   const res = await window.api.download.retryFailed(bookId)
   if (!res.ok) {
     message.error(res.message || '重试失败')
-    retryingId.value = null
+    endTask(retryingIds, bookId)
   }
 }
 
 async function handleCheckUpdate(bookId: string) {
-  checkingId.value = bookId
+  if (hasTask(checkingIds.value, bookId) || hasTask(activeDownloadIds.value, bookId)) return
+  startTask(checkingIds, bookId)
   try {
     const res = await window.api.download.checkUpdate(bookId)
-    checkingId.value = null
+    endTask(checkingIds, bookId)
     if (res.ok && res.added > 0) {
+      startTask(activeDownloadIds, bookId)
       const i = books.value.findIndex((b) => b.id === bookId)
       if (i >= 0) {
         const cur = books.value[i]
@@ -242,21 +261,22 @@ async function handleCheckUpdate(bookId: string) {
     checkMsg.value = { ...checkMsg.value, [bookId]: text || '检查更新失败' }
     checkErr.value = { ...checkErr.value, [bookId]: true }
   } finally {
-    checkingId.value = null
+    endTask(checkingIds, bookId)
   }
 }
 
 async function handleExport(bookId: string, format: 'txt' | 'epub') {
+  if (hasTask(exportingIds.value, bookId)) return
   const { filePaths } = await window.api.dialog.openDirectory()
   const dest = filePaths?.[0]
   if (!dest) return
-  exportingId.value = bookId
+  startTask(exportingIds, bookId)
   try {
     const res = await window.api.library.export(bookId, format, dest)
     if (res.ok) message.success(`已导出到 ${res.path}`)
     else message.error(res.message || '导出失败')
   } finally {
-    exportingId.value = null
+    endTask(exportingIds, bookId)
   }
 }
 
@@ -280,10 +300,49 @@ function clearFilters() {
 }
 
 function cardTaskLabel(book: BookListItem): string {
-  if (checkingId.value === book.id) return '正在检查更新…'
-  if (retryingId.value === book.id) return '正在重试失败章…'
-  if (exportingId.value === book.id) return '正在导出…'
+  if (hasTask(checkingIds.value, book.id)) return '正在检查更新…'
+  if (hasTask(retryingIds.value, book.id)) return '正在重试失败章…'
+  if (hasTask(exportingIds.value, book.id)) return '正在导出…'
+  if (hasTask(activeDownloadIds.value, book.id)) return '正在下载新章节…'
   return checkMsg.value[book.id] || libraryFailureLabel(book)
+}
+
+function cardMenuOptions(book: BookListItem): DropdownOption[] {
+  return libraryMenuEntries(book).map((entry) => {
+    if (entry.startsWith('divider-')) return { type: 'divider', key: entry }
+    if (entry === 'recap') return { label: '前情提要', key: entry }
+    if (entry === 'check-update') {
+      const running = hasTask(checkingIds.value, book.id) || hasTask(activeDownloadIds.value, book.id)
+      return { label: running ? '正在检查更新…' : '检查更新', key: entry, disabled: running }
+    }
+    if (entry === 'retry-failed') {
+      const running = hasTask(retryingIds.value, book.id) || hasTask(activeDownloadIds.value, book.id)
+      return { label: running ? '正在重试失败章…' : '重试失败章', key: entry, disabled: running }
+    }
+    if (entry === 'view-failed') return { label: '查看失败章', key: entry }
+    if (entry === 'export-txt' || entry === 'export-epub') {
+      const running = hasTask(exportingIds.value, book.id)
+      const format = entry === 'export-txt' ? 'txt' : 'epub'
+      return { label: running ? `正在导出 ${format}…` : `导出 ${format}`, key: entry, disabled: running }
+    }
+    return { label: '移入回收站', key: entry }
+  })
+}
+
+function handleCardMenu(book: BookListItem, key: string | number) {
+  const action = String(key) as LibraryMenuKey
+  if (action === 'recap') void openRecap(book)
+  else if (action === 'check-update') void handleCheckUpdate(book.id)
+  else if (action === 'retry-failed') void handleRetry(book.id)
+  else if (action === 'view-failed') void openFailedList(book.id, book.title)
+  else if (action === 'export-txt') void handleExport(book.id, 'txt')
+  else if (action === 'export-epub') void handleExport(book.id, 'epub')
+  else if (action === 'trash') deleteConfirmId.value = book.id
+}
+
+async function confirmDelete(bookId: string) {
+  deleteConfirmId.value = null
+  await handleDelete(bookId)
 }
 
 function statusType(status: BookListItem['status']): 'info' | 'success' | 'warning' {
@@ -349,6 +408,7 @@ onMounted(() => {
   refresh()
   unsubProgress = window.api.download.onProgress((p: DownloadProgress) => {
     if (p.status === 'running' && p.bookId) {
+      startTask(activeDownloadIds, p.bookId)
       const i = books.value.findIndex((b) => b.id === p.bookId)
       if (i < 0) {
         void refresh()
@@ -370,8 +430,11 @@ onMounted(() => {
       }
     }
     if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
-      retryingId.value = null
-      checkingId.value = null
+      if (p.bookId) {
+        endTask(retryingIds, p.bookId)
+        endTask(checkingIds, p.bookId)
+        endTask(activeDownloadIds, p.bookId)
+      }
       void refresh()
     }
   })
@@ -459,48 +522,29 @@ onUnmounted(() => {
             {{ cardTaskLabel(b) }}
           </div>
         </button>
-        <n-space class="legacy-card-actions" justify="end">
-          <n-button
-            v-if="isDownloadBook(b)"
-            size="tiny"
-            :loading="checkingId === b.id"
-            @click="handleCheckUpdate(b.id)"
-          >
-            检查更新
+        <n-dropdown
+          trigger="click"
+          :options="cardMenuOptions(b)"
+          @select="(key: string | number) => handleCardMenu(b, key)"
+        >
+          <n-button class="card-more" size="small" quaternary :aria-label="`更多操作：《${b.title}》`">
+            更多
           </n-button>
-          <n-button
-            v-if="hasFailedChapters(b)"
-            size="tiny"
-            type="warning"
-            :loading="retryingId === b.id"
-            @click="handleRetry(b.id)"
-          >
-            重试失败章
-          </n-button>
-          <n-button
-            v-if="hasFailedChapters(b)"
-            size="tiny"
-            @click="openFailedList(b.id, b.title)"
-          >
-            失败章
-          </n-button>
-          <n-button size="tiny" @click="openRecap(b)">前情提要</n-button>
-          <n-dropdown
-            trigger="click"
-            :options="[{ label: '导出 txt', key: 'txt' }, { label: '导出 epub', key: 'epub' }]"
-            @select="(key: string) => handleExport(b.id, key as 'txt' | 'epub')"
-          >
-            <n-button size="tiny" :loading="exportingId === b.id">导出</n-button>
-          </n-dropdown>
-          <n-popconfirm @positive-click="handleDelete(b.id)">
-            <template #trigger>
-              <n-button size="tiny" quaternary>删除</n-button>
-            </template>
-            把《{{ b.title }}》移入回收站？之后可在回收站还原。
-          </n-popconfirm>
-        </n-space>
+        </n-dropdown>
       </n-card>
     </div>
+    <n-modal
+      :show="Boolean(deleteConfirmBook)"
+      preset="dialog"
+      type="warning"
+      title="移入回收站"
+      positive-text="移入回收站"
+      negative-text="取消"
+      @update:show="(show: boolean) => { if (!show) deleteConfirmId = null }"
+      @positive-click="deleteConfirmId && confirmDelete(deleteConfirmId)"
+    >
+      把《{{ deleteConfirmBook?.title }}》移入回收站？之后可在回收站还原。
+    </n-modal>
     <n-drawer v-model:show="recapOpen" placement="right" :width="420">
       <n-drawer-content title="前情提要" closable>
         <div class="ai-result">{{ recapText }}</div>
@@ -529,7 +573,8 @@ onUnmounted(() => {
           <n-button
             size="small"
             type="warning"
-            :loading="retryingId === failedBookId"
+            :loading="hasTask(retryingIds, failedBookId)"
+            :disabled="hasTask(activeDownloadIds, failedBookId)"
             @click="handleRetry(failedBookId)"
           >
             重试失败章
@@ -644,6 +689,7 @@ onUnmounted(() => {
 }
 
 :deep(.book-card > .n-card__content) {
+  position: relative;
   display: flex;
   height: 100%;
   flex-direction: column;
@@ -768,8 +814,14 @@ onUnmounted(() => {
   color: var(--error);
 }
 
-.legacy-card-actions {
-  margin-top: var(--space-3);
+.card-more {
+  position: absolute;
+  z-index: 2;
+  top: var(--space-2);
+  right: var(--space-2);
+  min-height: 32px;
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
 }
 
 .library-empty {
