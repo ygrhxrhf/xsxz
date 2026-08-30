@@ -41,9 +41,9 @@ export function removeAssistantStage(
 export function updateAssistantSaveToken(
   current: AssistantSaveTokenState,
   kind: AssistantJobKind,
-  event: { ok: boolean; saveToken?: string },
+  event: { ok: boolean; saveToken?: string; stopped?: boolean },
 ): AssistantSaveTokenState {
-  if (!event.ok) return current
+  if (!event.ok || event.stopped) return current
   if (event.saveToken) return { token: event.saveToken, kind }
   return current.kind === kind ? { token: '', kind: '' } : current
 }

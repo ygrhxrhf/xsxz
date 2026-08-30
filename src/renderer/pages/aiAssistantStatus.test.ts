@@ -27,9 +27,10 @@ describe('assistant stage lifecycle', () => {
 })
 
 describe('assistant save token lifecycle', () => {
-  it('keeps a token across failed or different-kind completions', () => {
+  it('keeps a token across failed, stopped, or different-kind completions', () => {
     const current = { token: 'save-old', kind: 'memory' as const }
     expect(updateAssistantSaveToken(current, 'memory', { ok: false })).toEqual(current)
+    expect(updateAssistantSaveToken(current, 'memory', { ok: true, stopped: true })).toEqual(current)
     expect(updateAssistantSaveToken(current, 'recap', { ok: true })).toEqual(current)
   })
 

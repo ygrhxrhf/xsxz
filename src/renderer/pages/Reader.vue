@@ -89,6 +89,7 @@ const recapText = ref('')
 const recapJobId = ref('')
 const recapJobKind = ref<'chapter' | 'story' | ''>('')
 const recapStopping = ref(false)
+const recapStarting = ref(false)
 const recapLength = ref<'short' | 'standard' | 'detailed'>('standard')
 const memoryData = ref<AiMemoryFile | null>(null)
 const memoryJobId = ref('')
@@ -111,8 +112,10 @@ const translateLoading = computed(() => Boolean(translateJobId.value))
 const chatMessages = ref<AiChatMessage[]>([])
 const chatInput = ref('')
 const chatLoading = ref(false)
+const chatStarting = ref(false)
 const chatJobId = ref('')
 const chatAssistantIndex = ref(-1)
+const assistantBusy = computed(() => recapStarting.value || recapLoading.value || memoryLoading.value || chatStarting.value || chatLoading.value)
 const assistantJobIds = computed(() => ({
   recap: recapJobId.value,
   memory: memoryJobId.value,
@@ -1151,7 +1154,7 @@ async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
 }
 
 async function startMemoryJob(kind: 'update' | 'rebuild') {
-  if (!book.value?.progress?.chapterId || memoryLoading.value) return
+  if (!book.value?.progress?.chapterId || assistantBusy.value || assistantSaveRetrying.value) return
   memoryStarting.value = true
   try {
     const start = kind === 'update' ? window.api.ai.updateMemory : window.api.ai.rebuildMemory
@@ -1193,7 +1196,7 @@ async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'e
 
 async function retryAssistantSave() {
   const token = assistantSaveState.value.token
-  if (!token || assistantSaveRetrying.value) return
+  if (!token || assistantSaveRetrying.value || assistantBusy.value) return
   assistantSaveRetrying.value = true
   try {
     const result = await window.api.ai.retrySave(token)
@@ -1222,32 +1225,39 @@ async function setRecapLength(value: 'short' | 'standard' | 'detailed') {
 }
 
 async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) {
-  if (!book.value || !currentChapter.value) return
+  if (!book.value || !currentChapter.value || assistantBusy.value || assistantSaveRetrying.value) return
   if (kind === 'story' || !confirmOverBudget) chapterSummaryBudget.value = null
   const uptoChapterId = kind === 'chapter' ? currentChapter.value.id : book.value.progress?.chapterId
   if (!uptoChapterId) {
     recapText.value = '还没有阅读进度，打开阅读器读几章再来。'
     return
   }
-  const res = kind === 'chapter'
-    ? await window.api.ai.summarizeChapter(book.value.id, uptoChapterId, confirmOverBudget)
-    : await window.api.ai.storySoFar(book.value.id, uptoChapterId, confirmOverBudget)
-  if (!res.ok) {
-    if ('confirmationRequired' in res && res.confirmationRequired) {
-      recapBudgetConfirmKind.value = kind
-      chapterSummaryBudget.value = res.budget
-      showChapterSummaryBudgetConfirm.value = true
+  recapStarting.value = true
+  try {
+    const res = kind === 'chapter'
+      ? await window.api.ai.summarizeChapter(book.value.id, uptoChapterId, confirmOverBudget)
+      : await window.api.ai.storySoFar(book.value.id, uptoChapterId, confirmOverBudget)
+    if (!res.ok) {
+      if ('confirmationRequired' in res && res.confirmationRequired) {
+        recapBudgetConfirmKind.value = kind
+        chapterSummaryBudget.value = res.budget
+        showChapterSummaryBudgetConfirm.value = true
+        return
+      }
+      message.error(res.message)
       return
     }
-    message.error(res.message)
-    return
+    recapStopping.value = false
+    recapJobId.value = res.jobId
+    recapJobKind.value = kind
+    recapText.value = ''
+    aiAssistantTab.value = 'recap'
+    showAiAssistant.value = true
+  } catch {
+    message.error('无法启动前情任务')
+  } finally {
+    recapStarting.value = false
   }
-  recapStopping.value = false
-  recapJobId.value = res.jobId
-  recapJobKind.value = kind
-  recapText.value = ''
-  aiAssistantTab.value = 'recap'
-  showAiAssistant.value = true
 }
 
 async function confirmOverBudgetChapterSummary() {
@@ -1305,22 +1315,29 @@ function stopTranslate() {
 
 async function sendChat() {
   if (!book.value || !currentChapter.value || !chatInput.value.trim()) return
-  if (chatLoading.value) {
+  if (assistantBusy.value || assistantSaveRetrying.value) {
     message.warning('请先停止当前生成')
     return
   }
   const userMsg = chatInput.value.trim()
   chatMessages.value.push({ role: 'user', content: userMsg })
   chatInput.value = ''
-  const res = await window.api.ai.chatStream(book.value.id, currentChapter.value.id, chatMessages.value)
-  if (!res.ok) {
-    chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
-    return
+  chatStarting.value = true
+  try {
+    const res = await window.api.ai.chatStream(book.value.id, currentChapter.value.id, chatMessages.value)
+    if (!res.ok) {
+      chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
+      return
+    }
+    chatJobId.value = res.jobId
+    chatLoading.value = true
+    chatMessages.value.push({ role: 'assistant', content: '' })
+    chatAssistantIndex.value = chatMessages.value.length - 1
+  } catch {
+    chatMessages.value.push({ role: 'assistant', content: '错误：无法启动问答任务' })
+  } finally {
+    chatStarting.value = false
   }
-  chatJobId.value = res.jobId
-  chatLoading.value = true
-  chatMessages.value.push({ role: 'assistant', content: '' })
-  chatAssistantIndex.value = chatMessages.value.length - 1
 }
 
 function stopChat() {
@@ -1671,7 +1688,7 @@ onUnmounted(() => {
           <n-tag v-if="lastAssistantTruncated" type="warning">回答可能因输出上限而截断。</n-tag>
           <div v-if="assistantSaveState.token" class="ai-save-warning">
             结果已生成，但未能保存到书库。
-            <n-button size="small" :loading="assistantSaveRetrying" @click="retryAssistantSave">重试保存</n-button>
+            <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantBusy" @click="retryAssistantSave">重试保存</n-button>
           </div>
           <n-tabs v-model:value="aiAssistantTab" type="line" animated>
             <n-tab-pane name="recap" tab="前情">
@@ -1687,21 +1704,21 @@ onUnmounted(() => {
               <p class="subtle">前情只根据已经生成的本章摘要和小说记忆整理。</p>
               <div class="ai-result">{{ recapText || '还没有前情提要。' }}</div>
               <n-space>
-                <n-button :disabled="!book?.progress?.chapterId || recapLoading" type="primary" @click="startRecap('story')">刷新前情</n-button>
-                <n-button :disabled="!chapterReady || recapLoading" @click="startRecap('chapter')">生成本章摘要</n-button>
+                <n-button :disabled="!book?.progress?.chapterId || assistantBusy || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
+                <n-button :disabled="!chapterReady || assistantBusy || assistantSaveRetrying" @click="startRecap('chapter')">生成本章摘要</n-button>
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="memory" tab="记忆">
               <n-space vertical>
                 <n-space>
-                  <n-button type="primary" :disabled="!book?.progress?.chapterId || memoryLoading" @click="startMemoryJob('update')">更新记忆</n-button>
+                  <n-button type="primary" :disabled="!book?.progress?.chapterId || assistantBusy || assistantSaveRetrying" @click="startMemoryJob('update')">更新记忆</n-button>
                   <n-popconfirm
                     positive-text="继续重建"
                     negative-text="取消"
                     @positive-click="startMemoryJob('rebuild')"
                   >
                     全部重建会删除现有 AI 记忆，并重新分析第一章到当前已读章节。旧记忆会在新结果完整保存后替换。确定继续吗？
-                    <template #trigger><n-button :disabled="!book?.progress?.chapterId || memoryLoading">全部重建</n-button></template>
+                    <template #trigger><n-button :disabled="!book?.progress?.chapterId || assistantBusy || assistantSaveRetrying">全部重建</n-button></template>
                   </n-popconfirm>
                   <n-button v-if="memoryJobId" type="warning" :disabled="memoryStopping" @click="stopMemoryJob">{{ memoryStopping ? '正在停止…' : '停止生成' }}</n-button>
                 </n-space>
@@ -1767,9 +1784,9 @@ onUnmounted(() => {
                     <n-button :disabled="chatLoading || chatMessages.length === 0">清空聊天</n-button>
                   </template>
                 </n-popconfirm>
-                <n-input v-model:value="chatInput" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="chatLoading" @keyup.enter="sendChat" />
+                <n-input v-model:value="chatInput" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="assistantBusy || assistantSaveRetrying" @keyup.enter="sendChat" />
                 <n-button v-if="chatLoading" type="warning" @click="stopChat">停止生成</n-button>
-                <n-button v-else type="primary" :disabled="!chatInput.trim()" @click="sendChat">发送问题</n-button>
+                <n-button v-else type="primary" :disabled="!chatInput.trim() || assistantBusy || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
               </div>
             </n-tab-pane>
           </n-tabs>

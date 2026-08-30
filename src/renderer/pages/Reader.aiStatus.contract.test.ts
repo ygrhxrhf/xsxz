@@ -33,6 +33,7 @@ describe('Reader AI task status contract', () => {
     const end = source.indexOf('async function setRecapLength', start)
     const block = source.slice(start, end)
     expect(block).toContain('const token = assistantSaveState.value.token')
+    expect(block).toContain('assistantBusy.value')
     expect(block).toContain('window.api.ai.retrySave(token)')
     expect(block).toContain('clearRetriedAssistantSaveToken(assistantSaveState.value, token)')
     expect(block).toContain("message.success('结果已保存')")
