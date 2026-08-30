@@ -21,11 +21,27 @@ const dlRunning = ref(false)
 const dlHint = ref('')
 let unsubProgress: (() => void) | null = null
 
-const tabs: { id: Tab; label: string; icon: string }[] = [
-  { id: 'browse', label: '浏览', icon: '🧭' },
-  { id: 'library', label: '书库', icon: '📚' },
-  { id: 'reader', label: '阅读', icon: '📖' },
-  { id: 'settings', label: '设置', icon: '⚙️' },
+const tabs: { id: Tab; label: string; iconPaths: string[] }[] = [
+  {
+    id: 'browse',
+    label: '浏览',
+    iconPaths: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z', 'm16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3 6.3-2.1Z'],
+  },
+  {
+    id: 'library',
+    label: '书库',
+    iconPaths: ['M4 19.5A2.5 2.5 0 0 1 6.5 17H20', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z', 'M8 7h8', 'M8 11h6'],
+  },
+  {
+    id: 'reader',
+    label: '阅读',
+    iconPaths: ['M2.5 4.5A3.5 3.5 0 0 1 6 2h5v17H6a3.5 3.5 0 0 0-3.5 3V4.5Z', 'M21.5 4.5A3.5 3.5 0 0 0 18 2h-5v17h5a3.5 3.5 0 0 1 3.5 3V4.5Z'],
+  },
+  {
+    id: 'settings',
+    label: '设置',
+    iconPaths: ['M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z', 'M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56V20.3h-3v-.08a1.7 1.7 0 0 0-1.04-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 0 0 7 15a1.7 1.7 0 0 0-1.56-1.04H5.3v-3h.14A1.7 1.7 0 0 0 7 9.92a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.12-2.12.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 11.7 4.7v-.14h3v.14a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.12 2.12-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.04h.14v3h-.14A1.7 1.7 0 0 0 19.4 15Z'],
+  },
 ]
 
 // 夜樱主题：樱粉主色 + 紫罗兰辅色，统一 Naive UI 组件配色
@@ -65,8 +81,8 @@ const sakuraOverrides: GlobalThemeOverrides = {
     inputColor: 'rgba(11, 8, 19, 0.55)',
     actionColor: 'rgba(255, 255, 255, 0.04)',
     hoverColor: 'rgba(255, 142, 199, 0.10)',
-    borderRadius: '10px',
-    borderRadiusSmall: '7px',
+    borderRadius: '8px',
+    borderRadiusSmall: '8px',
   },
   Card: {
     borderRadius: '14px',
@@ -76,7 +92,7 @@ const sakuraOverrides: GlobalThemeOverrides = {
     borderRadius: '16px',
   },
   Tag: {
-    borderRadius: '999px',
+    borderRadius: '8px',
   },
 }
 
@@ -118,18 +134,18 @@ const minimalOverrides: GlobalThemeOverrides = {
     actionColor: '#f4f5f8',
     hoverColor: 'rgba(94, 111, 158, 0.08)',
     borderRadius: '8px',
-    borderRadiusSmall: '6px',
+    borderRadiusSmall: '8px',
   },
   Card: {
-    borderRadius: '12px',
+    borderRadius: '14px',
     borderColor: '#e4e5ec',
     color: '#ffffff',
   },
   Dialog: {
-    borderRadius: '12px',
+    borderRadius: '16px',
   },
   Tag: {
-    borderRadius: '4px',
+    borderRadius: '8px',
   },
 }
 
@@ -148,8 +164,8 @@ const themeOverrides = computed(() => (skin.value === 'minimal' ? minimalOverrid
 
 const skinMeta = computed(() =>
   skin.value === 'minimal'
-    ? { mark: '📘', sub: '简约阅读' }
-    : { mark: '🌸', sub: '❀ 樱色书房 ❀' },
+    ? { sub: '简约阅读', toggleLabel: '夜樱模式' }
+    : { sub: '❀ 樱色书房 ❀', toggleLabel: '简约模式' },
 )
 
 function toggleSkin() {
@@ -207,10 +223,11 @@ function onDownloadProgress(p: DownloadProgress) {
   }
 }
 
-function tabLabel(item: { id: Tab; label: string }): string {
-  if (item.id === 'library' && dlRunning.value && dlHint.value) return `${item.label} ${dlHint.value}`
-  if (item.id === 'browse' && dlRunning.value) return `${item.label} · 下`
-  return item.label
+function tabBadge(id: Tab): string {
+  if (!dlRunning.value) return ''
+  if (id === 'browse') return '下载中'
+  if (id === 'library') return dlHint.value
+  return ''
 }
 
 function syncBrowseVisibility() {
@@ -254,8 +271,13 @@ onUnmounted(() => {
       <div class="app-shell">
         <aside class="sidebar">
           <div class="brand">
-            <span class="brand-mark">{{ skinMeta.mark }}</span>
-            <div>
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M3 5.5A3.5 3.5 0 0 1 6.5 2H11v17H6.5A3.5 3.5 0 0 0 3 22V5.5Z" />
+                <path d="M21 5.5A3.5 3.5 0 0 0 17.5 2H13v17h4.5A3.5 3.5 0 0 1 21 22V5.5Z" />
+              </svg>
+            </span>
+            <div class="brand-copy">
               <div class="brand-title">小说浏览器</div>
               <div class="brand-sub">{{ skinMeta.sub }}</div>
             </div>
@@ -266,14 +288,25 @@ onUnmounted(() => {
             class="nav-btn"
             :class="{ active: tab === item.id }"
             type="button"
+            :aria-current="tab === item.id ? 'page' : undefined"
             @click="tab = item.id"
           >
-            <span class="nav-icon">{{ item.icon }}</span>
-            <span>{{ tabLabel(item) }}</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path v-for="path in item.iconPaths" :key="path" :d="path" />
+            </svg>
+            <span class="nav-label">{{ item.label }}</span>
+            <span v-if="tabBadge(item.id)" class="nav-badge">{{ tabBadge(item.id) }}</span>
           </button>
           <div class="sidebar-bottom">
             <button class="skin-toggle" type="button" :title="skin === 'sakura' ? '切换到简约皮肤' : '切换到夜樱皮肤'" @click="toggleSkin">
-              {{ skin === 'sakura' ? '📘 简约模式' : '🌸 夜樱模式' }}
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path v-if="skin === 'sakura'" d="M12 3a9 9 0 1 0 9 9c0-.5-.04-1-.12-1.47A7 7 0 0 1 13.47 3.1C13 3.03 12.5 3 12 3Z" />
+                <template v-else>
+                  <circle cx="12" cy="12" r="4" />
+                  <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42" />
+                </template>
+              </svg>
+              <span>{{ skinMeta.toggleLabel }}</span>
             </button>
             <div v-if="skin === 'sakura'" class="sidebar-footer">✦ ♡ ✦</div>
           </div>

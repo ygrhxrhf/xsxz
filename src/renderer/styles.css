@@ -56,6 +56,7 @@ body {
   --nav-active-bg: linear-gradient(135deg, #ff8ec7, #a78bfa);
   --nav-active-shadow: 0 4px 16px rgba(196, 130, 240, 0.35);
   --brand-mark-bg: linear-gradient(135deg, #ff8ec7, #a78bfa);
+  --brand-mark-color: var(--on-accent);
   --brand-mark-shadow: 0 4px 14px rgba(255, 142, 199, 0.35);
   --brand-title-fill: linear-gradient(90deg, #ffa9d4, #c3a8ff);
   --chrome-bg: rgba(29, 21, 46, 0.92);
@@ -140,6 +141,7 @@ body[data-skin='minimal'] {
   --nav-active-bg: #5e6f9e;
   --nav-active-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
   --brand-mark-bg: #eef0f5;
+  --brand-mark-color: var(--focus);
   --brand-mark-shadow: none;
   --brand-title-fill: #26262e;
   --chrome-bg: #ffffff;
@@ -343,10 +345,24 @@ body,
   flex-shrink: 0;
   display: grid;
   place-items: center;
-  font-size: 20px;
   border-radius: var(--radius-control);
+  color: var(--brand-mark-color);
   background: var(--brand-mark-bg);
   box-shadow: var(--brand-mark-shadow);
+}
+
+.brand-mark svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.brand-copy {
+  min-width: 0;
 }
 
 .brand-title {
@@ -399,16 +415,42 @@ body,
 }
 
 .nav-icon {
-  font-size: 15px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-/* 简约皮肤：隐藏 emoji 图标等装饰，靠留白和字重区分 */
-body[data-skin='minimal'] .nav-icon {
-  display: none;
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-badge {
+  margin-left: auto;
+  max-width: 64px;
+  overflow: hidden;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-control);
+  padding: 1px var(--space-1);
+  font-size: 10px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .skin-toggle {
   margin: var(--space-2) var(--space-1) 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
   border: 1px solid var(--line);
   background: transparent;
   color: var(--muted);
@@ -417,6 +459,16 @@ body[data-skin='minimal'] .nav-icon {
   font-size: 12px;
   cursor: pointer;
   transition: border-color var(--motion-duration), color var(--motion-duration), background var(--motion-duration);
+}
+
+.skin-toggle svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .skin-toggle:hover {
