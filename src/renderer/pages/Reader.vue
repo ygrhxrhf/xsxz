@@ -92,6 +92,8 @@ const showAiAssistant = ref(false)
 const aiAssistantTab = ref<'recap' | 'memory' | 'qa'>('recap')
 const aiServiceOrigin = ref('')
 const aiAssistantTaskLabel = computed(() => ({ recap: '前情', memory: '记忆', qa: '问答' })[aiAssistantTab.value])
+const assistantBudgets = ref<Partial<Record<'recap' | 'memory' | 'qa', AiBudgetEstimate>>>({})
+const currentAssistantBudget = computed(() => assistantBudgets.value[aiAssistantTab.value] ?? null)
 const recapText = ref('')
 const recapJobId = ref('')
 const recapJobKind = ref<'chapter' | 'story' | ''>('')
@@ -770,6 +772,7 @@ let scrollTimer: ReturnType<typeof setTimeout> | null = null
 let unsubDownload: (() => void) | null = null
 let unsubAiChunk: (() => void) | null = null
 let unsubAiStage: (() => void) | null = null
+let unsubAiBudget: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
 
 const nightClass = computed(() => (nightMode.value ? 'night' : ''))
@@ -1473,6 +1476,9 @@ onMounted(async () => {
   unsubAiStage = window.api.ai.onStage(({ jobId, stage }) => {
     assistantStages.value = { ...assistantStages.value, [jobId]: stage }
   })
+  unsubAiBudget = window.api.ai.onBudget(({ task, budget }) => {
+    assistantBudgets.value = { ...assistantBudgets.value, [task]: budget }
+  })
   unsubAiDone = window.api.ai.onDone((event) => {
     const assistantKind = assistantKindForJob(event.jobId, assistantJobIds.value)
     if (assistantKind) {
@@ -1568,6 +1574,7 @@ onUnmounted(() => {
   unsubDownload?.()
   unsubAiChunk?.()
   unsubAiStage?.()
+  unsubAiBudget?.()
   unsubAiDone?.()
   saveProgress()
 })
@@ -1728,6 +1735,11 @@ onUnmounted(() => {
             <span>当前任务：{{ aiAssistantTaskLabel }}</span>
             <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
             <span>仅包含当前阅读进度以内的内容，不发送未读章节。</span>
+          </div>
+          <div v-if="currentAssistantBudget" class="ai-budget-status">
+            <strong>本次发送范围</strong>
+            <div>预计发送：{{ currentAssistantBudget.chapterCount }} 章 / {{ currentAssistantBudget.paragraphCount }} 段，约 {{ currentAssistantBudget.sentCharacters }} 字 / {{ currentAssistantBudget.estimatedTokens }} tokens（估算）</div>
+            <div>{{ currentAssistantBudget.range }}</div>
           </div>
           <div v-if="assistantStageText" class="ai-assistant-status">{{ assistantStageText }}</div>
           <div v-if="assistantCompleted" class="ai-assistant-status">

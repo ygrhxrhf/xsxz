@@ -79,6 +79,7 @@ export interface EvidenceQaPipelineOptions {
   onStage: (stage: AiRequestStage) => void
   rewrite: (messages: ReturnType<typeof buildEvidenceQueryRewriteMessages>) => Promise<AiCompletionResult>
   search: (query: EvidenceSearchQuery) => Promise<{ citations: AiCitation[]; uptoChapterId: string }>
+  onEvidenceSelected?: (citations: AiCitation[], uptoChapterId: string) => void
   answer: (messages: ReturnType<typeof buildEvidenceAnswerMessages>) => Promise<AiCompletionResult>
 }
 
@@ -102,6 +103,7 @@ export async function executeEvidenceQaPipeline(options: EvidenceQaPipelineOptio
   options.onStage('searching')
   const selected = await options.search(rewritten)
   if (options.stopped()) return { kind: 'stopped' }
+  options.onEvidenceSelected?.(selected.citations, selected.uptoChapterId)
   if (!selected.citations.length) {
     return {
       kind: 'noEvidence', text: NO_LOCAL_EVIDENCE_MESSAGE, citations: [],

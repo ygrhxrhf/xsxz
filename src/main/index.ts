@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiPromptKind, AiRequestStage, AiUsage, BrowseState, Settings, SiteRule } from '../shared/types'
+import type { AiBudgetEstimate, AiPromptKind, AiRequestStage, AiUsage, BrowseState, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import {
@@ -58,10 +58,12 @@ import {
   type AiConfig,
   type AiSuccessDoneEvent,
 } from './ai'
-import { executeMemoryOrchestration, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
+import { executeMemoryOrchestration, planMemoryPromptRequests, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
+import { buildAiMemoryCandidates } from './aiMemory'
 import { finalizeMemoryUpdate } from './aiMemorySave'
 import { selectLocalEvidence, type EvidenceSearchChapter } from './aiEvidenceSearch'
-import { executeEvidenceQaPipeline, planEvidenceChapterReads } from './aiEvidenceQa'
+import { buildEvidenceAnswerMessages, executeEvidenceQaPipeline, planEvidenceChapterReads } from './aiEvidenceQa'
+import { countTextCharacters, estimateAiTokens } from './aiBudget'
 import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
 import {
   parseMemoryBookPayload,
@@ -109,6 +111,29 @@ function aiTaskInstruction(settings: Settings, kind: AiPromptKind): string {
 
 function sendAiStage(jobId: string, stage: AiRequestStage, detail?: string): void {
   mainWindow?.webContents.send('ai.stage', { jobId, stage, ...(detail ? { detail } : {}) })
+}
+
+function sendAiBudget(jobId: string, task: 'recap' | 'memory' | 'qa', budget: AiBudgetEstimate): void {
+  mainWindow?.webContents.send('ai.budget', { jobId, task, budget })
+}
+
+function promptBudget(
+  prompts: readonly string[],
+  chapters: readonly { id: string; title: string }[],
+  paragraphCount: number,
+  range?: string,
+): AiBudgetEstimate {
+  const sentCharacters = prompts.reduce((total, prompt) => total + countTextCharacters(prompt), 0)
+  const unique = [...new Map(chapters.map((chapter) => [chapter.id, chapter])).values()]
+  return {
+    originalCharacters: sentCharacters,
+    sentCharacters,
+    estimatedTokens: prompts.reduce((total, prompt) => total + estimateAiTokens(prompt), 0),
+    chapterCount: unique.length,
+    paragraphCount,
+    batchCount: prompts.length,
+    range: range ?? (unique.length ? `${unique[0]!.title} → ${unique.at(-1)!.title}` : '0 条本地证据'),
+  }
 }
 
 async function saveAiDone(
@@ -566,7 +591,27 @@ function registerIpc(): void {
       }
       const config = trustedAiConfig(settings, apiKey)
       const instruction = aiTaskInstruction(settings, 'memory')
+      const reviewRequests = mode === 'update'
+        ? planMemoryPromptRequests(book.title, instruction, [], existing, true, eligibleChapterIds)
+        : []
+      const candidateGroups = batches.map((batch) => batch.flatMap((chapter) =>
+        buildAiMemoryCandidates(chapter.id, chapter.title, chapter.body ?? '')))
+      const extractionRequests = candidateGroups.flatMap((candidates) =>
+        planMemoryPromptRequests(book.title, instruction, candidates, existing, false, eligibleChapterIds))
+      const memoryRequests = [...reviewRequests, ...extractionRequests]
+      const materialChapters = [
+        ...batches.flat().map((chapter) => ({ id: chapter.id, title: chapter.title })),
+        ...reviewRequests.flatMap((request) => request.candidates.map((candidate) => ({
+          id: candidate.chapterId, title: candidate.chapterTitle,
+        }))),
+      ]
+      const memoryBudget = promptBudget(
+        memoryRequests.map((request) => request.prompt),
+        materialChapters,
+        memoryRequests.reduce((total, request) => total + request.candidates.length, 0),
+      )
       return aiJobSlot.start(async (jobId, signal) => {
+        sendAiBudget(jobId, 'memory', memoryBudget)
         sendAiStage(jobId, 'preparing')
         let usage: AiUsage | undefined
         try {
@@ -692,6 +737,7 @@ function registerIpc(): void {
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       return aiJobSlot.start(async (jobId, signal) => {
         let partial = ''
+        sendAiBudget(jobId, 'recap', plan.budget)
         sendAiStage(jobId, 'preparing')
         try {
           sendAiStage(jobId, 'requesting')
@@ -968,9 +1014,10 @@ function registerIpc(): void {
 
         try {
           const readPlan = planEvidenceChapterReads(book.chapters, progressChapterId)
+          const taskInstruction = aiTaskInstruction(settings, 'evidenceQa')
           const result = await executeEvidenceQaPipeline({
             question,
-            taskInstruction: aiTaskInstruction(settings, 'evidenceQa'),
+            taskInstruction,
             stopped: () => signal.aborted,
             onStage: (stage) => sendAiStage(jobId, stage),
             rewrite: (messages) => runAiTaskCompletion(config, messages, { task: 'queryRewrite', signal }),
@@ -998,6 +1045,19 @@ function registerIpc(): void {
                 progressChapterId,
                 currentChapterId: args.chapterId,
               })
+            },
+            onEvidenceSelected: (citations) => {
+              const messages = citations.length
+                ? buildEvidenceAnswerMessages(question, citations, taskInstruction)
+                : []
+              sendAiBudget(jobId, 'qa', promptBudget(
+                messages.map((message) => message.content),
+                citations.map((citation) => ({ id: citation.chapterId, title: citation.chapterTitle })),
+                citations.length,
+                citations.length
+                  ? `${citations[0]!.chapterTitle} → ${citations.at(-1)!.chapterTitle}`
+                  : '0 条本地证据',
+              ))
             },
             answer: (messages) => runAiTaskCompletion(config, messages, { task: 'evidenceQa', signal }),
           })

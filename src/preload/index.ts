@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AiBudgetEstimate,
+  AiBudgetEvent,
   AiChatMessage,
   AiChunkEvent,
   AiCleanResult,
@@ -202,6 +203,7 @@ const api = {
     cancel: (jobId?: string) => ipcRenderer.invoke('ai.cancel', { jobId }) as Promise<{ ok: true }>,
     onChunk: (handler: (payload: AiChunkEvent) => void) => on('ai.chunk', handler),
     onStage: (handler: (payload: AiStageEvent) => void) => on('ai.stage', handler),
+    onBudget: (handler: (payload: AiBudgetEvent) => void) => on('ai.budget', handler),
     onDone: (handler: (payload: AiDoneEvent) => void) => on('ai.done', handler),
   },
 }

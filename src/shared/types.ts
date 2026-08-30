@@ -381,6 +381,12 @@ export interface AiStageEvent {
   detail?: string
 }
 
+export interface AiBudgetEvent {
+  jobId: string
+  task: 'recap' | 'memory' | 'qa'
+  budget: AiBudgetEstimate
+}
+
 export interface AiEvidenceChatMessage {
   role: 'user' | 'assistant'
   content: string

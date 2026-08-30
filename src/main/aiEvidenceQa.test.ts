@@ -62,14 +62,16 @@ describe('evidence QA pipeline', () => {
 
   it('does not make the final model request when local evidence is empty', async () => {
     const answer = vi.fn()
+    const onEvidenceSelected = vi.fn()
     const stages: string[] = []
     const result = await executeEvidenceQaPipeline({
       question: '谁？', taskInstruction: '仅根据证据回答。', stopped: () => false,
       onStage: (stage) => stages.push(stage),
       rewrite: async () => completion({ corePhrase: '无人', keywords: [] }),
-      search: async () => ({ citations: [], uptoChapterId: 'c2' }), answer,
+      search: async () => ({ citations: [], uptoChapterId: 'c2' }), onEvidenceSelected, answer,
     })
     expect(answer).not.toHaveBeenCalled()
+    expect(onEvidenceSelected).toHaveBeenCalledWith([], 'c2')
     expect(stages).toEqual(['rewriting', 'searching'])
     expect(result).toEqual({
       kind: 'noEvidence', text: NO_LOCAL_EVIDENCE_MESSAGE, citations: [], uptoChapterId: 'c2',
