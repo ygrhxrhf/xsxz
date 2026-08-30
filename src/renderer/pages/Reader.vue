@@ -89,6 +89,8 @@ const showCleanBudgetConfirm = ref(false)
 const lastCleanBudget = ref<AiBudgetEstimate | null>(null)
 const showAiAssistant = ref(false)
 const aiAssistantTab = ref<'recap' | 'memory' | 'qa'>('recap')
+const aiServiceOrigin = ref('')
+const aiAssistantTaskLabel = computed(() => ({ recap: '前情', memory: '记忆', qa: '问答' })[aiAssistantTab.value])
 const recapText = ref('')
 const recapJobId = ref('')
 const recapJobKind = ref<'chapter' | 'story' | ''>('')
@@ -1026,6 +1028,11 @@ async function loadPrefs() {
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
   recapLength.value = s.ai?.recapLength ?? 'standard'
+  try {
+    aiServiceOrigin.value = new URL(s.baseUrl).origin
+  } catch {
+    aiServiceOrigin.value = s.baseUrl
+  }
 }
 
 // AI actions
@@ -1720,7 +1727,10 @@ onUnmounted(() => {
         <n-drawer-content title="AI 助手" closable>
           <div class="ai-assistant-heading">
             <strong>{{ book?.title }}</strong>
+            <span>模型服务：{{ aiServiceOrigin || '未配置' }}</span>
+            <span>当前任务：{{ aiAssistantTaskLabel }}</span>
             <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
+            <span>仅包含当前阅读进度以内的内容，不发送未读章节。</span>
           </div>
           <div v-if="assistantStageText" class="ai-assistant-status">{{ assistantStageText }}</div>
           <div v-if="assistantCompleted" class="ai-assistant-status">

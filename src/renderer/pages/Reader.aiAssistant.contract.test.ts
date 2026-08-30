@@ -12,6 +12,10 @@ describe('Reader unified AI assistant shell', () => {
     expect(source).toContain('<n-tab-pane name="memory" tab="记忆">')
     expect(source).toContain('<n-tab-pane name="qa" tab="问答">')
     expect(source).toContain('已读截止：')
+    expect(source).toContain("aiServiceOrigin.value = new URL(s.baseUrl).origin")
+    expect(source).toContain('模型服务：{{ aiServiceOrigin')
+    expect(source).toContain('当前任务：{{ aiAssistantTaskLabel }}')
+    expect(source).toContain('仅包含当前阅读进度以内的内容，不发送未读章节。')
   })
 
   it('opens from local data only and maps legacy entry intent to a tab', async () => {
