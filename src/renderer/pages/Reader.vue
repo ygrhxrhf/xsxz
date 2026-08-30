@@ -369,9 +369,15 @@ async function askSelectedText() {
   restoringChat.value = true
   aiAssistantTab.value = 'qa'
   showAiAssistant.value = true
-  const history = await window.api.ai.getChat(book.value.id)
-  if (history.ok) chatMessages.value = history.messages
-  restoringChat.value = false
+  try {
+    const history = await window.api.ai.getChat(book.value.id)
+    if (history.ok) chatMessages.value = history.messages
+    else message.warning(history.message)
+  } catch {
+    message.warning('读取本地问答记录失败，将继续发送当前问题')
+  } finally {
+    restoringChat.value = false
+  }
   chatInput.value = `这段话是什么意思？结合剧情解释一下。\n\n「${excerpt}」`
   closeSelectionTools()
   await sendChat()
@@ -1071,7 +1077,7 @@ async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
   if (!book.value) return
   aiAssistantTab.value = tab
   showAiAssistant.value = true
-  await Promise.all([
+  await Promise.allSettled([
     recapLoading.value ? Promise.resolve() : loadStoredRecap(),
     window.api.ai.getMemory(book.value.id),
     chatLoading.value || restoringChat.value
@@ -1160,15 +1166,6 @@ async function translateSelectedText() {
 
 function stopTranslate() {
   if (translateJobId.value) void window.api.ai.cancel(translateJobId.value)
-}
-
-function askSuggested(question: string) {
-  if (chatLoading.value) {
-    message.warning('请先停止当前生成')
-    return
-  }
-  chatInput.value = question
-  void sendChat()
 }
 
 async function sendChat() {
@@ -1537,7 +1534,7 @@ onUnmounted(() => {
             </n-tab-pane>
           </n-tabs>
           <template #footer>
-            <n-button v-if="recapLoading" type="warning" @click="stopRecap">停止生成</n-button>
+            <n-button v-if="recapLoading && aiAssistantTab === 'recap'" type="warning" @click="stopRecap">停止生成</n-button>
           </template>
         </n-drawer-content>
       </n-drawer>

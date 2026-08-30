@@ -17,8 +17,9 @@ describe('Reader unified AI assistant shell', () => {
   it('opens from local data only and maps legacy entry intent to a tab', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
     const start = source.indexOf('async function openAiAssistant')
-    const end = source.indexOf('async function openRecap', start)
+    const end = source.indexOf('async function startRecap', start)
     const block = source.slice(start, end)
+    expect(block).toContain('Promise.allSettled([')
     expect(block).toContain('loadStoredRecap()')
     expect(block).toContain('window.api.ai.getMemory(book.value.id)')
     expect(block).toContain('window.api.ai.getChat(book.value.id)')
@@ -28,5 +29,7 @@ describe('Reader unified AI assistant shell', () => {
     expect(source).toContain("openAiAssistant('recap')")
     expect(source).toContain("openAiAssistant('qa')")
     expect(source).toContain("aiAssistantTab.value = 'qa'")
+    expect(source).toContain("recapLoading && aiAssistantTab === 'recap'")
+    expect(source).not.toContain('function askSuggested(')
   })
 })
