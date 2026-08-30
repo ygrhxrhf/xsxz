@@ -84,7 +84,9 @@ const recapLength = ref<'short' | 'standard' | 'detailed'>('standard')
 const memoryData = ref<AiMemoryFile | null>(null)
 const memoryJobId = ref('')
 const memoryJobKind = ref<'update' | 'rebuild' | ''>('')
-const memoryLoading = computed(() => Boolean(memoryJobId.value))
+const memoryStarting = ref(false)
+const memoryStopping = ref(false)
+const memoryLoading = computed(() => memoryStarting.value || Boolean(memoryJobId.value))
 const chapterSummaryBudget = ref<AiBudgetEstimate | null>(null)
 const showChapterSummaryBudgetConfirm = ref(false)
 const recapBudgetConfirmKind = ref<'chapter' | 'story'>('chapter')
@@ -1114,18 +1116,32 @@ async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
 
 async function startMemoryJob(kind: 'update' | 'rebuild') {
   if (!book.value?.progress?.chapterId || memoryLoading.value) return
-  const start = kind === 'update' ? window.api.ai.updateMemory : window.api.ai.rebuildMemory
-  const result = await start(book.value.id, book.value.progress.chapterId)
-  if (!result.ok) {
-    message.warning(result.message)
-    return
+  memoryStarting.value = true
+  try {
+    const start = kind === 'update' ? window.api.ai.updateMemory : window.api.ai.rebuildMemory
+    const result = await start(book.value.id, book.value.progress.chapterId)
+    if (!result.ok) {
+      message.warning(result.message)
+      return
+    }
+    memoryJobId.value = result.jobId
+    memoryJobKind.value = kind
+  } catch {
+    message.error('无法启动小说记忆任务')
+  } finally {
+    memoryStarting.value = false
   }
-  memoryJobId.value = result.jobId
-  memoryJobKind.value = kind
 }
 
-function stopMemoryJob() {
-  if (memoryJobId.value) void window.api.ai.cancel(memoryJobId.value)
+async function stopMemoryJob() {
+  if (!memoryJobId.value || memoryStopping.value) return
+  memoryStopping.value = true
+  try {
+    await window.api.ai.cancel(memoryJobId.value)
+  } catch {
+    memoryStopping.value = false
+    message.error('停止小说记忆任务失败')
+  }
 }
 
 async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'event', item: AiMemoryBase) {
@@ -1140,8 +1156,14 @@ async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'e
 }
 
 async function setRecapLength(value: 'short' | 'standard' | 'detailed') {
+  const previous = recapLength.value
   recapLength.value = value
-  await window.api.settings.set({ ai: { recapLength: value } })
+  try {
+    await window.api.settings.set({ ai: { recapLength: value } })
+  } catch {
+    recapLength.value = previous
+    message.error('前情长度保存失败，已恢复原设置')
+  }
 }
 
 async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) {
@@ -1353,15 +1375,17 @@ onMounted(async () => {
     }
     if (event.jobId === memoryJobId.value) {
       const kind = memoryJobKind.value
+      const stopped = event.ok ? event.stopped === true : event.message === '已停止生成'
       memoryJobId.value = ''
       memoryJobKind.value = ''
-      if (event.ok && event.memoryUpdate) {
+      memoryStopping.value = false
+      if (stopped) {
+        message.info('更新已停止，原有记忆未改变。')
+      } else if (event.ok && event.memoryUpdate) {
         memoryData.value = event.memoryUpdate.memory
         message.success(kind === 'rebuild'
           ? '小说记忆已重建'
           : `本次处理 ${event.memoryUpdate.processedChapters} 章，新增或更新 ${event.memoryUpdate.changedItems} 条记忆。`)
-      } else if (event.ok && event.stopped) {
-        message.info('更新已停止，原有记忆未改变。')
       } else if (!event.ok) {
         message.error(event.message)
       }
@@ -1598,7 +1622,7 @@ onUnmounted(() => {
                     全部重建会删除现有 AI 记忆，并重新分析第一章到当前已读章节。旧记忆会在新结果完整保存后替换。确定继续吗？
                     <template #trigger><n-button :disabled="!book?.progress?.chapterId || memoryLoading">全部重建</n-button></template>
                   </n-popconfirm>
-                  <n-button v-if="memoryLoading" type="warning" @click="stopMemoryJob">停止生成</n-button>
+                  <n-button v-if="memoryJobId" type="warning" :disabled="memoryStopping" @click="stopMemoryJob">{{ memoryStopping ? '正在停止…' : '停止生成' }}</n-button>
                 </n-space>
                 <div v-if="memoryData?.uptoChapterId" class="subtle">
                   已更新到：{{ book?.chapters.find((chapter) => chapter.id === memoryData?.uptoChapterId)?.title || memoryData.uptoChapterId }}
@@ -1614,7 +1638,7 @@ onUnmounted(() => {
                     <h3>人物</h3>
                     <article v-for="item in memoryData.characters" :key="item.id" class="memory-item">
                       <strong>{{ item.name }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
-                      <p>{{ item.role }} · {{ item.status }}</p><p>{{ item.summary }}</p>
+                      <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}</p><p>{{ item.summary }}</p>
                       <p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('character', item)">标记不准确</n-button>
                     </article>
@@ -1639,7 +1663,7 @@ onUnmounted(() => {
                     <h3>关键事件</h3>
                     <article v-for="item in memoryData.events" :key="item.id" class="memory-item">
                       <strong>{{ item.title }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
-                      <p>{{ item.result }} · {{ item.summary }}</p><p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
+                      <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}</p><p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('event', item)">标记不准确</n-button>
                     </article>
                   </section>
