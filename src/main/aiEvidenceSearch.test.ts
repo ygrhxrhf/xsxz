@@ -84,6 +84,24 @@ describe('local read-range evidence selection', () => {
     expect(Array.from(expanded.citations[0]!.excerpt).length).toBeLessThanOrEqual(80)
   })
 
+  it('keeps paragraph coordinates and excerpts in the same paragraph at a boundary match', () => {
+    const boundary = chapter('c0001', 1, `${'上一段标记'.repeat(80)}\n\nTARGET${'本段'.repeat(120)}`)
+    const result = selectLocalEvidence([boundary], { originalQuestion: 'target', corePhrase: 'target' }, {
+      requestedUptoChapterId: 'c0001', progressChapterId: 'c0001', excerptCharacters: 80,
+    })
+    expect(result.citations[0]).toMatchObject({ paragraphIndex: 1 })
+    expect(result.citations[0]!.excerpt).toContain('TARGET')
+    expect(result.citations[0]!.excerpt).not.toContain('上一段标记')
+  })
+
+  it('keeps a normal long core phrase complete when it fits the excerpt limit', () => {
+    const phrase = '核心短语'.repeat(30)
+    const result = selectLocalEvidence([chapter('c0001', 1, `开头${phrase}结尾`)], {
+      originalQuestion: phrase, corePhrase: phrase,
+    }, { requestedUptoChapterId: 'c0001', progressChapterId: 'c0001' })
+    expect(result.citations[0]!.excerpt).toContain(phrase)
+  })
+
   it('falls back from non-finite option values while preserving the 8-result and 6-chapter caps', () => {
     const many = Array.from({ length: 10 }, (_, index) => chapter(
       `c${String(index + 1).padStart(4, '0')}`, index + 1, '目标词',

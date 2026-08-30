@@ -147,7 +147,6 @@ export function selectLocalEvidence(
       }, -1)
       const paragraphMatchPosition = corePosition >= 0 ? corePosition : firstKeywordPosition
       const originalMatchOffset = view.originalOffsets[Math.max(0, paragraphMatchPosition)] ?? 0
-      const bodyPosition = paragraph.start + originalMatchOffset
       let score = corePosition >= 0 ? 100 : 0
       score += matchingKeywords.length * 20
       if (terms.corePhrase && title.includes(terms.corePhrase)) score += 15
@@ -160,7 +159,7 @@ export function selectLocalEvidence(
           chapterId: chapter.id,
           chapterTitle: chapter.title,
           paragraphIndex: paragraph.index,
-          excerpt: clipAround(chapter.body, bodyPosition, excerptLimit),
+          excerpt: clipAround(paragraph.text, originalMatchOffset, excerptLimit),
         },
         score,
         chapterIndex: chapter.index,
