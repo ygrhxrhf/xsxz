@@ -77,6 +77,7 @@ export interface EvidenceQaPipelineOptions {
   taskInstruction: string
   stopped: () => boolean
   onStage: (stage: AiRequestStage) => void
+  onRewriteStarted?: (messages: ReturnType<typeof buildEvidenceQueryRewriteMessages>) => void
   rewrite: (messages: ReturnType<typeof buildEvidenceQueryRewriteMessages>) => Promise<AiCompletionResult>
   search: (query: EvidenceSearchQuery) => Promise<{ citations: AiCitation[]; uptoChapterId: string }>
   onEvidenceSelected?: (citations: AiCitation[], uptoChapterId: string) => void
@@ -93,7 +94,9 @@ export async function executeEvidenceQaPipeline(options: EvidenceQaPipelineOptio
   let rewritten: EvidenceSearchQuery = { originalQuestion: options.question }
   let rewriteUsage: AiUsage | undefined
   try {
-    const result = await options.rewrite(buildEvidenceQueryRewriteMessages(options.question))
+    const rewriteMessages = buildEvidenceQueryRewriteMessages(options.question)
+    options.onRewriteStarted?.(rewriteMessages)
+    const result = await options.rewrite(rewriteMessages)
     rewriteUsage = result.usage
     rewritten = { ...parseEvidenceQueryRewrite(result.json ?? {}), originalQuestion: options.question }
   } catch {

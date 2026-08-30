@@ -51,11 +51,14 @@ describe('evidence chapter read planning', () => {
 describe('evidence QA pipeline', () => {
   it('falls back to the original question when rewrite fails', async () => {
     const search = vi.fn(async (query) => ({ citations: [citation], uptoChapterId: 'c1', query }))
+    const onRewriteStarted = vi.fn()
     const answer = vi.fn(async () => completion({ answer: '在码头。', citations: [citation.id] }))
     const result = await executeEvidenceQaPipeline({
       question: '账册在哪里？', taskInstruction: '仅根据证据回答。', stopped: () => false,
-      onStage: () => {}, rewrite: async () => { throw new Error('rewrite') }, search, answer,
+      onStage: () => {}, onRewriteStarted,
+      rewrite: async () => { throw new Error('rewrite') }, search, answer,
     })
+    expect(onRewriteStarted).toHaveBeenCalledOnce()
     expect(search).toHaveBeenCalledWith({ originalQuestion: '账册在哪里？' })
     expect(result).toMatchObject({ kind: 'answer', text: '在码头。', citations: [citation], uptoChapterId: 'c1' })
   })

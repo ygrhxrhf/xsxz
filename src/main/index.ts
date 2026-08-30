@@ -118,11 +118,12 @@ function sendAiBudget(jobId: string, task: 'recap' | 'memory' | 'qa', budget: Ai
 }
 
 function promptBudget(
-  prompts: readonly string[],
+  requestGroups: readonly (readonly string[])[],
   chapters: readonly { id: string; title: string }[],
   paragraphCount: number,
   range?: string,
 ): AiBudgetEstimate {
+  const prompts = requestGroups.flat()
   const sentCharacters = prompts.reduce((total, prompt) => total + countTextCharacters(prompt), 0)
   const unique = [...new Map(chapters.map((chapter) => [chapter.id, chapter])).values()]
   return {
@@ -131,7 +132,7 @@ function promptBudget(
     estimatedTokens: prompts.reduce((total, prompt) => total + estimateAiTokens(prompt), 0),
     chapterCount: unique.length,
     paragraphCount,
-    batchCount: prompts.length,
+    batchCount: requestGroups.length,
     range: range ?? (unique.length ? `${unique[0]!.title} → ${unique.at(-1)!.title}` : '0 条本地证据'),
   }
 }
@@ -599,11 +600,14 @@ function registerIpc(): void {
       const extractionRequests = candidateGroups.flatMap((candidates) =>
         planMemoryPromptRequests(book.title, instruction, candidates, existing, false, eligibleChapterIds))
       const memoryRequests = [...reviewRequests, ...extractionRequests]
-      const materialChapters = memoryRequests.flatMap((request) => request.candidates.map((candidate) => ({
-        id: candidate.chapterId, title: candidate.chapterTitle,
-      })))
+      const materialChapterIds = new Set(memoryRequests.flatMap((request) =>
+        request.candidates.map((candidate) => candidate.chapterId)))
+      const materialChapters = book.chapters
+        .filter((chapter) => materialChapterIds.has(chapter.id))
+        .sort((left, right) => left.index - right.index)
+        .map((chapter) => ({ id: chapter.id, title: chapter.title }))
       const memoryBudget = promptBudget(
-        memoryRequests.map((request) => request.prompt),
+        memoryRequests.map((request) => [request.prompt]),
         materialChapters,
         memoryRequests.reduce((total, request) => total + request.candidates.length, 0),
         memoryRequests.length ? undefined : '无模型请求',
@@ -1019,6 +1023,10 @@ function registerIpc(): void {
             taskInstruction,
             stopped: () => signal.aborted,
             onStage: (stage) => sendAiStage(jobId, stage),
+            onRewriteStarted: (messages) => sendAiBudget(jobId, 'qa', promptBudget(
+              [messages.map((message) => message.content)], [], 0,
+              '仅发送查询改写；正在检索本地已读内容',
+            )),
             rewrite: (messages) => runAiTaskCompletion(config, messages, { task: 'queryRewrite', signal }),
             search: async (query) => {
               const searchChapters: EvidenceSearchChapter[] = []
@@ -1056,7 +1064,10 @@ function registerIpc(): void {
                 .sort((left, right) => left.index - right.index)
                 .map((chapter) => ({ id: chapter.id, title: chapter.title }))
               sendAiBudget(jobId, 'qa', promptBudget(
-                [...rewriteMessages, ...answerMessages].map((message) => message.content),
+                [
+                  rewriteMessages.map((message) => message.content),
+                  ...(answerMessages.length ? [answerMessages.map((message) => message.content)] : []),
+                ],
                 citedChapters,
                 citations.length,
                 citations.length
