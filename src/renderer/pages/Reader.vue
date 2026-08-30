@@ -72,8 +72,8 @@ const showAiResult = ref(false)
 const cleanBudget = ref<AiBudgetEstimate | null>(null)
 const showCleanBudgetConfirm = ref(false)
 const lastCleanBudget = ref<AiBudgetEstimate | null>(null)
-const showChat = ref(false)
-const showRecap = ref(false)
+const showAiAssistant = ref(false)
+const aiAssistantTab = ref<'recap' | 'memory' | 'qa'>('recap')
 const recapText = ref('')
 const recapJobId = ref('')
 const recapJobKind = ref<'chapter' | 'story' | ''>('')
@@ -367,7 +367,8 @@ async function askSelectedText() {
   }
   if (!book.value) return
   restoringChat.value = true
-  showChat.value = true
+  aiAssistantTab.value = 'qa'
+  showAiAssistant.value = true
   const history = await window.api.ai.getChat(book.value.id)
   if (history.ok) chatMessages.value = history.messages
   restoringChat.value = false
@@ -506,10 +507,9 @@ function anyDrawerOpen() {
   return (
     showDrawer.value ||
     showAiResult.value ||
-    showChat.value ||
+    showAiAssistant.value ||
     showSearch.value ||
     showMarks.value ||
-    showRecap.value ||
     activeToolPanel.value !== null
   )
 }
@@ -597,8 +597,7 @@ function toggleImmersiveLock() {
 
 function closeTopReaderOverlay() {
   if (showAiResult.value) showAiResult.value = false
-  else if (showChat.value) showChat.value = false
-  else if (showRecap.value) showRecap.value = false
+  else if (showAiAssistant.value) showAiAssistant.value = false
   else if (showSearch.value) showSearch.value = false
   else if (showMarks.value) showMarks.value = false
   else if (showDrawer.value) showDrawer.value = false
@@ -1068,10 +1067,21 @@ async function loadStoredRecap() {
   recapText.value = res.ok ? (res.summaries.storySoFar?.text || '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。') : res.message
 }
 
-async function openRecap() {
+async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
   if (!book.value) return
-  showRecap.value = true
-  if (!recapLoading.value) await loadStoredRecap()
+  aiAssistantTab.value = tab
+  showAiAssistant.value = true
+  await Promise.all([
+    recapLoading.value ? Promise.resolve() : loadStoredRecap(),
+    window.api.ai.getMemory(book.value.id),
+    chatLoading.value || restoringChat.value
+      ? Promise.resolve()
+      : window.api.ai.getChat(book.value.id).then((res) => { if (res.ok) chatMessages.value = res.messages }),
+  ])
+}
+
+async function openRecap() {
+  await openAiAssistant('recap')
 }
 
 async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) {
@@ -1099,7 +1109,8 @@ async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) 
   recapJobId.value = res.jobId
   recapJobKind.value = kind
   recapText.value = ''
-  showRecap.value = true
+  aiAssistantTab.value = 'recap'
+  showAiAssistant.value = true
 }
 
 async function confirmOverBudgetChapterSummary() {
@@ -1248,14 +1259,9 @@ watch([ttsRate, ttsAutoNext], () => {
 })
 
 watch(() => props.bookId, (id) => { if (id) loadBook(id) })
-watch(showChat, async (open) => {
-  if (!open || !book.value || chatLoading.value || restoringChat.value) return
-  const res = await window.api.ai.getChat(book.value.id)
-  if (res.ok) chatMessages.value = res.messages
-})
 watch(showDrawer, (open) => { if (open) void scrollCatalogToCurrent() })
 watch(
-  [showDrawer, showAiResult, showChat, showSearch, showMarks, showRecap, showSelPopup, activeToolPanel],
+  [showDrawer, showAiResult, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel],
   () => {
     if (anyDrawerOpen() || selectionOpen()) toolsVisible.value = true
     lastToolActivityAt = Date.now()
@@ -1395,7 +1401,7 @@ onUnmounted(() => {
           </template>
           <template v-else>
             <strong>AI</strong>
-            <n-space vertical :size="6"><n-button size="tiny" block :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button><n-button v-if="cleanRunning" size="tiny" block type="warning" @click="stopCleanBody">停止清正文</n-button><n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button><n-button size="tiny" block @click="openRecap">看到这里</n-button><n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCharacterCard">人物卡</n-button><n-button size="tiny" block :disabled="!chapterReady" @click="showChat = true">聊书</n-button></n-space>
+            <n-space vertical :size="6"><n-button size="tiny" block :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button><n-button v-if="cleanRunning" size="tiny" block type="warning" @click="stopCleanBody">停止清正文</n-button><n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button><n-button size="tiny" block @click="openAiAssistant('recap')">AI 助手</n-button><n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCharacterCard">人物卡</n-button><n-button size="tiny" block :disabled="!chapterReady" @click="openAiAssistant('qa')">聊书</n-button></n-space>
           </template>
         </div>
       </div>
@@ -1489,61 +1495,53 @@ onUnmounted(() => {
         @cancel="cancelOverBudgetChapterSummary"
       />
 
-      <n-drawer v-model:show="showRecap" placement="right" :width="420">
-        <n-drawer-content title="看到这里" closable>
-          <div v-if="chapterSummaryBudget" class="ai-budget-status">
-            预计发送：{{ chapterSummaryBudget.chapterCount }} 章 / {{ chapterSummaryBudget.paragraphCount }} 段，约
-            {{ chapterSummaryBudget.sentCharacters }} 字 / {{ chapterSummaryBudget.estimatedTokens }} tokens（估算）
+      <n-drawer v-model:show="showAiAssistant" placement="right" :width="420">
+        <n-drawer-content title="AI 助手" closable>
+          <div class="ai-assistant-heading">
+            <strong>{{ book?.title }}</strong>
+            <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
           </div>
-          <div class="ai-result">{{ recapText }}</div>
-          <template #footer>
-            <n-space>
-              <n-button v-if="recapLoading" type="warning" @click="stopRecap">停止</n-button>
-              <template v-else>
-                <n-button :disabled="!book?.progress?.chapterId" type="primary" @click="startRecap('story')">刷新看到这里</n-button>
-                <n-button :disabled="!chapterReady" @click="startRecap('chapter')">生成本章摘要</n-button>
-              </template>
-            </n-space>
-          </template>
-        </n-drawer-content>
-      </n-drawer>
-
-      <!-- Chat drawer -->
-      <n-drawer v-model:show="showChat" placement="right" :width="420">
-        <n-drawer-content title="聊书" closable>
-          <div class="chat-messages">
-            <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
-              <div class="chat-bubble">{{ msg.content }}</div>
-            </div>
-            <div v-if="chatMessages.length === 0 && !chatLoading" class="chat-empty">
+          <n-tabs v-model:value="aiAssistantTab" type="line" animated>
+            <n-tab-pane name="recap" tab="前情">
+              <div v-if="chapterSummaryBudget" class="ai-budget-status">
+                预计发送：{{ chapterSummaryBudget.chapterCount }} 章 / {{ chapterSummaryBudget.paragraphCount }} 段，约
+                {{ chapterSummaryBudget.sentCharacters }} 字 / {{ chapterSummaryBudget.estimatedTokens }} tokens（估算）
+              </div>
+              <div class="ai-result">{{ recapText || '还没有前情提要。' }}</div>
               <n-space>
-                <n-button size="tiny" @click="askSuggested('这章讲了什么？')">这章讲了什么？</n-button>
-                <n-button size="tiny" @click="askSuggested('主角现在什么状态？')">主角现在什么状态？</n-button>
-                <n-button size="tiny" @click="askSuggested('有哪些未收的伏笔？')">有哪些未收的伏笔？</n-button>
+                <n-button :disabled="!book?.progress?.chapterId || recapLoading" type="primary" @click="startRecap('story')">刷新前情</n-button>
+                <n-button :disabled="!chapterReady || recapLoading" @click="startRecap('chapter')">生成本章摘要</n-button>
               </n-space>
-            </div>
-          </div>
+            </n-tab-pane>
+            <n-tab-pane name="memory" tab="记忆">
+              <n-empty description="还没有人物与剧情记忆。">
+                <template #extra>更新记忆后，可按人物、关系、伏笔和关键事件查看已读剧情。</template>
+              </n-empty>
+            </n-tab-pane>
+            <n-tab-pane name="qa" tab="问答">
+              <div class="chat-messages">
+                <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
+                  <div class="chat-bubble">{{ msg.content }}</div>
+                </div>
+                <div v-if="chatMessages.length === 0 && !chatLoading" class="chat-empty">
+                  可询问已读内容，回答会附上可回到原文的依据。
+                </div>
+              </div>
+              <div class="chat-input-row">
+                <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="clearChat">
+                  确定清空这本书的全部 AI 问答记录吗？此操作无法撤销。
+                  <template #trigger>
+                    <n-button :disabled="chatLoading || chatMessages.length === 0">清空聊天</n-button>
+                  </template>
+                </n-popconfirm>
+                <n-input v-model:value="chatInput" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="chatLoading" @keyup.enter="sendChat" />
+                <n-button v-if="chatLoading" type="warning" @click="stopChat">停止生成</n-button>
+                <n-button v-else type="primary" :disabled="!chatInput.trim()" @click="sendChat">发送问题</n-button>
+              </div>
+            </n-tab-pane>
+          </n-tabs>
           <template #footer>
-            <div class="chat-input-row">
-              <n-popconfirm
-                positive-text="确定"
-                negative-text="取消"
-                @positive-click="clearChat"
-              >
-                清空后无法恢复，确定清空？
-                <template #trigger>
-                  <n-button :disabled="chatLoading || chatMessages.length === 0">清空对话</n-button>
-                </template>
-              </n-popconfirm>
-              <n-input
-                v-model:value="chatInput"
-                placeholder="输入问题…"
-                :disabled="chatLoading"
-                @keyup.enter="sendChat"
-              />
-              <n-button v-if="chatLoading" type="warning" @click="stopChat">停止</n-button>
-              <n-button v-else type="primary" :disabled="!chatInput.trim()" @click="sendChat">发送</n-button>
-            </div>
+            <n-button v-if="recapLoading" type="warning" @click="stopRecap">停止生成</n-button>
           </template>
         </n-drawer-content>
       </n-drawer>
