@@ -3,6 +3,7 @@ import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NTag, NPopconfirm, NMo
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, TrashItem } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
+import { aiSaveRecoveryActive } from '../aiSaveRecoveryLock'
 import {
   applyAddedChapterCount,
   checkUpdateMessage,
@@ -303,7 +304,7 @@ function openRecapBook() {
 
 async function refreshRecap() {
   const item = recapBook.value
-  if (!item?.progress?.chapterId) return
+  if (!item?.progress?.chapterId || aiSaveRecoveryActive.value) return
   const res = await window.api.ai.storySoFar(item.id, item.progress.chapterId)
   if (!res.ok) return message.error(res.message)
   recapStopping.value = false
@@ -450,7 +451,7 @@ onUnmounted(() => {
         <template #footer>
           <n-space>
             <n-button v-if="recapJobId" type="warning" @click="stopRecap">停止</n-button>
-            <n-button v-else :disabled="!recapBook?.progress?.chapterId" type="primary" @click="refreshRecap">刷新看到这里</n-button>
+            <n-button v-else :disabled="!recapBook?.progress?.chapterId || aiSaveRecoveryActive" type="primary" @click="refreshRecap">刷新看到这里</n-button>
             <n-button v-if="!recapBook?.progress?.chapterId" @click="openRecapBook">打开该书</n-button>
           </n-space>
         </template>

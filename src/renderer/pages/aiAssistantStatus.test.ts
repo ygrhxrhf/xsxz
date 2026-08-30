@@ -31,6 +31,8 @@ describe('assistant save token lifecycle', () => {
     const current = { token: 'save-old', kind: 'memory' as const }
     expect(updateAssistantSaveToken(current, 'memory', { ok: false })).toEqual(current)
     expect(updateAssistantSaveToken(current, 'memory', { ok: true, stopped: true })).toEqual(current)
+    expect(updateAssistantSaveToken(current, 'qa', { ok: true, stopped: true, saveToken: 'save-partial' }))
+      .toEqual({ token: 'save-partial', kind: 'qa' })
     expect(updateAssistantSaveToken(current, 'recap', { ok: true })).toEqual(current)
   })
 

@@ -35,6 +35,7 @@ import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { decorateText, relocateRange } from '@shared/paragraphSearch'
 import type { Annotation, BookSearchHit } from '@shared/types'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
+import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import {
   assistantKindForJob,
   clearRetriedAssistantSaveToken,
@@ -102,7 +103,7 @@ const lastAssistantUsage = ref<AiUsage | null>(null)
 const assistantCompleted = ref(false)
 const lastAssistantTruncated = ref(false)
 const assistantSaveState = ref<{ token: string; kind: 'recap' | 'memory' | 'qa' | '' }>({ token: '', kind: '' })
-const assistantSaveRetrying = ref(false)
+const assistantSaveRetrying = aiSaveRecoveryActive
 const chapterSummaryBudget = ref<AiBudgetEstimate | null>(null)
 const showChapterSummaryBudgetConfirm = ref(false)
 const recapBudgetConfirmKind = ref<'chapter' | 'story'>('chapter')
@@ -1184,7 +1185,7 @@ async function stopMemoryJob() {
 }
 
 async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'event', item: AiMemoryBase) {
-  if (!book.value || item.accuracy !== 'normal') return
+  if (!book.value || item.accuracy !== 'normal' || assistantSaveRetrying.value) return
   const result = await window.api.ai.markMemoryInaccurate(book.value.id, kind, item.id)
   if (!result.ok) {
     message.warning(result.message)
@@ -1197,19 +1198,18 @@ async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'e
 async function retryAssistantSave() {
   const token = assistantSaveState.value.token
   if (!token || assistantSaveRetrying.value || assistantBusy.value) return
-  assistantSaveRetrying.value = true
   try {
-    const result = await window.api.ai.retrySave(token)
-    if (result.ok) {
-      assistantSaveState.value = clearRetriedAssistantSaveToken(assistantSaveState.value, token)
-      message.success('结果已保存')
-    } else {
-      message.error(result.message)
-    }
+    await runAiSaveRecovery(async () => {
+      const result = await window.api.ai.retrySave(token)
+      if (result.ok) {
+        assistantSaveState.value = clearRetriedAssistantSaveToken(assistantSaveState.value, token)
+        message.success('结果已保存')
+      } else {
+        message.error(result.message)
+      }
+    })
   } catch {
     message.error('重试保存失败')
-  } finally {
-    assistantSaveRetrying.value = false
   }
 }
 
@@ -1345,7 +1345,7 @@ function stopChat() {
 }
 
 async function clearChat() {
-  if (!book.value || chatLoading.value) return
+  if (!book.value || chatLoading.value || assistantSaveRetrying.value) return
   const res = await window.api.ai.clearChat(book.value.id)
   if (res.ok) {
     chatMessages.value = []
@@ -1738,7 +1738,7 @@ onUnmounted(() => {
                       <strong>{{ item.name }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
                       <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}</p><p>{{ item.summary }}</p>
                       <p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('character', item)">标记不准确</n-button>
+                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
                     </article>
                   </section>
                   <section v-if="memoryData.relations.length" class="memory-section">
@@ -1746,7 +1746,7 @@ onUnmounted(() => {
                     <article v-for="item in memoryData.relations" :key="item.id" class="memory-item">
                       <strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
                       <p>{{ item.status }} · {{ item.summary }}</p><p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('relation', item)">标记不准确</n-button>
+                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
                     </article>
                   </section>
                   <section v-if="memoryData.foreshadows.length" class="memory-section">
@@ -1754,7 +1754,7 @@ onUnmounted(() => {
                     <article v-for="item in memoryData.foreshadows" :key="item.id" class="memory-item">
                       <strong>{{ item.desc }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
                       <p>{{ item.status }} · {{ item.summary }}</p><p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
+                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
                     </article>
                   </section>
                   <section v-if="memoryData.events.length" class="memory-section">
@@ -1762,7 +1762,7 @@ onUnmounted(() => {
                     <article v-for="item in memoryData.events" :key="item.id" class="memory-item">
                       <strong>{{ item.title }}</strong><n-tag v-if="item.accuracy !== 'normal'" size="small" type="warning">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</n-tag>
                       <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}</p><p v-for="source in item.sources" :key="source.id" class="memory-source">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</p>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" @click="markMemoryItem('event', item)">标记不准确</n-button>
+                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
                     </article>
                   </section>
                 </template>
@@ -1781,7 +1781,7 @@ onUnmounted(() => {
                 <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="clearChat">
                   确定清空这本书的全部 AI 问答记录吗？此操作无法撤销。
                   <template #trigger>
-                    <n-button :disabled="chatLoading || chatMessages.length === 0">清空聊天</n-button>
+                    <n-button :disabled="chatLoading || assistantSaveRetrying || chatMessages.length === 0">清空聊天</n-button>
                   </template>
                 </n-popconfirm>
                 <n-input v-model:value="chatInput" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="assistantBusy || assistantSaveRetrying" @keyup.enter="sendChat" />

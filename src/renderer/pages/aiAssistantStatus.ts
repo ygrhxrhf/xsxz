@@ -43,8 +43,9 @@ export function updateAssistantSaveToken(
   kind: AssistantJobKind,
   event: { ok: boolean; saveToken?: string; stopped?: boolean },
 ): AssistantSaveTokenState {
-  if (!event.ok || event.stopped) return current
+  if (!event.ok) return current
   if (event.saveToken) return { token: event.saveToken, kind }
+  if (event.stopped) return current
   return current.kind === kind ? { token: '', kind: '' } : current
 }
 
