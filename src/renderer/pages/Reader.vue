@@ -155,7 +155,7 @@ const immersiveMode = ref<ReaderImmersiveMode>('normal')
 const toolsVisible = ref(true)
 const temporaryToolReveal = ref(false)
 const pointerInToolbar = ref(false)
-const activeToolPanel = ref<'tts' | 'ai' | 'appearance' | null>(null)
+const activeToolPanel = ref<'tts' | 'ai' | 'appearance' | 'shortcuts' | null>(null)
 let lastToolActivityAt = Date.now()
 let toolHideTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -643,7 +643,7 @@ function onToolbarLeave() {
   scheduleToolHide()
 }
 
-function toggleToolPanel(panel: 'tts' | 'ai' | 'appearance') {
+function toggleToolPanel(panel: 'tts' | 'ai' | 'appearance' | 'shortcuts') {
   activeToolPanel.value = activeToolPanel.value === panel ? null : panel
   revealTools(immersiveMode.value === 'locked')
 }
@@ -674,6 +674,13 @@ function toggleTtsFromShortcut() {
   if (!ttsSpeaking.value) ttsStart(0)
   else if (ttsPaused.value) ttsResume()
   else ttsPause()
+}
+
+function startTtsFromParagraph(index: number) {
+  if (!chapterReady.value || !ttsSupported.value || !paras.value[index]) return
+  closeSelectionTools()
+  ttsStart(index)
+  revealTools(immersiveMode.value === 'locked')
 }
 
 function onReaderResize() {
@@ -1605,6 +1612,7 @@ onUnmounted(() => {
         <button class="tool-button" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg></button>
         <button class="tool-button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg></button>
         <button class="tool-button" title="外观" aria-label="外观" @click="toggleToolPanel('appearance')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z"/></svg></button>
+        <button class="tool-button" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M7 10h1M10 10h1M13 10h1M16 10h1M7 14h7M16 14h1"/></svg></button>
         <button class="tool-button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
 
         <div v-if="activeToolPanel" class="tool-panel" @click.stop>
@@ -1631,6 +1639,16 @@ onUnmounted(() => {
               <div class="control-label"><n-switch v-model:value="ttsAutoNext" /> 自动下一章</div>
             </n-space>
             <div v-else class="control-label">当前环境不支持朗读</div>
+          </template>
+          <template v-else-if="activeToolPanel === 'shortcuts'">
+            <strong>快捷键</strong>
+            <dl class="shortcut-list">
+              <div><dt>← / →</dt><dd>上一章 / 下一章</dd></div>
+              <div><dt>Space / Shift+Space，J / K</dt><dd>下一屏 / 上一屏</dd></div>
+              <div><dt>T / A / R</dt><dd>目录 / 外观 / 朗读</dd></div>
+              <div><dt>M / Alt / Esc</dt><dd>沉浸模式 / 临时唤回 / 关闭面板</dd></div>
+              <div><dt>Ctrl+F，+ / -</dt><dd>本书搜索 / 调整字号</dd></div>
+            </dl>
           </template>
           <template v-else>
             <strong>AI</strong>
@@ -1660,7 +1678,7 @@ onUnmounted(() => {
               :key="i"
               :data-p="i"
               :class="['para', { 'para-speaking': i === spokenPara }]"
-            ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+            ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
             <button v-if="chapterReady && followingChapter" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
             <div v-else-if="chapterReady && currentChapterIndex === chapters.length - 1" class="chapter-end-card finished">
               <strong>已读完《{{ book.title }}》</strong>
@@ -2569,7 +2587,30 @@ onUnmounted(() => {
 .chapter-end-card:hover { background: color-mix(in srgb, var(--reader-paper-text) 9%, transparent); }
 .chapter-end-card:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
 .chapter-end-card.finished { display: flex; flex-direction: column; align-items: center; gap: 12px; cursor: default; }
-.para { text-indent: var(--paragraph-indent, 2em); margin-bottom: var(--paragraph-spacing, .45em); }
+.para { position: relative; text-indent: var(--paragraph-indent, 2em); margin-bottom: var(--paragraph-spacing, .45em); }
+.para-tts-start {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--r-line);
+  border-radius: var(--radius-control);
+  background: var(--r-surface);
+  color: var(--r-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity var(--motion-duration) var(--motion-easing), background var(--motion-duration) var(--motion-easing);
+}
+.para:hover .para-tts-start, .para-tts-start:focus-visible { opacity: 1; }
+.para-tts-start:hover { background: var(--r-hover); }
+.para-tts-start:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
+.shortcut-list { display: grid; gap: 8px; margin: 0; }
+.shortcut-list div { display: grid; gap: 2px; }
+.shortcut-list dt { color: var(--text); font-weight: 600; }
+.shortcut-list dd { margin: 0; color: var(--r-muted); font-size: 12px; }
 
 .option-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
 .option-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }

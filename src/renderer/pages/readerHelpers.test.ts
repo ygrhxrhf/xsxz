@@ -78,9 +78,13 @@ describe('resolveReaderKey', () => {
     expect(resolveReaderKey({ key: 'ArrowRight' })).toBe('next-chapter')
   })
 
-  it('maps space to paging, shift+space back up', () => {
+  it('maps space/J to paging and shift+space/K back up', () => {
     expect(resolveReaderKey({ key: ' ' })).toBe('page-down')
     expect(resolveReaderKey({ key: ' ', shift: true })).toBe('page-up')
+    expect(resolveReaderKey({ key: 'j' })).toBe('page-down')
+    expect(resolveReaderKey({ key: 'J' })).toBe('page-down')
+    expect(resolveReaderKey({ key: 'k' })).toBe('page-up')
+    expect(resolveReaderKey({ key: 'K' })).toBe('page-up')
   })
 
   it('maps T/A/R to catalog, appearance and reading', () => {

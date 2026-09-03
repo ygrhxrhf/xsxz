@@ -191,6 +191,8 @@ export function resolveReaderKey(opts: {
   if (opts.key === 'ArrowLeft') return 'prev-chapter'
   if (opts.key === 'ArrowRight') return 'next-chapter'
   if (opts.key === ' ') return opts.shift ? 'page-up' : 'page-down'
+  if (opts.key.toLowerCase() === 'j') return 'page-down'
+  if (opts.key.toLowerCase() === 'k') return 'page-up'
   if (opts.key === 'Escape') return 'close-drawer'
   if (opts.key.toLowerCase() === 't') return 'open-catalog'
   if (opts.key.toLowerCase() === 'a') return 'open-appearance'
