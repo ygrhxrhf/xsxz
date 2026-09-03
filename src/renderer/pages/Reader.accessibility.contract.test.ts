@@ -7,6 +7,7 @@ import Reader from './Reader.vue'
 class ResizeObserverStub { observe() {}; unobserve() {}; disconnect() {} }
 Object.defineProperty(window, 'ResizeObserver', { value: ResizeObserverStub, configurable: true })
 Object.defineProperty(window, 'matchMedia', { value: () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} }), configurable: true })
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { value: () => {}, configurable: true })
 
 afterEach(() => { document.body.innerHTML = '' })
 
@@ -46,16 +47,22 @@ describe('Reader P2.1 accessibility behavior', () => {
     const paragraphs = [...document.querySelectorAll('.reader-content [data-p]')]
     expect(paragraphs).toHaveLength(2)
     paragraphs[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    paragraphs[0].dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
     expect(spoken).toEqual([])
     const start = paragraphs[1].querySelector<HTMLButtonElement>('.para-tts-start')
+    expect(start?.tagName).toBe('BUTTON')
+    expect(start?.type).toBe('button')
     expect(start?.getAttribute('aria-label')).toBe('从第 2 段开始朗读')
     start?.focus()
     expect(document.activeElement).toBe(start)
+    start?.click()
+    await nextTick()
+    expect(spoken).toEqual(['第二段。'])
     const shortcuts = document.querySelector<HTMLButtonElement>('[aria-label="快捷键说明"]')
     shortcuts?.click()
     await nextTick()
     expect(document.querySelector('.tool-panel')?.textContent).toContain('Space / Shift+Space，J / K')
-    expect(spoken).toEqual([])
+    expect(spoken).toEqual(['第二段。'])
     app.unmount()
   })
 

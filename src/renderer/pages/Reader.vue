@@ -670,14 +670,14 @@ function closeTopReaderOverlay() {
 function toggleTtsFromShortcut() {
   activeToolPanel.value = 'tts'
   revealTools(immersiveMode.value === 'locked')
-  if (!ttsSupported.value) return
+  if (!ttsSupported) return
   if (!ttsSpeaking.value) ttsStart(0)
   else if (ttsPaused.value) ttsResume()
   else ttsPause()
 }
 
 function startTtsFromParagraph(index: number) {
-  if (!chapterReady.value || !ttsSupported.value || !paras.value[index]) return
+  if (!chapterReady.value || !ttsSupported || !paras.value[index]) return
   closeSelectionTools()
   ttsStart(index)
   revealTools(immersiveMode.value === 'locked')
@@ -701,6 +701,8 @@ function onReaderKeydown(e: KeyboardEvent) {
   if (!book.value) return
   const target = e.target as HTMLElement | null
   const isTextEntry = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT' || Boolean(target?.isContentEditable)
+  // 让原生按钮保留 Enter / Space 激活语义，避免阅读器翻屏快捷键抢走段落起读等可聚焦控件。
+  if (target?.tagName === 'BUTTON' && (e.key === 'Enter' || e.key === ' ')) return
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
     if (isTextEntry) return
     e.preventDefault()
