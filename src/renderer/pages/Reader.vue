@@ -38,6 +38,7 @@ import {
   shouldAutoHideReaderTools,
   wheelPageDirection,
   selectionPopupPosition,
+  catalogChapterBadge,
 } from './readerHelpers'
 import type { ReaderImmersiveMode } from './readerHelpers'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
@@ -858,6 +859,15 @@ const canRetryChapter = computed(() => {
   return ch.status === 'failed' || ch.status === 'empty' || ch.status === 'pending'
 })
 const filteredCatalog = computed(() => filterCatalogChapters(chapters.value, catalogQuery.value))
+function catalogBadge(ch: { id: string; status: typeof chapters.value[number]['status']; failCode?: typeof chapters.value[number]['failCode'] }) {
+  return catalogChapterBadge({
+    status: ch.status,
+    chapterId: ch.id,
+    currentChapterId: currentChapter.value?.id,
+    progressChapterId: book.value?.progress?.chapterId,
+    chapters: chapters.value,
+  })
+}
 const currentChapterIndex = computed(() => chapters.value.findIndex((chapter) => chapter.id === currentChapter.value?.id))
 const previousChapter = computed(() => currentChapterIndex.value > 0 ? chapters.value[currentChapterIndex.value - 1] : null)
 const followingChapter = computed(() => currentChapterIndex.value >= 0 && currentChapterIndex.value < chapters.value.length - 1 ? chapters.value[currentChapterIndex.value + 1] : null)
@@ -1790,9 +1800,11 @@ onUnmounted(() => {
             >
               <div :ref="(element) => setCatalogItemRef(ch.id, element)" :class="['ch-item', { active: ch.id === currentChapter?.id }]">
                 <span>{{ ch.title }}</span>
-                <n-tag v-if="ch.status === 'failed'" size="tiny" type="error">{{ ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败' }}</n-tag>
-                <n-tag v-else-if="ch.status === 'pending'" size="tiny">未下</n-tag>
-                <n-tag v-else-if="ch.status === 'empty'" size="tiny" type="warning">空</n-tag>
+                <n-tag v-if="catalogBadge(ch) === 'failed'" size="tiny" type="error">{{ ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败' }}</n-tag>
+                <n-tag v-else-if="catalogBadge(ch) === 'pending'" size="tiny">未下</n-tag>
+                <n-tag v-else-if="catalogBadge(ch) === 'empty'" size="tiny" type="warning">空</n-tag>
+                <n-tag v-else-if="catalogBadge(ch) === 'current'" size="tiny" type="info">当前</n-tag>
+                <n-tag v-else-if="catalogBadge(ch) === 'read'" size="tiny">已读</n-tag>
               </div>
             </n-list-item>
           </n-list>
