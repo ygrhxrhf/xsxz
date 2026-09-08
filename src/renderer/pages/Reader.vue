@@ -1785,7 +1785,12 @@ onUnmounted(() => {
       </div>
 
       <div class="reader-progress-track" :title="bookProgressDetail" :aria-label="bookProgressDetail">
-        <div class="reader-progress-fill" :style="{ width: `${bookPercent}%` }"></div>
+        <div class="reader-progress-row" aria-hidden="true">
+          <div class="reader-progress-fill book" :style="{ width: `${bookPercent}%` }"></div>
+        </div>
+        <div class="reader-progress-row" aria-hidden="true">
+          <div class="reader-progress-fill chapter" :style="{ width: `${chapterPercent}%` }"></div>
+        </div>
       </div>
 
       <!-- Chapter drawer -->
@@ -2637,16 +2642,19 @@ onUnmounted(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 3px;
+  display: flex;
+  flex-direction: column;
+  height: 4px;
   background: var(--r-surface);
   pointer-events: none;
 }
-
+.reader-progress-row { height: 2px; }
 .reader-progress-fill {
   height: 100%;
   background: var(--active-chapter);
   transition: width .12s linear;
 }
+.reader-progress-fill.chapter { opacity: .55; }
 
 .reader-wrap.immersive-locked .reader-progress-track { opacity: 1; }
 .reader-wrap.night .reader-content { background: var(--reader-paper); color: var(--reader-paper-text); }
