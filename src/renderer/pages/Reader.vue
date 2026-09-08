@@ -37,6 +37,7 @@ import {
   scrollTopFromRatio,
   shouldAutoHideReaderTools,
   wheelPageDirection,
+  selectionPopupPosition,
 } from './readerHelpers'
 import type { ReaderImmersiveMode } from './readerHelpers'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
@@ -219,6 +220,16 @@ const lostHighlightIds = ref<Set<string>>(new Set())
 const showMarks = ref(false)
 const selPopupX = ref(0)
 const selPopupY = ref(0)
+const lastSelRect = ref({ top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 })
+function applySelPopupPosition(popup: { width: number; height: number }) {
+  const pos = selectionPopupPosition({
+    range: lastSelRect.value,
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    popup,
+  })
+  selPopupX.value = pos.x
+  selPopupY.value = pos.y
+}
 const showSelPopup = ref(false)
 const selectedExcerpt = ref('')
 const selectedRange = ref<{ start: number; end: number; text: string } | null>(null)
@@ -328,9 +339,7 @@ function selectionOffsets(): { start: number; end: number; text: string } | null
   return { start, end, text }
 }
 
-function onContentMouseup(e: MouseEvent) {
-  void e
-  // 等选区稳定后再取
+function onContentMouseup(_e: MouseEvent) {
   setTimeout(() => {
     const sel = selectionOffsets()
     if (!sel) {
@@ -341,8 +350,12 @@ function onContentMouseup(e: MouseEvent) {
     }
     selectedRange.value = sel
     selectedExcerpt.value = sel.text.trim()
-    selPopupX.value = Math.max(8, Math.min(window.innerWidth - 360, e.clientX - 120))
-    selPopupY.value = Math.min(window.innerHeight - 60, e.clientY + 12)
+    const range = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0) : null
+    const rect = range?.getBoundingClientRect()
+    lastSelRect.value = rect
+      ? { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height }
+      : { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 }
+    applySelPopupPosition({ width: 360, height: 40 })
     showSelPopup.value = true
   }, 0)
 }
@@ -373,6 +386,7 @@ function openDirectNote() {
   showSelPopup.value = false
   showDirectNote.value = true
   directNoteDraft.value = ''
+  applySelPopupPosition({ width: 340, height: 220 })
 }
 
 async function saveDirectNote() {
