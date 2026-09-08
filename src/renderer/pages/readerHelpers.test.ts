@@ -7,6 +7,7 @@ import {
   focusHalfWindow,
   formatCharacterCard,
   isParagraphInFocus,
+  paragraphIndexAtViewportCenter,
   remainingChapterCount,
   readerScrollBehavior,
   resolveFocusAnchor,
@@ -176,6 +177,20 @@ describe('reader focus window', () => {
     expect(focusHalfWindow('three')).toBe(1)
     expect(focusHalfWindow('five')).toBe(2)
     expect(focusHalfWindow('huge' as ReaderFocusMode)).toBe(0)
+  })
+})
+
+describe('paragraphIndexAtViewportCenter', () => {
+  it('returns -1 for an empty paragraphCenters list', () => {
+    expect(paragraphIndexAtViewportCenter({ viewportCenter: 100, paragraphCenters: [] })).toBe(-1)
+  })
+
+  it('hits the paragraph whose center is nearest the viewport center', () => {
+    expect(paragraphIndexAtViewportCenter({ viewportCenter: 50, paragraphCenters: [10, 50, 90] })).toBe(1)
+  })
+
+  it('breaks equal distance toward the smaller index', () => {
+    expect(paragraphIndexAtViewportCenter({ viewportCenter: 20, paragraphCenters: [10, 30] })).toBe(0)
   })
 })
 

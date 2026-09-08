@@ -234,3 +234,23 @@ export function resolveFocusAnchor(opts: { spokenPara: number; viewportCenterPar
   if (Number.isFinite(opts.viewportCenterPara) && opts.viewportCenterPara >= 0) return opts.viewportCenterPara
   return -1
 }
+
+export function paragraphIndexAtViewportCenter(opts: {
+  viewportCenter: number
+  paragraphCenters: number[]
+}): number {
+  if (!Array.isArray(opts.paragraphCenters) || opts.paragraphCenters.length === 0) return -1
+  if (!Number.isFinite(opts.viewportCenter)) return -1
+  let best = -1
+  let bestDist = Number.POSITIVE_INFINITY
+  for (let i = 0; i < opts.paragraphCenters.length; i++) {
+    const c = opts.paragraphCenters[i]
+    if (!Number.isFinite(c)) continue
+    const d = Math.abs(c - opts.viewportCenter)
+    if (d < bestDist) {
+      bestDist = d
+      best = i
+    }
+  }
+  return best
+}

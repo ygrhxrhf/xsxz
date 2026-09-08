@@ -28,8 +28,8 @@ import {
   readerProgressLabel,
   readerScrollBehavior,
   remainingChapterCount,
-  focusHalfWindow,
   isParagraphInFocus,
+  paragraphIndexAtViewportCenter,
   resolveFocusAnchor,
   resolveImmersiveKey,
   resolveReaderKey,
@@ -82,6 +82,7 @@ const contentWidth = ref<ReaderContentWidth>(DEFAULT_READER_PREFS.contentWidth)
 const paragraphSpacing = ref<ReaderParagraphSpacing>(DEFAULT_READER_PREFS.paragraphSpacing)
 const paragraphIndent = ref(DEFAULT_READER_PREFS.paragraphIndent)
 const focusMode = ref<ReaderFocusMode>(DEFAULT_READER_PREFS.focusMode)
+const viewportCenterPara = ref(-1)
 const nightMode = computed({
   get: () => theme.value === 'night',
   set: (enabled: boolean) => { theme.value = enabled ? 'night' : 'paper' },
@@ -942,12 +943,27 @@ function saveProgress() {
   })
 }
 
+function updateViewportFocusAnchor() {
+  const el = contentRef.value
+  if (!el) {
+    viewportCenterPara.value = -1
+    return
+  }
+  const nodes = [...el.querySelectorAll<HTMLElement>('[data-p]')]
+  const centers = nodes.map((n) => n.offsetTop + n.offsetHeight / 2)
+  viewportCenterPara.value = paragraphIndexAtViewportCenter({
+    viewportCenter: el.scrollTop + el.clientHeight / 2,
+    paragraphCenters: centers,
+  })
+}
+
 function onScroll() {
   if (selectionOpen()) closeSelectionTools()
   const el = contentRef.value
   if (el) scrollRatioView.value = chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight)
   if (scrollTimer) clearTimeout(scrollTimer)
   scrollTimer = setTimeout(saveProgress, 1000)
+  updateViewportFocusAnchor()
 }
 
 function goBrowseForChapter() {
@@ -1488,6 +1504,9 @@ watch([ttsRate, ttsAutoNext], () => {
 })
 
 watch(() => props.bookId, (id) => { if (id) loadBook(id) })
+watch([renderedParas, chapterBody], () => {
+  void nextTick(() => updateViewportFocusAnchor())
+})
 watch(showDrawer, (open) => { if (open) void scrollCatalogToCurrent() })
 watch(
   [showDrawer, showAiResult, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel],
@@ -1710,7 +1729,7 @@ onUnmounted(() => {
               v-for="(segs, i) in renderedParas"
               :key="i"
               :data-p="i"
-              :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara: -1 }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara: -1 }), paragraphIndex: i, paragraphCount: renderedParas.length }) }]"
+              :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: renderedParas.length }) }]"
             ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
             <button v-if="chapterReady && followingChapter" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
             <div v-else-if="chapterReady && currentChapterIndex === chapters.length - 1" class="chapter-end-card finished">
