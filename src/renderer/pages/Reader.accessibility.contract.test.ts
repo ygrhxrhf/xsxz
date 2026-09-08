@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { createApp, h, nextTick } from 'vue'
 import { afterEach, describe, expect, it } from 'vitest'
 import { NMessageProvider } from 'naive-ui'
 import Reader from './Reader.vue'
+import { readerScrollBehavior, resolveReaderKey } from './readerHelpers'
 
 class ResizeObserverStub { observe() {}; unobserve() {}; disconnect() {} }
 Object.defineProperty(window, 'ResizeObserver', { value: ResizeObserverStub, configurable: true })
@@ -67,8 +70,79 @@ describe('Reader P2.1 accessibility behavior', () => {
   })
 
   it('maps J/K to the existing page actions', async () => {
-    const source = await import('./readerHelpers')
-    expect(source.resolveReaderKey({ key: 'j' })).toBe('page-down')
-    expect(source.resolveReaderKey({ key: 'K' })).toBe('page-up')
+    expect(resolveReaderKey({ key: 'j' })).toBe('page-down')
+    expect(resolveReaderKey({ key: 'K' })).toBe('page-up')
+  })
+})
+
+describe('Reader P2.4 accessibility wrap-up', () => {
+  it('names core toolbar and chapter controls in Chinese', async () => {
+    installReaderApi()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp({ render: () => h(NMessageProvider, null, { default: () => h(Reader, { bookId: 'book-1' }) }) })
+    app.mount(host)
+    await nextTick(); await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    const labels = [
+      '返回书库',
+      '目录',
+      '搜索',
+      '标记',
+      '朗读',
+      '外观',
+      '快捷键说明',
+      '沉浸模式',
+      '上一章',
+      '下一章',
+    ]
+    for (const label of labels) {
+      expect(document.querySelector(`[aria-label="${label}"]`)).not.toBeNull()
+    }
+    app.unmount()
+  })
+
+  it('lets the shortcut help button take keyboard focus', async () => {
+    installReaderApi()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp({ render: () => h(NMessageProvider, null, { default: () => h(Reader, { bookId: 'book-1' }) }) })
+    app.mount(host)
+    await nextTick(); await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    const shortcuts = document.querySelector<HTMLButtonElement>('[aria-label="快捷键说明"]')
+    expect(shortcuts?.tagName).toBe('BUTTON')
+    shortcuts?.focus()
+    expect(document.activeElement).toBe(shortcuts)
+    app.unmount()
+  })
+
+  it('keeps focus-visible outlines, reduced-motion rails, and toolbar title shrink in source', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    expect(source).toContain(':focus-visible')
+    expect(source).toContain('outline: 2px solid var(--r-focus)')
+    expect(source).toContain('@media (prefers-reduced-motion: reduce)')
+    expect(source).toContain('transition: none !important; animation: none !important; scroll-behavior: auto !important;')
+    expect(source).toContain('.reader-toolbar .reader-book-title { min-width: 0; }')
+    expect(source).toContain("window.matchMedia?.('(prefers-reduced-motion: reduce)')")
+  })
+
+  it('maps reader keys and does not steal them from text fields', () => {
+    expect(resolveReaderKey({ key: 'ArrowLeft' })).toBe('prev-chapter')
+    expect(resolveReaderKey({ key: 'ArrowRight' })).toBe('next-chapter')
+    expect(resolveReaderKey({ key: ' ' })).toBe('page-down')
+    expect(resolveReaderKey({ key: ' ', shift: true })).toBe('page-up')
+    expect(resolveReaderKey({ key: 'j' })).toBe('page-down')
+    expect(resolveReaderKey({ key: 'K' })).toBe('page-up')
+    expect(resolveReaderKey({ key: 't' })).toBe('open-catalog')
+    expect(resolveReaderKey({ key: 'a' })).toBe('open-appearance')
+    expect(resolveReaderKey({ key: 'r' })).toBe('toggle-tts')
+    expect(resolveReaderKey({ key: 'Escape' })).toBe('close-drawer')
+    expect(resolveReaderKey({ key: ' ', targetTag: 'input' })).toBeNull()
+    expect(resolveReaderKey({ key: 'ArrowRight', targetTag: 'textarea' })).toBeNull()
+    expect(resolveReaderKey({ key: 't', targetTag: 'input' })).toBeNull()
+  })
+
+  it('maps reduced-motion preference to auto scroll', () => {
+    expect(readerScrollBehavior(true)).toBe('auto')
+    expect(readerScrollBehavior(false)).toBe('smooth')
   })
 })

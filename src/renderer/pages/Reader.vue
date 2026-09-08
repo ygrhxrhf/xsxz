@@ -25,6 +25,7 @@ import {
   filterCatalogChapters,
   formatCharacterCard,
   readerProgressLabel,
+  readerScrollBehavior,
   remainingChapterCount,
   resolveImmersiveKey,
   resolveReaderKey,
@@ -187,14 +188,13 @@ const {
   onChapterEnd: () => nextChapter(),
 })
 
-function readerScrollBehavior(): ScrollBehavior {
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-}
-
 watch(spokenPara, (i) => {
   if (i < 0 || !contentRef.value) return
   const el = contentRef.value.querySelector(`[data-p="${i}"]`)
-  el?.scrollIntoView({ block: 'center', behavior: readerScrollBehavior() })
+  el?.scrollIntoView({
+    block: 'center',
+    behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true),
+  })
 })
 
 // 本书内全文搜索
@@ -692,7 +692,10 @@ function onReaderResize() {
 function pageByScreen(direction: 1 | -1) {
   const el = contentRef.value
   if (!el) return
-  el.scrollBy({ top: direction * el.clientHeight * 0.9, behavior: readerScrollBehavior() })
+  el.scrollBy({
+    top: direction * el.clientHeight * 0.9,
+    behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true),
+  })
 }
 
 function setFontSize(next: number) {

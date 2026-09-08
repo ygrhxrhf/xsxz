@@ -201,3 +201,8 @@ export function resolveReaderKey(opts: {
   if (opts.key === '-' || opts.key === '_') return 'font-smaller'
   return null
 }
+
+/** 系统要求减少动效时用瞬时滚动，否则平滑滚动。 */
+export function readerScrollBehavior(reduceMotion: boolean): ScrollBehavior {
+  return reduceMotion ? 'auto' : 'smooth'
+}

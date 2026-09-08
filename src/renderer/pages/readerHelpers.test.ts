@@ -5,6 +5,7 @@ import {
   failAdvice,
   formatCharacterCard,
   remainingChapterCount,
+  readerScrollBehavior,
   resolveImmersiveKey,
   resolveReaderKey,
   scrollableDistance,
@@ -123,6 +124,13 @@ describe('resolveReaderKey', () => {
   it('returns null for unrelated keys', () => {
     expect(resolveReaderKey({ key: 'q' })).toBeNull()
     expect(resolveReaderKey({ key: 'F5' })).toBeNull()
+  })
+})
+
+describe('readerScrollBehavior', () => {
+  it('uses auto when reduced motion is requested and smooth otherwise', () => {
+    expect(readerScrollBehavior(true)).toBe('auto')
+    expect(readerScrollBehavior(false)).toBe('smooth')
   })
 })
 

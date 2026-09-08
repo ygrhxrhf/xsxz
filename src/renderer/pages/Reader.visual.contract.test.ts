@@ -28,5 +28,7 @@ describe('Reader visual surface contract', () => {
     expect(source).toContain('v-model:show="showSearch" placement="right" :width="420"')
     expect(source).toContain('@media (prefers-reduced-motion: reduce)')
     expect(source).toContain('transition: none !important; animation: none !important; scroll-behavior: auto !important;')
+    expect(source).toContain('.reader-toolbar .reader-book-title { min-width: 0; }')
+    expect(source).toContain('readerScrollBehavior(window.matchMedia?.(\'(prefers-reduced-motion: reduce)\')?.matches === true)')
   })
 })
