@@ -145,4 +145,17 @@ describe('Reader P2.4 accessibility wrap-up', () => {
     expect(readerScrollBehavior(true)).toBe('auto')
     expect(readerScrollBehavior(false)).toBe('smooth')
   })
+
+  it('locks focus-mode copy, dim class, and viewport anchor in source', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    expect(source).toContain('行焦点')
+    expect(source).toContain('1 段')
+    expect(source).toContain('3 段')
+    expect(source).toContain('5 段')
+    expect(source).toContain('para-unfocused')
+    expect(source).toContain('opacity: 0.4')
+    expect(source).toContain('updateViewportFocusAnchor')
+    expect(source).toContain('paragraphIndexAtViewportCenter')
+    expect(source).toContain('@media (prefers-reduced-motion: reduce)')
+  })
 })
