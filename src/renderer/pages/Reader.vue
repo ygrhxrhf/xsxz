@@ -36,6 +36,7 @@ import {
   resolveReaderKey,
   scrollTopFromRatio,
   shouldAutoHideReaderTools,
+  wheelPageDirection,
 } from './readerHelpers'
 import type { ReaderImmersiveMode } from './readerHelpers'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
@@ -704,6 +705,15 @@ function pageByScreen(direction: 1 | -1) {
     top: direction * el.clientHeight * 0.9,
     behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true),
   })
+}
+
+function onContentWheel(e: WheelEvent) {
+  if (readingMode.value !== 'screen') return
+  if (e.ctrlKey || e.metaKey) return
+  const dir = wheelPageDirection(e.deltaY)
+  if (!dir) return
+  e.preventDefault()
+  pageByScreen(dir)
 }
 
 function setFontSize(next: number) {
@@ -1686,6 +1696,10 @@ onUnmounted(() => {
             <div class="option-grid four">
               <button v-for="item in [{v:'off',l:'关'},{v:'one',l:'1 段'},{v:'three',l:'3 段'},{v:'five',l:'5 段'}]" :key="item.v" :class="{ active: focusMode === item.v }" @click="focusMode = item.v as ReaderFocusMode">{{ item.l }}</button>
             </div>
+            <div class="control-label">阅读方式</div>
+            <div class="option-grid">
+              <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
+            </div>
             <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
           </template>
           <template v-else-if="activeToolPanel === 'tts'">
@@ -1716,7 +1730,7 @@ onUnmounted(() => {
 
       <div class="reader-body">
         <button class="chapter-hotzone left" :disabled="!previousChapter" :title="previousChapter ? `上一章：${previousChapter.title}` : '已经是第一章'" aria-label="上一章" @click="prevChapter"><span>‹</span></button>
-        <div class="reader-content reader-pane" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup">
+        <div class="reader-content reader-pane" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup" @wheel="onContentWheel">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>

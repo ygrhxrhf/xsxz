@@ -254,3 +254,8 @@ export function paragraphIndexAtViewportCenter(opts: {
   }
   return best
 }
+
+export function wheelPageDirection(deltaY: number, minDelta = 8): 1 | -1 | 0 {
+  if (!Number.isFinite(deltaY) || Math.abs(deltaY) < minDelta) return 0
+  return deltaY > 0 ? 1 : -1
+}

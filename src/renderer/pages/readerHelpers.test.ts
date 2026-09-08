@@ -16,6 +16,7 @@ import {
   scrollableDistance,
   shouldAutoHideReaderTools,
   scrollTopFromRatio,
+  wheelPageDirection,
 } from './readerHelpers'
 
 describe('reader progress helpers', () => {
@@ -198,6 +199,23 @@ describe('failAdvice', () => {
   it('stays silent for codes without advice', () => {
     expect(failAdvice(undefined)).toBe('')
     expect(failAdvice('CatalogNotFound')).toBe('')
+  })
+})
+
+describe('wheelPageDirection', () => {
+  it('returns 0 for zero, NaN, and sub-threshold deltas', () => {
+    expect(wheelPageDirection(0)).toBe(0)
+    expect(wheelPageDirection(Number.NaN)).toBe(0)
+    expect(wheelPageDirection(7)).toBe(0)
+  })
+
+  it('returns 1 at the positive threshold and -1 at the negative threshold', () => {
+    expect(wheelPageDirection(8)).toBe(1)
+    expect(wheelPageDirection(-8)).toBe(-1)
+  })
+
+  it('returns 1 for a typical page-wheel delta', () => {
+    expect(wheelPageDirection(40)).toBe(1)
   })
 })
 
