@@ -41,6 +41,13 @@ import {
   catalogChapterBadge,
 } from './readerHelpers'
 import type { ReaderImmersiveMode } from './readerHelpers'
+import {
+  adjacentVisualPage,
+  scrollTopForVisualPage,
+  visualPageCount,
+  visualPageIndex,
+  visualPageLabel,
+} from './readerPager'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { decorateText, relocateRange } from '@shared/paragraphSearch'
 import type { Annotation, BookSearchHit } from '@shared/types'
@@ -162,6 +169,8 @@ const assistantStageText = computed(() => {
 })
 const catalogQuery = ref('')
 const scrollRatioView = ref(0)
+const visualPageIndexView = ref(0)
+const visualPageCountView = ref(1)
 const retryingChapter = ref(false)
 
 // 沉浸工具层
@@ -709,16 +718,44 @@ function startTtsFromParagraph(index: number) {
   revealTools(immersiveMode.value === 'locked')
 }
 
+function syncVisualPage() {
+  const el = contentRef.value
+  if (!el) {
+    visualPageIndexView.value = 0
+    visualPageCountView.value = 1
+    return
+  }
+  visualPageCountView.value = visualPageCount(el.scrollHeight, el.clientHeight)
+  visualPageIndexView.value = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
+}
+
+function snapToVisualPage() {
+  const el = contentRef.value
+  if (!el || readingMode.value !== 'screen') return
+  const index = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
+  el.scrollTop = scrollTopForVisualPage(index, el.scrollHeight, el.clientHeight)
+  syncVisualPage()
+}
+
 function onReaderResize() {
   if (selectionOpen()) closeSelectionTools()
+  snapToVisualPage()
 }
 
 function pageByScreen(direction: 1 | -1) {
   const el = contentRef.value
   if (!el) return
+  const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
+  if (readingMode.value === 'screen') {
+    const count = visualPageCount(el.scrollHeight, el.clientHeight)
+    const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
+    const next = adjacentVisualPage(current, direction, count)
+    el.scrollTo({ top: scrollTopForVisualPage(next, el.scrollHeight, el.clientHeight), behavior })
+    return
+  }
   el.scrollBy({
     top: direction * el.clientHeight * 0.9,
-    behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true),
+    behavior,
   })
 }
 
@@ -964,7 +1001,16 @@ function scrollToRatio(ratio: number) {
   const el = contentRef.value
   if (!el) return
   requestAnimationFrame(() => {
-    el.scrollTop = scrollTopFromRatio(ratio, el.scrollHeight, el.clientHeight)
+    let top = scrollTopFromRatio(ratio, el.scrollHeight, el.clientHeight)
+    if (readingMode.value === 'screen') {
+      top = scrollTopForVisualPage(
+        visualPageIndex(top, el.scrollHeight, el.clientHeight),
+        el.scrollHeight,
+        el.clientHeight,
+      )
+    }
+    el.scrollTop = top
+    syncVisualPage()
   })
 }
 
@@ -1000,6 +1046,7 @@ function onScroll() {
   if (scrollTimer) clearTimeout(scrollTimer)
   scrollTimer = setTimeout(saveProgress, 1000)
   updateViewportFocusAnchor()
+  syncVisualPage()
 }
 
 function goBrowseForChapter() {
@@ -1532,6 +1579,7 @@ watch(
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()
+    void nextTick(() => snapToVisualPage())
   },
 )
 
@@ -1779,6 +1827,7 @@ onUnmounted(() => {
               <strong>已读完《{{ book.title }}》</strong>
               <n-button size="small" @click="emit('back')">返回书库</n-button>
             </div>
+            <div v-if="readingMode === 'screen'" class="reader-page-indicator">{{ visualPageLabel(visualPageIndexView, visualPageCountView) }}</div>
           </template>
         </div>
         <button class="chapter-hotzone right" :disabled="!followingChapter" :title="followingChapter ? `下一章：${followingChapter.title}` : '已经是最后一章'" aria-label="下一章" @click="nextChapter"><span>›</span></button>
@@ -2628,12 +2677,21 @@ onUnmounted(() => {
 }
 
 .reader-content {
+  position: relative;
   width: min(100%, 38em);
   max-width: 38em;
   flex: 0 1 38em;
   padding: 64px clamp(24px, 5vw, 56px) 100px;
   border-radius: var(--radius-control) var(--radius-control) 0 0;
   box-shadow: 0 2px 18px rgba(0, 0, 0, .08);
+}
+.reader-page-indicator {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  pointer-events: none;
+  color: var(--r-muted);
+  font-size: 12px;
 }
 
 .reader-progress-track {
