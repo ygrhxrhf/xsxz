@@ -210,6 +210,7 @@ export type ReaderTheme = 'paper' | 'sepia' | 'gray' | 'night'
 export type ReaderFontFamily = 'serif' | 'system' | 'mono'
 export type ReaderContentWidth = 'narrow' | 'medium' | 'wide'
 export type ReaderParagraphSpacing = 'compact' | 'normal' | 'relaxed'
+export type ReaderFocusMode = 'off' | 'one' | 'three' | 'five'
 
 export interface ReaderPrefs {
   fontSize: number
@@ -219,6 +220,7 @@ export interface ReaderPrefs {
   contentWidth: ReaderContentWidth
   paragraphSpacing: ReaderParagraphSpacing
   paragraphIndent: boolean
+  focusMode: ReaderFocusMode
 }
 
 /** 朗读偏好（Web speechSynthesis） */
@@ -470,6 +472,7 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   contentWidth: 'medium',
   paragraphSpacing: 'normal',
   paragraphIndent: true,
+  focusMode: 'off',
 }
 
 export const DEFAULT_TTS_PREFS: TtsPrefs = {

@@ -25,7 +25,7 @@ function installReaderApi() {
       readChapter: async () => ({ chapter: { title: '第一章', body: '第一段。\n\n第二段。', status: 'ready' } }),
       setProgress: async () => ({ ok: true }),
     },
-    settings: { get: async () => ({ reader: { fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium', paragraphSpacing: 'normal', paragraphIndent: true }, tts: { rate: 1, autoNextChapter: true }, baseUrl: '' }), set: async () => ({}) },
+    settings: { get: async () => ({ reader: { fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium', paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off' }, tts: { rate: 1, autoNextChapter: true }, baseUrl: '' }), set: async () => ({}) },
     annotations: { list: async () => ({ ok: true, items: [] }) },
     download: { onProgress: () => () => {} },
     ai: { onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {} },

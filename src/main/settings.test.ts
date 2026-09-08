@@ -98,6 +98,21 @@ describe('normalizeReaderPrefs', () => {
       lineHeight: DEFAULT_READER_PREFS.lineHeight,
     })
   })
+
+  it('defaults missing or illegal focusMode to off while keeping legal values', () => {
+    expect(normalizeReaderPrefs({ paragraphIndent: true })).toMatchObject({
+      paragraphIndent: true,
+      focusMode: 'off',
+    })
+    expect(normalizeReaderPrefs({ focusMode: 'huge', paragraphIndent: false })).toMatchObject({
+      focusMode: 'off',
+      paragraphIndent: false,
+    })
+    expect(normalizeReaderPrefs({ focusMode: 'one' }).focusMode).toBe('one')
+    expect(normalizeReaderPrefs({ focusMode: 'three' }).focusMode).toBe('three')
+    expect(normalizeReaderPrefs({ focusMode: 'five' }).focusMode).toBe('five')
+    expect(normalizeReaderPrefs({ focusMode: 'off' }).focusMode).toBe('off')
+  })
 })
 
 describe('AI endpoint trust guard', () => {

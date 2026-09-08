@@ -92,6 +92,7 @@ function installReaderApi() {
             contentWidth: 'medium',
             paragraphSpacing: 'normal',
             paragraphIndent: true,
+            focusMode: 'off',
           },
           tts: { rate: 1, autoNextChapter: true },
           baseUrl: '',
