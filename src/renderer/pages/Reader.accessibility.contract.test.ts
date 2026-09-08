@@ -158,4 +158,17 @@ describe('Reader P2.4 accessibility wrap-up', () => {
     expect(source).toContain('paragraphIndexAtViewportCenter')
     expect(source).toContain('@media (prefers-reduced-motion: reduce)')
   })
+
+  it('locks reading-mode copy and wheel paging in source', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    expect(source).toContain('阅读方式')
+    expect(source).toContain('连续滚动')
+    expect(source).toContain('屏幕翻页')
+    expect(source).toContain('onContentWheel')
+    expect(source).toContain('wheelPageDirection')
+    expect(source).toContain('@wheel="onContentWheel"')
+    expect(source).toContain('readingMode.value !== \'screen\'')
+    expect(source).toContain('el.clientHeight * 0.9')
+    expect(source).toContain('readerScrollBehavior')
+  })
 })
