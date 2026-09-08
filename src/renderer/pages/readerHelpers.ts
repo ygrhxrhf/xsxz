@@ -259,3 +259,69 @@ export function wheelPageDirection(deltaY: number, minDelta = 8): 1 | -1 | 0 {
   if (!Number.isFinite(deltaY) || Math.abs(deltaY) < minDelta) return 0
   return deltaY > 0 ? 1 : -1
 }
+
+export type SelectionPopupPlacement = 'above' | 'below'
+
+export interface SelectionPopupPositionOpts {
+  range: { top: number; right: number; bottom: number; left: number; width: number; height: number }
+  viewport: { width: number; height: number }
+  popup: { width: number; height: number }
+  gap?: number
+  margin?: number
+}
+
+function finiteOr(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function nonNegOr(value: unknown, fallback = 0): number {
+  const n = finiteOr(value, fallback)
+  return n < 0 ? 0 : n
+}
+
+/** 夹入 [margin, viewport - size - margin]；可用空间不足时贴 margin。 */
+function clampPopupAxis(value: number, size: number, viewport: number, margin: number): number {
+  const min = margin
+  const max = viewport - size - margin
+  const start = Number.isFinite(value) ? value : min
+  if (!Number.isFinite(min)) return 0
+  if (!Number.isFinite(max) || max < min) return min
+  return Math.min(max, Math.max(min, start))
+}
+
+/** 选区弹出层的 viewport 坐标，供 position:fixed 使用。 */
+export function selectionPopupPosition(opts: SelectionPopupPositionOpts): {
+  x: number
+  y: number
+  placement: SelectionPopupPlacement
+} {
+  const gap = nonNegOr(opts?.gap, 8)
+  const margin = nonNegOr(opts?.margin, 8)
+  const range = opts?.range
+  const viewport = opts?.viewport
+  const popup = opts?.popup
+
+  const popupW = nonNegOr(popup?.width)
+  const popupH = nonNegOr(popup?.height)
+  const vpW = nonNegOr(viewport?.width)
+  const vpH = nonNegOr(viewport?.height)
+
+  const left = finiteOr(range?.left)
+  const top = finiteOr(range?.top)
+  const width = nonNegOr(range?.width)
+  const bottom = finiteOr(range?.bottom)
+
+  let placement: SelectionPopupPlacement = 'below'
+  let y = bottom + gap
+  if (y + popupH + margin > vpH) {
+    placement = 'above'
+    y = top - gap - popupH
+  }
+
+  const x = left + width / 2 - popupW / 2
+  return {
+    x: clampPopupAxis(x, popupW, vpW, margin),
+    y: clampPopupAxis(y, popupH, vpH, margin),
+    placement,
+  }
+}

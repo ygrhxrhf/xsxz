@@ -14,6 +14,7 @@ import {
   resolveImmersiveKey,
   resolveReaderKey,
   scrollableDistance,
+  selectionPopupPosition,
   shouldAutoHideReaderTools,
   scrollTopFromRatio,
   wheelPageDirection,
@@ -239,5 +240,68 @@ describe('formatCharacterCard', () => {
   it('falls back to raw output when nothing parsed', () => {
     expect(formatCharacterCard({ raw: '模型直接写的文字' })).toBe('模型直接写的文字')
     expect(formatCharacterCard({})).toBe('（人物卡为空）')
+  })
+})
+
+describe('selectionPopupPosition', () => {
+  const viewport = { width: 800, height: 600 }
+  const popup = { width: 200, height: 80 }
+
+  it('places the popup below the range when there is room', () => {
+    const pos = selectionPopupPosition({
+      range: { top: 100, right: 400, bottom: 140, left: 300, width: 100, height: 40 },
+      viewport,
+      popup,
+    })
+    expect(pos).toEqual({ x: 250, y: 148, placement: 'below' })
+  })
+
+  it('falls back above when the below edge would overflow the viewport', () => {
+    const pos = selectionPopupPosition({
+      range: { top: 520, right: 400, bottom: 560, left: 300, width: 100, height: 40 },
+      viewport,
+      popup,
+    })
+    expect(pos).toEqual({ x: 250, y: 432, placement: 'above' })
+  })
+
+  it('clamps horizontally to the left margin', () => {
+    const pos = selectionPopupPosition({
+      range: { top: 100, right: 30, bottom: 140, left: 10, width: 20, height: 40 },
+      viewport,
+      popup,
+    })
+    expect(pos.x).toBe(8)
+    expect(pos.placement).toBe('below')
+  })
+
+  it('clamps horizontally to the right margin', () => {
+    const pos = selectionPopupPosition({
+      range: { top: 100, right: 790, bottom: 140, left: 750, width: 40, height: 40 },
+      viewport,
+      popup,
+    })
+    expect(pos.x).toBe(592)
+    expect(pos.placement).toBe('below')
+  })
+
+  it('returns finite coordinates for NaN, Infinity, negative sizes, and a zero viewport', () => {
+    const bad = selectionPopupPosition({
+      range: {
+        top: Number.NaN,
+        right: Number.POSITIVE_INFINITY,
+        bottom: Number.NEGATIVE_INFINITY,
+        left: Number.NaN,
+        width: -40,
+        height: Number.NaN,
+      },
+      viewport: { width: 0, height: 0 },
+      popup: { width: -12, height: Number.POSITIVE_INFINITY },
+      gap: Number.NaN,
+      margin: Number.POSITIVE_INFINITY,
+    })
+    expect(Number.isFinite(bad.x)).toBe(true)
+    expect(Number.isFinite(bad.y)).toBe(true)
+    expect(bad.placement === 'above' || bad.placement === 'below').toBe(true)
   })
 })
