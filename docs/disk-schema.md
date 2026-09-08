@@ -270,7 +270,8 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
     "contentWidth": "medium",
     "paragraphSpacing": "normal",
     "paragraphIndent": true,
-    "focusMode": "off"
+    "focusMode": "off",
+    "readingMode": "scroll"
   },
   "tts": {
     "rate": 1,
@@ -305,7 +306,7 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
 - `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
 - `appearance.skin` 取值 `sakura`（夜樱，默认）/ `minimal`（简约），非法值回退默认。
 - `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。
-- `reader.theme` 取值 `paper`（默认）/ `sepia` / `gray` / `night`；`reader.fontFamily` 取值 `serif`（默认）/ `system` / `mono`；`reader.contentWidth` 取值 `narrow` / `medium`（默认）/ `wide`；`reader.paragraphSpacing` 取值 `compact` / `normal`（默认）/ `relaxed`；`reader.paragraphIndent` 为布尔值，默认 `true`；`reader.focusMode` 取值 `off`（默认）/ `one` / `three` / `five`。非法字段逐项回退，不影响其他合法设置。缺失或非法的 `focusMode` 回退 `off`。
+- `reader.theme` 取值 `paper`（默认）/ `sepia` / `gray` / `night`；`reader.fontFamily` 取值 `serif`（默认）/ `system` / `mono`；`reader.contentWidth` 取值 `narrow` / `medium`（默认）/ `wide`；`reader.paragraphSpacing` 取值 `compact` / `normal`（默认）/ `relaxed`；`reader.paragraphIndent` 为布尔值，默认 `true`；`reader.focusMode` 取值 `off`（默认）/ `one` / `three` / `five`；`reader.readingMode` 取值 `scroll`（默认）/ `screen`。非法字段逐项回退，不影响其他合法设置。缺失或非法的 `focusMode` 回退 `off`。缺失或非法的 `readingMode` 回退 `scroll`。
 - 向后兼容：有效的新 `theme` 优先；新主题缺失或非法时，旧 `nightMode: true` 迁移为 `night`、`false` 迁移为 `paper`。首次成功保存新偏好后写入新字段；未知旧字段允许继续保留，但读取逻辑不再依赖它们。设置文件整体损坏时按默认值启动，不重建书库、章节、进度或标记数据。
 
 ---

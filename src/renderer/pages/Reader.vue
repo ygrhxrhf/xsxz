@@ -15,6 +15,7 @@ import type {
   ReaderContentWidth,
   ReaderFocusMode,
   ReaderFontFamily,
+  ReaderReadingMode,
   ReaderParagraphSpacing,
   ReaderPrefs,
   ReaderTheme,
@@ -82,6 +83,7 @@ const contentWidth = ref<ReaderContentWidth>(DEFAULT_READER_PREFS.contentWidth)
 const paragraphSpacing = ref<ReaderParagraphSpacing>(DEFAULT_READER_PREFS.paragraphSpacing)
 const paragraphIndent = ref(DEFAULT_READER_PREFS.paragraphIndent)
 const focusMode = ref<ReaderFocusMode>(DEFAULT_READER_PREFS.focusMode)
+const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
 const viewportCenterPara = ref(-1)
 const nightMode = computed({
   get: () => theme.value === 'night',
@@ -1024,6 +1026,7 @@ function currentReaderPrefs(): ReaderPrefs {
     paragraphSpacing: paragraphSpacing.value,
     paragraphIndent: paragraphIndent.value,
     focusMode: focusMode.value,
+    readingMode: readingMode.value,
   }
 }
 
@@ -1066,6 +1069,7 @@ function restoreDefaultReaderPrefs() {
   paragraphSpacing.value = DEFAULT_READER_PREFS.paragraphSpacing
   paragraphIndent.value = DEFAULT_READER_PREFS.paragraphIndent
   focusMode.value = DEFAULT_READER_PREFS.focusMode
+  readingMode.value = DEFAULT_READER_PREFS.readingMode
   message.success('已恢复默认阅读设置')
 }
 
@@ -1079,6 +1083,7 @@ async function loadPrefs() {
   paragraphSpacing.value = s.reader.paragraphSpacing
   paragraphIndent.value = s.reader.paragraphIndent
   focusMode.value = s.reader.focusMode
+  readingMode.value = s.reader.readingMode
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
   recapLength.value = s.ai?.recapLength ?? 'standard'
@@ -1489,7 +1494,7 @@ async function aiCharacterCard() {
 }
 
 watch(
-  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode],
+  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode],
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()

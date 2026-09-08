@@ -113,6 +113,19 @@ describe('normalizeReaderPrefs', () => {
     expect(normalizeReaderPrefs({ focusMode: 'five' }).focusMode).toBe('five')
     expect(normalizeReaderPrefs({ focusMode: 'off' }).focusMode).toBe('off')
   })
+
+  it('defaults missing or illegal readingMode to scroll while keeping legal values', () => {
+    expect(normalizeReaderPrefs({ paragraphIndent: true })).toMatchObject({
+      paragraphIndent: true,
+      readingMode: 'scroll',
+    })
+    expect(normalizeReaderPrefs({ readingMode: 'paged', focusMode: 'one' })).toMatchObject({
+      readingMode: 'scroll',
+      focusMode: 'one',
+    })
+    expect(normalizeReaderPrefs({ readingMode: 'screen' }).readingMode).toBe('screen')
+    expect(normalizeReaderPrefs({ readingMode: 'scroll' }).readingMode).toBe('scroll')
+  })
 })
 
 describe('AI endpoint trust guard', () => {

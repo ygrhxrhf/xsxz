@@ -9,6 +9,7 @@ import type {
   ReaderContentWidth,
   ReaderFocusMode,
   ReaderFontFamily,
+  ReaderReadingMode,
   ReaderParagraphSpacing,
   ReaderPrefs,
   ReaderTheme,
@@ -33,6 +34,7 @@ const READER_FONT_FAMILIES: readonly ReaderFontFamily[] = ['serif', 'system', 'm
 const READER_CONTENT_WIDTHS: readonly ReaderContentWidth[] = ['narrow', 'medium', 'wide']
 const READER_PARAGRAPH_SPACINGS: readonly ReaderParagraphSpacing[] = ['compact', 'normal', 'relaxed']
 const READER_FOCUS_MODES: readonly ReaderFocusMode[] = ['off', 'one', 'three', 'five']
+const READER_READING_MODES: readonly ReaderReadingMode[] = ['scroll', 'screen']
 const AI_PROVIDERS: readonly AiPrefs['provider'][] = ['deepseek', 'custom']
 const AI_RECAP_LENGTHS: readonly AiPrefs['recapLength'][] = ['short', 'standard', 'detailed']
 const AI_PROMPT_MODES: readonly AiPrefs['promptMode'][AiPromptKind][] = ['builtin', 'custom']
@@ -167,6 +169,7 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
         ? reader.paragraphIndent
         : DEFAULT_READER_PREFS.paragraphIndent,
     focusMode: readEnum(reader.focusMode, READER_FOCUS_MODES, DEFAULT_READER_PREFS.focusMode),
+    readingMode: readEnum(reader.readingMode, READER_READING_MODES, DEFAULT_READER_PREFS.readingMode),
   }
 }
 

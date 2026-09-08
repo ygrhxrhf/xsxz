@@ -211,6 +211,7 @@ export type ReaderFontFamily = 'serif' | 'system' | 'mono'
 export type ReaderContentWidth = 'narrow' | 'medium' | 'wide'
 export type ReaderParagraphSpacing = 'compact' | 'normal' | 'relaxed'
 export type ReaderFocusMode = 'off' | 'one' | 'three' | 'five'
+export type ReaderReadingMode = 'scroll' | 'screen'
 
 export interface ReaderPrefs {
   fontSize: number
@@ -221,6 +222,7 @@ export interface ReaderPrefs {
   paragraphSpacing: ReaderParagraphSpacing
   paragraphIndent: boolean
   focusMode: ReaderFocusMode
+  readingMode: ReaderReadingMode
 }
 
 /** 朗读偏好（Web speechSynthesis） */
@@ -473,6 +475,7 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   paragraphSpacing: 'normal',
   paragraphIndent: true,
   focusMode: 'off',
+  readingMode: 'scroll',
 }
 
 export const DEFAULT_TTS_PREFS: TtsPrefs = {
