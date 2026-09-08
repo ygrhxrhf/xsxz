@@ -15,6 +15,8 @@ describe('Reader visual surface contract', () => {
     expect(source).toContain('.chapter-hotzone:not(:disabled):hover, .chapter-hotzone:not(:disabled):focus-visible { opacity: 1; background: var(--r-hover); }')
     expect(source).not.toContain('.chapter-hotzone:not(:disabled):hover, .chapter-hotzone:not(:disabled):focus-visible { opacity: 1; background: var(--hover); }')
     expect(source).toContain('outline: 2px solid var(--r-focus)')
+    expect(source).toContain('行焦点')
+    expect(source).toContain('para-unfocused')
   })
 
   it('preserves the reader interaction structure and motion safety rails', async () => {

@@ -28,6 +28,9 @@ import {
   readerProgressLabel,
   readerScrollBehavior,
   remainingChapterCount,
+  focusHalfWindow,
+  isParagraphInFocus,
+  resolveFocusAnchor,
   resolveImmersiveKey,
   resolveReaderKey,
   scrollTopFromRatio,
@@ -1655,6 +1658,10 @@ onUnmounted(() => {
             <div class="control-label">段间距</div>
             <div class="option-grid"><button v-for="item in [{v:'compact',l:'紧凑'},{v:'normal',l:'标准'},{v:'relaxed',l:'宽松'}]" :key="item.v" :class="{ active: paragraphSpacing === item.v }" @click="paragraphSpacing = item.v as ReaderParagraphSpacing">{{ item.l }}</button></div>
             <div class="control-label"><n-switch v-model:value="paragraphIndent" /> 首行缩进</div>
+            <div class="control-label">行焦点</div>
+            <div class="option-grid four">
+              <button v-for="item in [{v:'off',l:'关'},{v:'one',l:'1 段'},{v:'three',l:'3 段'},{v:'five',l:'5 段'}]" :key="item.v" :class="{ active: focusMode === item.v }" @click="focusMode = item.v as ReaderFocusMode">{{ item.l }}</button>
+            </div>
             <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
           </template>
           <template v-else-if="activeToolPanel === 'tts'">
@@ -1703,7 +1710,7 @@ onUnmounted(() => {
               v-for="(segs, i) in renderedParas"
               :key="i"
               :data-p="i"
-              :class="['para', { 'para-speaking': i === spokenPara }]"
+              :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara: -1 }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara: -1 }), paragraphIndex: i, paragraphCount: renderedParas.length }) }]"
             ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
             <button v-if="chapterReady && followingChapter" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
             <div v-else-if="chapterReady && currentChapterIndex === chapters.length - 1" class="chapter-end-card finished">
@@ -2139,6 +2146,8 @@ onUnmounted(() => {
   background: var(--speaking-bg);
   border-radius: 4px;
 }
+
+.para-unfocused { opacity: 0.4; }
 
 :deep(mark.search-hit) {
   background: var(--hit-bg);

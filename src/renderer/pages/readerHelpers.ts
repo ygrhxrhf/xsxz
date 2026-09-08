@@ -1,4 +1,4 @@
-import type { ChapterMeta, FailCode } from '@shared/types'
+import type { ChapterMeta, FailCode, ReaderFocusMode } from '@shared/types'
 import { formatChapterOrdinal } from './libraryCard'
 
 export function chapterIndexOf(chapters: Array<Pick<ChapterMeta, 'id'>>, chapterId?: string | null): number {
@@ -205,4 +205,32 @@ export function resolveReaderKey(opts: {
 /** 系统要求减少动效时用瞬时滚动，否则平滑滚动。 */
 export function readerScrollBehavior(reduceMotion: boolean): ScrollBehavior {
   return reduceMotion ? 'auto' : 'smooth'
+}
+
+export function focusHalfWindow(mode: ReaderFocusMode): number {
+  if (mode === 'three') return 1
+  if (mode === 'five') return 2
+  return 0
+}
+
+export function isParagraphInFocus(opts: {
+  mode: ReaderFocusMode
+  anchorIndex: number
+  paragraphIndex: number
+  paragraphCount: number
+}): boolean {
+  if (opts.mode === 'off' || opts.paragraphCount <= 0) return true
+  const last = opts.paragraphCount - 1
+  const anchor = Number.isFinite(opts.anchorIndex)
+    ? Math.max(0, Math.min(last, Math.trunc(opts.anchorIndex)))
+    : 0
+  const half = focusHalfWindow(opts.mode)
+  const i = opts.paragraphIndex
+  return i >= anchor - half && i <= anchor + half
+}
+
+export function resolveFocusAnchor(opts: { spokenPara: number; viewportCenterPara: number }): number {
+  if (Number.isFinite(opts.spokenPara) && opts.spokenPara >= 0) return opts.spokenPara
+  if (Number.isFinite(opts.viewportCenterPara) && opts.viewportCenterPara >= 0) return opts.viewportCenterPara
+  return -1
 }

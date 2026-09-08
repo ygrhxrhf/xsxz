@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import type { ReaderFocusMode } from '@shared/types'
 import {
   approximateBookRatio,
   chapterScrollRatio,
   failAdvice,
+  focusHalfWindow,
   formatCharacterCard,
+  isParagraphInFocus,
   remainingChapterCount,
   readerScrollBehavior,
+  resolveFocusAnchor,
   resolveImmersiveKey,
   resolveReaderKey,
   scrollableDistance,
@@ -131,6 +135,47 @@ describe('readerScrollBehavior', () => {
   it('uses auto when reduced motion is requested and smooth otherwise', () => {
     expect(readerScrollBehavior(true)).toBe('auto')
     expect(readerScrollBehavior(false)).toBe('smooth')
+  })
+})
+
+describe('reader focus window', () => {
+  it('treats off as fully focused', () => {
+    for (let i = 0; i < 5; i++) {
+      expect(isParagraphInFocus({ mode: 'off', anchorIndex: 1, paragraphIndex: i, paragraphCount: 5 })).toBe(true)
+    }
+  })
+
+  it('keeps a three-paragraph window around anchor 1 of 5', () => {
+    const hits = [0, 1, 2, 3, 4].map((i) =>
+      isParagraphInFocus({ mode: 'three', anchorIndex: 1, paragraphIndex: i, paragraphCount: 5 }),
+    )
+    expect(hits).toEqual([true, true, true, false, false])
+  })
+
+  it('clamps out-of-range anchors into the paragraph list', () => {
+    expect(isParagraphInFocus({ mode: 'three', anchorIndex: -10, paragraphIndex: 0, paragraphCount: 5 })).toBe(true)
+    expect(isParagraphInFocus({ mode: 'three', anchorIndex: -10, paragraphIndex: 1, paragraphCount: 5 })).toBe(true)
+    expect(isParagraphInFocus({ mode: 'three', anchorIndex: -10, paragraphIndex: 2, paragraphCount: 5 })).toBe(false)
+    expect(isParagraphInFocus({ mode: 'three', anchorIndex: 99, paragraphIndex: 3, paragraphCount: 5 })).toBe(true)
+    expect(isParagraphInFocus({ mode: 'three', anchorIndex: 99, paragraphIndex: 4, paragraphCount: 5 })).toBe(true)
+    expect(isParagraphInFocus({ mode: 'three', anchorIndex: 99, paragraphIndex: 2, paragraphCount: 5 })).toBe(false)
+    expect(isParagraphInFocus({ mode: 'three', anchorIndex: Number.NaN, paragraphIndex: 0, paragraphCount: 5 })).toBe(true)
+  })
+
+  it('prefers spokenPara and returns -1 when both anchors are invalid', () => {
+    expect(resolveFocusAnchor({ spokenPara: 2, viewportCenterPara: 4 })).toBe(2)
+    expect(resolveFocusAnchor({ spokenPara: -1, viewportCenterPara: 3 })).toBe(3)
+    expect(resolveFocusAnchor({ spokenPara: Number.NaN, viewportCenterPara: 1 })).toBe(1)
+    expect(resolveFocusAnchor({ spokenPara: Number.NaN, viewportCenterPara: Number.NaN })).toBe(-1)
+    expect(resolveFocusAnchor({ spokenPara: -1, viewportCenterPara: -1 })).toBe(-1)
+  })
+
+  it('uses half-window 0 for one and unknown modes', () => {
+    expect(focusHalfWindow('one')).toBe(0)
+    expect(focusHalfWindow('off')).toBe(0)
+    expect(focusHalfWindow('three')).toBe(1)
+    expect(focusHalfWindow('five')).toBe(2)
+    expect(focusHalfWindow('huge' as ReaderFocusMode)).toBe(0)
   })
 })
 
