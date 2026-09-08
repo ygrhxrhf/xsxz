@@ -1,4 +1,4 @@
-import type { ChapterMeta, FailCode, ReaderFocusMode } from '@shared/types'
+import type { ChapterMeta, ChapterStatus, FailCode, ReaderFocusMode } from '@shared/types'
 import { formatChapterOrdinal } from './libraryCard'
 
 export function chapterIndexOf(chapters: Array<Pick<ChapterMeta, 'id'>>, chapterId?: string | null): number {
@@ -56,6 +56,36 @@ export function readerProgressLabel(
   const pct = Math.round(clampRatio(scrollRatio) * 100)
   const left = remainingChapterCount(chapters, chapterId)
   return `${ordinal} · 本章 ${pct}% · 还剩 ${left} 章`
+}
+
+export type CatalogChapterBadge = 'failed' | 'pending' | 'empty' | 'current' | 'read' | null
+
+export function catalogChapterBadge(opts: {
+  status: ChapterStatus
+  chapterId: string
+  currentChapterId?: string | null
+  progressChapterId?: string | null
+  chapters: Array<Pick<ChapterMeta, 'id'>>
+}): CatalogChapterBadge {
+  const status = opts?.status
+  if (status === 'failed') return 'failed'
+  if (status === 'pending') return 'pending'
+  if (status === 'empty') return 'empty'
+  const chapterId = opts?.chapterId
+  if (chapterId && chapterId === opts?.currentChapterId) return 'current'
+  const chapters = Array.isArray(opts?.chapters) ? opts.chapters : []
+  const chapterIndex = chapterIndexOf(chapters, chapterId)
+  const progressIndex = chapterIndexOf(chapters, opts?.progressChapterId)
+  if (
+    Number.isFinite(chapterIndex) &&
+    Number.isFinite(progressIndex) &&
+    chapterIndex >= 0 &&
+    progressIndex >= 0 &&
+    chapterIndex < progressIndex
+  ) {
+    return 'read'
+  }
+  return null
 }
 
 export function filterCatalogChapters<T extends Pick<ChapterMeta, 'title'>>(chapters: T[], q: string): T[] {

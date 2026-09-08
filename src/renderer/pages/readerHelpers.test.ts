@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ReaderFocusMode } from '@shared/types'
 import {
   approximateBookRatio,
+  catalogChapterBadge,
   chapterScrollRatio,
   failAdvice,
   focusHalfWindow,
@@ -303,5 +304,133 @@ describe('selectionPopupPosition', () => {
     expect(Number.isFinite(bad.x)).toBe(true)
     expect(Number.isFinite(bad.y)).toBe(true)
     expect(bad.placement === 'above' || bad.placement === 'below').toBe(true)
+  })
+})
+
+describe('catalogChapterBadge', () => {
+  const chapters = [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }]
+
+  it('lets failed override current', () => {
+    expect(
+      catalogChapterBadge({
+        status: 'failed',
+        chapterId: 'c2',
+        currentChapterId: 'c2',
+        progressChapterId: 'c3',
+        chapters,
+      }),
+    ).toBe('failed')
+  })
+
+  it('marks undownloaded pending chapters', () => {
+    expect(
+      catalogChapterBadge({
+        status: 'pending',
+        chapterId: 'c1',
+        currentChapterId: 'c2',
+        progressChapterId: 'c2',
+        chapters,
+      }),
+    ).toBe('pending')
+  })
+
+  it('marks empty chapters', () => {
+    expect(
+      catalogChapterBadge({
+        status: 'empty',
+        chapterId: 'c1',
+        currentChapterId: 'c2',
+        progressChapterId: 'c2',
+        chapters,
+      }),
+    ).toBe('empty')
+  })
+
+  it('lets current override already-read', () => {
+    expect(
+      catalogChapterBadge({
+        status: 'ready',
+        chapterId: 'c1',
+        currentChapterId: 'c1',
+        progressChapterId: 'c3',
+        chapters,
+      }),
+    ).toBe('current')
+  })
+
+  it('marks chapters before the progress chapter as read', () => {
+    expect(
+      catalogChapterBadge({
+        status: 'ready',
+        chapterId: 'c1',
+        currentChapterId: 'c3',
+        progressChapterId: 'c2',
+        chapters,
+      }),
+    ).toBe('read')
+  })
+
+  it('returns null when there is no progress chapter', () => {
+    expect(
+      catalogChapterBadge({
+        status: 'ready',
+        chapterId: 'c1',
+        currentChapterId: 'c3',
+        progressChapterId: null,
+        chapters,
+      }),
+    ).toBeNull()
+  })
+
+  it('returns null when the progress chapter is not in the list', () => {
+    expect(
+      catalogChapterBadge({
+        status: 'ready',
+        chapterId: 'c1',
+        currentChapterId: 'c3',
+        progressChapterId: 'missing',
+        chapters,
+      }),
+    ).toBeNull()
+  })
+
+  it('returns null for unknown status that is not current', () => {
+    expect(
+      catalogChapterBadge({
+        status: 'unknown' as 'ready',
+        chapterId: 'c2',
+        currentChapterId: 'c1',
+        progressChapterId: 'c2',
+        chapters,
+      }),
+    ).toBeNull()
+  })
+
+  it('does not throw on missing chapters, empty ids, or non-array chapters', () => {
+    expect(
+      catalogChapterBadge({
+        status: 'ready',
+        chapterId: '',
+        currentChapterId: '',
+        progressChapterId: 'c2',
+        chapters,
+      }),
+    ).toBeNull()
+    expect(
+      catalogChapterBadge({
+        status: 'ready',
+        chapterId: 'c1',
+        currentChapterId: 'c1',
+        chapters: undefined as unknown as typeof chapters,
+      }),
+    ).toBe('current')
+    expect(
+      catalogChapterBadge({
+        status: 'ready',
+        chapterId: 'c1',
+        progressChapterId: 'c2',
+        chapters: undefined as unknown as typeof chapters,
+      }),
+    ).toBeNull()
   })
 })
