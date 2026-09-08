@@ -47,6 +47,7 @@ import {
   removeAssistantStage,
   updateAssistantSaveToken,
 } from './aiAssistantStatus'
+import { createChapterPrefetch } from './readerPrefetch'
 
 const props = defineProps<{ bookId?: string }>()
 const emit = defineEmits<{
@@ -58,6 +59,7 @@ const message = useMessage()
 const book = ref<Book | null>(null)
 const chapters = ref<ChapterMeta[]>([])
 const currentChapter = ref<ChapterMeta | null>(null)
+const chapterPrefetch = createChapterPrefetch()
 const chapterBody = ref('')
 const chapterError = ref('')
 const hasBodyRaw = ref(false)
@@ -836,6 +838,7 @@ const chapterFailHint = computed(() => failAdvice(currentChapter.value?.failCode
 
 async function loadBook(bookId: string) {
   assistantBudgets.value = {}
+  chapterPrefetch.onBookChange(bookId)
   const previousChapterId = currentChapter.value?.id
   saveProgress()
   const res = await window.api.library.get(bookId)
@@ -866,12 +869,16 @@ async function loadBook(bookId: string) {
 
 async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
   if (!book.value) return
+  chapterPrefetch.beginNavigation()
   closeSelectionTools()
   ttsStop()
   if (currentChapter.value && currentChapter.value.id !== ch.id) saveProgress()
   chapterLoading.value = true
   try {
-    const res = await window.api.library.readChapter(book.value.id, ch.id)
+    const cached = chapterPrefetch.get(book.value.id, ch.id)
+    const res = cached
+      ? { chapter: cached }
+      : await window.api.library.readChapter(book.value.id, ch.id)
     if (res.chapter) {
       currentChapter.value = { ...ch, status: res.chapter.status, failCode: res.chapter.failCode }
       chapterBody.value = res.chapter.body || ''
@@ -891,6 +898,12 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
       } else {
         scrollToRatio(scrollRatio)
       }
+      chapterPrefetch.scheduleNeighbors({
+        bookId: book.value.id,
+        previous: previousChapter.value,
+        following: followingChapter.value,
+        readChapter: (bookId, chapterId) => window.api.library.readChapter(bookId, chapterId),
+      })
     } else {
       currentChapter.value = ch
       chapterBody.value = ''
@@ -1097,6 +1110,7 @@ async function stopCleanBody() {
 async function applyCleanedBody() {
   if (!book.value || !currentChapter.value || !aiResult.value) return
   await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, aiResult.value)
+  chapterPrefetch.invalidate(book.value.id, currentChapter.value.id)
   chapterBody.value = aiResult.value
   hasBodyRaw.value = true
   showAiResult.value = false
@@ -1106,6 +1120,7 @@ async function applyCleanedBody() {
 async function restoreCleanedBody() {
   if (!book.value || !currentChapter.value) return
   const res = await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, '', true)
+  chapterPrefetch.invalidate(book.value.id, currentChapter.value.id)
   if (res && 'ok' in res && res.ok === false) {
     message.error((res as { message?: string }).message || '撤销失败')
     return
@@ -1577,6 +1592,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onReaderKeydown)
   window.removeEventListener('resize', onReaderResize)
+  chapterPrefetch.dispose()
   ttsStop()
   if (scrollTimer) clearTimeout(scrollTimer)
   clearToolHideTimer()
