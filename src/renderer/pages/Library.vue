@@ -9,6 +9,7 @@ import {
   applyAddedChapterCount,
   checkUpdateMessage,
   checkUpdateNeedsBrowse,
+  collectLibraryTags,
   createLibraryRefreshTracker,
   filterLibraryBooks,
   formatChapterOrdinal,
@@ -44,6 +45,7 @@ const checkErr = ref<Record<string, boolean>>({})
 const query = ref('')
 const searchInputRef = ref<InputInst | null>(null)
 const statusFilter = ref<LibraryStatusFilter>('all')
+const selectedTag = ref('')
 const sortKey = ref<LibrarySortKey>('updated')
 const failedOpen = ref(false)
 const failedTitle = ref('')
@@ -62,10 +64,20 @@ let lastErrorToast = ''
 const refreshTracker = createLibraryRefreshTracker()
 
 const visibleBooks = computed(() =>
-  sortLibraryBooks(filterLibraryBooks(books.value, { q: query.value, status: statusFilter.value }), sortKey.value),
+  sortLibraryBooks(
+    filterLibraryBooks(books.value, {
+      q: query.value,
+      status: statusFilter.value,
+      selectedTag: selectedTag.value,
+    }),
+    sortKey.value,
+  ),
 )
+const libraryTags = computed(() => collectLibraryTags(books.value))
 const initialLoading = computed(() => loading.value && books.value.length === 0)
-const hasActiveFilter = computed(() => Boolean(query.value.trim()) || statusFilter.value !== 'all')
+const hasActiveFilter = computed(
+  () => Boolean(query.value.trim()) || statusFilter.value !== 'all' || Boolean(selectedTag.value),
+)
 const deleteConfirmBook = computed(() => books.value.find((book) => book.id === deleteConfirmId.value) || null)
 
 const statusOptions = [
@@ -296,9 +308,18 @@ function coverStyle(id: string): Record<string, string> {
   }
 }
 
+function isSelectedLibraryTag(tag: string): boolean {
+  return Boolean(selectedTag.value) && selectedTag.value.toLowerCase() === tag.toLowerCase()
+}
+
+function toggleLibraryTag(tag: string) {
+  selectedTag.value = isSelectedLibraryTag(tag) ? '' : tag
+}
+
 function clearFilters() {
   query.value = ''
   statusFilter.value = 'all'
+  selectedTag.value = ''
 }
 
 function focusLibrarySearch() {
@@ -489,6 +510,20 @@ onUnmounted(() => {
       <n-input ref="searchInputRef" v-model:value="query" clearable placeholder="按书名、作者或标签筛选" style="max-width:240px" />
       <n-select v-model:value="statusFilter" :options="statusOptions" style="width:120px" />
       <n-select v-model:value="sortKey" :options="sortOptions" style="width:132px" />
+      <div v-if="libraryTags.length" class="lib-tag-chips" role="list" aria-label="按标签筛选">
+        <n-tag
+          v-for="tag in libraryTags"
+          :key="tag"
+          role="listitem"
+          checkable
+          size="small"
+          :checked="isSelectedLibraryTag(tag)"
+          :aria-pressed="isSelectedLibraryTag(tag)"
+          @update:checked="toggleLibraryTag(tag)"
+        >
+          {{ tag }}
+        </n-tag>
+      </div>
     </div>
 
     <div v-if="initialLoading" class="book-grid library-skeletons" role="status" aria-label="正在加载书库">
@@ -674,6 +709,13 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-bottom: var(--space-4);
+}
+
+.lib-tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  flex: 1 0 100%;
+  gap: var(--space-2);
 }
 
 .checkall-status {

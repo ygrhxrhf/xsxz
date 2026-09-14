@@ -4,6 +4,7 @@ import {
   checkUpdateMessage,
   checkUpdateNeedsBrowse,
   createLibraryRefreshTracker,
+  collectLibraryTags,
   filterLibraryBooks,
   formatChapterOrdinal,
   formatLibraryProgress,
@@ -189,7 +190,24 @@ describe('library check-update card helpers', () => {
     expect(filterLibraryBooks(books, { q: '', status: 'partial' }).map((b) => b.id)).toEqual(['2'])
     expect(filterLibraryBooks(books, { q: '   ' }).map((b) => b.id)).toEqual(['1', '2'])
     expect(filterLibraryBooks(books, { status: 'partial' }).map((b) => b.id)).toEqual(['2'])
+    expect(filterLibraryBooks(books, { selectedTag: 'xuanhuan' }).map((b) => b.id)).toEqual(['1'])
+    expect(filterLibraryBooks(books, { selectedTag: '  穿越  ' }).map((b) => b.id)).toEqual(['1'])
+    expect(filterLibraryBooks(books, { selectedTag: '都' }).map((b) => b.id)).toEqual([])
+    expect(filterLibraryBooks(books, { q: '万古', selectedTag: '都市' }).map((b) => b.id)).toEqual([])
+    expect(filterLibraryBooks(books, { q: '导入', status: 'partial', selectedTag: '都市' }).map((b) => b.id)).toEqual(['2'])
+    expect(filterLibraryBooks(books, { selectedTag: '' }).map((b) => b.id)).toEqual(['1', '2'])
     expect(sortLibraryBooks(books, 'title').map((b) => b.id)).toEqual(['2', '1'])
+  })
+
+  it('collects unique library tags, case-insensitively keeping first spelling', () => {
+    expect(collectLibraryTags([])).toEqual([])
+    expect(collectLibraryTags([{ tags: [] }, { tags: ['  ', ''] }])).toEqual([])
+    expect(
+      collectLibraryTags([
+        { tags: ['XuanHuan', '穿越', ' xuanhuan '] },
+        { tags: ['都市', '穿越', 'XUANHUAN'] },
+      ]),
+    ).toEqual(['XuanHuan', '穿越', '都市'])
   })
 
   it('treats Ctrl+F and Meta+F without Shift as the library find shortcut', () => {

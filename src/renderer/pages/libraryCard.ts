@@ -129,14 +129,32 @@ export function isLibraryFindShortcut(e: {
   return (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f'
 }
 
+export function collectLibraryTags(books: Array<Pick<BookListItem, 'tags'>>): string[] {
+  const seen = new Set<string>()
+  const tags: string[] = []
+  for (const book of books) {
+    for (const raw of book.tags || []) {
+      const tag = raw.trim()
+      if (!tag) continue
+      const key = tag.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      tags.push(tag)
+    }
+  }
+  return tags
+}
+
 export function filterLibraryBooks(
   books: BookListItem[],
-  opts: { q?: string; status?: LibraryStatusFilter },
+  opts: { q?: string; status?: LibraryStatusFilter; selectedTag?: string },
 ): BookListItem[] {
   const q = (opts.q || '').trim().toLowerCase()
   const status = opts.status || 'all'
+  const selectedTag = (opts.selectedTag || '').trim().toLowerCase()
   return books.filter((b) => {
     if (status !== 'all' && b.status !== status) return false
+    if (selectedTag && !(b.tags || []).some((tag) => tag.toLowerCase() === selectedTag)) return false
     if (!q) return true
     if (b.title.toLowerCase().includes(q) || (b.author || '').toLowerCase().includes(q)) return true
     return (b.tags || []).some((tag) => tag.toLowerCase().includes(q))

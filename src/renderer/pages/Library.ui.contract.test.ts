@@ -90,4 +90,18 @@ describe('Library comfortable card contract', () => {
     expect(source).toContain('e.preventDefault()')
     expect(source).toContain('searchInputRef.value?.focus()')
   })
+
+  it('renders single-select tag chips from all books and combines with search/status', async () => {
+    const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
+    expect(source).toContain('collectLibraryTags')
+    expect(source).toContain('v-if="libraryTags.length"')
+    expect(source).toContain('class="lib-tag-chips"')
+    expect(source).toContain('aria-label="按标签筛选"')
+    expect(source).toContain('v-for="tag in libraryTags"')
+    expect(source).toContain('@update:checked="toggleLibraryTag(tag)"')
+    expect(source).toContain('selectedTag: selectedTag.value')
+    expect(source).toContain("selectedTag.value = isSelectedLibraryTag(tag) ? '' : tag")
+    expect(source).toContain('selectedTag.value = \'\'')
+    expect(source).not.toContain('v-html')
+  })
 })
