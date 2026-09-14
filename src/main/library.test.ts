@@ -15,8 +15,11 @@ import {
   setLibraryPath,
   createBookFromBootstrap,
   bookExists,
+  getBook,
   loadBook,
   listBooks,
+  updateMeta,
+  setCover,
   markChapterStatus,
   readChapter,
   readAiMemory,
@@ -868,5 +871,169 @@ describe('trash（回收站）', () => {
   it('rejects illegal trash names (path traversal)', async () => {
     await expect(restoreFromTrash('../escape')).rejects.toThrow('不合法')
     await expect(purgeTrash('..\\escape')).rejects.toThrow('不合法')
+  })
+})
+
+describe('updateMeta + setCover (U1.2)', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-meta-'))
+    await setLibraryPath(dir)
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function seed(id = 'd_meta') {
+    const created = await createBookFromBootstrap({
+      bookId: id,
+      title: '原标题',
+      author: '原作者',
+      sourceUrl: `https://example.com/${id}/`,
+      sourceHost: 'example.com',
+      importType: 'download',
+      chapterTitles: ['第一章'],
+      chapterUrls: [`https://example.com/${id}/1.html`],
+    })
+    created.progress = { chapterId: 'c0001', scrollRatio: 0.4, updatedAt: '2026-01-01T00:00:00.000Z' }
+    created.chapters[0].status = 'ready'
+    await saveBook(created)
+    await mkdir(join(dir, id, 'chapters'), { recursive: true })
+    await writeFile(
+      join(dir, id, 'chapters', '0001.json'),
+      JSON.stringify({
+        title: '第一章',
+        url: `https://example.com/${id}/1.html`,
+        body: '正文不得被改',
+        status: 'ready',
+      }, null, 2),
+      'utf-8',
+    )
+    return created
+  }
+
+  it('list/get return tags and coverPath; missing or illegal tags become []', async () => {
+    await mkdir(join(dir, 'd_legacy'), { recursive: true })
+    const legacy = {
+      id: 'd_legacy',
+      title: '旧书',
+      author: '',
+      importType: 'txt',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      status: 'ready',
+      progress: null,
+      chapters: [],
+    }
+    await writeFile(join(dir, 'd_legacy', 'book.json'), JSON.stringify(legacy), 'utf-8')
+    await expect(listBooks()).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'd_legacy', tags: [] })]),
+    )
+    await expect(getBook('d_legacy')).resolves.toMatchObject({ id: 'd_legacy', tags: [] })
+
+    await writeFile(
+      join(dir, 'd_legacy', 'book.json'),
+      JSON.stringify({ ...legacy, tags: '玄幻', coverPath: 'cover.jpg' }),
+      'utf-8',
+    )
+    const listed = await listBooks()
+    expect(listed.find((b) => b.id === 'd_legacy')).toMatchObject({ tags: [], coverPath: 'cover.jpg' })
+    await expect(getBook('d_legacy')).resolves.toMatchObject({ tags: [], coverPath: 'cover.jpg' })
+
+    await writeFile(
+      join(dir, 'd_legacy', 'book.json'),
+      JSON.stringify({ ...legacy, tags: [1, '玄幻'] }),
+      'utf-8',
+    )
+    await expect(getBook('d_legacy')).resolves.toMatchObject({ tags: [] })
+  })
+
+  it('updateMeta writes title/author/tags/updatedAt to book.json and index.json', async () => {
+    await seed()
+    await listBooks()
+    const before = await loadBook('d_meta')
+    const result = await updateMeta({
+      bookId: 'd_meta',
+      title: '  新标题  ',
+      author: '  乙  ',
+      tags: [' 玄幻 ', '', 'XuanHuan', 'xuanhuan', ' 穿越 '],
+    })
+    expect(result).toEqual({ ok: true })
+    const loaded = await loadBook('d_meta')
+    expect(loaded.title).toBe('新标题')
+    expect(loaded.author).toBe('乙')
+    expect(loaded.tags).toEqual(['玄幻', 'XuanHuan', '穿越'])
+    expect(loaded.updatedAt).not.toBe(before.updatedAt)
+    expect(loaded.progress).toEqual(before.progress)
+    expect(loaded.chapters).toEqual(before.chapters)
+    const chapter = JSON.parse(await readFile(join(dir, 'd_meta', 'chapters', '0001.json'), 'utf-8')) as { body: string }
+    expect(chapter.body).toBe('正文不得被改')
+    const index = JSON.parse(await readFile(join(dir, 'index.json'), 'utf-8')) as {
+      books: Array<{ id: string; title: string; author: string; tags: string[]; updatedAt: string }>
+    }
+    expect(index.books.find((b) => b.id === 'd_meta')).toMatchObject({
+      title: '新标题',
+      author: '乙',
+      tags: ['玄幻', 'XuanHuan', '穿越'],
+      updatedAt: loaded.updatedAt,
+    })
+  })
+
+  it('updateMeta rejects missing books and empty titles without writing', async () => {
+    await seed()
+    const missing = await updateMeta({ bookId: 'd_nope', title: '有名', author: '', tags: [] })
+    expect(missing).toEqual({ ok: false, message: '书不存在' })
+    const blank = await updateMeta({ bookId: 'd_meta', title: '   ', author: '甲', tags: ['x'] })
+    expect(blank.ok).toBe(false)
+    if (!blank.ok) expect(blank.message.length).toBeGreaterThan(0)
+    const loaded = await loadBook('d_meta')
+    expect(loaded.title).toBe('原标题')
+    expect(loaded.author).toBe('原作者')
+    expect(loaded.tags).toEqual([])
+  })
+
+  it('setCover copies jpg/png/webp, overwrites stale covers, and rejects bad files', async () => {
+    await seed()
+    const srcDir = await mkdtemp(join(tmpdir(), 'spbf-cover-src-'))
+    const jpg = join(srcDir, 'photo.JPEG')
+    const png = join(srcDir, 'art.png')
+    const webp = join(srcDir, 'art.webp')
+    const gif = join(srcDir, 'art.gif')
+    const huge = join(srcDir, 'huge.jpg')
+    await writeFile(jpg, 'fake-jpeg')
+    await writeFile(png, 'fake-png')
+    await writeFile(webp, 'fake-webp')
+    await writeFile(gif, 'fake-gif')
+    await writeFile(huge, Buffer.alloc(8 * 1024 * 1024 + 1))
+
+    const first = await setCover({ bookId: 'd_meta', sourcePath: jpg })
+    expect(first).toEqual({ ok: true, coverPath: 'cover.jpg' })
+    expect(await readFile(join(dir, 'd_meta', 'cover.jpg'), 'utf-8')).toBe('fake-jpeg')
+    expect((await getBook('d_meta')).coverPath).toBe('cover.jpg')
+
+    const second = await setCover({ bookId: 'd_meta', sourcePath: png })
+    expect(second).toEqual({ ok: true, coverPath: 'cover.png' })
+    const names = await readdir(join(dir, 'd_meta'))
+    expect(names).toContain('cover.png')
+    expect(names).not.toContain('cover.jpg')
+    expect((await listBooks()).find((b) => b.id === 'd_meta')?.coverPath).toBe('cover.png')
+
+    const third = await setCover({ bookId: 'd_meta', sourcePath: webp })
+    expect(third).toEqual({ ok: true, coverPath: 'cover.webp' })
+    expect((await readdir(join(dir, 'd_meta'))).filter((name) => name.startsWith('cover.'))).toEqual(['cover.webp'])
+
+    expect(await setCover({ bookId: 'd_meta', sourcePath: gif })).toMatchObject({ ok: false })
+    expect(await setCover({ bookId: 'd_meta', sourcePath: huge })).toEqual({ ok: false, message: '封面超过 8MB' })
+    expect(await setCover({ bookId: 'd_nope', sourcePath: png })).toEqual({ ok: false, message: '书不存在' })
+    expect(await setCover({ bookId: 'd_meta', sourcePath: join(srcDir, 'missing.jpg') })).toMatchObject({ ok: false })
+
+    const after = await loadBook('d_meta')
+    expect(after.title).toBe('原标题')
+    expect(after.progress?.chapterId).toBe('c0001')
+    const chapter = JSON.parse(await readFile(join(dir, 'd_meta', 'chapters', '0001.json'), 'utf-8')) as { body: string }
+    expect(chapter.body).toBe('正文不得被改')
+    await rm(srcDir, { recursive: true, force: true })
   })
 })

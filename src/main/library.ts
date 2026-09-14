@@ -176,9 +176,20 @@ function applyChapterStatus(
   }
 }
 
+/** 非法（非字符串数组）整段当 []。合法项 trim、丢空串，同书大小写不敏感去重并保留先出现写法。 */
 function normalizeTags(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) return []
-  return value
+  const seen = new Set<string>()
+  const tags: string[] = []
+  for (const item of value) {
+    const tag = item.trim()
+    if (!tag) continue
+    const key = tag.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    tags.push(tag)
+  }
+  return tags
 }
 
 async function loadBookUnlocked(bookId: string): Promise<Book> {
@@ -308,6 +319,19 @@ interface IndexData {
 
 async function writeIndex(data: IndexData): Promise<void> {
   await writeFile(indexFile(), JSON.stringify(data, null, 2), 'utf-8')
+}
+
+async function upsertIndexItem(book: Book): Promise<void> {
+  let books: BookListItem[] = []
+  try {
+    const parsed = JSON.parse(await readFile(indexFile(), 'utf-8')) as IndexData
+    if (Array.isArray(parsed.books)) books = parsed.books.filter((item) => item?.id !== book.id)
+  } catch {
+    /* missing or corrupt index — write this book only; listBooks rebuilds the rest */
+  }
+  books.push(bookToList(book))
+  books.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  await writeIndex({ version: 1, books })
 }
 
 export async function rebuildIndex(): Promise<BookListItem[]> {
@@ -879,22 +903,81 @@ export async function createBookFromBootstrap(opts: {
   return book
 }
 
-/** U1.1 契约 stub；完整元数据落盘见 U1.2。 */
-export async function updateMeta(_payload: {
+const COVER_MAX_BYTES = 8 * 1024 * 1024
+const COVER_STALE_NAMES = ['cover.jpg', 'cover.jpeg', 'cover.png', 'cover.webp'] as const
+
+function coverDestName(sourcePath: string): 'cover.jpg' | 'cover.png' | 'cover.webp' | null {
+  const ext = extname(sourcePath || '').toLowerCase()
+  if (ext === '.jpg' || ext === '.jpeg') return 'cover.jpg'
+  if (ext === '.png') return 'cover.png'
+  if (ext === '.webp') return 'cover.webp'
+  return null
+}
+
+export async function updateMeta(payload: {
   bookId: string
   title: string
   author: string
   tags: string[]
 }): Promise<{ ok: true } | { ok: false; message: string }> {
-  return { ok: false, message: 'not implemented' }
+  const title = typeof payload.title === 'string' ? payload.title.trim() : ''
+  if (!title) return { ok: false, message: '书名不能为空' }
+  const author = typeof payload.author === 'string' ? payload.author.trim() : ''
+  const tags = normalizeTags(payload.tags)
+  const bookId = payload.bookId
+  if (!(await bookExists(bookId))) return { ok: false, message: '书不存在' }
+  return withBookLock(bookId, async () => {
+    let book: Book
+    try {
+      book = await loadBookUnlocked(bookId)
+    } catch {
+      return { ok: false, message: '书不存在' }
+    }
+    book.title = title
+    book.author = author
+    book.tags = tags
+    await saveBookUnlocked(book)
+    await upsertIndexItem(book)
+    return { ok: true }
+  })
 }
 
-/** U1.1 契约 stub；完整封面落盘见 U1.2。 */
-export async function setCover(_payload: {
+export async function setCover(payload: {
   bookId: string
   sourcePath: string
 }): Promise<{ ok: true; coverPath: string } | { ok: false; message: string }> {
-  return { ok: false, message: 'not implemented' }
+  const sourcePath = typeof payload.sourcePath === 'string' ? payload.sourcePath.trim() : ''
+  if (!sourcePath) return { ok: false, message: '封面文件不存在' }
+  const destName = coverDestName(sourcePath)
+  if (!destName) return { ok: false, message: '仅支持 jpg / png / webp 封面' }
+  let sourceStat: Awaited<ReturnType<typeof stat>>
+  try {
+    sourceStat = await stat(sourcePath)
+  } catch {
+    return { ok: false, message: '封面文件不存在' }
+  }
+  if (!sourceStat.isFile()) return { ok: false, message: '封面文件不存在' }
+  if (sourceStat.size > COVER_MAX_BYTES) return { ok: false, message: '封面超过 8MB' }
+  const bookId = payload.bookId
+  if (!(await bookExists(bookId))) return { ok: false, message: '书不存在' }
+  return withBookLock(bookId, async () => {
+    let book: Book
+    try {
+      book = await loadBookUnlocked(bookId)
+    } catch {
+      return { ok: false, message: '书不存在' }
+    }
+    const destPath = join(bookDir(bookId), destName)
+    await cp(sourcePath, destPath)
+    for (const name of COVER_STALE_NAMES) {
+      if (name === destName) continue
+      await rm(join(bookDir(bookId), name), { force: true }).catch(() => {})
+    }
+    book.coverPath = destName
+    await saveBookUnlocked(book)
+    await upsertIndexItem(book)
+    return { ok: true, coverPath: destName }
+  })
 }
 
 export async function writeChapterFile(bookId: string, chapterId: string, data: ChapterFile): Promise<void> {
