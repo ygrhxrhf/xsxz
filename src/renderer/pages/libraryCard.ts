@@ -104,16 +104,30 @@ export function applyAddedChapterCount(chapterCount: number, added: number): num
 
 export function formatChapterOrdinal(chapterId?: string | null, fallbackIndex?: number): string {
   if (typeof fallbackIndex === 'number' && fallbackIndex > 0) return `第 ${fallbackIndex} 章`
-  const m = /^c0*([0-9]+)$/i.exec(chapterId || '')
-  if (m) return `第 ${Number(m[1])} 章`
+  const ordinal = catalogChapterOrdinal(chapterId)
+  if (ordinal > 0) return `第 ${ordinal} 章`
   return chapterId || '未读'
 }
 
-export function formatLibraryProgress(b: BookListItem): string {
-  const ready = `${b.readyCount}/${b.chapterCount} 章`
-  if (!b.progress) return ready
-  const pct = Math.round(Math.max(0, Math.min(1, b.progress.scrollRatio || 0)) * 100)
-  return `${formatChapterOrdinal(b.progress.chapterId)} · ${pct}% · ${ready}`
+/** progress 所在章在目录中的序号（从 1 计）。无 progress 或无法从 chapterId 解析时为 0。 */
+export function libraryReadChapterOrdinal(b: Pick<BookListItem, 'progress'>): number {
+  if (!b.progress) return 0
+  return catalogChapterOrdinal(b.progress.chapterId)
+}
+
+function catalogChapterOrdinal(chapterId?: string | null): number {
+  const m = /^c0*([0-9]+)$/i.exec(chapterId || '')
+  return m ? Number(m[1]) : 0
+}
+
+export function formatLibraryProgress(b: Pick<BookListItem, 'chapterCount' | 'progress'>): string {
+  return `已读 ${libraryReadChapterOrdinal(b)} / 共 ${b.chapterCount} 章`
+}
+
+export function formatLibraryProgressTime(b: Pick<BookListItem, 'progress'>): string {
+  if (!b.progress) return '未读'
+  const d = new Date(b.progress.updatedAt)
+  return Number.isNaN(d.getTime()) ? b.progress.updatedAt : d.toLocaleString('zh-CN')
 }
 
 export function checkUpdateNeedsBrowse(code?: FailCode | string): boolean {

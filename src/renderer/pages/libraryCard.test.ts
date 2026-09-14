@@ -9,7 +9,9 @@ import {
   findLibraryDuplicateGroups,
   formatChapterOrdinal,
   formatLibraryProgress,
+  formatLibraryProgressTime,
   hasFailedChapters,
+  libraryReadChapterOrdinal,
   isDownloadBook,
   isLibraryFindShortcut,
   libraryCoverFileName,
@@ -169,20 +171,44 @@ describe('library check-update card helpers', () => {
   it('shows 第 x 章 instead of a raw chapterId', () => {
     expect(formatChapterOrdinal('c0005')).toBe('第 5 章')
     expect(formatChapterOrdinal('c0005', 5)).toBe('第 5 章')
+  })
+
+  it('shows 已读 x / 共 y 章 from catalog ordinal and chapterCount', () => {
+    const unread = {
+      id: 'd_1',
+      title: '测',
+      author: '甲',
+      tags: [] as string[],
+      importType: 'download' as const,
+      status: 'partial' as const,
+      chapterCount: 10,
+      readyCount: 6,
+      progress: null,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+    expect(libraryReadChapterOrdinal(unread)).toBe(0)
+    expect(formatLibraryProgress(unread)).toBe('已读 0 / 共 10 章')
+    expect(formatLibraryProgressTime(unread)).toBe('未读')
+    const reading = {
+      ...unread,
+      progress: { chapterId: 'c0003', scrollRatio: 0.42, updatedAt: '2026-01-01T00:00:00.000Z' },
+    }
+    expect(libraryReadChapterOrdinal(reading)).toBe(3)
+    expect(formatLibraryProgress(reading)).toBe('已读 3 / 共 10 章')
+    expect(formatLibraryProgressTime(reading)).toBe(
+      new Date('2026-01-01T00:00:00.000Z').toLocaleString('zh-CN'),
+    )
     expect(
       formatLibraryProgress({
-        id: 'd_1',
-        title: '测',
-        author: '甲',
-        tags: [],
-        importType: 'download',
-        status: 'partial',
-        chapterCount: 10,
-        readyCount: 6,
-        progress: { chapterId: 'c0003', scrollRatio: 0.42, updatedAt: '2026-01-01T00:00:00.000Z' },
-        updatedAt: '2026-01-01T00:00:00.000Z',
+        ...unread,
+        progress: { chapterId: 'unknown', scrollRatio: 0, updatedAt: 'not-a-date' },
       }),
-    ).toBe('第 3 章 · 42% · 6/10 章')
+    ).toBe('已读 0 / 共 10 章')
+    expect(
+      formatLibraryProgressTime({
+        progress: { chapterId: 'c0001', scrollRatio: 0, updatedAt: 'not-a-date' },
+      }),
+    ).toBe('not-a-date')
   })
 
   it('filters title/author/tags/status case-insensitively and sorts locally', () => {

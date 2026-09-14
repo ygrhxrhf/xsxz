@@ -15,6 +15,7 @@ import {
   findLibraryDuplicateGroups,
   formatChapterOrdinal,
   formatLibraryProgress,
+  formatLibraryProgressTime,
   isLibraryFindShortcut,
   libraryCoverHues,
   libraryCoverSrc,
@@ -513,6 +514,10 @@ function fmtProgress(b: BookListItem): string {
   return formatLibraryProgress(b)
 }
 
+function fmtProgressTime(b: BookListItem): string {
+  return formatLibraryProgressTime(b)
+}
+
 watch(
   () => props.active,
   (active) => {
@@ -693,6 +698,7 @@ onUnmounted(() => {
             </n-tag>
           </div>
           <div class="book-progress" :title="fmtProgress(b)">{{ fmtProgress(b) }}</div>
+          <div class="book-progress-time" :title="fmtProgressTime(b)">{{ fmtProgressTime(b) }}</div>
           <div
             v-if="cardTaskLabel(b)"
             class="check-msg"
@@ -1033,6 +1039,7 @@ onUnmounted(() => {
 
 .book-author,
 .book-progress,
+.book-progress-time,
 .check-msg {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1053,10 +1060,15 @@ onUnmounted(() => {
   margin-top: var(--space-2);
 }
 
-.book-progress {
+.book-progress,
+.book-progress-time {
   margin-top: var(--space-2);
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.book-progress-time {
+  margin-top: var(--space-1);
 }
 
 .check-msg {
