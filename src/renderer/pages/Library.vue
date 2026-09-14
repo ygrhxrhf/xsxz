@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, useMessage } from 'naive-ui'
+import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, NForm, NFormItem, NDynamicTags, useMessage } from 'naive-ui'
 import type { DropdownOption, InputInst } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, TrashItem } from '@shared/types'
@@ -19,6 +19,7 @@ import {
   libraryCoverText,
   libraryFailureLabel,
   libraryMenuEntries,
+  normalizeEditTags,
   sortLibraryBooks,
   type LibraryMenuKey,
   type LibrarySortKey,
@@ -56,6 +57,12 @@ const recapBook = ref<BookListItem | null>(null)
 const recapText = ref('')
 const recapJobId = ref('')
 const recapStopping = ref(false)
+const editOpen = ref(false)
+const editSaving = ref(false)
+const editBookId = ref('')
+const editTitle = ref('')
+const editAuthor = ref('')
+const editTags = ref<string[]>([])
 let unsubProgress: (() => void) | null = null
 let unsubCheckAll: (() => void) | null = null
 let unsubAiChunk: (() => void) | null = null
@@ -291,6 +298,73 @@ async function handleExport(bookId: string, format: 'txt' | 'epub') {
     else message.error(res.message || '导出失败')
   } finally {
     endTask(exportingIds, bookId)
+  }
+}
+
+function openEdit(book: BookListItem) {
+  if (editSaving.value) return
+  editBookId.value = book.id
+  editTitle.value = book.title
+  editAuthor.value = book.author || ''
+  editTags.value = normalizeEditTags(book.tags || [])
+  editOpen.value = true
+}
+
+function closeEdit() {
+  if (editSaving.value) return
+  editOpen.value = false
+  editBookId.value = ''
+}
+
+function onEditShow(show: boolean) {
+  if (show) return
+  if (editSaving.value) {
+    editOpen.value = true
+    return
+  }
+  closeEdit()
+}
+
+function onEditTagsUpdate(next: string[]) {
+  editTags.value = normalizeEditTags(next)
+}
+
+function onTagInputKeydown(e: KeyboardEvent) {
+  if (e.key !== ',' && e.key !== '，') return
+  e.preventDefault()
+  const target = e.target as HTMLInputElement | null
+  const draft = target?.value || ''
+  editTags.value = normalizeEditTags([...editTags.value, draft])
+  if (target) target.value = ''
+}
+
+async function saveEdit() {
+  if (editSaving.value || !editBookId.value) return
+  const title = editTitle.value.trim()
+  if (!title) {
+    message.error('书名不能为空')
+    return
+  }
+  editSaving.value = true
+  try {
+    const res = await window.api.library.updateMeta({
+      bookId: editBookId.value,
+      title,
+      author: editAuthor.value.trim(),
+      tags: normalizeEditTags(editTags.value),
+    })
+    if (res && 'ok' in res && res.ok) {
+      message.success('已保存')
+      editOpen.value = false
+      editBookId.value = ''
+      await refresh()
+    } else {
+      message.error('保存失败，已保留原来的信息')
+    }
+  } catch {
+    message.error('保存失败，已保留原来的信息')
+  } finally {
+    editSaving.value = false
   }
 }
 
@@ -572,6 +646,7 @@ onUnmounted(() => {
             {{ cardTaskLabel(b) }}
           </div>
         </button>
+        <n-button class="card-edit" size="small" @click="openEdit(b)">编辑信息</n-button>
         <n-dropdown
           trigger="click"
           :options="cardMenuOptions(b)"
@@ -583,6 +658,41 @@ onUnmounted(() => {
         </n-dropdown>
       </n-card>
     </div>
+    <n-modal
+      :show="editOpen"
+      preset="card"
+      title="编辑信息"
+      style="width:440px"
+      :mask-closable="!editSaving"
+      :closable="!editSaving"
+      @update:show="onEditShow"
+    >
+      <n-form label-placement="top">
+        <n-form-item label="书名">
+          <n-input v-model:value="editTitle" :disabled="editSaving" />
+        </n-form-item>
+        <n-form-item label="作者">
+          <n-input v-model:value="editAuthor" :disabled="editSaving" />
+        </n-form-item>
+        <n-form-item label="标签">
+          <n-dynamic-tags
+            :value="editTags"
+            :disabled="editSaving"
+            :input-props="{ onKeydown: onTagInputKeydown }"
+            @update:value="onEditTagsUpdate"
+          />
+        </n-form-item>
+        <n-form-item>
+          <n-button disabled>选择封面</n-button>
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <n-space justify="end">
+          <n-button :disabled="editSaving" @click="closeEdit">取消</n-button>
+          <n-button type="primary" :loading="editSaving" @click="saveEdit">保存</n-button>
+        </n-space>
+      </template>
+    </n-modal>
     <n-modal
       :show="Boolean(deleteConfirmBook)"
       preset="dialog"
@@ -869,6 +979,13 @@ onUnmounted(() => {
 
 .check-msg.error {
   color: var(--error);
+}
+
+.card-edit {
+  align-self: flex-start;
+  margin-top: var(--space-3);
+  min-height: 32px;
+  border-radius: var(--radius-control);
 }
 
 .card-more {

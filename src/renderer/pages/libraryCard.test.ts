@@ -16,6 +16,7 @@ import {
   libraryCoverText,
   libraryFailureLabel,
   libraryMenuEntries,
+  normalizeEditTags,
   sortLibraryBooks,
 } from './libraryCard'
 import { failAdvice, filterCatalogChapters, readerProgressLabel, remainingChapterCount } from './readerHelpers'
@@ -208,6 +209,17 @@ describe('library check-update card helpers', () => {
         { tags: ['都市', '穿越', 'XUANHUAN'] },
       ]),
     ).toEqual(['XuanHuan', '穿越', '都市'])
+  })
+
+  it('normalizes edit tags by comma/trim/empty-drop/same-book dedupe', () => {
+    expect(normalizeEditTags([])).toEqual([])
+    expect(normalizeEditTags(['  ', '', '  ,  ， '])).toEqual([])
+    expect(normalizeEditTags([' 玄幻 ', 'XuanHuan,xuanhuan， 穿越 ', '穿越'])).toEqual([
+      '玄幻',
+      'XuanHuan',
+      '穿越',
+    ])
+    expect(normalizeEditTags(['都市, 都市', '都市'])).toEqual(['都市'])
   })
 
   it('treats Ctrl+F and Meta+F without Shift as the library find shortcut', () => {

@@ -145,6 +145,23 @@ export function collectLibraryTags(books: Array<Pick<BookListItem, 'tags'>>): st
   return tags
 }
 
+/** 编辑信息：按逗号/回车拆分，trim 丢空串，同书大小写不敏感去重并保留先出现写法。 */
+export function normalizeEditTags(tags: string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const raw of tags) {
+    for (const part of String(raw).split(/[,，]/)) {
+      const tag = part.trim()
+      if (!tag) continue
+      const key = tag.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      result.push(tag)
+    }
+  }
+  return result
+}
+
 export function filterLibraryBooks(
   books: BookListItem[],
   opts: { q?: string; status?: LibraryStatusFilter; selectedTag?: string },
