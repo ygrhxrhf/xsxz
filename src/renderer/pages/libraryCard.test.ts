@@ -11,10 +11,13 @@ import {
   hasFailedChapters,
   isDownloadBook,
   isLibraryFindShortcut,
+  libraryCoverFileName,
   libraryCoverHue,
   libraryCoverHues,
+  libraryCoverSrc,
   libraryCoverText,
   libraryFailureLabel,
+  mapLibraryCoverError,
   libraryMenuEntries,
   normalizeEditTags,
   sortLibraryBooks,
@@ -61,6 +64,30 @@ describe('library cover helpers', () => {
   it('creates an explicit failure line only for books with missing ready chapters', () => {
     expect(libraryFailureLabel({ status: 'partial', readyCount: 7, chapterCount: 10 })).toBe('3 章下载失败')
     expect(libraryFailureLabel({ status: 'ready', readyCount: 10, chapterCount: 10 })).toBe('')
+  })
+
+  it('builds a file:// cover src and maps setCover errors', () => {
+    expect(libraryCoverFileName('cover.jpg')).toBe('cover.jpg')
+    expect(libraryCoverFileName('cover.PNG')).toBe('cover.png')
+    expect(libraryCoverFileName('../cover.jpg')).toBe(null)
+    expect(libraryCoverFileName('cover.gif')).toBe(null)
+    expect(libraryCoverSrc('D:\\spbf\\library', 'd_abc', 'cover.jpg')).toBe(
+      'file:///D:/spbf/library/d_abc/cover.jpg',
+    )
+    expect(libraryCoverSrc('/tmp/library', 'd_abc', 'cover.webp')).toBe(
+      'file:///tmp/library/d_abc/cover.webp',
+    )
+    expect(libraryCoverSrc('D:\\spbf\\My Library', 'd_abc', 'cover.png')).toBe(
+      'file:///D:/spbf/My%20Library/d_abc/cover.png',
+    )
+    expect(libraryCoverSrc('/tmp/library', '../escape', 'cover.jpg')).toBe(null)
+    expect(libraryCoverSrc('/tmp/library', 'd_abc', 'cover.jpeg')).toBe(null)
+    expect(mapLibraryCoverError('封面超过 8MB')).toBe('封面不能超过 8MB')
+    expect(mapLibraryCoverError('封面不能超过 8MB')).toBe('封面不能超过 8MB')
+    expect(mapLibraryCoverError('仅支持 jpg / png / webp 封面')).toBe('仅支持 jpg、png、webp')
+    expect(mapLibraryCoverError('仅支持 jpg、png、webp')).toBe('仅支持 jpg、png、webp')
+    expect(mapLibraryCoverError('书不存在')).toBe('保存失败，已保留原来的信息')
+    expect(mapLibraryCoverError('')).toBe('保存失败，已保留原来的信息')
   })
 })
 

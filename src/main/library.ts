@@ -949,7 +949,7 @@ export async function setCover(payload: {
   const sourcePath = typeof payload.sourcePath === 'string' ? payload.sourcePath.trim() : ''
   if (!sourcePath) return { ok: false, message: '封面文件不存在' }
   const destName = coverDestName(sourcePath)
-  if (!destName) return { ok: false, message: '仅支持 jpg / png / webp 封面' }
+  if (!destName) return { ok: false, message: '仅支持 jpg、png、webp' }
   let sourceStat: Awaited<ReturnType<typeof stat>>
   try {
     sourceStat = await stat(sourcePath)
@@ -957,7 +957,7 @@ export async function setCover(payload: {
     return { ok: false, message: '封面文件不存在' }
   }
   if (!sourceStat.isFile()) return { ok: false, message: '封面文件不存在' }
-  if (sourceStat.size > COVER_MAX_BYTES) return { ok: false, message: '封面超过 8MB' }
+  if (sourceStat.size > COVER_MAX_BYTES) return { ok: false, message: '封面不能超过 8MB' }
   const bookId = payload.bookId
   if (!(await bookExists(bookId))) return { ok: false, message: '书不存在' }
   return withBookLock(bookId, async () => {

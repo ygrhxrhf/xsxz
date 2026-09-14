@@ -185,3 +185,49 @@ export function sortLibraryBooks(books: BookListItem[], key: LibrarySortKey = 'u
   else next.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
   return next
 }
+
+const COVER_FILE_RE = /^cover\.(jpg|png|webp)$/i
+
+export function libraryCoverFileName(coverPath?: string | null): string | null {
+  if (typeof coverPath !== 'string') return null
+  const name = coverPath.trim().replace(/\\/g, '/')
+  if (!name || name.includes('/') || name.includes('..')) return null
+  if (!COVER_FILE_RE.test(name)) return null
+  return name.toLowerCase()
+}
+
+function encodeFileUrlPath(unixPath: string): string {
+  return unixPath
+    .split('/')
+    .map((segment) => {
+      if (segment === '') return ''
+      if (/^[A-Za-z]:$/.test(segment)) return segment
+      return encodeURIComponent(segment)
+    })
+    .join('/')
+}
+
+export function libraryCoverSrc(
+  libraryPath: string,
+  bookId: string,
+  coverPath?: string | null,
+): string | null {
+  const file = libraryCoverFileName(coverPath)
+  const root = (libraryPath || '').trim()
+  const id = (bookId || '').trim()
+  if (!file || !root || !id) return null
+  if (id.includes('..') || /[\\/]/.test(id)) return null
+  const unixRoot = root.replace(/\\/g, '/').replace(/\/+$/g, '')
+  const abs = `${unixRoot}/${id}/${file}`
+  const withLead = abs.startsWith('/') ? abs : `/${abs}`
+  return `file://${encodeFileUrlPath(withLead)}`
+}
+
+export function mapLibraryCoverError(message?: string | null): string {
+  const text = (message || '').toLowerCase()
+  if (text.includes('8mb') || text.includes('超过')) return '封面不能超过 8MB'
+  if (text.includes('jpg') || text.includes('png') || text.includes('webp') || text.includes('仅支持')) {
+    return '仅支持 jpg、png、webp'
+  }
+  return '保存失败，已保留原来的信息'
+}

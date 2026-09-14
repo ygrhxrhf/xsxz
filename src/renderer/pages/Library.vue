@@ -16,9 +16,11 @@ import {
   formatLibraryProgress,
   isLibraryFindShortcut,
   libraryCoverHues,
+  libraryCoverSrc,
   libraryCoverText,
   libraryFailureLabel,
   libraryMenuEntries,
+  mapLibraryCoverError,
   normalizeEditTags,
   sortLibraryBooks,
   type LibraryMenuKey,
@@ -59,10 +61,12 @@ const recapJobId = ref('')
 const recapStopping = ref(false)
 const editOpen = ref(false)
 const editSaving = ref(false)
+const editCoverSaving = ref(false)
 const editBookId = ref('')
 const editTitle = ref('')
 const editAuthor = ref('')
 const editTags = ref<string[]>([])
+const libraryPath = ref('')
 let unsubProgress: (() => void) | null = null
 let unsubCheckAll: (() => void) | null = null
 let unsubAiChunk: (() => void) | null = null
@@ -104,7 +108,17 @@ async function refresh() {
   loading.value = refreshTracker.loading
   try {
     const res = await window.api.library.list()
-    if (refreshTracker.isLatest(requestId)) books.value = res.books
+    let nextLibraryPath = libraryPath.value
+    try {
+      const settings = await window.api.settings.get()
+      nextLibraryPath = settings.libraryPath
+    } catch {
+      /* keep previous libraryPath */
+    }
+    if (refreshTracker.isLatest(requestId)) {
+      books.value = res.books
+      libraryPath.value = nextLibraryPath
+    }
   } finally {
     refreshTracker.end()
     loading.value = refreshTracker.loading
@@ -302,7 +316,7 @@ async function handleExport(bookId: string, format: 'txt' | 'epub') {
 }
 
 function openEdit(book: BookListItem) {
-  if (editSaving.value) return
+  if (editSaving.value || editCoverSaving.value) return
   editBookId.value = book.id
   editTitle.value = book.title
   editAuthor.value = book.author || ''
@@ -311,14 +325,14 @@ function openEdit(book: BookListItem) {
 }
 
 function closeEdit() {
-  if (editSaving.value) return
+  if (editSaving.value || editCoverSaving.value) return
   editOpen.value = false
   editBookId.value = ''
 }
 
 function onEditShow(show: boolean) {
   if (show) return
-  if (editSaving.value) {
+  if (editSaving.value || editCoverSaving.value) {
     editOpen.value = true
     return
   }
@@ -338,8 +352,37 @@ function onTagInputKeydown(e: KeyboardEvent) {
   if (target) target.value = ''
 }
 
+async function pickCover() {
+  if (editSaving.value || editCoverSaving.value || !editBookId.value) return
+  let sourcePath: string | null
+  try {
+    sourcePath = await window.api.library.pickCoverFile()
+  } catch {
+    message.error('保存失败，已保留原来的信息')
+    return
+  }
+  if (sourcePath == null) return
+  editCoverSaving.value = true
+  try {
+    const res = await window.api.library.setCover({
+      bookId: editBookId.value,
+      sourcePath,
+    })
+    if (res && 'ok' in res && res.ok) {
+      message.success('已保存')
+      await refresh()
+    } else {
+      message.error(mapLibraryCoverError(res && 'message' in res ? res.message : ''))
+    }
+  } catch {
+    message.error('保存失败，已保留原来的信息')
+  } finally {
+    editCoverSaving.value = false
+  }
+}
+
 async function saveEdit() {
-  if (editSaving.value || !editBookId.value) return
+  if (editSaving.value || editCoverSaving.value || !editBookId.value) return
   const title = editTitle.value.trim()
   if (!title) {
     message.error('书名不能为空')
@@ -380,6 +423,10 @@ function coverStyle(id: string): Record<string, string> {
     '--cover-hue': String(hues.primary),
     '--cover-hue-secondary': String(hues.secondary),
   }
+}
+
+function coverImgSrc(book: BookListItem): string | null {
+  return libraryCoverSrc(libraryPath.value, book.id, book.coverPath)
 }
 
 function isSelectedLibraryTag(tag: string): boolean {
@@ -627,7 +674,8 @@ onUnmounted(() => {
       <n-card v-for="b in visibleBooks" :key="b.id" hoverable class="book-card">
         <button class="book-open-area" type="button" :aria-label="`打开《${b.title}》`" @click="emit('open-book', b.id)">
           <div class="book-cover" :style="coverStyle(b.id)" aria-hidden="true">
-            <span>{{ libraryCoverText(b.title) }}</span>
+            <img v-if="b.coverPath" class="book-cover-img" :src="coverImgSrc(b) || undefined" alt="" />
+            <span v-else>{{ libraryCoverText(b.title) }}</span>
           </div>
           <div class="book-title" :title="b.title">{{ b.title }}</div>
           <div v-if="b.author" class="book-author" :title="b.author">{{ b.author }}</div>
@@ -663,33 +711,33 @@ onUnmounted(() => {
       preset="card"
       title="编辑信息"
       style="width:440px"
-      :mask-closable="!editSaving"
-      :closable="!editSaving"
+      :mask-closable="!editSaving && !editCoverSaving"
+      :closable="!editSaving && !editCoverSaving"
       @update:show="onEditShow"
     >
       <n-form label-placement="top">
         <n-form-item label="书名">
-          <n-input v-model:value="editTitle" :disabled="editSaving" />
+          <n-input v-model:value="editTitle" :disabled="editSaving || editCoverSaving" />
         </n-form-item>
         <n-form-item label="作者">
-          <n-input v-model:value="editAuthor" :disabled="editSaving" />
+          <n-input v-model:value="editAuthor" :disabled="editSaving || editCoverSaving" />
         </n-form-item>
         <n-form-item label="标签">
           <n-dynamic-tags
             :value="editTags"
-            :disabled="editSaving"
+            :disabled="editSaving || editCoverSaving"
             :input-props="{ onKeydown: onTagInputKeydown }"
             @update:value="onEditTagsUpdate"
           />
         </n-form-item>
         <n-form-item>
-          <n-button disabled>选择封面</n-button>
+          <n-button :disabled="editSaving || editCoverSaving" :loading="editCoverSaving" @click="pickCover">选择封面</n-button>
         </n-form-item>
       </n-form>
       <template #footer>
         <n-space justify="end">
-          <n-button :disabled="editSaving" @click="closeEdit">取消</n-button>
-          <n-button type="primary" :loading="editSaving" @click="saveEdit">保存</n-button>
+          <n-button :disabled="editSaving || editCoverSaving" @click="closeEdit">取消</n-button>
+          <n-button type="primary" :loading="editSaving" :disabled="editCoverSaving" @click="saveEdit">保存</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -900,6 +948,20 @@ onUnmounted(() => {
   font-weight: 800;
   letter-spacing: 1px;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
+.book-cover-img {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.book-cover:has(.book-cover-img)::before,
+.book-cover:has(.book-cover-img)::after {
+  display: none;
 }
 
 .book-cover::before {

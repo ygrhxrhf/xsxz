@@ -1024,8 +1024,8 @@ describe('updateMeta + setCover (U1.2)', () => {
     expect(third).toEqual({ ok: true, coverPath: 'cover.webp' })
     expect((await readdir(join(dir, 'd_meta'))).filter((name) => name.startsWith('cover.'))).toEqual(['cover.webp'])
 
-    expect(await setCover({ bookId: 'd_meta', sourcePath: gif })).toMatchObject({ ok: false })
-    expect(await setCover({ bookId: 'd_meta', sourcePath: huge })).toEqual({ ok: false, message: '封面超过 8MB' })
+    expect(await setCover({ bookId: 'd_meta', sourcePath: gif })).toEqual({ ok: false, message: '仅支持 jpg、png、webp' })
+    expect(await setCover({ bookId: 'd_meta', sourcePath: huge })).toEqual({ ok: false, message: '封面不能超过 8MB' })
     expect(await setCover({ bookId: 'd_nope', sourcePath: png })).toEqual({ ok: false, message: '书不存在' })
     expect(await setCover({ bookId: 'd_meta', sourcePath: join(srcDir, 'missing.jpg') })).toMatchObject({ ok: false })
 
