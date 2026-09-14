@@ -6,6 +6,7 @@ import {
   createLibraryRefreshTracker,
   collectLibraryTags,
   filterLibraryBooks,
+  findLibraryDuplicateGroups,
   formatChapterOrdinal,
   formatLibraryProgress,
   hasFailedChapters,
@@ -16,6 +17,7 @@ import {
   libraryCoverHues,
   libraryCoverSrc,
   libraryCoverText,
+  libraryDuplicateKey,
   libraryFailureLabel,
   mapLibraryCoverError,
   libraryMenuEntries,
@@ -247,6 +249,73 @@ describe('library check-update card helpers', () => {
       '穿越',
     ])
     expect(normalizeEditTags(['都市, 都市', '都市'])).toEqual(['都市'])
+  })
+
+  it('groups books whose trimmed title and author match case-insensitively', () => {
+    const book = (
+      id: string,
+      title: string,
+      author: string,
+      updatedAt = '2026-01-01T00:00:00.000Z',
+    ) => ({
+      id,
+      title,
+      author,
+      tags: [] as string[],
+      importType: 'txt' as const,
+      status: 'ready' as const,
+      chapterCount: 1,
+      readyCount: 1,
+      progress: null,
+      updatedAt,
+    })
+    expect(findLibraryDuplicateGroups([])).toEqual([])
+    expect(findLibraryDuplicateGroups([book('1', '万古神帝', '飞天鱼')])).toEqual([])
+    expect(
+      findLibraryDuplicateGroups([
+        book('1', '万古神帝', '飞天鱼'),
+        book('2', '导入书', '乙'),
+      ]),
+    ).toEqual([])
+    expect(
+      findLibraryDuplicateGroups([
+        book('1', '万古神帝', '飞天鱼'),
+        book('2', '万古神帝', '乙'),
+      ]),
+    ).toEqual([])
+    expect(
+      findLibraryDuplicateGroups([
+        book('1', '甲', '同作者'),
+        book('2', '乙', '同作者'),
+      ]),
+    ).toEqual([])
+    const pair = findLibraryDuplicateGroups([
+      book('keep', '  万古神帝  ', '飞天鱼'),
+      book('dup', '万古神帝', '  飞天鱼  '),
+    ])
+    expect(pair).toHaveLength(1)
+    expect(pair[0].books.map((b) => b.id)).toEqual(['keep', 'dup'])
+    expect(pair[0].title).toBe('  万古神帝  ')
+    expect(pair[0].author).toBe('飞天鱼')
+    expect(libraryDuplicateKey({ title: '  Foo ', author: ' Bar ' })).toBe(
+      libraryDuplicateKey({ title: 'foo', author: 'bar' }),
+    )
+    const mixed = findLibraryDuplicateGroups([
+      book('a', 'Alpha', 'Ann'),
+      book('b', 'Beta', ''),
+      book('c', 'ALPHA', 'ANN'),
+      book('d', 'Beta', '  '),
+      book('e', 'Gamma', 'G'),
+      book('f', 'alpha', 'ann'),
+    ])
+    expect(mixed.map((g) => g.books.map((b) => b.id))).toEqual([
+      ['a', 'c', 'f'],
+      ['b', 'd'],
+    ])
+    expect(mixed[0].title).toBe('Alpha')
+    expect(mixed[0].author).toBe('Ann')
+    expect(mixed[1].title).toBe('Beta')
+    expect(mixed[1].author).toBe('')
   })
 
   it('treats Ctrl+F and Meta+F without Shift as the library find shortcut', () => {

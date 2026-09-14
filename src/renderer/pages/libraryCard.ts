@@ -231,3 +231,37 @@ export function mapLibraryCoverError(message?: string | null): string {
   }
   return '保存失败，已保留原来的信息'
 }
+
+export type LibraryDuplicateGroup = {
+  key: string
+  title: string
+  author: string
+  books: BookListItem[]
+}
+
+/** 书名与作者均 trim 后大小写不敏感比较用的分组键。 */
+export function libraryDuplicateKey(book: Pick<BookListItem, 'title' | 'author'>): string {
+  return `${book.title.trim().toLowerCase()}\0${(book.author || '').trim().toLowerCase()}`
+}
+
+/** 书名+作者完全相同（trim、大小写不敏感）且 ≥2 本的组；组序与组内书序保持书库原顺序，展示文案取先出现写法。 */
+export function findLibraryDuplicateGroups(books: BookListItem[]): LibraryDuplicateGroup[] {
+  const buckets = new Map<string, BookListItem[]>()
+  for (const book of books) {
+    const key = libraryDuplicateKey(book)
+    const list = buckets.get(key)
+    if (list) list.push(book)
+    else buckets.set(key, [book])
+  }
+  const groups: LibraryDuplicateGroup[] = []
+  for (const [key, list] of buckets) {
+    if (list.length < 2) continue
+    groups.push({
+      key,
+      title: list[0].title,
+      author: list[0].author || '',
+      books: list,
+    })
+  }
+  return groups
+}

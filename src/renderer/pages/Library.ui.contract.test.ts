@@ -159,4 +159,27 @@ describe('Library comfortable card contract', () => {
     expect(closeBlock).not.toContain('updateMeta')
     expect(closeBlock).toContain('editOpen.value = false')
   })
+
+  it('shows 可能重复 n 组 in the header and opens a list-only duplicate modal', async () => {
+    const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
+    expect(source).toContain('findLibraryDuplicateGroups')
+    expect(source).toContain('const duplicateGroups = computed(() => findLibraryDuplicateGroups(books.value))')
+    expect(source).toContain('v-if="duplicateGroups.length"')
+    expect(source).toContain('@click="duplicateOpen = true">可能重复 {{ duplicateGroups.length }} 组</n-button>')
+    expect(source).toContain('title="可能重复的书"')
+    expect(source).toContain('v-for="group in duplicateGroups"')
+    expect(source).toContain('{{ group.title }}{{ group.author ? ` · ${group.author}` : \'\' }}')
+    expect(source).toContain('{{ book.title }}{{ book.author ? ` · ${book.author}` : \'\' }}')
+    expect(source).toContain('@click="openDuplicateBook(book.id)">打开</n-button>')
+    expect(source).toContain("emit('open-book', bookId)")
+    expect(source).not.toContain('v-html')
+    const modal = source.slice(
+      source.indexOf('title="可能重复的书"'),
+      source.indexOf('title="回收站"'),
+    )
+    expect(modal).toContain('打开')
+    expect(modal).not.toContain('合并')
+    expect(modal).not.toContain('删除')
+    expect(modal).not.toContain('library.delete')
+  })
 })

@@ -12,6 +12,7 @@ import {
   collectLibraryTags,
   createLibraryRefreshTracker,
   filterLibraryBooks,
+  findLibraryDuplicateGroups,
   formatChapterOrdinal,
   formatLibraryProgress,
   isLibraryFindShortcut,
@@ -85,6 +86,8 @@ const visibleBooks = computed(() =>
   ),
 )
 const libraryTags = computed(() => collectLibraryTags(books.value))
+const duplicateGroups = computed(() => findLibraryDuplicateGroups(books.value))
+const duplicateOpen = ref(false)
 const initialLoading = computed(() => loading.value && books.value.length === 0)
 const hasActiveFilter = computed(
   () => Boolean(query.value.trim()) || statusFilter.value !== 'all' || Boolean(selectedTag.value),
@@ -538,6 +541,10 @@ function openRecapBook() {
   if (recapBook.value) emit('open-book', recapBook.value.id)
 }
 
+function openDuplicateBook(bookId: string) {
+  emit('open-book', bookId)
+}
+
 async function refreshRecap() {
   const item = recapBook.value
   if (!item?.progress?.chapterId || aiSaveRecoveryActive.value) return
@@ -623,6 +630,7 @@ onUnmounted(() => {
         <span v-if="checkAllStatus" class="checkall-status">{{ checkAllStatus }}</span>
         <n-button v-if="checkAllLoading" size="small" @click="handleCancelCheckAll">停止</n-button>
         <n-button v-else :disabled="!books.length" @click="handleCheckAll">全部检查更新</n-button>
+        <n-button v-if="duplicateGroups.length" @click="duplicateOpen = true">可能重复 {{ duplicateGroups.length }} 组</n-button>
         <n-button @click="openTrash">回收站</n-button>
         <n-button type="primary" @click="handleImport">导入 txt / epub</n-button>
       </div>
@@ -787,6 +795,25 @@ onUnmounted(() => {
           >
             重试失败章
           </n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <n-modal v-model:show="duplicateOpen" preset="card" title="可能重复的书" style="width:520px">
+      <div class="fail-list">
+        <div v-for="group in duplicateGroups" :key="group.key" class="dup-group">
+          <div class="fail-title">{{ group.title }}{{ group.author ? ` · ${group.author}` : '' }}</div>
+          <div v-for="book in group.books" :key="book.id" class="fail-row dup-row">
+            <div>
+              <div class="fail-title">{{ book.title }}{{ book.author ? ` · ${book.author}` : '' }}</div>
+            </div>
+            <n-button size="tiny" @click="openDuplicateBook(book.id)">打开</n-button>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button size="small" @click="duplicateOpen = false">关闭</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -1141,5 +1168,16 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--danger);
   margin-top: 4px;
+}
+
+.dup-group {
+  padding-bottom: 8px;
+}
+
+.dup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 </style>
