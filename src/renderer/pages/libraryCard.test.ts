@@ -9,6 +9,7 @@ import {
   formatLibraryProgress,
   hasFailedChapters,
   isDownloadBook,
+  isLibraryFindShortcut,
   libraryCoverHue,
   libraryCoverHues,
   libraryCoverText,
@@ -153,13 +154,13 @@ describe('library check-update card helpers', () => {
     ).toBe('第 3 章 · 42% · 6/10 章')
   })
 
-  it('filters title/author/status and sorts locally', () => {
+  it('filters title/author/tags/status case-insensitively and sorts locally', () => {
     const books = [
       {
         id: '1',
         title: '万古神帝',
         author: '飞天鱼',
-        tags: [],
+        tags: ['XuanHuan', '穿越'],
         importType: 'download' as const,
         status: 'ready' as const,
         chapterCount: 2,
@@ -171,7 +172,7 @@ describe('library check-update card helpers', () => {
         id: '2',
         title: '导入书',
         author: '乙',
-        tags: [],
+        tags: ['都市'],
         importType: 'txt' as const,
         status: 'partial' as const,
         chapterCount: 3,
@@ -182,8 +183,21 @@ describe('library check-update card helpers', () => {
     ]
     expect(filterLibraryBooks(books, { q: '万古' }).map((b) => b.id)).toEqual(['1'])
     expect(filterLibraryBooks(books, { q: '乙' }).map((b) => b.id)).toEqual(['2'])
+    expect(filterLibraryBooks(books, { q: 'xuanhuan' }).map((b) => b.id)).toEqual(['1'])
+    expect(filterLibraryBooks(books, { q: '  穿越  ' }).map((b) => b.id)).toEqual(['1'])
+    expect(filterLibraryBooks(books, { q: '都市', status: 'ready' }).map((b) => b.id)).toEqual([])
+    expect(filterLibraryBooks(books, { q: '', status: 'partial' }).map((b) => b.id)).toEqual(['2'])
+    expect(filterLibraryBooks(books, { q: '   ' }).map((b) => b.id)).toEqual(['1', '2'])
     expect(filterLibraryBooks(books, { status: 'partial' }).map((b) => b.id)).toEqual(['2'])
     expect(sortLibraryBooks(books, 'title').map((b) => b.id)).toEqual(['2', '1'])
+  })
+
+  it('treats Ctrl+F and Meta+F without Shift as the library find shortcut', () => {
+    expect(isLibraryFindShortcut({ key: 'f', ctrlKey: true, metaKey: false })).toBe(true)
+    expect(isLibraryFindShortcut({ key: 'F', ctrlKey: false, metaKey: true, shiftKey: false })).toBe(true)
+    expect(isLibraryFindShortcut({ key: 'f', ctrlKey: true, metaKey: false, shiftKey: true })).toBe(false)
+    expect(isLibraryFindShortcut({ key: 'f', ctrlKey: false, metaKey: false })).toBe(false)
+    expect(isLibraryFindShortcut({ key: 'g', ctrlKey: true, metaKey: false })).toBe(false)
   })
 
   it('sends NeedLogin / Intercepted back to the browse page', () => {

@@ -78,4 +78,16 @@ describe('Library comfortable card contract', () => {
     expect(source).not.toContain('<n-popconfirm\n          :show="deleteConfirmId === b.id"')
     expect(source).not.toContain('legacy-card-actions')
   })
+
+  it('matches search q against title, author, and tags, and focuses find with Ctrl/Meta+F', async () => {
+    const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
+    expect(source).toContain('placeholder="按书名、作者或标签筛选"')
+    expect(source).toContain('ref="searchInputRef"')
+    expect(source).toContain('window.addEventListener(\'keydown\', onLibraryKeydown)')
+    expect(source).toContain('window.removeEventListener(\'keydown\', onLibraryKeydown)')
+    expect(source).toContain('if (!props.active) return')
+    expect(source).toContain('if (!isLibraryFindShortcut(e)) return')
+    expect(source).toContain('e.preventDefault()')
+    expect(source).toContain('searchInputRef.value?.focus()')
+  })
 })

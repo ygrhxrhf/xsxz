@@ -120,6 +120,15 @@ export function checkUpdateNeedsBrowse(code?: FailCode | string): boolean {
   return code === 'NeedLogin' || code === 'Intercepted'
 }
 
+export function isLibraryFindShortcut(e: {
+  key: string
+  ctrlKey: boolean
+  metaKey: boolean
+  shiftKey?: boolean
+}): boolean {
+  return (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f'
+}
+
 export function filterLibraryBooks(
   books: BookListItem[],
   opts: { q?: string; status?: LibraryStatusFilter },
@@ -129,7 +138,8 @@ export function filterLibraryBooks(
   return books.filter((b) => {
     if (status !== 'all' && b.status !== status) return false
     if (!q) return true
-    return b.title.toLowerCase().includes(q) || (b.author || '').toLowerCase().includes(q)
+    if (b.title.toLowerCase().includes(q) || (b.author || '').toLowerCase().includes(q)) return true
+    return (b.tags || []).some((tag) => tag.toLowerCase().includes(q))
   })
 }
 

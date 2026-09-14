@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, useMessage } from 'naive-ui'
-import type { DropdownOption } from 'naive-ui'
+import type { DropdownOption, InputInst } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, TrashItem } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
@@ -13,6 +13,7 @@ import {
   filterLibraryBooks,
   formatChapterOrdinal,
   formatLibraryProgress,
+  isLibraryFindShortcut,
   libraryCoverHues,
   libraryCoverText,
   libraryFailureLabel,
@@ -41,6 +42,7 @@ const deleteConfirmId = ref<string | null>(null)
 const checkMsg = ref<Record<string, string>>({})
 const checkErr = ref<Record<string, boolean>>({})
 const query = ref('')
+const searchInputRef = ref<InputInst | null>(null)
 const statusFilter = ref<LibraryStatusFilter>('all')
 const sortKey = ref<LibrarySortKey>('updated')
 const failedOpen = ref(false)
@@ -299,6 +301,17 @@ function clearFilters() {
   statusFilter.value = 'all'
 }
 
+function focusLibrarySearch() {
+  searchInputRef.value?.focus()
+}
+
+function onLibraryKeydown(e: KeyboardEvent) {
+  if (!props.active) return
+  if (!isLibraryFindShortcut(e)) return
+  e.preventDefault()
+  focusLibrarySearch()
+}
+
 function cardTaskLabel(book: BookListItem): string {
   if (hasTask(checkingIds.value, book.id)) return '正在检查更新…'
   if (hasTask(retryingIds.value, book.id)) return '正在重试失败章…'
@@ -394,6 +407,7 @@ async function refreshRecap() {
 }
 
 onMounted(() => {
+  window.addEventListener('keydown', onLibraryKeydown)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => { if (jobId === recapJobId.value) recapText.value += delta })
   unsubAiDone = window.api.ai.onDone((event) => {
     if (event.jobId !== recapJobId.value) return
@@ -444,6 +458,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', onLibraryKeydown)
   unsubProgress?.()
   unsubCheckAll?.()
   unsubAiChunk?.()
@@ -471,7 +486,7 @@ onUnmounted(() => {
       </div>
     </header>
     <div v-if="books.length" class="lib-toolbar">
-      <n-input v-model:value="query" clearable placeholder="按书名或作者筛选" style="max-width:240px" />
+      <n-input ref="searchInputRef" v-model:value="query" clearable placeholder="按书名、作者或标签筛选" style="max-width:240px" />
       <n-select v-model:value="statusFilter" :options="statusOptions" style="width:120px" />
       <n-select v-model:value="sortKey" :options="sortOptions" style="width:132px" />
     </div>
