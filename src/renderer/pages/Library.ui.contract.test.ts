@@ -24,12 +24,31 @@ describe('Library comfortable card contract', () => {
     expect(source).toContain('v-if="initialLoading"')
     expect(source).toContain('v-for="index in 6"')
     expect(source).toContain('aria-label="正在加载书库"')
-    expect(source).toContain('书库还是空的')
-    expect(source).toContain('从网页下载一本书，或导入本地 txt / epub。')
-    expect(source).toContain('去浏览找书')
-    expect(source).toContain('导入本地书')
-    expect(source).toContain('没有找到符合条件的书。')
-    expect(source).toContain('清除筛选')
+    expect(source).toContain('!books.length && !hasActiveFilter')
+    expect(source).toContain('还没有书')
+    expect(source).toContain("@click=\"emit('go-browse')\">去浏览</n-button>")
+    expect(source).toContain('!visibleBooks.length')
+    expect(source).toContain('没有匹配的书')
+    expect(source).not.toContain('书库还是空的')
+    expect(source).not.toContain('去浏览找书')
+    expect(source).not.toContain('导入本地书')
+    expect(source).not.toContain('没有找到符合条件的书。')
+    expect(source).not.toContain('清除筛选')
+    expect(source).not.toContain('v-html')
+    const emptyTrue = source.slice(
+      source.indexOf('v-else-if="!books.length && !hasActiveFilter"'),
+      source.indexOf('v-else-if="!visibleBooks.length"'),
+    )
+    expect(emptyTrue).toContain('还没有书')
+    expect(emptyTrue).toContain("@click=\"emit('go-browse')\">去浏览</n-button>")
+    expect(emptyTrue).not.toContain('没有匹配的书')
+    const emptyFiltered = source.slice(
+      source.indexOf('v-else-if="!visibleBooks.length"'),
+      source.indexOf('v-else class="book-grid"'),
+    )
+    expect(emptyFiltered).toContain('没有匹配的书')
+    expect(emptyFiltered).not.toContain('n-button')
+    expect(emptyFiltered).not.toContain('去浏览')
   })
 
   it('keeps title, author, status, progress, and running result text visible', async () => {
@@ -108,7 +127,6 @@ describe('Library comfortable card contract', () => {
     expect(source).toContain('@update:checked="toggleLibraryTag(tag)"')
     expect(source).toContain('selectedTag: selectedTag.value')
     expect(source).toContain("selectedTag.value = isSelectedLibraryTag(tag) ? '' : tag")
-    expect(source).toContain('selectedTag.value = \'\'')
     expect(source).not.toContain('v-html')
   })
 

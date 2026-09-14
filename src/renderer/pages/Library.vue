@@ -441,12 +441,6 @@ function toggleLibraryTag(tag: string) {
   selectedTag.value = isSelectedLibraryTag(tag) ? '' : tag
 }
 
-function clearFilters() {
-  query.value = ''
-  statusFilter.value = 'all'
-  selectedTag.value = ''
-}
-
 function focusLibrarySearch() {
   searchInputRef.value?.focus()
 }
@@ -669,18 +663,15 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <section v-else-if="!books.length" class="library-empty empty-state">
-      <h3>书库还是空的</h3>
-      <p>从网页下载一本书，或导入本地 txt / epub。</p>
+    <section v-else-if="!books.length && !hasActiveFilter" class="library-empty empty-state">
+      <h3>还没有书</h3>
       <div class="empty-actions">
-        <n-button type="primary" @click="emit('go-browse')">去浏览找书</n-button>
-        <n-button secondary @click="handleImport">导入本地书</n-button>
+        <n-button type="primary" @click="emit('go-browse')">去浏览</n-button>
       </div>
     </section>
 
     <section v-else-if="!visibleBooks.length" class="library-empty empty-state">
-      <p>没有找到符合条件的书。</p>
-      <n-button v-if="hasActiveFilter" @click="clearFilters">清除筛选</n-button>
+      <h3>没有匹配的书</h3>
     </section>
 
     <div v-else class="book-grid">
