@@ -42,6 +42,7 @@ function book(partial?: Partial<Book>): Book {
     id: 'd_test',
     title: '测',
     author: '',
+    tags: [],
     importType: 'download',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',

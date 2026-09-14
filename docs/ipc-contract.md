@@ -59,11 +59,16 @@
 | `library.delete` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.import` | invoke | `{ filePath: string }` | `{ ok: true; bookId: string } \| { ok: false; message: string }` |
 | `library.setProgress` | invoke | `{ bookId: string; progress: ReadingProgress }` | `{ ok: true }` |
+| `library.updateMeta` | invoke | `{ bookId: string; title: string; author: string; tags: string[] }` | `{ ok: true } \| { ok: false; message: string }` |
+| `library.setCover` | invoke | `{ bookId: string; sourcePath: string }` | `{ ok: true; coverPath: string } \| { ok: false; message: string }` |
+| `library.pickCoverFile` | invoke | 无 | `string \| null` |
 | `library.updateChapterBody` | invoke | `{ bookId: string; chapterId: string; body: string; restoreRaw?: boolean }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.export` | invoke | `{ bookId: string; format: 'txt' \| 'epub'; destDir: string }` | `{ ok: true; path: string } \| { ok: false; message: string }` |
 | `library.searchInBook` | invoke | `{ bookId: string; query: string }` | `{ ok: true; hits: BookSearchHit[] } \| { ok: false; message: string }` |
 
 `library.searchInBook` 只扫本书 `ready` 章节正文，大小写不敏感，按章节顺序返回命中（每章一条：次数、首个命中的摘录与段落下标）。纯本机操作。
+
+`Book.tags` / `BookListItem.tags` 始终是 `string[]`，缺省 `[]`。磁盘上旧书没有 `tags` 时按空数组读取，不得因此失败。`BookListItem.coverPath` 可选，有封面时给出相对书目录的路径。`library.updateMeta` 只改书名、作者和标签；`library.setCover` 用本机图片写入封面并返回 `coverPath`。`library.pickCoverFile` 打开本机选图对话框，取消时返回 `null`。
 
 `library.import` 的路径由主进程 `dialog.showOpenDialog` 选出后传入，或设置页先选文件再 invoke。只接受 `.txt` / `.epub`（大小写不敏感）；其它后缀或不带后缀返回 `{ ok: false, message }`（中文，说明不支持的类型）。不得把 `.docx` 等当 txt 硬读。
 
@@ -242,7 +247,7 @@ A1.1 只冻结以上类型、频道与白名单形状；handler 与 preload 方�
 window.api = {
   dialog: { openFile, openDirectory, openZip },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, onUrl, onState },
-  library: { list, get, readChapter, delete, import, setProgress, updateChapterBody, export, searchInBook, listTrash, restoreTrash, purgeTrash },
+  library: { list, get, readChapter, delete, import, setProgress, updateMeta, setCover, pickCoverFile, updateChapterBody, export, searchInBook, listTrash, restoreTrash, purgeTrash },
   download: { start, cancel, retryFailed, checkUpdate, checkAll, cancelCheckAll, onProgress, onCheckAllProgress },
   settings: { get, set },
   backup: { create, restore },

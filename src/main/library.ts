@@ -176,9 +176,16 @@ function applyChapterStatus(
   }
 }
 
+function normalizeTags(value: unknown): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) return []
+  return value
+}
+
 async function loadBookUnlocked(bookId: string): Promise<Book> {
   const raw = await readFile(join(bookDir(bookId), 'book.json'), 'utf-8')
-  return JSON.parse(raw)
+  const book = JSON.parse(raw) as Book
+  book.tags = normalizeTags(book.tags)
+  return book
 }
 
 async function saveBookUnlocked(book: Book): Promise<void> {
@@ -334,6 +341,8 @@ function bookToList(b: Book): BookListItem {
     id: b.id,
     title: b.title,
     author: b.author,
+    tags: normalizeTags(b.tags),
+    coverPath: b.coverPath,
     importType: b.importType,
     status: b.status,
     chapterCount: b.chapters.length,
@@ -856,6 +865,7 @@ export async function createBookFromBootstrap(opts: {
     id: opts.bookId,
     title: opts.title,
     author: opts.author,
+    tags: [],
     sourceUrl: opts.sourceUrl,
     sourceHost: opts.sourceHost,
     importType: opts.importType,
@@ -867,6 +877,24 @@ export async function createBookFromBootstrap(opts: {
   }
   await saveBook(book)
   return book
+}
+
+/** U1.1 契约 stub；完整元数据落盘见 U1.2。 */
+export async function updateMeta(_payload: {
+  bookId: string
+  title: string
+  author: string
+  tags: string[]
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  return { ok: false, message: 'not implemented' }
+}
+
+/** U1.1 契约 stub；完整封面落盘见 U1.2。 */
+export async function setCover(_payload: {
+  bookId: string
+  sourcePath: string
+}): Promise<{ ok: true; coverPath: string } | { ok: false; message: string }> {
+  return { ok: false, message: 'not implemented' }
 }
 
 export async function writeChapterFile(bookId: string, chapterId: string, data: ChapterFile): Promise<void> {

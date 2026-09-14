@@ -12,6 +12,8 @@ import {
   restoreFromTrash,
   purgeTrash,
   setProgress,
+  updateMeta,
+  setCover,
   updateChapterBody,
   setLibraryPath,
   readSummaries,
@@ -399,6 +401,32 @@ function registerIpc(): void {
     } catch (e: unknown) {
       return { ok: false, message: String(e) }
     }
+  })
+  ipcMain.handle(
+    'library.updateMeta',
+    async (_e, payload: { bookId: string; title: string; author: string; tags: string[] }) => {
+      try {
+        return await updateMeta(payload)
+      } catch (e: unknown) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  )
+  ipcMain.handle('library.setCover', async (_e, payload: { bookId: string; sourcePath: string }) => {
+    try {
+      return await setCover(payload)
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('library.pickCoverFile', async () => {
+    if (!mainWindow) return null
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择封面图片',
+      filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }],
+      properties: ['openFile'],
+    })
+    return result.canceled ? null : (result.filePaths[0] ?? null)
   })
   ipcMain.handle('library.updateChapterBody', async (_e, args: { bookId: string; chapterId: string; body: string; restoreRaw?: boolean }) => {
     try {

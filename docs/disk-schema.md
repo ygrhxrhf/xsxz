@@ -38,6 +38,8 @@
       "id": "…",
       "title": "…",
       "author": "…",
+      "tags": [],
+      "coverPath": "cover.jpg",
       "importType": "download",
       "status": "ready",
       "chapterCount": 12,
@@ -61,9 +63,10 @@
 |---|---|
 | id | 见下方身份算法 |
 | title / author | 提取或导入得到；作者可空字符串 |
+| tags | 可选 `string[]`，缺省或非法当 `[]`。旧书无此字段、非数组或含非字符串项时按空数组读取，不得因此失败 |
 | sourceUrl | 规范化后的目录 URL；导入可空 |
 | sourceHost | hostname |
-| coverPath | 可选，相对书目录 |
+| coverPath | 可选，相对书目录；`index.json` / `BookListItem` 同样可选 |
 | importType | `download` \| `txt` \| `epub` |
 | createdAt / updatedAt | ISO 8601 |
 | status | `downloading` \| `ready` \| `partial` |

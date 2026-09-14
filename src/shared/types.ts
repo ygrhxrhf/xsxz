@@ -56,6 +56,8 @@ export interface Book {
   id: string
   title: string
   author: string
+  /** 缺省 []；磁盘旧书无此字段时按空数组读取 */
+  tags: string[]
   sourceUrl?: string
   sourceHost?: string
   coverPath?: string
@@ -71,6 +73,8 @@ export interface BookListItem {
   id: string
   title: string
   author: string
+  tags: string[]
+  coverPath?: string
   importType: ImportType
   status: Book['status']
   chapterCount: number

@@ -57,6 +57,13 @@ const api = {
     import: (filePath: string) => ipcRenderer.invoke('library.import', { filePath }) as Promise<{ ok: boolean; bookId?: string; message?: string }>,
     setProgress: (bookId: string, progress: ReadingProgress) =>
       ipcRenderer.invoke('library.setProgress', { bookId, progress }),
+    updateMeta: (payload: { bookId: string; title: string; author: string; tags: string[] }) =>
+      ipcRenderer.invoke('library.updateMeta', payload) as Promise<{ ok: true } | { ok: false; message: string }>,
+    setCover: (payload: { bookId: string; sourcePath: string }) =>
+      ipcRenderer.invoke('library.setCover', payload) as Promise<
+        { ok: true; coverPath: string } | { ok: false; message: string }
+      >,
+    pickCoverFile: () => ipcRenderer.invoke('library.pickCoverFile') as Promise<string | null>,
     updateChapterBody: (bookId: string, chapterId: string, body: string, restoreRaw?: boolean) =>
       ipcRenderer.invoke('library.updateChapterBody', { bookId, chapterId, body, restoreRaw }),
     export: (bookId: string, format: 'txt' | 'epub', destDir: string) =>

@@ -50,6 +50,7 @@ function installReaderApi() {
     id: 'book-1',
     title: '验收书',
     author: '',
+    tags: [] as string[],
     importType: 'txt' as const,
     createdAt: '',
     updatedAt: '',

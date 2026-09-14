@@ -18,7 +18,7 @@ function installReaderApi() {
   const chapters = [
     { id: 'c1', index: 1, title: '第一章', file: '0001.json', status: 'ready' as const },
   ]
-  const book = { id: 'book-1', title: '验收书', author: '', importType: 'txt' as const, createdAt: '', updatedAt: '', status: 'ready' as const, chapters, progress: null }
+  const book = { id: 'book-1', title: '验收书', author: '', tags: [] as string[], importType: 'txt' as const, createdAt: '', updatedAt: '', status: 'ready' as const, chapters, progress: null }
   Object.defineProperty(window, 'api', { configurable: true, value: {
     library: {
       get: async () => ({ book }),
