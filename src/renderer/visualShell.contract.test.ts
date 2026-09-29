@@ -57,7 +57,6 @@ describe('shared visual shell contract', () => {
     expect(app).toContain('<span class="brand-mark" aria-hidden="true">')
     expect(app).toContain('class="nav-icon"')
     expect(app).toContain('v-for="path in item.iconPaths"')
-    expect(app).toContain('class="nav-badge"')
     expect(app).not.toContain('下载中')
     expect(app).toContain('class="sidebar-dl"')
     expect(app).toContain('已下 {{ dlRunning.done }} / {{ dlRunning.total }} 章')

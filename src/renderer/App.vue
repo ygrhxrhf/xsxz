@@ -285,7 +285,6 @@ onUnmounted(() => {
               <path v-for="path in item.iconPaths" :key="path" :d="path" />
             </svg>
             <span class="nav-label">{{ item.label }}</span>
-            <span v-if="false" class="nav-badge"></span>
           </button>
           <div class="sidebar-bottom">
             <div v-if="dlRunning?.status === 'running'" class="sidebar-dl">
