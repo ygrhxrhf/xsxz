@@ -151,21 +151,51 @@ describe('normalizeSkin', () => {
 
   it('reads stored legacy skins as paper and writes paper instead of sakura or minimal', async () => {
     await mkdir(TEST_DIR, { recursive: true })
-    await writeFile(SETTINGS_FILE, JSON.stringify({ appearance: { skin: 'sakura' } }), 'utf-8')
+    await writeFile(
+      SETTINGS_FILE,
+      JSON.stringify({ libraryPath: 'D:\\books', model: 'keep-me', appearance: { skin: 'sakura', accent: 'rose' } }),
+      'utf-8',
+    )
     resetSettingsCacheForTests()
-    expect((await getSettings()).appearance.skin).toBe('paper')
+    const sakuraRead = await getSettings()
+    expect(sakuraRead.appearance.skin).toBe('paper')
+    expect(sakuraRead.libraryPath).toBe('D:\\books')
+    expect(sakuraRead.model).toBe('keep-me')
+    expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8'))).toMatchObject({
+      libraryPath: 'D:\\books',
+      model: 'keep-me',
+      appearance: { skin: 'sakura', accent: 'rose' },
+    })
 
-    await writeFile(SETTINGS_FILE, JSON.stringify({ appearance: { skin: 'minimal' } }), 'utf-8')
+    await writeFile(
+      SETTINGS_FILE,
+      JSON.stringify({ libraryPath: 'D:\\keep', appearance: { skin: 'minimal' } }),
+      'utf-8',
+    )
     resetSettingsCacheForTests()
+    const minimalRead = await getSettings()
+    expect(minimalRead.appearance.skin).toBe('paper')
+    expect(minimalRead.libraryPath).toBe('D:\\keep')
+
+    await writeFile(SETTINGS_FILE, JSON.stringify({ model: 'untouched', appearance: { skin: 'mystery' } }), 'utf-8')
+    resetSettingsCacheForTests()
+    const unknownRead = await getSettings()
+    expect(unknownRead.appearance.skin).toBe('paper')
+    expect(unknownRead.model).toBe('untouched')
+
+    resetSettingsCacheForTests()
+    await rm(TEST_DIR, { recursive: true, force: true })
     expect((await getSettings()).appearance.skin).toBe('paper')
 
     const saved = await updateSettings({ appearance: { skin: 'sakura' as 'paper' } })
     expect(saved.appearance.skin).toBe('paper')
     expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')).appearance.skin).toBe('paper')
 
-    const kept = await updateSettings({ appearance: { skin: 'night' } })
-    expect(kept.appearance.skin).toBe('night')
-    expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')).appearance.skin).toBe('night')
+    for (const skin of ['paper', 'white', 'night'] as const) {
+      const kept = await updateSettings({ appearance: { skin } })
+      expect(kept.appearance.skin).toBe(skin)
+      expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')).appearance.skin).toBe(skin)
+    }
   })
 })
 
