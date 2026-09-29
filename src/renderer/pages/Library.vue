@@ -89,6 +89,15 @@ const visibleBooks = computed(() =>
 const libraryTags = computed(() => collectLibraryTags(books.value))
 const duplicateGroups = computed(() => findLibraryDuplicateGroups(books.value))
 const duplicateOpen = ref(false)
+const continueBook = computed(() => {
+  const withProgress = books.value.filter((book) => book.progress?.chapterId)
+  if (!withProgress.length) return null
+  return [...withProgress].sort((a, b) => {
+    const aTime = Date.parse(a.progress?.updatedAt || '') || 0
+    const bTime = Date.parse(b.progress?.updatedAt || '') || 0
+    return bTime - aTime
+  })[0]
+})
 const initialLoading = computed(() => loading.value && books.value.length === 0)
 const loadError = ref('')
 const hasActiveFilter = computed(
@@ -557,6 +566,10 @@ function openDuplicateBook(bookId: string) {
   emit('open-book', bookId)
 }
 
+function continueReading() {
+  if (continueBook.value) emit('open-book', continueBook.value.id)
+}
+
 async function refreshRecap() {
   const item = recapBook.value
   if (!item?.progress?.chapterId || aiSaveRecoveryActive.value) return
@@ -641,11 +654,21 @@ onUnmounted(() => {
           正在刷新
         </span>
         <span v-if="checkAllStatus" class="checkall-status">{{ checkAllStatus }}</span>
-        <n-button v-if="checkAllLoading" size="small" @click="handleCancelCheckAll">停止</n-button>
-        <n-button v-else :disabled="!books.length" @click="handleCheckAll">全部检查更新</n-button>
-        <n-button v-if="duplicateGroups.length" @click="duplicateOpen = true">可能重复 {{ duplicateGroups.length }} 组</n-button>
-        <n-button @click="openTrash">回收站</n-button>
-        <n-button type="primary" @click="handleImport">导入 txt / epub</n-button>
+        <n-button
+          v-if="continueBook"
+          class="shelf-action"
+          type="primary"
+          :title="`继续读《${continueBook.title}》`"
+          @click="continueReading"
+        >
+          继续读
+        </n-button>
+        <n-button class="shelf-action" @click="emit('go-browse')">浏览下载</n-button>
+        <n-button v-if="checkAllLoading" class="shelf-action" size="small" @click="handleCancelCheckAll">停止</n-button>
+        <n-button v-else class="shelf-action" :disabled="!books.length" @click="handleCheckAll">全部检查更新</n-button>
+        <n-button v-if="duplicateGroups.length" class="shelf-action" @click="duplicateOpen = true">可能重复 {{ duplicateGroups.length }} 组</n-button>
+        <n-button class="shelf-action" @click="openTrash">回收站</n-button>
+        <n-button class="shelf-action" @click="handleImport">导入 txt / epub</n-button>
       </div>
     </header>
     <div v-if="books.length" class="lib-toolbar">
@@ -697,8 +720,9 @@ onUnmounted(() => {
       <h3>没有匹配的书</h3>
     </section>
 
-    <p v-if="loadError && books.length" class="library-inline-error" role="alert">{{ loadError }}</p>
-    <div v-else class="book-grid">
+    <template v-else>
+      <p v-if="loadError" class="library-inline-error" role="alert">{{ loadError }}</p>
+      <div class="book-grid">
       <n-card v-for="b in visibleBooks" :key="b.id" hoverable class="book-card">
         <button class="book-open-area" type="button" :aria-label="`打开《${b.title}》`" @click="emit('open-book', b.id)">
           <div class="book-cover" :style="coverStyle(b.id)" aria-hidden="true">
