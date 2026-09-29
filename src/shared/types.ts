@@ -246,8 +246,8 @@ export interface TtsPrefs {
   autoNextChapter: boolean
 }
 
-/** 界面皮肤：夜樱 / 简约 */
-export type Skin = 'sakura' | 'minimal'
+/** 界面皮肤：暖纸 / 白纸 / 夜间 */
+export type Skin = 'paper' | 'white' | 'night'
 
 /** 下载章与章之间的固定间隔档位。 */
 export type DownloadPace = 'slow' | 'standard' | 'fast'
@@ -504,7 +504,7 @@ export const DEFAULT_TTS_PREFS: TtsPrefs = {
 }
 
 export const DEFAULT_APPEARANCE_PREFS: AppearancePrefs = {
-  skin: 'sakura',
+  skin: 'paper',
 }
 
 export const AI_PROMPT_KINDS: readonly AiPromptKind[] = [

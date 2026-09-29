@@ -29,7 +29,7 @@ import {
   DEFAULT_AI_PLACEHOLDER,
 } from '../shared/types'
 
-const SKINS: readonly Skin[] = ['sakura', 'minimal']
+const SKINS: readonly Skin[] = ['paper', 'white', 'night']
 const DOWNLOAD_PACES: readonly DownloadPace[] = ['slow', 'standard', 'fast']
 const READER_THEMES: readonly ReaderTheme[] = ['paper', 'sepia', 'gray', 'night']
 const READER_FONT_FAMILIES: readonly ReaderFontFamily[] = ['serif', 'system', 'mono']
@@ -42,7 +42,9 @@ const AI_RECAP_LENGTHS: readonly AiPrefs['recapLength'][] = ['short', 'standard'
 const AI_PROMPT_MODES: readonly AiPrefs['promptMode'][AiPromptKind][] = ['builtin', 'custom']
 const LEGACY_DEEPSEEK_MODELS = new Set(['deepseek-chat', 'deepseek-reasoner'])
 
-function readSkin(value: unknown): Skin {
+/** paper/white/night 原样保留；旧 sakura、minimal 与缺省、非字符串、未知值一律回退 paper。 */
+export function normalizeSkin(value: unknown): Skin {
+  if (value === 'sakura' || value === 'minimal') return 'paper'
   return SKINS.includes(value as Skin) ? (value as Skin) : DEFAULT_APPEARANCE_PREFS.skin
 }
 
@@ -236,7 +238,7 @@ export async function getSettings(): Promise<Settings> {
         typeof tts.autoNextChapter === 'boolean' ? tts.autoNextChapter : DEFAULT_TTS_PREFS.autoNextChapter,
     },
     appearance: {
-      skin: readSkin(appearance.skin),
+      skin: normalizeSkin(appearance.skin),
     },
     ai: normalizeAiPrefs(raw.ai),
     downloadPace: readDownloadPace(raw.downloadPace),
@@ -270,7 +272,7 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
   }
   if (patch.appearance) {
     const next = { ...readRecord(raw.appearance), ...readRecord(patch.appearance) }
-    if (typeof next.skin === 'string') next.skin = readSkin(next.skin)
+    if ('skin' in next) next.skin = normalizeSkin(next.skin)
     raw.appearance = next
   }
   if (patch.ai) raw.ai = mergeAiPrefs(raw.ai, patch.ai)
