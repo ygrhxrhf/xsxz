@@ -29,6 +29,7 @@ const unsubs: Array<() => void> = []
 
 // Download state
 const downloading = ref(false)
+const retryingFailed = ref(false)
 const downloadProgress = ref<DownloadProgress | null>(null)
 const showProgress = ref(false)
 
@@ -148,6 +149,25 @@ async function cancelDownload() {
   await window.api.download.cancel()
 }
 
+async function retryFailedChapters() {
+  const bookId = downloadProgress.value?.bookId
+  if (!bookId || retryingFailed.value || downloading.value) return
+  retryingFailed.value = true
+  downloading.value = true
+  try {
+    const res = await window.api.download.retryFailed(bookId)
+    if (!res.ok) {
+      message.error(res.message || '重试失败')
+      retryingFailed.value = false
+      downloading.value = false
+    }
+  } catch (e: unknown) {
+    message.error(e instanceof Error ? e.message : '重试失败')
+    retryingFailed.value = false
+    downloading.value = false
+  }
+}
+
 function onSubmit(e: Event) {
   e.preventDefault()
   void go()
@@ -170,6 +190,7 @@ onMounted(async () => {
     downloadProgress.value = p
     if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
       downloading.value = false
+      retryingFailed.value = false
       // Closed mid-run must not cancel; surface the terminal tag + open button.
       showProgress.value = true
     }
@@ -273,8 +294,15 @@ onUnmounted(() => {
             </ul>
             <div v-else class="dl-failed-empty">没有失败章节</div>
             <div v-if="failedChapterRows.length > 0" class="dl-retry-sample">
-              <n-button size="small" secondary disabled>只补失败章</n-button>
-              <span>样例，尚未补章</span>
+              <n-button
+                size="small"
+                secondary
+                :loading="retryingFailed"
+                :disabled="downloading || !downloadProgress?.bookId"
+                @click="retryFailedChapters"
+              >
+                只补失败章
+              </n-button>
             </div>
           </div>
           <div class="dl-actions">

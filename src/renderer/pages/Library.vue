@@ -237,15 +237,22 @@ function handleCancelCheckAll() {
 }
 
 function failLabel(ch: ChapterMeta): string {
-  return ch.failMessage || (ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败')
+  const message = ch.failMessage?.trim()
+  if (message) return message
+  if (ch.failCode && FAIL_CODE_ZH[ch.failCode]) return FAIL_CODE_ZH[ch.failCode]
+  return '正文为空或过短'
+}
+
+async function reloadFailedRows(bookId: string) {
+  const res = await window.api.library.get(bookId)
+  failedRows.value = (res.book?.chapters || []).filter((c) => c.status === 'failed' || c.status === 'empty')
 }
 
 async function openFailedList(bookId: string, title: string) {
   failedBookId.value = bookId
   failedTitle.value = title
   failedOpen.value = true
-  const res = await window.api.library.get(bookId)
-  failedRows.value = (res.book?.chapters || []).filter((c) => c.status === 'failed' || c.status === 'empty')
+  await reloadFailedRows(bookId)
 }
 
 function hasTask(ids: string[], bookId: string): boolean {
@@ -596,6 +603,7 @@ onMounted(() => {
         endTask(retryingIds, p.bookId)
         endTask(checkingIds, p.bookId)
         endTask(activeDownloadIds, p.bookId)
+        if (failedOpen.value && failedBookId.value === p.bookId) void reloadFailedRows(p.bookId)
       }
       void refresh()
     }
@@ -771,7 +779,7 @@ onUnmounted(() => {
       </n-drawer-content>
     </n-drawer>
     <n-modal v-model:show="failedOpen" preset="card" :title="`失败章 · ${failedTitle}`" style="width:480px">
-      <n-empty v-if="!failedRows.length" description="当前没有失败章" />
+      <n-empty v-if="!failedRows.length" description="没有失败章节" />
       <div v-else class="fail-list">
         <div v-for="ch in failedRows" :key="ch.id" class="fail-row">
           <div>
@@ -790,7 +798,7 @@ onUnmounted(() => {
             :disabled="hasTask(activeDownloadIds, failedBookId)"
             @click="handleRetry(failedBookId)"
           >
-            重试失败章
+            只补失败章
           </n-button>
         </n-space>
       </template>

@@ -1060,6 +1060,55 @@ describe('checkUpdate', () => {
     await waitForIdle()
   })
 
+  it('retryFailed leaves chapter status unchanged when the catalog cannot be opened', async () => {
+    const { bookId, readySnapshots } = await seedSixChapterBook({ failSixth: true })
+    const before = await loadBook(bookId)
+    const snapshot = before.chapters.map((ch) => ({
+      id: ch.id,
+      status: ch.status,
+      failCode: ch.failCode,
+      failMessage: ch.failMessage,
+    }))
+    expect(snapshot.filter((ch) => ch.status === 'ready')).toHaveLength(5)
+    expect(snapshot.filter((ch) => ch.status === 'failed')).toHaveLength(1)
+    const bookStatus = before.status
+
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) throw new Error('目录打不开')
+      return fixture('chapter.html')
+    })
+    const thrown = await retryFailed(bookId)
+    expect(thrown.ok).toBe(false)
+    if (thrown.ok) return
+    expect(thrown.message).toContain('目录打不开')
+
+    loadedUrls.length = 0
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return emptyCatalogHtml()
+      return fixture('chapter.html')
+    })
+    const empty = await retryFailed(bookId)
+    expect(empty).toEqual({ ok: false, message: '目录页无法访问或内容变化' })
+    expect(loadedUrls.filter((u) => /\/book\/[1-6]\.html$/.test(u))).toEqual([])
+
+    const after = await loadBook(bookId)
+    expect(after.status).toBe(bookStatus)
+    expect(after.chapters.map((ch) => ({
+      id: ch.id,
+      status: ch.status,
+      failCode: ch.failCode,
+      failMessage: ch.failMessage,
+    }))).toEqual(snapshot)
+    for (const snap of readySnapshots) {
+      const file = await readChapter(bookId, snap.id)
+      expect(file.status).toBe('ready')
+      expect(file.body).toBe(snap.body)
+    }
+    expect(await listBooks()).toHaveLength(1)
+  })
+
   it('fails with Chinese when the catalog has zero chapter links (VAL-DL-009)', async () => {
     const { bookId, readySnapshots } = await seedSixChapterBook()
     setTestHtmlLoader(async (url) => {
