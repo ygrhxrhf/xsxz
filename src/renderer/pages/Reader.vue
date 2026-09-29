@@ -51,7 +51,7 @@ import {
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { decorateText, relocateRange } from '@shared/paragraphSearch'
 import type { Annotation, BookSearchHit, DownloadProgress } from '@shared/types'
-import { libraryCoverHues, libraryCoverSrc } from './libraryCard'
+import { libraryCoverSrc } from './libraryCard'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
@@ -71,8 +71,7 @@ const emit = defineEmits<{
   (e: 'back'): void
   (e: 'go-browse', url?: string): void
   (e: 'open-shelf'): void
-  (e: 'open-browse'): void
-  (e: 'open-settings'): void
+  (e: 'go-settings'): void
 }>()
 const message = useMessage()
 
@@ -692,6 +691,12 @@ function toggleToolPanel(panel: 'tts' | 'ai' | 'shortcuts') {
   revealTools(immersiveMode.value === 'locked')
 }
 
+function openCatalog() {
+  activeBottomPanel.value = null
+  showDrawer.value = true
+  revealTools(immersiveMode.value === 'locked')
+}
+
 function toggleBottomPanel(panel: 'catalog' | 'progress' | 'background' | 'font') {
   activeBottomPanel.value = activeBottomPanel.value === panel ? null : panel
   if (activeBottomPanel.value) {
@@ -944,14 +949,11 @@ const downloadRunning = computed(() =>
     : null,
 )
 const spineCoverSrc = computed(() =>
-  book.value ? libraryCoverSrc(libraryPath.value, book.value.id, book.value.coverPath) : null,
+  book.value?.coverPath ? libraryCoverSrc(libraryPath.value, book.value.id, book.value.coverPath) : null,
 )
-const spineCoverStyle = computed(() => {
-  const hues = libraryCoverHues(book.value?.id || 'paper')
-  return {
-    '--cover-hue': String(hues.primary),
-    '--cover-hue-secondary': String(hues.secondary),
-  }
+const spineInitial = computed(() => {
+  const title = (book.value?.title || '').trim()
+  return title ? [...title][0] : '书'
 })
 
 async function loadBook(bookId: string) {
@@ -1206,7 +1208,7 @@ async function loadPrefs() {
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
   recapLength.value = s.ai?.recapLength ?? 'standard'
   aiServiceOrigin.value = displayAiServiceOrigin(s.baseUrl)
-  libraryPath.value = s.libraryPath
+  libraryPath.value = s.libraryPath ?? ''
 }
 
 // AI actions
@@ -1766,9 +1768,10 @@ onUnmounted(() => {
 <template>
   <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove">
     <!-- No book selected -->
-    <div v-if="!book" class="page placeholder reader-empty-shelf">
-      <h2>还没有书</h2>
-      <n-button type="primary" @click="emit('open-browse')">去浏览</n-button>
+    <div v-if="!book" class="page placeholder">
+      <h2>阅读</h2>
+      <p>从书库打开一本书后在这里阅读。</p>
+      <n-button @click="emit('back')">返回书库</n-button>
     </div>
 
     <!-- Reader -->
@@ -1829,12 +1832,11 @@ onUnmounted(() => {
           class="reader-spine"
           type="button"
           :title="book.title"
-          aria-label="当前书"
-          :style="spineCoverStyle"
+          aria-label="书架"
           @click="emit('open-shelf')"
         >
           <img v-if="spineCoverSrc" class="reader-spine-img" :src="spineCoverSrc" alt="" />
-          <span v-else class="reader-spine-title">{{ book.title }}</span>
+          <span v-else class="reader-spine-mark">{{ spineInitial }}</span>
         </button>
         <div class="reader-body">
         <button class="chapter-hotzone left" :disabled="!previousChapter" :title="previousChapter ? `上一章：${previousChapter.title}` : '已经是第一章'" aria-label="上一章" @click="prevChapter"><span>‹</span></button>
@@ -1871,10 +1873,10 @@ onUnmounted(() => {
       </div>
 
       <div class="reader-bottombar">
-        <button class="bottom-button" type="button" :class="{ active: activeBottomPanel === 'catalog' }" @click="toggleBottomPanel('catalog')">目录</button>
-        <button class="bottom-button" type="button" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')">进度</button>
-        <button class="bottom-button" type="button" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')">背景</button>
-        <button class="bottom-button" type="button" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')">字体</button>
+        <button class="bottom-button" type="button" aria-label="目录" :class="{ active: activeBottomPanel === 'catalog' }" @click="toggleBottomPanel('catalog')">目录</button>
+        <button class="bottom-button" type="button" aria-label="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')">进度</button>
+        <button class="bottom-button" type="button" aria-label="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')">背景</button>
+        <button class="bottom-button" type="button" aria-label="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')">字体</button>
         <div v-if="activeBottomPanel" class="bottom-panel tool-panel" @click.stop>
           <template v-if="activeBottomPanel === 'catalog'">
             <strong>目录</strong>
@@ -2744,15 +2746,28 @@ onUnmounted(() => {
 .tool-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .tool-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .tool-button.tool-text { width: auto; flex-basis: auto; padding: 0 8px; font: inherit; font-size: 13px; }
-.tool-button-offstage { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.tool-button-offstage {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.reader-toolbar .reader-book-title { min-width: 0; }
 .reader-toolbar .reader-book-title { min-width: 0; text-align: left; flex: 0 1 auto; max-width: 28ch; padding-left: 0; color: var(--reader-paper-text); font-weight: 650; }
 .toolbar-gap { flex: 1; }
 .reader-download-chip { display: inline-flex; align-items: center; gap: 8px; margin-right: 4px; color: var(--reader-paper-text); font-size: 13px; white-space: nowrap; }
 .reader-download-cancel { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .reader-stage { flex: 1; min-height: 0; display: flex; }
-.reader-spine { width: 52px; flex: 0 0 52px; margin: 16px 0 16px 12px; padding: 10px 6px; border: 0; border-radius: 3px 8px 8px 3px; color: #f7f1e4; background: linear-gradient(160deg, hsl(calc(var(--cover-hue) * 1deg) 42% 34%), hsl(calc(var(--cover-hue-secondary) * 1deg) 38% 24%)); box-shadow: 2px 0 0 rgba(255, 255, 255, .18) inset, 3px 6px 14px rgba(47, 42, 36, .16); cursor: pointer; overflow: hidden; }
+.reader-spine { width: 44px; flex: 0 0 44px; align-self: stretch; margin: 12px 0 12px 10px; padding: 0; border: 1px solid var(--r-line); border-radius: 3px 8px 8px 3px; color: var(--reader-paper-text); background: var(--reader-paper); cursor: pointer; overflow: hidden; }
+.reader-spine:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .reader-spine-img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.reader-spine-title { display: block; writing-mode: vertical-rl; max-height: 100%; overflow: hidden; font-size: 13px; letter-spacing: 0.12em; }
+.reader-spine-mark { display: grid; place-items: center; width: 100%; height: 100%; font-size: 18px; font-weight: 600; }
 .reader-bottombar { position: relative; z-index: 28; flex: 0 0 auto; display: flex; justify-content: center; gap: 8px; min-height: 48px; padding: 6px 12px; border-top: 1px solid var(--r-line); background: color-mix(in srgb, var(--r-bar-bg) 94%, var(--r-surface)); }
 .bottom-button { min-width: 64px; min-height: 32px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--reader-paper-text); font: inherit; font-size: 14px; cursor: pointer; }
 .bottom-button:hover, .bottom-button.active { background: var(--r-hover); }
@@ -2916,3 +2931,5 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 </style>
+
+.reader-bottombar { border-radius: var(--radius-card); }
