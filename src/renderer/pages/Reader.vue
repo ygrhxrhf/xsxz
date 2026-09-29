@@ -1784,10 +1784,6 @@ onUnmounted(() => {
         @mouseleave="onToolbarLeave"
       >
         <div class="reader-book-title" :title="book.title">{{ book.title }}</div>
-        <div v-if="downloadRunning" class="reader-download-chip">
-          <span>已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章</span>
-          <button class="reader-download-cancel" type="button" @click="cancelReaderDownload">取消</button>
-        </div>
         <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('back')">书架</button>
         <button class="tool-button tool-text" type="button" title="搜索" aria-label="搜索" @click="openSearch">搜索</button>
         <button class="tool-button tool-text" type="button" title="标记" aria-label="标记" @click="showMarks = true">标记</button>
@@ -1795,6 +1791,7 @@ onUnmounted(() => {
         <button class="tool-button tool-text" type="button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')">AI</button>
         <button class="tool-button tool-text" type="button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock">沉浸</button>
         <span class="toolbar-gap" aria-hidden="true"></span>
+        <span v-if="downloadRunning" class="reader-dl">已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章<button class="reader-dl-cancel" type="button" @click="cancelReaderDownload">取消</button></span>
         <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('open-browse')">浏览</button>
         <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('open-settings')">设置</button>
         <button class="tool-button tool-button-offstage" title="返回书库" aria-label="返回书库" @click="emit('back')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10"/></svg></button>
@@ -2931,5 +2928,3 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 </style>
-
-.reader-bottombar { border-radius: var(--radius-card); }
