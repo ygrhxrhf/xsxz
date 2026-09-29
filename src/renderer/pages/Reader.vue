@@ -1779,7 +1779,7 @@ onUnmounted(() => {
     <!-- Reader -->
     <template v-else>
       <div
-        :class="['reader-toolbar', { visible: toolsVisible }]"
+        class="reader-toolbar"
         @mouseenter="onToolbarEnter"
         @mouseleave="onToolbarLeave"
       >
