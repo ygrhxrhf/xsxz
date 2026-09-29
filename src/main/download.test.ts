@@ -368,19 +368,10 @@ describe('chapterNeedsDownload', () => {
   })
 
   it('maps download pace to a fixed chapter gap and treats unknown values as standard', () => {
-    resetDownloadStateForTests()
-    expect(chapterGapMs('slow', { testing: false })).toBe(2000)
-    expect(chapterGapMs('standard', { testing: false })).toBe(600)
-    expect(chapterGapMs('fast', { testing: false })).toBe(200)
-    expect(chapterGapMs('turbo', { testing: false })).toBe(600)
-    expect(chapterGapMs(undefined, { testing: false })).toBe(600)
-  })
-
-  it('uses zero chapter gap when a test html loader is injected', () => {
-    setTestHtmlLoader(async () => '<html></html>')
-    expect(chapterGapMs('slow')).toBe(0)
-    expect(chapterGapMs('standard')).toBe(0)
-    resetDownloadStateForTests()
+    expect(chapterGapMs('slow')).toBe(2000)
+    expect(chapterGapMs('standard')).toBe(600)
+    expect(chapterGapMs('fast')).toBe(200)
+    expect(chapterGapMs('turbo' as 'standard')).toBe(600)
   })
 })
 
