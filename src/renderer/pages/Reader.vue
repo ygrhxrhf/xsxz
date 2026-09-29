@@ -71,9 +71,9 @@ const emit = defineEmits<{
   (e: 'back'): void
   (e: 'go-browse', url?: string): void
   (e: 'open-shelf'): void
-  (e: 'go-settings'): void
-  (e: 'cancel-download'): void
-}>()
+  (e: 'open-browse'): void
+  (e: 'open-settings'): void
+}>())
 const message = useMessage()
 
 const book = ref<Book | null>(null)
@@ -1774,16 +1774,17 @@ onUnmounted(() => {
       <h2>还没有书</h2>
       <n-button type="primary" @click="emit('open-browse')">去浏览</n-button>
     </div>
+    </div>
 
     <!-- Reader -->
     <template v-else>
       <div
-        class="reader-toolbar"
+        :class="['reader-toolbar', { visible: toolsVisible }]"
         @mouseenter="onToolbarEnter"
         @mouseleave="onToolbarLeave"
       >
         <div class="reader-book-title" :title="book.title">{{ book.title }}</div>
-        <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('back')">书架</button>
+        <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('open-shelf')">书架</button>
         <button class="tool-button tool-text" type="button" title="搜索" aria-label="搜索" @click="openSearch">搜索</button>
         <button class="tool-button tool-text" type="button" title="标记" aria-label="标记" @click="showMarks = true">标记</button>
         <button class="tool-button tool-text" type="button" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')">朗读</button>
@@ -1794,10 +1795,10 @@ onUnmounted(() => {
           <span>已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章</span>
           <button class="reader-download-cancel" type="button" @click="cancelReaderDownload">取消</button>
         </div>
-        <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('go-browse')">浏览</button>
-        <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('go-settings')">设置</button>
-        <button class="tool-button tool-button-offstage" type="button" title="返回书库" aria-label="当前书" @click="emit('open-shelf')"></button>
-        <button class="tool-button tool-button-offstage" type="button" title="目录" aria-label="目录" @click="openCatalog"></button>
+        <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('open-browse')">浏览</button>
+        <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('open-settings')">设置</button>
+        <button class="tool-button tool-button-offstage" type="button" title="返回书库" aria-label="返回书库" @click="emit('back')"></button>
+        <button class="tool-button tool-button-offstage" type="button" title="目录" aria-label="目录" @click="toggleBottomPanel('catalog')"></button>
         <button class="tool-button tool-button-offstage" type="button" title="外观" aria-label="外观" @click="toggleBottomPanel('font')"></button>
         <button class="tool-button tool-button-offstage" type="button" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"></button>
 
