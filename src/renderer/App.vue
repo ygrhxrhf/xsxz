@@ -43,7 +43,7 @@ const tabs: { id: Tab; label: string; iconPaths: string[] }[] = [
   },
 ]
 
-// 夜樱主题：樱粉主色 + 紫罗兰辅色，统一 Naive UI 组件配色
+// 纸色主题：暖纸主色，统一 Naive UI 组件配色
 const paperOverrides: GlobalThemeOverrides = {
   common: {
     primaryColor: '#ff8ec7',
@@ -249,14 +249,14 @@ onUnmounted(() => {
   <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
       <div :class="['app-shell', { 'app-shell-reader': tab === 'reader' && !!currentBookId }]">
-        <aside v-if="!(tab === 'reader' && currentBookId)" class="sidebar" aria-label="主要功能">
+        <header v-if="!(tab === 'reader' && currentBookId)" class="app-bar">
           <span class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">
               <path d="M3 5.5A3.5 3.5 0 0 1 6.5 2H11v17H6.5A3.5 3.5 0 0 0 3 22V5.5Z" />
               <path d="M21 5.5A3.5 3.5 0 0 0 17.5 2H13v17h4.5A3.5 3.5 0 0 1 21 22V5.5Z" />
             </svg>
           </span>
-          <nav class="app-nav">
+          <nav class="app-nav" aria-label="主要功能">
             <button
               v-for="item in tabs"
               :key="item.id"
@@ -279,7 +279,7 @@ onUnmounted(() => {
               <button class="sidebar-dl-cancel" type="button" @click="cancelSidebarDownload">取消</button>
             </div>
           </div>
-        </aside>
+        </header>
         <section class="main">
           <BrowsePage
             v-show="tab === 'browse'"
