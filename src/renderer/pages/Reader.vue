@@ -1106,9 +1106,6 @@ async function retryThisChapter() {
   }
 }
 
-function cancelReaderDownload() {
-  void window.api.download.cancel()
-}
 
 function prevChapter() {
   if (!currentChapter.value) return
@@ -1770,10 +1767,10 @@ onUnmounted(() => {
 <template>
   <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove">
     <!-- No book selected -->
-    <div v-if="!book" class="page placeholder reader-empty-shelf">
-      <h2>还没有书</h2>
-      <n-button type="primary" @click="emit('open-browse')">去浏览</n-button>
-    </div>
+    <div v-if="!book" class="page placeholder">
+      <h2>阅读</h2>
+      <p>从书库打开一本书后在这里阅读。</p>
+      <n-button @click="emit('back')">返回书库</n-button>
     </div>
 
     <!-- Reader -->
@@ -1791,15 +1788,13 @@ onUnmounted(() => {
         <button class="tool-button tool-text" type="button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')">AI</button>
         <button class="tool-button tool-text" type="button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock">沉浸</button>
         <span class="toolbar-gap" aria-hidden="true"></span>
-        <div v-if="downloadRunning" class="reader-download-chip">
-          <span>已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章</span>
-          <button class="reader-download-cancel" type="button" @click="cancelReaderDownload">取消</button>
-        </div>
+        <span v-if="downloadRunning" class="reader-dl">已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章<button class="reader-dl-cancel" type="button" @click="cancelReaderDownload">取消</button></span>
         <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('open-browse')">浏览</button>
         <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('open-settings')">设置</button>
         <button class="tool-button tool-button-offstage" type="button" title="返回书库" aria-label="返回书库" @click="emit('back')"></button>
         <button class="tool-button tool-button-offstage" type="button" title="目录" aria-label="目录" @click="toggleBottomPanel('catalog')"></button>
         <button class="tool-button tool-button-offstage" type="button" title="外观" aria-label="外观" @click="toggleBottomPanel('font')"></button>
+        <button class="tool-button tool-button-offstage" type="button" title="沉浸模式" aria-label="沉浸模式" @click="toggleImmersiveLock"></button>
         <button class="tool-button tool-button-offstage" type="button" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"></button>
 
         <div v-if="activeToolPanel" class="tool-panel" @click.stop>
@@ -2932,6 +2927,6 @@ onUnmounted(() => {
   outline: 2px solid var(--active-chapter);
   outline-offset: 2px;
 }
-</style>
 
 .reader-bottombar { border-radius: var(--radius-card); }
+</style>
