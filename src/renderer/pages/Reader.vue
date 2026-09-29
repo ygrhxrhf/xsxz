@@ -72,7 +72,6 @@ const emit = defineEmits<{
   (e: 'go-browse', url?: string): void
   (e: 'open-shelf'): void
   (e: 'go-settings'): void
-  (e: 'cancel-download'): void
 }>()
 const message = useMessage()
 
@@ -1106,12 +1105,10 @@ async function retryThisChapter() {
   }
 }
 
-function cancelReaderDownload() {
-  void window.api.download.cancel()
-}
+
 
 function cancelReaderDownload() {
-  emit('cancel-download')
+  void window.api.download.cancel()
 }
 
 function prevChapter() {
@@ -1774,16 +1771,15 @@ onUnmounted(() => {
 <template>
   <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove">
     <!-- No book selected -->
-    <div v-if="!book" class="page placeholder">
-      <h2>阅读</h2>
-      <p>从书库打开一本书后在这里阅读。</p>
-      <n-button @click="emit('back')">返回书库</n-button>
+    <div v-if="!book" class="page placeholder reader-empty-shelf">
+      <h2>还没有书</h2>
+      <n-button type="primary" @click="emit('open-browse')">去浏览</n-button>
     </div>
 
     <!-- Reader -->
     <template v-else>
       <div
-        class="reader-toolbar"
+        :class="['reader-toolbar', { visible: toolsVisible }]"
         @mouseenter="onToolbarEnter"
         @mouseleave="onToolbarLeave"
       >
@@ -1797,11 +1793,11 @@ onUnmounted(() => {
         <span class="toolbar-gap" aria-hidden="true"></span>
         <div v-if="downloadRunning" class="reader-download-chip">
           <span>已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章</span>
-          <button class="reader-download-cancel" type="button" @click="cancelReaderDownload">取消</button>
+          <button class="reader-dl-cancel" type="button" aria-label="取消" @click="cancelReaderDownload">取消</button>
         </div>
         <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('go-browse')">浏览</button>
         <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('go-settings')">设置</button>
-        <button class="tool-button tool-button-offstage" type="button" title="返回书库" aria-label="当前书" @click="emit('open-shelf')"></button>
+        <button class="tool-button tool-button-offstage" type="button" title="返回书库" aria-label="返回书库" @click="emit('back')"></button>
         <button class="tool-button tool-button-offstage" type="button" title="目录" aria-label="目录" @click="openCatalog"></button>
         <button class="tool-button tool-button-offstage" type="button" title="外观" aria-label="外观" @click="toggleBottomPanel('font')"></button>
         <button class="tool-button tool-button-offstage" type="button" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"></button>
@@ -1838,7 +1834,7 @@ onUnmounted(() => {
           class="reader-spine"
           type="button"
           :title="book.title"
-          aria-label="书架"
+          aria-label="当前书"
           @click="emit('open-shelf')"
         >
           <img v-if="spineCoverSrc" class="reader-spine-img" :src="spineCoverSrc" alt="" />
@@ -1933,7 +1929,7 @@ onUnmounted(() => {
             </div>
             <div class="control-label">阅读方式</div>
             <div class="option-grid">
-              <button v-for="item in [{v:'scroll',l:'滚动'},{v:'screen',l:'翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
+              <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
             </div>
             <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
           </template>
