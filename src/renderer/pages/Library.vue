@@ -758,7 +758,8 @@ onUnmounted(() => {
           </n-button>
         </n-dropdown>
       </n-card>
-    </div>
+      </div>
+    </template>
     <n-modal
       :show="editOpen"
       preset="card"
@@ -958,8 +959,57 @@ onUnmounted(() => {
 }
 
 .library-page :deep(.n-button) {
+  --n-color: #fffdf8;
+  --n-color-hover: #f3ecdf;
+  --n-color-pressed: #efe6d4;
+  --n-color-focus: #fffdf8;
+  --n-text-color: var(--shelf-ink);
+  --n-text-color-hover: var(--shelf-ink);
+  --n-text-color-pressed: var(--shelf-ink);
+  --n-text-color-focus: var(--shelf-ink);
+  --n-text-color-disabled: #a89884;
+  --n-border: 1px solid #e3d9c6;
+  --n-border-hover: 1px solid #c9b89a;
+  --n-border-pressed: 1px solid var(--shelf-focus);
+  --n-border-focus: 1px solid var(--shelf-focus);
+  --n-border-disabled: 1px solid #eadfce;
+  --n-ripple-color: var(--shelf-focus);
   min-height: 32px;
   border-radius: var(--radius-control);
+}
+
+.library-page :deep(.n-button.n-button--primary-type) {
+  --n-color: var(--shelf-focus);
+  --n-color-hover: #744b29;
+  --n-color-pressed: #633f22;
+  --n-color-focus: var(--shelf-focus);
+  --n-text-color: #fffaf3;
+  --n-text-color-hover: #fffaf3;
+  --n-text-color-pressed: #fffaf3;
+  --n-text-color-focus: #fffaf3;
+  --n-text-color-disabled: rgba(255, 250, 243, 0.72);
+  --n-border: 1px solid transparent;
+  --n-border-hover: 1px solid transparent;
+  --n-border-pressed: 1px solid transparent;
+  --n-border-focus: 1px solid transparent;
+  --n-border-disabled: 1px solid transparent;
+}
+
+.library-page :deep(.n-button.n-button--error-type) {
+  --n-color: transparent;
+  --n-color-hover: rgba(156, 59, 50, 0.08);
+  --n-color-pressed: rgba(156, 59, 50, 0.14);
+  --n-text-color: #9c3b32;
+  --n-text-color-hover: #9c3b32;
+  --n-text-color-pressed: #9c3b32;
+  --n-border: 1px solid transparent;
+}
+
+.library-page :deep(.n-button.n-button--warning-type) {
+  --n-text-color: #8a5a12;
+  --n-text-color-hover: #8a5a12;
+  --n-text-color-pressed: #8a5a12;
+  --n-border: 1px solid #e3d0a4;
 }
 
 .library-page :deep(.n-button:not(.n-button--disabled):focus-visible) {

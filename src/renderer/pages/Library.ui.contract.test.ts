@@ -42,9 +42,10 @@ describe('Library comfortable card contract', () => {
     expect(emptyTrue).toContain('还没有书')
     expect(emptyTrue).toContain("@click=\"emit('go-browse')\">去浏览</n-button>")
     expect(emptyTrue).not.toContain('没有匹配的书')
+    const shelfStart = source.indexOf('<template v-else>')
     const emptyFiltered = source.slice(
       source.indexOf('v-else-if="!visibleBooks.length"'),
-      source.indexOf('v-else class="book-grid"'),
+      shelfStart === -1 ? source.indexOf('v-else class="book-grid"') : shelfStart,
     )
     expect(emptyFiltered).toContain('没有匹配的书')
     expect(emptyFiltered).not.toContain('n-button')
