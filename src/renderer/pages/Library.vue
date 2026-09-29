@@ -894,7 +894,7 @@ onUnmounted(() => {
 
 .library-subtitle {
   margin: var(--space-1) 0 0;
-  color: var(--text-muted);
+  color: #6d5c4a;
   font-size: 13px;
 }
 
@@ -911,7 +911,7 @@ onUnmounted(() => {
 }
 
 .library-refresh-status {
-  color: var(--text-secondary);
+  color: #5c4b3a;
   font-size: 12px;
   white-space: nowrap;
 }
@@ -933,7 +933,7 @@ onUnmounted(() => {
 .checkall-status {
   max-width: 280px;
   overflow: hidden;
-  color: var(--text-muted);
+  color: #6d5c4a;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -953,6 +953,7 @@ onUnmounted(() => {
 
 .book-card {
   min-width: 0;
+  border: 1px solid #e4d5bf;
   border-radius: var(--radius-card);
   background: #fffaf3;
   transition: transform var(--motion-duration), box-shadow var(--motion-duration), border-color var(--motion-duration);
@@ -960,8 +961,8 @@ onUnmounted(() => {
 
 .book-card:hover {
   transform: translateY(-2px);
-  border-color: var(--card-hover-border);
-  box-shadow: var(--card-hover-shadow);
+  border-color: #c9b396;
+  box-shadow: 0 8px 18px rgba(92, 68, 40, 0.12);
 }
 
 :deep(.book-card > .n-card__content) {
@@ -1077,7 +1078,7 @@ onUnmounted(() => {
 
 .book-author {
   margin-top: var(--space-1);
-  color: var(--text-muted);
+  color: #6d5c4a;
   font-size: 12px;
 }
 
@@ -1092,7 +1093,7 @@ onUnmounted(() => {
 .book-progress,
 .book-progress-time {
   margin-top: var(--space-2);
-  color: var(--text-muted);
+  color: #6d5c4a;
   font-size: 12px;
 }
 
@@ -1112,7 +1113,6 @@ onUnmounted(() => {
 }
 
 .card-edit {
-  position: static;
   align-self: flex-start;
   margin-top: var(--space-3);
   min-height: 32px;
@@ -1120,10 +1120,10 @@ onUnmounted(() => {
 }
 
 .card-more {
-  position: static;
-  z-index: 1;
-  align-self: flex-start;
-  margin-top: var(--space-2);
+  position: absolute;
+  z-index: 2;
+  top: var(--space-2);
+  right: var(--space-2);
   min-height: 32px;
   border-radius: var(--radius-control);
   background: #f3e6d4;
@@ -1132,6 +1132,15 @@ onUnmounted(() => {
 .library-empty {
   min-height: 280px;
   align-content: center;
+  border-color: #e4d5bf;
+  background: #fffaf3;
+  color: #5c4b3a;
+}
+
+.library-inline-error {
+  margin: 0 0 var(--space-3);
+  color: #9a3b32;
+  font-size: 13px;
 }
 
 .library-empty h3,
