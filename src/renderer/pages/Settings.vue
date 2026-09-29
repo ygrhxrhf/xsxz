@@ -52,9 +52,10 @@ const sectionOptions: { id: SettingsSection; label: string }[] = [
   { id: 'about', label: '关于' },
 ]
 
-const skinOptions: { id: Skin; name: string; desc: string; mark: string }[] = [
-  { id: 'sakura', name: '夜樱', desc: '深色 · 樱粉 × 紫罗兰', mark: '🌸' },
-  { id: 'minimal', name: '简约', desc: '浅色 · 中性克制', mark: '📘' },
+const skinOptions: { id: Skin; name: string; desc: string }[] = [
+  { id: 'paper', name: '暖纸', desc: '米白纸面 · 长时间阅读' },
+  { id: 'white', name: '白纸', desc: '浅色 · 中性克制' },
+  { id: 'night', name: '夜间', desc: '深色 · 弱光阅读' },
 ]
 
 const settings = ref<Settings | null>(null)
@@ -558,7 +559,7 @@ onMounted(load)
             <span class="sw-dot d3"></span>
           </span>
           <span class="skin-name">
-            {{ s.mark }} {{ s.name }}
+            {{ s.name }}
             <span v-if="skin === s.id" class="skin-current">✓ 使用中</span>
           </span>
           <span class="skin-desc">{{ s.desc }}</span>
@@ -919,7 +920,7 @@ onMounted(load)
 
 .skin-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-3);
 }
 
@@ -959,13 +960,19 @@ onMounted(load)
   gap: 6px;
 }
 
-.skin-swatch.sakura {
-  background: linear-gradient(135deg, #ff8ec7, #a78bfa);
+.skin-swatch.paper {
+  background: #f7f3e8;
+  border: 1px solid #e4dcc8;
 }
 
-.skin-swatch.minimal {
-  background: #f2f3f6;
+.skin-swatch.white {
+  background: #ffffff;
   border: 1px solid #e4e5ec;
+}
+
+.skin-swatch.night {
+  background: #1b1d20;
+  border: 1px solid #34373c;
 }
 
 .sw-dot {
@@ -974,28 +981,40 @@ onMounted(load)
   border-radius: 50%;
 }
 
-.sakura .d1 {
-  background: #fff;
+.paper .d1 {
+  background: #c4a574;
 }
 
-.sakura .d2 {
-  background: #ffd7ea;
+.paper .d2 {
+  background: #efe6d4;
 }
 
-.sakura .d3 {
-  background: #43315c;
+.paper .d3 {
+  background: #2f2a24;
 }
 
-.minimal .d1 {
+.white .d1 {
   background: #5e6f9e;
 }
 
-.minimal .d2 {
-  background: #c9cede;
+.white .d2 {
+  background: #e6e7ee;
 }
 
-.minimal .d3 {
+.white .d3 {
   background: #26262e;
+}
+
+.night .d1 {
+  background: #d8d2c7;
+}
+
+.night .d2 {
+  background: #3a3d42;
+}
+
+.night .d3 {
+  background: #8a8478;
 }
 
 .skin-name {
