@@ -104,6 +104,9 @@ body {
   background-attachment: fixed;
 }
 
+body[data-skin='paper'],
+body[data-skin='white'],
+body[data-skin='night'],
 body[data-skin='minimal'] {
   /* 简约皮肤只替换语义色，不改变布局、间距和状态结构。 */
   --text-primary: #26262e;
@@ -319,6 +322,12 @@ body,
 .app-shell {
   display: flex;
   height: 100%;
+}
+
+.app-shell-reader,
+.app-shell-reader .main {
+  background: #F7F3E8;
+  color: #2F2A24;
 }
 
 .sidebar {
