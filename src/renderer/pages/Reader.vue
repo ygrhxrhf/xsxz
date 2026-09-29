@@ -1727,8 +1727,9 @@ onMounted(async () => {
   scheduleToolHide()
   if (props.bookId) await loadBook(props.bookId)
   unsubDownload = window.api.download.onProgress((p) => {
+    if (book.value && p.bookId === book.value.id && p.status === 'running') downloadProgress.value = p
+    else if (!book.value || p.bookId === book.value.id) downloadProgress.value = null
     if (!book.value || p.bookId !== book.value.id) return
-    downloadProgress.value = p
     if (p.status === 'done' || p.status === 'error' || p.status === 'cancelled') {
       void loadBook(book.value.id)
     }
@@ -1775,10 +1776,10 @@ onUnmounted(() => {
         <button class="tool-button" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg></button>
         <button class="tool-button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg></button>
         <span class="toolbar-gap" aria-hidden="true"></span>
-        <template v-if="downloadProgress?.status === 'running' && downloadProgress.bookId === book.id">
-          <span class="tool-button tool-text" role="status">已下 {{ downloadProgress.done }} / {{ downloadProgress.total }} 章</span>
-          <button class="tool-button tool-text" type="button" @click="cancelReaderDownload">取消</button>
-        </template>
+        <div v-if="downloadProgress?.status === 'running' && downloadProgress.bookId === book.id" class="reader-download-chip">
+          <span>已下 {{ downloadProgress.done }} / {{ downloadProgress.total }} 章</span>
+          <button class="reader-dl-cancel" type="button" aria-label="取消" @click="cancelReaderDownload">取消</button>
+        </div>
         <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('go-settings')">设置</button>
         <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('go-browse')">浏览</button>
         <button class="tool-button tool-button-offstage" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M7 10h1M10 10h1M13 10h1M16 10h1M7 14h7M16 14h1"/></svg></button>
