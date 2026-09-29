@@ -338,7 +338,6 @@ onUnmounted(() => {
   --browse-ink-soft: #6d6458;
   --browse-line: rgba(47, 42, 36, 0.14);
   --browse-focus: #8a5a32;
-  --browse-hover: rgba(47, 42, 36, 0.08);
   color: var(--browse-ink);
   background: var(--browse-paper);
   font-family: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", "Microsoft YaHei UI", serif;
@@ -350,8 +349,8 @@ onUnmounted(() => {
   height: auto;
   display: block;
   padding: 0;
-  border-bottom: 1px solid var(--browse-line);
-  background: color-mix(in srgb, #fffdf8 88%, var(--browse-paper));
+  border-bottom: 1px solid rgba(47, 42, 36, 0.14);
+  background: #f7f3e8;
 }
 
 .browser-nav-row,
@@ -369,22 +368,22 @@ onUnmounted(() => {
 .browser-action-row {
   min-height: 44px;
   justify-content: space-between;
-  border-top: 1px solid var(--browse-line);
-  background: transparent;
+  border-top: 1px solid rgba(47, 42, 36, 0.14);
+  background: #fffdf8;
 }
 
 .browser-nav-row input {
   min-width: 120px;
   height: 36px;
   flex: 1;
-  border: 0;
+  border: 1px solid #e3d9c6;
   border-radius: var(--radius-control);
   padding: 0 var(--space-3);
   color: var(--browse-ink);
-  background: rgba(47, 42, 36, 0.05);
+  background: #fffdf8;
   font: inherit;
   font-size: 14px;
-  transition: background var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing);
+  transition: border-color var(--motion-duration) var(--motion-easing), background var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing);
 }
 
 .browser-nav-row input::placeholder {
@@ -392,12 +391,14 @@ onUnmounted(() => {
 }
 
 .browser-nav-row input:hover {
-  background: rgba(47, 42, 36, 0.08);
+  border-color: #c9b89a;
+  background: #fffdf8;
 }
 
 .browser-nav-row input:focus {
+  border-color: var(--browse-focus);
   background: #fffdf8;
-  box-shadow: 0 0 0 2px var(--browse-focus);
+  box-shadow: 0 0 0 3px rgba(138, 90, 50, 0.16);
 }
 
 .browser-nav-row input:focus:not(:focus-visible) {
@@ -411,17 +412,22 @@ onUnmounted(() => {
   display: grid;
   place-items: center;
   padding: 0;
-  border: 0;
+  border: 1px solid #e3d9c6;
   border-radius: var(--radius-control);
   color: var(--browse-ink);
-  background: transparent;
+  background: #fffdf8;
   cursor: pointer;
-  transition: background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
+  transition: border-color var(--motion-duration) var(--motion-easing), background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
 }
 
-.browser-icon-button:hover:not(:disabled),
-.browser-open-button:hover:not(:disabled) {
-  background: var(--browse-hover);
+.browser-icon-button:hover:not(:disabled) {
+  border-color: #c9b89a;
+  background: #f3ecdf;
+}
+
+.browser-icon-button:active:not(:disabled) {
+  border-color: var(--browse-focus);
+  background: #efe6d4;
 }
 
 .browser-icon-button:focus-visible,
@@ -432,6 +438,8 @@ onUnmounted(() => {
 
 .browser-icon-button:disabled {
   color: #a89884;
+  border-color: #eadfce;
+  background: #fffdf8;
   opacity: 1;
   cursor: default;
 }
@@ -450,7 +458,7 @@ onUnmounted(() => {
 .browser-open-button {
   height: 36px;
   flex: 0 0 auto;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: var(--radius-control);
   padding: 0 var(--space-3);
   color: #fffaf3;
@@ -463,6 +471,10 @@ onUnmounted(() => {
 
 .browser-open-button:hover:not(:disabled) {
   background: #744b29;
+}
+
+.browser-open-button:active:not(:disabled) {
+  background: #633f22;
 }
 
 .browser-open-button:disabled {
