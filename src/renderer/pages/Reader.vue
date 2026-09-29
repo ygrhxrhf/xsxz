@@ -71,8 +71,7 @@ const emit = defineEmits<{
   (e: 'back'): void
   (e: 'go-browse', url?: string): void
   (e: 'open-shelf'): void
-  (e: 'open-browse'): void
-  (e: 'open-settings'): void
+  (e: 'go-settings'): void
 }>()
 const message = useMessage()
 
@@ -1792,10 +1791,12 @@ onUnmounted(() => {
         <button class="tool-button tool-text" type="button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock">沉浸</button>
         <span class="toolbar-gap" aria-hidden="true"></span>
         <span v-if="downloadRunning" class="reader-dl">已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章<button class="reader-dl-cancel" type="button" @click="cancelReaderDownload">取消</button></span>
-        <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('open-browse')">浏览</button>
-        <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('open-settings')">设置</button>
-        <button class="tool-button tool-button-offstage" title="返回书库" aria-label="返回书库" @click="emit('back')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10"/></svg></button>
-        <button class="tool-button tool-button-offstage" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M7 10h1M10 10h1M13 10h1M16 10h1M7 14h7M16 14h1"/></svg></button>
+        <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('go-browse')">浏览</button>
+        <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('go-settings')">设置</button>
+        <button class="tool-button tool-button-offstage" type="button" title="返回书库" aria-label="返回书库" @click="emit('back')"></button>
+        <button class="tool-button tool-button-offstage" type="button" title="目录" aria-label="目录" @click="openCatalog"></button>
+        <button class="tool-button tool-button-offstage" type="button" title="外观" aria-label="外观" @click="toggleBottomPanel('font')"></button>
+        <button class="tool-button tool-button-offstage" type="button" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"></button>
 
         <div v-if="activeToolPanel" class="tool-panel" @click.stop>
           <template v-if="activeToolPanel === 'tts'">
@@ -1870,7 +1871,7 @@ onUnmounted(() => {
       </div>
 
       <div class="reader-bottombar">
-        <button class="bottom-button" type="button" aria-label="目录" :class="{ active: activeBottomPanel === 'catalog' }" @click="toggleBottomPanel('catalog')">目录</button>
+        <button class="bottom-button" type="button" aria-label="目录" :class="{ active: showDrawer }" @click="openCatalog">目录</button>
         <button class="bottom-button" type="button" aria-label="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')">进度</button>
         <button class="bottom-button" type="button" aria-label="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')">背景</button>
         <button class="bottom-button" type="button" aria-label="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')">字体</button>
@@ -1924,7 +1925,7 @@ onUnmounted(() => {
             </div>
             <div class="control-label">阅读方式</div>
             <div class="option-grid">
-              <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
+              <button v-for="item in [{v:'scroll',l:'滚动'},{v:'screen',l:'翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
             </div>
             <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
           </template>
@@ -2928,3 +2929,5 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 </style>
+
+.reader-bottombar { border-radius: var(--radius-card); }
