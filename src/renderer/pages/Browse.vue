@@ -78,10 +78,6 @@ function restoreProgressDrawer() {
   if (downloadProgress.value) showProgress.value = true
 }
 
-function noteFailedRetrySample() {
-  message.info('样例，尚未补章')
-}
-
 function reportBounds() {
   const el = slot.value
   if (!el) return
@@ -277,7 +273,7 @@ onUnmounted(() => {
             </ul>
             <div v-else class="dl-failed-empty">没有失败章节</div>
             <div v-if="failedChapterRows.length > 0" class="dl-retry-sample">
-              <n-button size="small" secondary @click="noteFailedRetrySample">只补失败章</n-button>
+              <n-button size="small" secondary disabled>只补失败章</n-button>
               <span>样例，尚未补章</span>
             </div>
           </div>
