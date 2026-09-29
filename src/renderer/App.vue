@@ -258,8 +258,8 @@ onUnmounted(() => {
 <template>
   <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
-      <div :class="['app-shell', { 'app-shell-reader': tab === 'reader' }]">
-        <aside v-if="tab !== 'reader'" class="sidebar">
+      <div :class="['app-shell', { 'app-shell-reader': tab === 'reader' && !!currentBookId }]">
+        <aside v-if="!(tab === 'reader' && currentBookId)" class="sidebar">
           <div class="brand">
             <span class="brand-mark" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
@@ -318,8 +318,7 @@ onUnmounted(() => {
             @back="backToLibrary"
             @go-browse="goBrowse"
             @open-shelf="backToLibrary"
-            @open-browse="goBrowse()"
-            @open-settings="tab = 'settings'"
+            @go-settings="tab = 'settings'"
           />
           <SettingsPage
             v-show="tab === 'settings'"

@@ -1110,10 +1110,6 @@ function cancelReaderDownload() {
   void window.api.download.cancel()
 }
 
-function cancelReaderDownload() {
-  emit('cancel-download')
-}
-
 function prevChapter() {
   if (!currentChapter.value) return
   const i = chapters.value.findIndex((c) => c.id === currentChapter.value!.id)
@@ -1794,7 +1790,10 @@ onUnmounted(() => {
         <button class="tool-button tool-text" type="button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')">AI</button>
         <button class="tool-button tool-text" type="button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock">沉浸</button>
         <span class="toolbar-gap" aria-hidden="true"></span>
-        <span v-if="downloadRunning" class="reader-dl">已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章<button class="reader-dl-cancel" type="button" @click="cancelReaderDownload">取消</button></span>
+        <div v-if="downloadRunning" class="reader-download-chip">
+          <span>已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章</span>
+          <button class="reader-download-cancel" type="button" @click="cancelReaderDownload">取消</button>
+        </div>
         <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('go-browse')">浏览</button>
         <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('go-settings')">设置</button>
         <button class="tool-button tool-button-offstage" type="button" title="返回书库" aria-label="当前书" @click="emit('open-shelf')"></button>
