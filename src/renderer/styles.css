@@ -321,6 +321,7 @@ body,
 
 .app-shell {
   display: flex;
+  flex-direction: column;
   height: 100%;
 }
 
@@ -330,25 +331,25 @@ body,
   color: #2F2A24;
 }
 
+.app-bar,
 .sidebar {
-  width: 72px;
-  flex-shrink: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-1);
-  background: #F7F3E8;
+  height: 56px;
+  flex-shrink: 0;
+  gap: var(--space-3);
+  padding: 0 var(--space-4);
+  background: #f7f3e8;
   color: #2F2A24;
-  border-right: 1px solid #E4DCCB;
+  border-bottom: 1px solid #E4DCCB;
 }
 
 .app-nav {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: center;
   gap: var(--space-1);
-  width: 100%;
   min-width: 0;
 }
 
@@ -375,21 +376,21 @@ body,
 }
 
 .nav-btn {
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  width: 100%;
+  gap: var(--space-1);
+  width: auto;
   text-align: center;
   border: 1px solid transparent;
   background: transparent;
   color: #6B6258;
-  padding: var(--space-1) 0;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-control);
   cursor: pointer;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 13px;
+  line-height: 20px;
   transition: background var(--motion-duration), color var(--motion-duration), border-color var(--motion-duration);
 }
 
@@ -474,13 +475,13 @@ body,
 }
 
 .sidebar-dl {
-  margin-top: auto;
-  width: 100%;
+  margin-left: auto;
   min-width: 0;
+  max-width: 280px;
   color: #2F2A24;
-  font-size: 11px;
-  line-height: 15px;
-  text-align: center;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: right;
 }
 
 .sidebar-dl-title {
@@ -492,11 +493,12 @@ body,
 
 .sidebar-dl-row {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 2px;
+  justify-content: flex-end;
+  gap: var(--space-2);
   color: #6B6258;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .sidebar-dl-cancel {
