@@ -90,6 +90,7 @@ const libraryTags = computed(() => collectLibraryTags(books.value))
 const duplicateGroups = computed(() => findLibraryDuplicateGroups(books.value))
 const duplicateOpen = ref(false)
 const initialLoading = computed(() => loading.value && books.value.length === 0)
+const loadError = ref('')
 const hasActiveFilter = computed(
   () => Boolean(query.value.trim()) || statusFilter.value !== 'all' || Boolean(selectedTag.value),
 )
@@ -122,6 +123,11 @@ async function refresh() {
     if (refreshTracker.isLatest(requestId)) {
       books.value = res.books
       libraryPath.value = nextLibraryPath
+      loadError.value = ''
+    }
+  } catch {
+    if (refreshTracker.isLatest(requestId)) {
+      loadError.value = '书库暂时打不开，请稍后重试。'
     }
   } finally {
     refreshTracker.end()
@@ -671,8 +677,17 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <section v-else-if="loadError && !books.length" class="library-empty empty-state library-error" role="alert">
+      <h3>书库暂时打不开</h3>
+      <p>{{ loadError }}</p>
+      <div class="empty-actions">
+        <n-button type="primary" @click="refresh">重试</n-button>
+      </div>
+    </section>
+
     <section v-else-if="!books.length && !hasActiveFilter" class="library-empty empty-state">
       <h3>还没有书</h3>
+      <p>导入一本 txt 或 epub，或去浏览里下载。</p>
       <div class="empty-actions">
         <n-button type="primary" @click="emit('go-browse')">去浏览</n-button>
       </div>
@@ -682,6 +697,7 @@ onUnmounted(() => {
       <h3>没有匹配的书</h3>
     </section>
 
+    <p v-if="loadError && books.length" class="library-inline-error" role="alert">{{ loadError }}</p>
     <div v-else class="book-grid">
       <n-card v-for="b in visibleBooks" :key="b.id" hoverable class="book-card">
         <button class="book-open-area" type="button" :aria-label="`打开《${b.title}》`" @click="emit('open-book', b.id)">
@@ -860,6 +876,12 @@ onUnmounted(() => {
 <style scoped>
 .library-page {
   overflow: auto;
+  color: #3a2a1c;
+  background:
+    radial-gradient(720px 280px at 8% -8%, rgba(196, 138, 74, 0.16), transparent 68%),
+    linear-gradient(180deg, #f6efe2 0%, #efe4d2 100%);
+  border: 1px solid #e2d3bc;
+  border-radius: var(--radius-card);
 }
 
 .library-header {
@@ -921,11 +943,18 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: var(--space-4);
+  padding: var(--space-4);
+  background:
+    linear-gradient(180deg, rgba(255, 250, 242, 0.72), rgba(243, 232, 214, 0.88));
+  border: 1px solid #e6d7c2;
+  border-radius: var(--radius-card);
+  box-shadow: inset 0 1px 0 rgba(255, 252, 246, 0.8);
 }
 
 .book-card {
   min-width: 0;
   border-radius: var(--radius-card);
+  background: #fffaf3;
   transition: transform var(--motion-duration), box-shadow var(--motion-duration), border-color var(--motion-duration);
 }
 
@@ -1028,10 +1057,11 @@ onUnmounted(() => {
   min-height: 42px;
   display: -webkit-box;
   overflow: hidden;
-  color: var(--text-primary);
-  font-size: 15px;
+  color: #2c2118;
+  font-size: 16px;
   font-weight: 700;
   line-height: 1.4;
+  letter-spacing: 0.01em;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -1082,6 +1112,7 @@ onUnmounted(() => {
 }
 
 .card-edit {
+  position: static;
   align-self: flex-start;
   margin-top: var(--space-3);
   min-height: 32px;
@@ -1089,13 +1120,13 @@ onUnmounted(() => {
 }
 
 .card-more {
-  position: absolute;
-  z-index: 2;
-  top: var(--space-2);
-  right: var(--space-2);
+  position: static;
+  z-index: 1;
+  align-self: flex-start;
+  margin-top: var(--space-2);
   min-height: 32px;
   border-radius: var(--radius-control);
-  background: var(--surface-2);
+  background: #f3e6d4;
 }
 
 .library-empty {
@@ -1122,8 +1153,8 @@ onUnmounted(() => {
 .skeleton-card {
   min-height: 330px;
   padding: var(--space-4);
-  border: 1px solid var(--border);
-  background: var(--surface-1);
+  border: 1px solid #e4d5bf;
+  background: #fffaf3;
 }
 
 .skeleton-cover {
