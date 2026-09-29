@@ -21,7 +21,8 @@ describe('Reader visual surface contract', () => {
 
   it('preserves the reader interaction structure and motion safety rails', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
-    expect(source).toContain(':class="[\'reader-toolbar\', { visible: toolsVisible }]"')
+    expect(source).toContain('class="reader-toolbar"')
+    expect(source).not.toContain(':class="[\'reader-toolbar\', { visible: toolsVisible }]"')
     expect(source).toContain('class="tool-panel"')
     expect(source).toContain('v-model:show="showDrawer" placement="left" :width="320"')
     expect(source).toContain('v-model:show="showAiResult" placement="right" :width="420"')
