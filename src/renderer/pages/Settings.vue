@@ -11,6 +11,7 @@ import {
   NEmpty,
   NPopconfirm,
   NRadio,
+  NRadioButton,
   NRadioGroup,
   NSelect,
   NSwitch,
@@ -19,7 +20,7 @@ import {
   NSpin,
   useMessage,
 } from 'naive-ui'
-import type { AiPromptKind, AiPromptMode, AiProvider, Settings, SiteRule, Skin } from '@shared/types'
+import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, Settings, SiteRule, Skin } from '@shared/types'
 import { AI_PROMPT_KINDS, DEFAULT_AI_PREFS } from '@shared/types'
 import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
 import {
@@ -68,6 +69,7 @@ const promptMode = ref<Record<AiPromptKind, AiPromptMode>>({ ...DEFAULT_AI_PREFS
 const customPrompts = ref<Partial<Record<AiPromptKind, string>>>({})
 const promptUndo = ref<Partial<Record<AiPromptKind, { mode: AiPromptMode; text?: string }>>>({})
 const libraryPath = ref('')
+const downloadPace = ref<DownloadPace>('standard')
 const saving = ref(false)
 const testing = ref(false)
 const msg = ref('')
@@ -141,6 +143,7 @@ async function load() {
     promptMode.value = { ...ai.promptMode }
     customPrompts.value = { ...ai.customPrompts }
     libraryPath.value = settings.value.libraryPath
+    downloadPace.value = settings.value.downloadPace ?? 'standard'
     await loadRules()
   } finally {
     settingsLoading.value = false
@@ -189,6 +192,21 @@ function changeProvider(next: AiProvider) {
   if (next === 'deepseek') {
     baseUrl.value = DEEPSEEK_BASE_URL
     model.value = DEEPSEEK_RECOMMENDED_MODEL
+  }
+}
+
+async function setDownloadPace(next: DownloadPace) {
+  if (next === downloadPace.value) return
+  const previous = downloadPace.value
+  downloadPace.value = next
+  try {
+    const saved = await window.api.settings.set({ downloadPace: next })
+    settings.value = saved
+    downloadPace.value = saved.downloadPace ?? next
+  } catch (e: unknown) {
+    downloadPace.value = previous
+    const text = e instanceof Error ? e.message : String(e)
+    message.error(text || '下载速度保存失败')
   }
 }
 
@@ -559,6 +577,17 @@ onMounted(load)
           保存后立即使用新路径，不会把旧书拷过去。旧目录里的文件仍留在原处。
         </p>
         <n-button type="primary" :loading="saving" @click="saveLibrary">保存路径</n-button>
+        <div class="pace-row">
+          <div>
+            <div class="field-label">下载速度</div>
+            <div class="field-help">只影响下载时两章之间的等待。</div>
+          </div>
+          <n-radio-group :value="downloadPace" size="small" @update:value="setDownloadPace">
+            <n-radio-button value="slow">慢</n-radio-button>
+            <n-radio-button value="standard">标准</n-radio-button>
+            <n-radio-button value="fast">快</n-radio-button>
+          </n-radio-group>
+        </div>
       </n-space>
     </n-card>
 
@@ -878,6 +907,14 @@ onMounted(load)
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.pace-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 4px;
 }
 
 .skin-grid {

@@ -2,7 +2,7 @@
 import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NMessageProvider } from 'naive-ui'
-import { DEFAULT_AI_PREFS, DEFAULT_APPEARANCE_PREFS, DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS, type Settings } from '../../shared/types'
+import { DEFAULT_AI_PREFS, DEFAULT_APPEARANCE_PREFS, DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS, type DownloadPace, type Settings } from '../../shared/types'
 import SettingsPage from './Settings.vue'
 
 class ResizeObserverStub {
@@ -42,6 +42,43 @@ function button(text: string): HTMLButtonElement {
     .find((item) => item.textContent?.trim() === text)
   if (!match) throw new Error(`button not found: ${text}`)
   return match as HTMLButtonElement
+}
+
+function baseSettings(downloadPace: DownloadPace = 'standard'): Settings {
+  return {
+    libraryPath: '/tmp/library',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-v4-flash',
+    apiKeyConfigured: true,
+    reader: DEFAULT_READER_PREFS,
+    tts: DEFAULT_TTS_PREFS,
+    appearance: DEFAULT_APPEARANCE_PREFS,
+    ai: { ...DEFAULT_AI_PREFS },
+    downloadPace,
+  }
+}
+
+async function openLibrarySection(): Promise<void> {
+  button('书库').click()
+  await flushUi()
+}
+
+function paceControl(label: string): HTMLElement {
+  const match = [...document.querySelectorAll('.n-radio-button, .n-radio-group label, [role="radio"]')]
+    .find((item) => item.textContent?.trim() === label)
+  if (!match) throw new Error(`pace control not found: ${label}`)
+  return match as HTMLElement
+}
+
+function paceChecked(label: string): boolean {
+  const control = paceControl(label)
+  const radio = control.matches('input[type="radio"]')
+    ? control as HTMLInputElement
+    : control.querySelector('input[type="radio"]')
+  if (radio) return (radio as HTMLInputElement).checked
+  return control.getAttribute('aria-checked') === 'true'
+    || control.className.includes('n-radio-button--checked')
+    || control.className.includes('n-radio--checked')
 }
 
 describe('Settings AI custom-origin confirmation', () => {
@@ -357,5 +394,85 @@ describe('Settings section content visibility', () => {
     expect(visibleCard('备份与恢复').textContent).toContain('从备份恢复…')
     await select('关于')
     expect(visibleCard('技术栈：Electron + Vue 3 + Naive UI').textContent).toContain('技术栈：Electron + Vue 3 + Naive UI')
+  })
+})
+
+describe('Settings download pace', () => {
+  let unmount: (() => void) | undefined
+
+  afterEach(() => {
+    unmount?.()
+    unmount = undefined
+    document.body.innerHTML = ''
+    vi.restoreAllMocks()
+  })
+
+  function mountPage(): void {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(settingsHarness())
+    app.mount(host)
+    unmount = () => app.unmount()
+  }
+
+  it('selects 标准 when downloadPace is missing and saves the chosen pace immediately', async () => {
+    let current = baseSettings('standard')
+    delete (current as { downloadPace?: DownloadPace }).downloadPace
+    const set = vi.fn(async (update: { downloadPace?: DownloadPace }) => {
+      if (update.downloadPace) current = { ...current, downloadPace: update.downloadPace }
+      return current
+    })
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        settings: { get: vi.fn(async () => current), set },
+        siteRules: { list: vi.fn(async () => ({ rules: [] })) },
+        ai: { test: vi.fn() },
+      },
+    })
+    mountPage()
+    await flushUi()
+    await openLibrarySection()
+
+    const library = document.body.textContent ?? ''
+    expect(library).toContain('下载速度')
+    expect(library).toContain('只影响下载时两章之间的等待')
+    expect(library).not.toMatch(/2000|600ms|200ms/)
+    expect(paceChecked('标准')).toBe(true)
+    expect(set).not.toHaveBeenCalled()
+
+    paceControl('快').click()
+    await flushUi()
+    expect(set).toHaveBeenCalledWith({ downloadPace: 'fast' })
+    expect(paceChecked('快')).toBe(true)
+    expect(paceChecked('标准')).toBe(false)
+  })
+
+  it('rolls the selection back and shows the save error', async () => {
+    const current = baseSettings('slow')
+    const set = vi.fn(async () => {
+      throw new Error('磁盘写入失败')
+    })
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        settings: { get: vi.fn(async () => current), set },
+        siteRules: { list: vi.fn(async () => ({ rules: [] })) },
+        ai: { test: vi.fn() },
+      },
+    })
+    mountPage()
+    await flushUi()
+    await openLibrarySection()
+
+    expect(paceChecked('慢')).toBe(true)
+    paceControl('标准').click()
+    await flushUi()
+    await flushUi()
+
+    expect(set).toHaveBeenCalledWith({ downloadPace: 'standard' })
+    expect(paceChecked('慢')).toBe(true)
+    expect(paceChecked('标准')).toBe(false)
+    expect(document.body.textContent).toContain('磁盘写入失败')
   })
 })
