@@ -161,16 +161,6 @@ document.body.dataset.skin = skin.value
 const naiveTheme = computed(() => (skin.value === 'night' ? darkTheme : lightTheme))
 const themeOverrides = computed(() => (skin.value === 'white' ? minimalOverrides : paperOverrides))
 
-const skinMeta = computed(() =>
-  skin.value === 'minimal'
-    ? { sub: '简约阅读', toggleLabel: '夜樱模式' }
-    : { sub: '❀ 樱色书房 ❀', toggleLabel: '简约模式' },
-)
-
-function toggleSkin() {
-  skin.value = skin.value === 'sakura' ? 'minimal' : 'sakura'
-}
-
 function onChangeSkin(s: Skin) {
   skin.value = s
 }
@@ -259,42 +249,35 @@ onUnmounted(() => {
   <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
       <div :class="['app-shell', { 'app-shell-reader': tab === 'reader' && !!currentBookId }]">
-        <aside v-if="!(tab === 'reader' && currentBookId)" class="sidebar">
-          <div class="brand">
-            <span class="brand-mark" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M3 5.5A3.5 3.5 0 0 1 6.5 2H11v17H6.5A3.5 3.5 0 0 0 3 22V5.5Z" />
-                <path d="M21 5.5A3.5 3.5 0 0 0 17.5 2H13v17h4.5A3.5 3.5 0 0 1 21 22V5.5Z" />
-              </svg>
-            </span>
-            <div class="brand-copy">
-              <div class="brand-title">小说浏览器</div>
-              <div class="brand-sub">{{ skinMeta.sub }}</div>
-            </div>
-          </div>
-          <button
-            v-for="item in tabs"
-            :key="item.id"
-            class="nav-btn"
-            :class="{ active: tab === item.id }"
-            type="button"
-            :aria-current="tab === item.id ? 'page' : undefined"
-            @click="tab = item.id"
-          >
-            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path v-for="path in item.iconPaths" :key="path" :d="path" />
+        <aside v-if="!(tab === 'reader' && currentBookId)" class="sidebar" aria-label="主要功能">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M3 5.5A3.5 3.5 0 0 1 6.5 2H11v17H6.5A3.5 3.5 0 0 0 3 22V5.5Z" />
+              <path d="M21 5.5A3.5 3.5 0 0 0 17.5 2H13v17h4.5A3.5 3.5 0 0 1 21 22V5.5Z" />
             </svg>
-            <span class="nav-label">{{ item.label }}</span>
-          </button>
-          <div class="sidebar-bottom">
-            <div v-if="dlRunning?.status === 'running'" class="sidebar-dl">
-              <div class="sidebar-dl-title" :title="dlRunning.title">{{ dlRunning.title }}</div>
-              <div class="sidebar-dl-row">
-                <span>已下 {{ dlRunning.done }} / {{ dlRunning.total }} 章</span>
-                <button class="sidebar-dl-cancel" type="button" @click="cancelSidebarDownload">取消</button>
-              </div>
+          </span>
+          <nav class="app-nav">
+            <button
+              v-for="item in tabs"
+              :key="item.id"
+              class="nav-btn"
+              :class="{ active: tab === item.id }"
+              type="button"
+              :aria-current="tab === item.id ? 'page' : undefined"
+              @click="tab = item.id"
+            >
+              <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path v-for="path in item.iconPaths" :key="path" :d="path" />
+              </svg>
+              <span class="nav-label">{{ item.label }}</span>
+            </button>
+          </nav>
+          <div v-if="dlRunning?.status === 'running'" class="sidebar-dl">
+            <div class="sidebar-dl-title" :title="dlRunning.title">{{ dlRunning.title }}</div>
+            <div class="sidebar-dl-row">
+              <span>已下 {{ dlRunning.done }} / {{ dlRunning.total }} 章</span>
+              <button class="sidebar-dl-cancel" type="button" @click="cancelSidebarDownload">取消</button>
             </div>
-            <div class="sidebar-footer">暖纸</div>
           </div>
         </aside>
         <section class="main">
