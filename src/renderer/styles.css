@@ -324,14 +324,10 @@ body,
   color: #2F2A24;
 }
 
-.sidebar {
-  display: none;
-}
-
 .app-bar {
   display: flex;
   align-items: center;
-  height: 56px;
+  height: 44px;
   flex-shrink: 0;
   gap: var(--space-3);
   padding: 0 var(--space-4);
