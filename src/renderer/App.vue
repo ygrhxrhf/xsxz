@@ -17,8 +17,7 @@ const ruleHostPrefill = ref('')
 const ruleHostNonce = ref(0)
 const browsePrefillUrl = ref('')
 const browsePrefillNonce = ref(0)
-const dlRunning = ref(false)
-const dlHint = ref('')
+const dlRunning = ref<DownloadProgress | null>(null)
 let unsubProgress: (() => void) | null = null
 
 const tabs: { id: Tab; label: string; iconPaths: string[] }[] = [
@@ -214,20 +213,11 @@ function goSettingsWithHost(host: string) {
 }
 
 function onDownloadProgress(p: DownloadProgress) {
-  if (p.status === 'running') {
-    dlRunning.value = true
-    dlHint.value = `${p.done}/${p.total}`
-  } else {
-    dlRunning.value = false
-    dlHint.value = p.status === 'error' ? '有失败' : ''
-  }
+  dlRunning.value = p.status === 'running' ? p : null
 }
 
-function tabBadge(id: Tab): string {
-  if (!dlRunning.value) return ''
-  if (id === 'browse') return '下载中'
-  if (id === 'library') return dlHint.value
-  return ''
+function cancelSidebarDownload() {
+  void window.api.download.cancel()
 }
 
 function syncBrowseVisibility() {
@@ -295,9 +285,16 @@ onUnmounted(() => {
               <path v-for="path in item.iconPaths" :key="path" :d="path" />
             </svg>
             <span class="nav-label">{{ item.label }}</span>
-            <span v-if="tabBadge(item.id)" class="nav-badge">{{ tabBadge(item.id) }}</span>
+            <span v-if="false" class="nav-badge"></span>
           </button>
           <div class="sidebar-bottom">
+            <div v-if="dlRunning?.status === 'running'" class="sidebar-dl">
+              <div class="sidebar-dl-title" :title="dlRunning.title">{{ dlRunning.title }}</div>
+              <div class="sidebar-dl-row">
+                <span>已下 {{ dlRunning.done }} / {{ dlRunning.total }} 章</span>
+                <button class="sidebar-dl-cancel" type="button" @click="cancelSidebarDownload">取消</button>
+              </div>
+            </div>
             <button class="skin-toggle" type="button" :title="skin === 'sakura' ? '切换到简约皮肤' : '切换到夜樱皮肤'" @click="toggleSkin">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path v-if="skin === 'sakura'" d="M12 3a9 9 0 1 0 9 9c0-.5-.04-1-.12-1.47A7 7 0 0 1 13.47 3.1C13 3.03 12.5 3 12 3Z" />

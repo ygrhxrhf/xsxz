@@ -108,6 +108,13 @@ export interface ExtractBootstrap {
   chapters: CatalogChapter[]
 }
 
+export interface FailedChapterItem {
+  chapterId: string
+  title: string
+  index: number
+  reason: string
+}
+
 export interface DownloadProgress {
   bookId: string
   title: string
@@ -117,6 +124,8 @@ export interface DownloadProgress {
   currentTitle?: string
   status: 'running' | 'paused' | 'done' | 'cancelled' | 'error'
   lastError?: string
+  /** 仅结束事件（done / error / cancelled）携带；无失败或空章时为 []。running 省略。 */
+  failedChapters?: FailedChapterItem[]
 }
 
 /** 批量检查更新：逐本进度推送（download.checkAll.progress） */

@@ -197,7 +197,36 @@ export function getHiddenView(): WebContentsView {
   return hiddenView
 }
 
-function emitProgress(bookId: string): void {
+const EMPTY_CHAPTER_REASON = '正文为空或过短'
+
+/** 结束清单原因：failMessage > FAIL_CODE_ZH[failCode] > 正文为空或过短。 */
+export function failedChapterReason(ch: {
+  failMessage?: string
+  failCode?: FailCode
+}): string {
+  const message = ch.failMessage?.trim()
+  if (message) return message
+  if (ch.failCode && FAIL_CODE_ZH[ch.failCode]) return FAIL_CODE_ZH[ch.failCode]
+  return EMPTY_CHAPTER_REASON
+}
+
+async function loadFailedChapters(bookId: string): Promise<DownloadProgress['failedChapters']> {
+  try {
+    const book = await loadBook(bookId)
+    return book.chapters
+      .filter((ch) => ch.status === 'failed' || ch.status === 'empty')
+      .map((ch) => ({
+        chapterId: ch.id,
+        title: ch.title,
+        index: ch.index,
+        reason: failedChapterReason(ch),
+      }))
+  } catch {
+    return []
+  }
+}
+
+async function emitProgress(bookId: string): Promise<void> {
   const dl = active.get(bookId)
   if (!dl || !ownerWindow) return
   const finished = dl.cancelled || dl.done + dl.failed >= dl.total
@@ -218,7 +247,14 @@ function emitProgress(bookId: string): void {
     status,
     lastError: dl.lastError,
   }
-  ownerWindow.webContents.send('download.progress', progress)
+  if (status === 'done' || status === 'error' || status === 'cancelled') {
+    progress.failedChapters = (await loadFailedChapters(bookId)) ?? []
+  }
+  try {
+    ownerWindow.webContents.send('download.progress', progress)
+  } catch {
+    /* 进度推送失败不打断下载 */
+  }
 }
 
 function delay(ms: number): Promise<void> {
@@ -584,7 +620,7 @@ async function beginDownloadFromBootstrap(
     cancelled: false,
   }
   active.set(bookId, dl)
-  emitProgress(bookId)
+  void emitProgress(bookId)
   const job = downloadChapters(bookId).catch(() => {})
   runningJobs.add(job)
   void job.finally(() => runningJobs.delete(job))
@@ -604,14 +640,14 @@ export async function downloadChapters(bookId: string): Promise<void> {
     if (!chapterNeedsDownload(ch.status)) continue
 
     dl.currentTitle = ch.title
-    emitProgress(bookId)
+    await emitProgress(bookId)
 
     const chapterUrl = ch.url
     if (!chapterUrl) {
       dl.failed++
       dl.lastError = failMessage('CatalogNotFound', '章节没有地址')
       await writeFailedPlaceholder(bookId, ch.id, ch.title, undefined, 'CatalogNotFound', dl.lastError)
-      emitProgress(bookId)
+      await emitProgress(bookId)
       continue
     }
 
@@ -672,7 +708,7 @@ export async function downloadChapters(bookId: string): Promise<void> {
       await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, dl.lastError)
     }
 
-    emitProgress(bookId)
+    await emitProgress(bookId)
     if (!dl.cancelled) {
       try {
         await chapterGapDelay()
@@ -688,7 +724,7 @@ export async function downloadChapters(bookId: string): Promise<void> {
   } else {
     await refreshBookStatus(bookId)
   }
-  emitProgress(bookId)
+  await emitProgress(bookId)
   active.delete(bookId)
 }
 
@@ -766,7 +802,7 @@ export async function checkUpdate(
       cancelled: false,
     }
     active.set(bookId, dl)
-    emitProgress(bookId)
+    void emitProgress(bookId)
     const job = downloadChapters(bookId).catch(() => {})
     runningJobs.add(job)
     void job.finally(() => runningJobs.delete(job))
@@ -888,7 +924,7 @@ export async function retryFailed(bookId: string): Promise<{ ok: boolean; messag
       cancelled: false,
     }
     active.set(bookId, dl)
-    emitProgress(bookId)
+    void emitProgress(bookId)
     const job = downloadChapters(bookId).catch(() => {})
     runningJobs.add(job)
     void job.finally(() => runningJobs.delete(job))

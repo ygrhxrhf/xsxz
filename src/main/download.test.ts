@@ -59,6 +59,7 @@ import {
   checkAllUpdates,
   checkUpdate,
   checkUpdateFailHint,
+  failedChapterReason,
   CHAPTER_RETRY_TIMES,
   DOWNLOAD_SESSION_PARTITION,
   followCatalogIfNeeded,
@@ -118,9 +119,18 @@ import {
 } from './library'
 import { extractPage } from './extract'
 import { setSiteRulesDir, upsertSiteRule } from './siteRules'
-import { FAIL_CODE_ZH } from '../shared/types'
+import { FAIL_CODE_ZH, type DownloadProgress } from '../shared/types'
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, '../../fixtures', name), 'utf-8')
+
+describe('failedChapterReason', () => {
+  it('prefers failMessage, then FAIL_CODE_ZH, then the empty-body sentence', () => {
+    expect(failedChapterReason({ failMessage: '  目录丢了  ', failCode: 'NeedLogin' })).toBe('目录丢了')
+    expect(failedChapterReason({ failCode: 'NavFailed' })).toBe(FAIL_CODE_ZH.NavFailed)
+    expect(failedChapterReason({})).toBe('正文为空或过短')
+    expect(failedChapterReason({ failMessage: '   ' })).toBe('正文为空或过短')
+  })
+})
 
 describe('identityFromPage + followCatalogIfNeeded', () => {
   it('recovers the catalog from a chapter page and hashes one bookId', async () => {
@@ -1546,5 +1556,62 @@ describe('checkAllUpdates（全部检查更新）', () => {
     // 只补完第一本，另一本保持 6 章
     const counts = (await listBooks()).map((x) => x.chapterCount).sort((a, b) => a - b)
     expect(counts).toEqual([6, 7])
+  })
+})
+
+describe('failedChapters on terminal progress', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-dl-failch-'))
+    await setLibraryPath(dir)
+    resetDownloadStateForTests()
+  })
+
+  afterEach(async () => {
+    resetDownloadStateForTests()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('omits the list while running and sends [] or the failed/empty rows when finished', async () => {
+    const events: DownloadProgress[] = []
+    setOwnerWindow(progressWindow(events) as never)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('2.html')) await gate
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      if (url.includes('3.html')) return '<html><body><div id="content">短</div></body></html>'
+      return fixture('chapter.html')
+    })
+
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok, started.ok ? '' : `${started.code ?? ''} ${started.message ?? ''}`).toBe(true)
+    if (!started.ok) return
+    await vi.waitFor(() => {
+      expect(events.some((p) => p.status === 'running')).toBe(true)
+    })
+    expect(events.filter((p) => p.status === 'running').every((p) => p.failedChapters === undefined)).toBe(true)
+
+    release()
+    await waitForIdle()
+
+    const terminal = events.filter((p) => p.status === 'done' || p.status === 'error' || p.status === 'cancelled')
+    expect(terminal.length).toBeGreaterThan(0)
+    const last = terminal[terminal.length - 1]
+    expect(last.failedChapters).toEqual(expect.any(Array))
+    const book = await loadBook(started.bookId!)
+    const expected = book.chapters
+      .filter((ch) => ch.status === 'failed' || ch.status === 'empty')
+      .map((ch) => ({
+        chapterId: ch.id,
+        title: ch.title,
+        index: ch.index,
+        reason: ch.failMessage || (ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '正文为空或过短'),
+      }))
+    expect(last.failedChapters).toEqual(expected)
+    if (expected.length === 0) expect(last.failedChapters).toEqual([])
   })
 })

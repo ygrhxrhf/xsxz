@@ -101,6 +101,8 @@
 | `download.progress` | 主→渲染 | — | `DownloadProgress` |
 | `download.checkAll.progress` | 主→渲染 | — | `CheckAllProgress` |
 
+不新增频道。`DownloadProgress.failedChapters` 可选，结束事件（`done` / `error` / `cancelled`）必带，没有失败或空章时为 `[]`；`running`（及 `paused`）省略。元素字段：`chapterId`、`title`、`index`（磁盘 `ChapterMeta.index`，界面不再加减）、`reason`（优先 `failMessage`，否则 `FAIL_CODE_ZH[failCode]`，再否则「正文为空或过短」）。来源是该书 `status` 为 `failed` 或 `empty` 的章。
+
 禁止用裸 `fetch(chapterUrl)` 作为下书主路径。必须走同一 `persist:novel` 的隐藏 webContents。
 
 `download.checkUpdate` 只补该书已存 `sourceUrl` 的新目录项；`added` 只计新追加的目录行（重试已有 `failed` / `empty` 不加 `added`）。与 `start` / `retryFailed` 共用单任务锁。导入书或无 `sourceUrl` 时返回 `{ ok: false, message: '无原始目录地址，无法检查更新' }`。本频道只追加，不改 `start` / `retryFailed` 含义。

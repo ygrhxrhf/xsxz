@@ -37,6 +37,13 @@ const canOpenDownloadedBook = computed(() => {
   return Boolean(p?.bookId) && (p!.status === 'done' || p!.status === 'error')
 })
 
+const progressEnded = computed(() => {
+  const status = downloadProgress.value?.status
+  return status === 'done' || status === 'error' || status === 'cancelled'
+})
+
+const failedChapterRows = computed(() => downloadProgress.value?.failedChapters ?? [])
+
 function currentHost(): string {
   try {
     const u = new URL(address.value || state.value.url)
@@ -69,6 +76,10 @@ function openThisBook() {
 
 function restoreProgressDrawer() {
   if (downloadProgress.value) showProgress.value = true
+}
+
+function noteFailedRetrySample() {
+  message.info('样例，尚未补章')
 }
 
 function reportBounds() {
@@ -254,6 +265,21 @@ onUnmounted(() => {
           </div>
           <div v-if="downloadProgress.lastError" class="dl-error">
             错误：{{ downloadProgress.lastError }}
+          </div>
+          <div v-if="progressEnded" class="dl-failed">
+            <div class="dl-failed-title">失败章节</div>
+            <ul v-if="failedChapterRows.length > 0" class="dl-failed-list">
+              <li v-for="row in failedChapterRows" :key="row.chapterId">
+                <span class="dl-failed-index">{{ row.index }}</span>
+                <span class="dl-failed-name">{{ row.title }}</span>
+                <span class="dl-failed-reason">{{ row.reason }}</span>
+              </li>
+            </ul>
+            <div v-else class="dl-failed-empty">没有失败章节</div>
+            <div v-if="failedChapterRows.length > 0" class="dl-retry-sample">
+              <n-button size="small" secondary @click="noteFailedRetrySample">只补失败章</n-button>
+              <span>样例，尚未补章</span>
+            </div>
           </div>
           <div class="dl-actions">
             <n-button
@@ -449,5 +475,66 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-2);
   margin-top: var(--space-2);
+}
+
+.dl-failed {
+  margin-top: var(--space-2);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.dl-failed-title {
+  font-weight: 600;
+  margin-bottom: var(--space-1);
+}
+
+.dl-failed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 72px;
+  overflow: auto;
+}
+
+.dl-failed-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.dl-failed-index {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.dl-failed-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl-failed-reason {
+  flex: 0 1 auto;
+  margin-left: auto;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl-failed-empty {
+  color: var(--text-muted);
+}
+
+.dl-retry-sample {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--text-muted);
 }
 </style>
