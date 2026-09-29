@@ -50,7 +50,8 @@ import {
 } from './readerPager'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { decorateText, relocateRange } from '@shared/paragraphSearch'
-import type { Annotation, BookSearchHit } from '@shared/types'
+import type { Annotation, BookSearchHit, DownloadProgress } from '@shared/types'
+import { libraryCoverHues, libraryCoverSrc } from './libraryCard'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
@@ -69,6 +70,9 @@ const props = defineProps<{ bookId?: string }>()
 const emit = defineEmits<{
   (e: 'back'): void
   (e: 'go-browse', url?: string): void
+  (e: 'open-shelf'): void
+  (e: 'open-browse'): void
+  (e: 'open-settings'): void
 }>()
 const message = useMessage()
 
@@ -178,7 +182,10 @@ const immersiveMode = ref<ReaderImmersiveMode>('normal')
 const toolsVisible = ref(true)
 const temporaryToolReveal = ref(false)
 const pointerInToolbar = ref(false)
-const activeToolPanel = ref<'tts' | 'ai' | 'appearance' | 'shortcuts' | null>(null)
+const activeToolPanel = ref<'tts' | 'ai' | 'shortcuts' | null>(null)
+const activeBottomPanel = ref<'catalog' | 'progress' | 'background' | 'font' | null>(null)
+const libraryPath = ref('')
+const downloadProgress = ref<DownloadProgress | null>(null)
 let lastToolActivityAt = Date.now()
 let toolHideTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -608,7 +615,8 @@ function anyDrawerOpen() {
     showAiAssistant.value ||
     showSearch.value ||
     showMarks.value ||
-    activeToolPanel.value !== null
+    activeToolPanel.value !== null ||
+    activeBottomPanel.value !== null
   )
 }
 
@@ -678,9 +686,23 @@ function onToolbarLeave() {
   scheduleToolHide()
 }
 
-function toggleToolPanel(panel: 'tts' | 'ai' | 'appearance' | 'shortcuts') {
+function toggleToolPanel(panel: 'tts' | 'ai' | 'shortcuts') {
   activeToolPanel.value = activeToolPanel.value === panel ? null : panel
+  if (activeToolPanel.value) activeBottomPanel.value = null
   revealTools(immersiveMode.value === 'locked')
+}
+
+function toggleBottomPanel(panel: 'catalog' | 'progress' | 'background' | 'font') {
+  activeBottomPanel.value = activeBottomPanel.value === panel ? null : panel
+  if (activeBottomPanel.value) {
+    activeToolPanel.value = null
+    if (panel === 'catalog') showDrawer.value = false
+  }
+  revealTools(immersiveMode.value === 'locked')
+}
+
+function cancelReaderDownload() {
+  void window.api.download.cancel()
 }
 
 function toggleImmersiveLock() {
@@ -699,6 +721,7 @@ function closeTopReaderOverlay() {
   else if (showSearch.value) showSearch.value = false
   else if (showMarks.value) showMarks.value = false
   else if (showDrawer.value) showDrawer.value = false
+  else if (activeBottomPanel.value) activeBottomPanel.value = null
   else if (activeToolPanel.value) activeToolPanel.value = null
 }
 
@@ -834,12 +857,10 @@ function onReaderKeydown(e: KeyboardEvent) {
       setFontSize(fontSize.value - 1)
       break
     case 'open-catalog':
-      showDrawer.value = true
-      revealTools(immersiveMode.value === 'locked')
+      toggleBottomPanel('catalog')
       break
     case 'open-appearance':
-      activeToolPanel.value = 'appearance'
-      revealTools(immersiveMode.value === 'locked')
+      toggleBottomPanel('font')
       break
     case 'toggle-tts':
       toggleTtsFromShortcut()
@@ -917,6 +938,21 @@ const progressSummary = computed(() =>
   readerProgressLabel(chapters.value, currentChapter.value?.id, scrollRatioView.value),
 )
 const chapterFailHint = computed(() => failAdvice(currentChapter.value?.failCode))
+const downloadRunning = computed(() =>
+  downloadProgress.value?.status === 'running' && downloadProgress.value.bookId === book.value?.id
+    ? downloadProgress.value
+    : null,
+)
+const spineCoverSrc = computed(() =>
+  book.value ? libraryCoverSrc(libraryPath.value, book.value.id, book.value.coverPath) : null,
+)
+const spineCoverStyle = computed(() => {
+  const hues = libraryCoverHues(book.value?.id || 'paper')
+  return {
+    '--cover-hue': String(hues.primary),
+    '--cover-hue-secondary': String(hues.secondary),
+  }
+})
 
 async function loadBook(bookId: string) {
   assistantBudgets.value = {}
@@ -972,6 +1008,7 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
         chapterError.value = ''
       }
       showDrawer.value = false
+      activeBottomPanel.value = null
       scrollRatioView.value = scrollRatio
       resolveCurrentAnnotations()
       await nextTick()
@@ -1169,6 +1206,7 @@ async function loadPrefs() {
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
   recapLength.value = s.ai?.recapLength ?? 'standard'
   aiServiceOrigin.value = displayAiServiceOrigin(s.baseUrl)
+  libraryPath.value = s.libraryPath
 }
 
 // AI actions
@@ -1596,7 +1634,7 @@ watch([renderedParas, chapterBody], () => {
 })
 watch(showDrawer, (open) => { if (open) void scrollCatalogToCurrent() })
 watch(
-  [showDrawer, showAiResult, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel],
+  [showDrawer, showAiResult, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel, activeBottomPanel],
   () => {
     if (anyDrawerOpen() || selectionOpen()) toolsVisible.value = true
     lastToolActivityAt = Date.now()
@@ -1699,6 +1737,8 @@ onMounted(async () => {
   scheduleToolHide()
   if (props.bookId) await loadBook(props.bookId)
   unsubDownload = window.api.download.onProgress((p) => {
+    if (book.value && p.bookId === book.value.id && p.status === 'running') downloadProgress.value = p
+    else if (!book.value || p.bookId === book.value.id) downloadProgress.value = null
     if (!book.value || p.bookId !== book.value.id) return
     if (p.status === 'done' || p.status === 'error' || p.status === 'cancelled') {
       void loadBook(book.value.id)
@@ -1726,10 +1766,9 @@ onUnmounted(() => {
 <template>
   <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove">
     <!-- No book selected -->
-    <div v-if="!book" class="page placeholder">
-      <h2>阅读</h2>
-      <p>从书库打开一本书后在这里阅读。</p>
-      <n-button @click="emit('back')">返回书库</n-button>
+    <div v-if="!book" class="page placeholder reader-empty-shelf">
+      <h2>还没有书</h2>
+      <n-button type="primary" @click="emit('open-browse')">去浏览</n-button>
     </div>
 
     <!-- Reader -->
@@ -1739,42 +1778,27 @@ onUnmounted(() => {
         @mouseenter="onToolbarEnter"
         @mouseleave="onToolbarLeave"
       >
-        <button class="tool-button" title="返回书库" aria-label="返回书库" @click="emit('back')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10"/></svg></button>
-        <button class="tool-button" title="目录" aria-label="目录" @click="showDrawer = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-        <div class="reader-book-title" :title="`${book.title} · ${currentChapter?.title || ''}`">《{{ book.title }}》· {{ currentChapter?.title }}</div>
+        <div class="reader-book-title" :title="book.title">{{ book.title }}</div>
+        <div v-if="downloadRunning" class="reader-download-chip">
+          <span>已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章</span>
+          <button class="reader-download-cancel" type="button" @click="cancelReaderDownload">取消</button>
+        </div>
+        <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('open-shelf')">书架</button>
         <button class="tool-button" title="搜索" aria-label="搜索" @click="openSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg></button>
         <button class="tool-button" title="标记" aria-label="标记" @click="showMarks = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg></button>
         <button class="tool-button" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg></button>
         <button class="tool-button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg></button>
-        <button class="tool-button" title="外观" aria-label="外观" @click="toggleToolPanel('appearance')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z"/></svg></button>
-        <button class="tool-button" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M7 10h1M10 10h1M13 10h1M16 10h1M7 14h7M16 14h1"/></svg></button>
         <button class="tool-button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+        <span class="toolbar-gap" aria-hidden="true"></span>
+        <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('open-browse')">浏览</button>
+        <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('open-settings')">设置</button>
+        <button class="tool-button tool-button-offstage" title="返回书库" aria-label="返回书库" @click="emit('back')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10"/></svg></button>
+        <button class="tool-button tool-button-offstage" title="目录" aria-label="目录" @click="toggleBottomPanel('catalog')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+        <button class="tool-button tool-button-offstage" title="外观" aria-label="外观" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z"/></svg></button>
+        <button class="tool-button tool-button-offstage" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M7 10h1M10 10h1M13 10h1M16 10h1M7 14h7M16 14h1"/></svg></button>
 
         <div v-if="activeToolPanel" class="tool-panel" @click.stop>
-          <template v-if="activeToolPanel === 'appearance'">
-            <strong>阅读外观</strong>
-            <div class="control-label">主题</div>
-            <div class="option-grid four"><button v-for="item in [{v:'paper',l:'纸白'},{v:'sepia',l:'暖黄'},{v:'gray',l:'柔灰'},{v:'night',l:'夜间'}]" :key="item.v" :class="{ active: theme === item.v }" @click="theme = item.v as ReaderTheme">{{ item.l }}</button></div>
-            <div class="control-label">字体</div>
-            <div class="option-grid"><button v-for="item in [{v:'serif',l:'宋体阅读'},{v:'system',l:'系统黑体'},{v:'mono',l:'等宽'}]" :key="item.v" :class="{ active: fontFamily === item.v }" @click="fontFamily = item.v as ReaderFontFamily">{{ item.l }}</button></div>
-            <div class="control-label">字号 {{ fontSize }}</div><n-slider v-model:value="fontSize" :min="12" :max="36" :step="1" />
-            <div class="control-label">行距 {{ lineHeight.toFixed(1) }}</div><n-slider v-model:value="lineHeight" :min="1.2" :max="3" :step="0.1" />
-            <div class="control-label">列宽</div>
-            <div class="option-grid"><button v-for="item in [{v:'narrow',l:'窄'},{v:'medium',l:'中'},{v:'wide',l:'宽'}]" :key="item.v" :class="{ active: contentWidth === item.v }" @click="contentWidth = item.v as ReaderContentWidth">{{ item.l }}</button></div>
-            <div class="control-label">段间距</div>
-            <div class="option-grid"><button v-for="item in [{v:'compact',l:'紧凑'},{v:'normal',l:'标准'},{v:'relaxed',l:'宽松'}]" :key="item.v" :class="{ active: paragraphSpacing === item.v }" @click="paragraphSpacing = item.v as ReaderParagraphSpacing">{{ item.l }}</button></div>
-            <div class="control-label"><n-switch v-model:value="paragraphIndent" /> 首行缩进</div>
-            <div class="control-label">行焦点</div>
-            <div class="option-grid four">
-              <button v-for="item in [{v:'off',l:'关'},{v:'one',l:'1 段'},{v:'three',l:'3 段'},{v:'five',l:'5 段'}]" :key="item.v" :class="{ active: focusMode === item.v }" @click="focusMode = item.v as ReaderFocusMode">{{ item.l }}</button>
-            </div>
-            <div class="control-label">阅读方式</div>
-            <div class="option-grid">
-              <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
-            </div>
-            <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
-          </template>
-          <template v-else-if="activeToolPanel === 'tts'">
+          <template v-if="activeToolPanel === 'tts'">
             <strong>朗读</strong>
             <n-space vertical :size="6" v-if="ttsSupported">
               <n-space :size="6"><n-button v-if="!ttsSpeaking" size="tiny" :disabled="!chapterReady" @click="ttsStart(0)">播放</n-button><n-button v-else-if="ttsPaused" size="tiny" type="primary" @click="ttsResume">继续</n-button><n-button v-else size="tiny" @click="ttsPause">暂停</n-button><n-button v-if="ttsSpeaking" size="tiny" @click="ttsStop">停止</n-button></n-space>
@@ -1800,7 +1824,19 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="reader-body">
+      <div class="reader-stage">
+        <button
+          class="reader-spine"
+          type="button"
+          :title="book.title"
+          aria-label="当前书"
+          :style="spineCoverStyle"
+          @click="emit('open-shelf')"
+        >
+          <img v-if="spineCoverSrc" class="reader-spine-img" :src="spineCoverSrc" alt="" />
+          <span v-else class="reader-spine-title">{{ book.title }}</span>
+        </button>
+        <div class="reader-body">
         <button class="chapter-hotzone left" :disabled="!previousChapter" :title="previousChapter ? `上一章：${previousChapter.title}` : '已经是第一章'" aria-label="上一章" @click="prevChapter"><span>‹</span></button>
         <div class="reader-content reader-pane" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup" @wheel="onContentWheel">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
@@ -1831,6 +1867,69 @@ onUnmounted(() => {
           </template>
         </div>
         <button class="chapter-hotzone right" :disabled="!followingChapter" :title="followingChapter ? `下一章：${followingChapter.title}` : '已经是最后一章'" aria-label="下一章" @click="nextChapter"><span>›</span></button>
+        </div>
+      </div>
+
+      <div class="reader-bottombar">
+        <button class="bottom-button" type="button" :class="{ active: activeBottomPanel === 'catalog' }" @click="toggleBottomPanel('catalog')">目录</button>
+        <button class="bottom-button" type="button" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')">进度</button>
+        <button class="bottom-button" type="button" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')">背景</button>
+        <button class="bottom-button" type="button" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')">字体</button>
+        <div v-if="activeBottomPanel" class="bottom-panel tool-panel" @click.stop>
+          <template v-if="activeBottomPanel === 'catalog'">
+            <strong>目录</strong>
+            <n-input v-model:value="catalogQuery" clearable placeholder="过滤目录" />
+            <div class="bottom-catalog">
+              <button
+                v-for="ch in filteredCatalog"
+                :key="ch.id"
+                type="button"
+                :class="['bottom-catalog-item', { active: ch.id === currentChapter?.id }]"
+                @click="goToChapterId(ch.id)"
+              >
+                <span>{{ ch.title }}</span>
+                <span v-if="catalogBadge(ch) === 'failed'" class="bottom-badge">{{ ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败' }}</span>
+                <span v-else-if="catalogBadge(ch) === 'pending'" class="bottom-badge">未下</span>
+                <span v-else-if="catalogBadge(ch) === 'empty'" class="bottom-badge">空</span>
+                <span v-else-if="catalogBadge(ch) === 'current'" class="bottom-badge">当前</span>
+                <span v-else-if="catalogBadge(ch) === 'read'" class="bottom-badge">已读</span>
+              </button>
+            </div>
+          </template>
+          <template v-else-if="activeBottomPanel === 'progress'">
+            <strong>进度</strong>
+            <div class="control-label">{{ bookProgressDetail }}</div>
+            <div class="control-label">全书 {{ bookPercent }}%</div>
+            <div class="reader-progress-row" aria-hidden="true"><div class="reader-progress-fill book" :style="{ width: `${bookPercent}%` }"></div></div>
+            <div class="control-label">本章 {{ chapterPercent }}%</div>
+            <div class="reader-progress-row" aria-hidden="true"><div class="reader-progress-fill chapter" :style="{ width: `${chapterPercent}%` }"></div></div>
+          </template>
+          <template v-else-if="activeBottomPanel === 'background'">
+            <strong>背景</strong>
+            <div class="option-grid four"><button v-for="item in [{v:'paper',l:'纸白'},{v:'sepia',l:'暖黄'},{v:'gray',l:'柔灰'},{v:'night',l:'夜间'}]" :key="item.v" :class="{ active: theme === item.v }" @click="theme = item.v as ReaderTheme">{{ item.l }}</button></div>
+          </template>
+          <template v-else>
+            <strong>字体</strong>
+            <div class="control-label">字体</div>
+            <div class="option-grid"><button v-for="item in [{v:'serif',l:'宋体阅读'},{v:'system',l:'系统黑体'},{v:'mono',l:'等宽'}]" :key="item.v" :class="{ active: fontFamily === item.v }" @click="fontFamily = item.v as ReaderFontFamily">{{ item.l }}</button></div>
+            <div class="control-label">字号 {{ fontSize }}</div><n-slider v-model:value="fontSize" :min="12" :max="36" :step="1" />
+            <div class="control-label">行距 {{ lineHeight.toFixed(1) }}</div><n-slider v-model:value="lineHeight" :min="1.2" :max="3" :step="0.1" />
+            <div class="control-label">列宽</div>
+            <div class="option-grid"><button v-for="item in [{v:'narrow',l:'窄'},{v:'medium',l:'中'},{v:'wide',l:'宽'}]" :key="item.v" :class="{ active: contentWidth === item.v }" @click="contentWidth = item.v as ReaderContentWidth">{{ item.l }}</button></div>
+            <div class="control-label">段间距</div>
+            <div class="option-grid"><button v-for="item in [{v:'compact',l:'紧凑'},{v:'normal',l:'标准'},{v:'relaxed',l:'宽松'}]" :key="item.v" :class="{ active: paragraphSpacing === item.v }" @click="paragraphSpacing = item.v as ReaderParagraphSpacing">{{ item.l }}</button></div>
+            <div class="control-label"><n-switch v-model:value="paragraphIndent" /> 首行缩进</div>
+            <div class="control-label">行焦点</div>
+            <div class="option-grid four">
+              <button v-for="item in [{v:'off',l:'关'},{v:'one',l:'1 段'},{v:'three',l:'3 段'},{v:'five',l:'5 段'}]" :key="item.v" :class="{ active: focusMode === item.v }" @click="focusMode = item.v as ReaderFocusMode">{{ item.l }}</button>
+            </div>
+            <div class="control-label">阅读方式</div>
+            <div class="option-grid">
+              <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
+            </div>
+            <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
+          </template>
+        </div>
       </div>
 
       <div class="reader-progress-track" :title="bookProgressDetail" :aria-label="bookProgressDetail">
@@ -2138,9 +2237,9 @@ onUnmounted(() => {
 <style scoped>
 .reader-wrap {
   /* 局部变量：夜间模式只覆盖这三项，其余跟随全局皮肤 */
-  --r-bar-bg: var(--bar-bg);
-  --r-line: var(--line);
-  --r-muted: var(--muted);
+  --r-bar-bg: color-mix(in srgb, var(--reader-paper) 88%, #fff);
+  --r-line: color-mix(in srgb, var(--reader-paper-text) 16%, transparent);
+  --r-muted: color-mix(in srgb, var(--reader-paper-text) 68%, var(--reader-paper));
   --r-surface: var(--surface-2);
   --r-hover: color-mix(in srgb, var(--reader-paper-text) 12%, transparent);
   --r-focus: var(--focus);
@@ -2149,8 +2248,8 @@ onUnmounted(() => {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  background: transparent;
-  color: var(--text);
+  background: var(--reader-paper, #F7F3E8);
+  color: var(--reader-paper-text, #2F2A24);
   transition: background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
 }
 
@@ -2606,30 +2705,25 @@ onUnmounted(() => {
 }
 
 .reader-toolbar {
-  position: absolute;
+  position: relative;
   z-index: 30;
-  top: 12px;
-  left: 50%;
-  width: min(920px, calc(100% - 32px));
+  flex: 0 0 auto;
+  width: 100%;
   min-height: 48px;
-  transform: translate(-50%, -10px);
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 10px;
-  border: 1px solid var(--r-line);
-  border-radius: var(--radius-card);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--r-line);
   background: color-mix(in srgb, var(--r-bar-bg) 94%, var(--r-surface));
-  box-shadow: 0 8px 28px rgba(0, 0, 0, .16);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--motion-duration) var(--motion-easing), transform var(--motion-duration) var(--motion-easing);
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity var(--motion-duration) var(--motion-easing);
 }
 
 .reader-toolbar.visible {
   opacity: 1;
   pointer-events: auto;
-  transform: translate(-50%, 0);
 }
 
 .tool-button {
@@ -2649,7 +2743,27 @@ onUnmounted(() => {
 .tool-button:hover { background: var(--r-hover); }
 .tool-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .tool-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.reader-toolbar .reader-book-title { min-width: 0; }
+.tool-button.tool-text { width: auto; flex-basis: auto; padding: 0 8px; font: inherit; font-size: 13px; }
+.tool-button-offstage { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.reader-toolbar .reader-book-title { min-width: 0; text-align: left; flex: 0 1 auto; max-width: 28ch; padding-left: 0; color: var(--reader-paper-text); font-weight: 650; }
+.toolbar-gap { flex: 1; }
+.reader-download-chip { display: inline-flex; align-items: center; gap: 8px; margin-right: 4px; color: var(--reader-paper-text); font-size: 13px; white-space: nowrap; }
+.reader-download-cancel { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.reader-stage { flex: 1; min-height: 0; display: flex; }
+.reader-spine { width: 52px; flex: 0 0 52px; margin: 16px 0 16px 12px; padding: 10px 6px; border: 0; border-radius: 3px 8px 8px 3px; color: #f7f1e4; background: linear-gradient(160deg, hsl(calc(var(--cover-hue) * 1deg) 42% 34%), hsl(calc(var(--cover-hue-secondary) * 1deg) 38% 24%)); box-shadow: 2px 0 0 rgba(255, 255, 255, .18) inset, 3px 6px 14px rgba(47, 42, 36, .16); cursor: pointer; overflow: hidden; }
+.reader-spine-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.reader-spine-title { display: block; writing-mode: vertical-rl; max-height: 100%; overflow: hidden; font-size: 13px; letter-spacing: 0.12em; }
+.reader-bottombar { position: relative; z-index: 28; flex: 0 0 auto; display: flex; justify-content: center; gap: 8px; min-height: 48px; padding: 6px 12px; border-top: 1px solid var(--r-line); background: color-mix(in srgb, var(--r-bar-bg) 94%, var(--r-surface)); }
+.bottom-button { min-width: 64px; min-height: 32px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--reader-paper-text); font: inherit; font-size: 14px; cursor: pointer; }
+.bottom-button:hover, .bottom-button.active { background: var(--r-hover); }
+.bottom-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
+.bottom-panel { left: 50%; right: auto; top: auto; bottom: calc(100% + 8px); transform: translateX(-50%); width: min(420px, calc(100vw - 32px)); }
+.bottom-catalog { display: flex; flex-direction: column; gap: 2px; max-height: 42vh; overflow: auto; }
+.bottom-catalog-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 32px; padding: 4px 8px; border: 0; border-radius: var(--radius-control); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.bottom-catalog-item.active, .bottom-catalog-item:hover { background: var(--r-hover); }
+.bottom-catalog-item:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 1px; }
+.bottom-badge { flex: 0 0 auto; color: var(--r-muted); font-size: 12px; }
+.reader-empty-shelf { display: grid; place-items: center; align-content: center; gap: 12px; height: 100%; color: var(--reader-paper-text); }
 
 .tool-panel {
   position: absolute;
@@ -2670,10 +2784,11 @@ onUnmounted(() => {
 
 .reader-body {
   position: relative;
-  padding: 28px clamp(48px, 5vw, 72px) 20px;
+  flex: 1;
+  padding: 28px clamp(24px, 4vw, 56px) 20px;
   justify-content: center;
   overflow: hidden;
-  background: var(--reader-outer);
+  background: var(--reader-paper);
 }
 
 .reader-content {
