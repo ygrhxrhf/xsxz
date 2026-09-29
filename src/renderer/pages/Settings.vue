@@ -551,6 +551,7 @@ onMounted(load)
           type="button"
           class="skin-card"
           :class="{ active: skin === s.id }"
+          :aria-pressed="skin === s.id"
           @click="emit('change-skin', s.id)"
         >
           <span class="skin-swatch" :class="s.id">
@@ -937,12 +938,16 @@ onMounted(load)
   padding: 12px;
   cursor: pointer;
   color: inherit;
-  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .skin-card:hover {
   border-color: var(--hover-line);
-  transform: translateY(-2px);
+}
+
+.skin-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .skin-card.active {
@@ -1109,6 +1114,10 @@ onMounted(load)
   .settings-nav {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .skin-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>
