@@ -53,6 +53,7 @@ vi.mock('electron', () => {
 import {
   cancelCheckAll,
   cancelDownload,
+  chapterGapMs,
   chapterNeedsDownload,
   chapterRetryDelayMs,
   checkAllUpdates,
@@ -363,6 +364,22 @@ describe('chapterNeedsDownload', () => {
   it('uses zero retry delay when a test html loader is injected', () => {
     setTestHtmlLoader(async () => '<html></html>')
     expect(chapterRetryDelayMs(1)).toBe(0)
+    resetDownloadStateForTests()
+  })
+
+  it('maps download pace to a fixed chapter gap and treats unknown values as standard', () => {
+    resetDownloadStateForTests()
+    expect(chapterGapMs('slow', { testing: false })).toBe(2000)
+    expect(chapterGapMs('standard', { testing: false })).toBe(600)
+    expect(chapterGapMs('fast', { testing: false })).toBe(200)
+    expect(chapterGapMs('turbo', { testing: false })).toBe(600)
+    expect(chapterGapMs(undefined, { testing: false })).toBe(600)
+  })
+
+  it('uses zero chapter gap when a test html loader is injected', () => {
+    setTestHtmlLoader(async () => '<html></html>')
+    expect(chapterGapMs('slow')).toBe(0)
+    expect(chapterGapMs('standard')).toBe(0)
     resetDownloadStateForTests()
   })
 })

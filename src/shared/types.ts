@@ -240,6 +240,9 @@ export interface TtsPrefs {
 /** 界面皮肤：夜樱 / 简约 */
 export type Skin = 'sakura' | 'minimal'
 
+/** 下载章与章之间的固定间隔档位。 */
+export type DownloadPace = 'slow' | 'standard' | 'fast'
+
 /** 外观偏好 */
 export interface AppearancePrefs {
   skin: Skin
@@ -271,6 +274,8 @@ export interface Settings {
   appearance: AppearancePrefs
   /** A1.2 起主进程始终补齐；可选用于兼容尚未迁移的旧调用方。 */
   ai?: AiPrefs
+  /** 章间间隔档位。getSettings 始终返回；缺省或非法回退 standard。 */
+  downloadPace: DownloadPace
 }
 
 export interface SettingsUpdate {
@@ -283,6 +288,8 @@ export interface SettingsUpdate {
   tts?: Partial<TtsPrefs>
   appearance?: Partial<AppearancePrefs>
   ai?: Partial<AiPrefs>
+  /** 省略则不改已保存档位。 */
+  downloadPace?: DownloadPace
 }
 
 /** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */

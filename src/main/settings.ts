@@ -6,6 +6,7 @@ import type {
   AiPromptKind,
   AiProvider,
   AppearancePrefs,
+  DownloadPace,
   ReaderContentWidth,
   ReaderFocusMode,
   ReaderFontFamily,
@@ -29,6 +30,7 @@ import {
 } from '../shared/types'
 
 const SKINS: readonly Skin[] = ['sakura', 'minimal']
+const DOWNLOAD_PACES: readonly DownloadPace[] = ['slow', 'standard', 'fast']
 const READER_THEMES: readonly ReaderTheme[] = ['paper', 'sepia', 'gray', 'night']
 const READER_FONT_FAMILIES: readonly ReaderFontFamily[] = ['serif', 'system', 'mono']
 const READER_CONTENT_WIDTHS: readonly ReaderContentWidth[] = ['narrow', 'medium', 'wide']
@@ -42,6 +44,11 @@ const LEGACY_DEEPSEEK_MODELS = new Set(['deepseek-chat', 'deepseek-reasoner'])
 
 function readSkin(value: unknown): Skin {
   return SKINS.includes(value as Skin) ? (value as Skin) : DEFAULT_APPEARANCE_PREFS.skin
+}
+
+/** 缺省、空串与非法值一律回退 standard。 */
+function readDownloadPace(value: unknown): DownloadPace {
+  return readEnum(value, DOWNLOAD_PACES, 'standard')
 }
 
 function readRecord(value: unknown): Record<string, unknown> {
@@ -232,6 +239,7 @@ export async function getSettings(): Promise<Settings> {
       skin: readSkin(appearance.skin),
     },
     ai: normalizeAiPrefs(raw.ai),
+    downloadPace: readDownloadPace(raw.downloadPace),
   }
 }
 
@@ -266,6 +274,7 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
     raw.appearance = next
   }
   if (patch.ai) raw.ai = mergeAiPrefs(raw.ai, patch.ai)
+  if ('downloadPace' in patch) raw.downloadPace = readDownloadPace(patch.downloadPace)
   await saveRaw(raw)
   return getSettings()
 }

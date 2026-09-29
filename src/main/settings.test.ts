@@ -298,6 +298,33 @@ describe('AI settings compatibility', () => {
     expect(isLegacyDeepSeekModel('custom-chat')).toBe(false)
   })
 
+  it('defaults a missing downloadPace to standard and rejects stored illegal values', async () => {
+    await mkdir(TEST_DIR, { recursive: true })
+    await writeFile(SETTINGS_FILE, JSON.stringify({ libraryPath: 'D:\\books' }), 'utf-8')
+    resetSettingsCacheForTests()
+    expect((await getSettings()).downloadPace).toBe('standard')
+
+    for (const downloadPace of ['turbo', 1, null, '']) {
+      await writeFile(SETTINGS_FILE, JSON.stringify({ downloadPace }), 'utf-8')
+      resetSettingsCacheForTests()
+      expect((await getSettings()).downloadPace).toBe('standard')
+    }
+  })
+
+  it('persists a legal downloadPace and stores standard for an illegal write', async () => {
+    const saved = await updateSettings({ downloadPace: 'fast' })
+    expect(saved.downloadPace).toBe('fast')
+    expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')).downloadPace).toBe('fast')
+    resetSettingsCacheForTests()
+    expect((await getSettings()).downloadPace).toBe('fast')
+
+    const rejected = await updateSettings({ downloadPace: 'turbo' as 'fast' })
+    expect(rejected.downloadPace).toBe('standard')
+    expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')).downloadPace).toBe('standard')
+    resetSettingsCacheForTests()
+    expect((await getSettings()).downloadPace).toBe('standard')
+  })
+
   it('returns independent default objects instead of sharing mutable arrays or maps', () => {
     const first = normalizeAiPrefs(undefined)
     first.trustedCustomOrigins.push('https://mutated.example')

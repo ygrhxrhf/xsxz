@@ -19,6 +19,7 @@ import type {
   CheckAllProgress,
   CheckAllResult,
   CheckOneResult,
+  DownloadPace,
   DownloadProgress,
   ExtractBootstrap,
   FailCode,
@@ -26,13 +27,17 @@ import type {
 } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 import { isPathLikeHash } from '../shared/urlHash'
+import { getSettings } from './settings'
 
 export const DOWNLOAD_SESSION_PARTITION = 'persist:novel'
 /** Off the visible chrome so chapter crawl cannot flash over the guest slot. */
 export const HIDDEN_VIEW_BOUNDS = { x: -2400, y: -2400, width: 800, height: 600 }
 
-const DELAY_MIN = 400
-const DELAY_MAX = 800
+const CHAPTER_GAP_MS: Record<DownloadPace, number> = {
+  slow: 2_000,
+  standard: 600,
+  fast: 200,
+}
 const LOAD_TIMEOUT_MS = 25_000
 /** Poll interval after navigation settles. Classic HTML should pass the first tick. */
 export const HYDRATE_POLL_MS = 300
@@ -73,6 +78,21 @@ export function chapterNeedsDownload(status: ChapterStatus): boolean {
 
 export function shouldRetryChapterFail(code: FailCode | undefined): boolean {
   return code === 'NavFailed' || code === 'BodyEmpty'
+}
+
+/** 章与章之间的固定间隔。未知档位按 standard。 */
+export function chapterGapMs(pace: DownloadPace): number {
+  if (pace === 'slow' || pace === 'standard' || pace === 'fast') return CHAPTER_GAP_MS[pace]
+  return CHAPTER_GAP_MS.standard
+}
+
+async function currentChapterGapMs(): Promise<number> {
+  if (testHtmlLoader) return 0
+  try {
+    return chapterGapMs((await getSettings()).downloadPace)
+  } catch {
+    return 0
+  }
 }
 
 export function chapterRetryDelayMs(attempt: number, opts?: { testing?: boolean }): number {
@@ -225,9 +245,10 @@ function interruptibleDelay(ms: number): Promise<void> {
   })
 }
 
-function randomDelay(): Promise<void> {
-  if (testHtmlLoader) return delay(0)
-  return interruptibleDelay(DELAY_MIN + Math.random() * (DELAY_MAX - DELAY_MIN))
+async function chapterGapDelay(): Promise<void> {
+  const ms = await currentChapterGapMs()
+  if (ms <= 0) return delay(0)
+  return interruptibleDelay(ms)
 }
 
 function pageUrlHasPathLikeHash(pageUrl: string): boolean {
@@ -654,7 +675,7 @@ export async function downloadChapters(bookId: string): Promise<void> {
     emitProgress(bookId)
     if (!dl.cancelled) {
       try {
-        await randomDelay()
+        await chapterGapDelay()
       } catch (e: unknown) {
         if (!isCancelledError(e)) throw e
       }

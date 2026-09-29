@@ -64,6 +64,7 @@ describe('Settings AI custom-origin confirmation', () => {
       tts: DEFAULT_TTS_PREFS,
       appearance: DEFAULT_APPEARANCE_PREFS,
       ai: { ...DEFAULT_AI_PREFS },
+      downloadPace: 'standard',
     }
     const set = vi.fn(async (update: { ai?: Partial<NonNullable<Settings['ai']>> }) => {
       if (update.ai) current = { ...current, ai: { ...current.ai!, ...update.ai } }
@@ -118,6 +119,7 @@ describe('Settings AI custom-origin confirmation', () => {
         promptMode: { ...DEFAULT_AI_PREFS.promptMode, clean: 'custom' },
         customPrompts: { clean: original },
       },
+      downloadPace: 'standard',
     }
     const set = vi.fn(async (update: { ai?: Partial<NonNullable<Settings['ai']>> }) => {
       if (update.ai) {
@@ -188,6 +190,7 @@ describe('Settings AI custom-origin confirmation', () => {
       tts: DEFAULT_TTS_PREFS,
       appearance: DEFAULT_APPEARANCE_PREFS,
       ai: { ...DEFAULT_AI_PREFS },
+      downloadPace: 'standard',
     }
     const set = vi.fn(async (update: Record<string, unknown>) => {
       current = {
@@ -236,6 +239,7 @@ describe('Settings AI custom-origin confirmation', () => {
       appearance: DEFAULT_APPEARANCE_PREFS,
       // Simulate an old custom URL whose newly-added provider field defaulted to deepseek.
       ai: { ...DEFAULT_AI_PREFS, provider: 'deepseek', trustedCustomOrigins: [] },
+      downloadPace: 'standard',
     }
     const set = vi.fn(async (update: { ai?: Partial<NonNullable<Settings['ai']>> }) => {
       if (update.ai) current = { ...current, ai: { ...current.ai!, ...update.ai } }
@@ -306,6 +310,7 @@ describe('Settings section content visibility', () => {
       tts: DEFAULT_TTS_PREFS,
       appearance: DEFAULT_APPEARANCE_PREFS,
       ai: { ...DEFAULT_AI_PREFS },
+      downloadPace: 'standard',
     }
     Object.defineProperty(window, 'api', {
       configurable: true,
