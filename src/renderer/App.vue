@@ -44,7 +44,7 @@ const tabs: { id: Tab; label: string; iconPaths: string[] }[] = [
 ]
 
 // 夜樱主题：樱粉主色 + 紫罗兰辅色，统一 Naive UI 组件配色
-const sakuraOverrides: GlobalThemeOverrides = {
+const paperOverrides: GlobalThemeOverrides = {
   common: {
     primaryColor: '#ff8ec7',
     primaryColorHover: '#ffa6d4',
@@ -152,14 +152,14 @@ const minimalOverrides: GlobalThemeOverrides = {
 const SKIN_STORAGE_KEY = 'spbf.skin'
 
 function isSkin(v: unknown): v is Skin {
-  return v === 'sakura' || v === 'minimal'
+  return v === 'paper' || v === 'white' || v === 'night'
 }
 
-const skin = ref<Skin>(localStorage.getItem(SKIN_STORAGE_KEY) === 'minimal' ? 'minimal' : 'sakura')
+const skin = ref<Skin>(isSkin(localStorage.getItem(SKIN_STORAGE_KEY)) ? localStorage.getItem(SKIN_STORAGE_KEY) as Skin : 'paper')
 document.body.dataset.skin = skin.value
 
-const naiveTheme = computed(() => (skin.value === 'minimal' ? lightTheme : darkTheme))
-const themeOverrides = computed(() => (skin.value === 'minimal' ? minimalOverrides : sakuraOverrides))
+const naiveTheme = computed(() => (skin.value === 'night' ? darkTheme : lightTheme))
+const themeOverrides = computed(() => (skin.value === 'white' ? minimalOverrides : paperOverrides))
 
 const skinMeta = computed(() =>
   skin.value === 'minimal'
@@ -258,8 +258,8 @@ onUnmounted(() => {
 <template>
   <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
-      <div class="app-shell">
-        <aside class="sidebar">
+      <div :class="['app-shell', { 'app-shell-reader': tab === 'reader' }]">
+        <aside v-if="tab !== 'reader'" class="sidebar">
           <div class="brand">
             <span class="brand-mark" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
@@ -294,17 +294,7 @@ onUnmounted(() => {
                 <button class="sidebar-dl-cancel" type="button" @click="cancelSidebarDownload">取消</button>
               </div>
             </div>
-            <button class="skin-toggle" type="button" :title="skin === 'sakura' ? '切换到简约皮肤' : '切换到夜樱皮肤'" @click="toggleSkin">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path v-if="skin === 'sakura'" d="M12 3a9 9 0 1 0 9 9c0-.5-.04-1-.12-1.47A7 7 0 0 1 13.47 3.1C13 3.03 12.5 3 12 3Z" />
-                <template v-else>
-                  <circle cx="12" cy="12" r="4" />
-                  <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42" />
-                </template>
-              </svg>
-              <span>{{ skinMeta.toggleLabel }}</span>
-            </button>
-            <div v-if="skin === 'sakura'" class="sidebar-footer">✦ ♡ ✦</div>
+            <div class="sidebar-footer">暖纸</div>
           </div>
         </aside>
         <section class="main">
@@ -327,6 +317,9 @@ onUnmounted(() => {
             :book-id="currentBookId"
             @back="backToLibrary"
             @go-browse="goBrowse"
+            @open-shelf="backToLibrary"
+            @open-browse="goBrowse()"
+            @open-settings="tab = 'settings'"
           />
           <SettingsPage
             v-show="tab === 'settings'"
