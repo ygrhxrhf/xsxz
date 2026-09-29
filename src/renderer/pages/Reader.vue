@@ -71,7 +71,8 @@ const emit = defineEmits<{
   (e: 'back'): void
   (e: 'go-browse', url?: string): void
   (e: 'open-shelf'): void
-  (e: 'go-settings'): void
+  (e: 'open-browse'): void
+  (e: 'open-settings'): void
 }>()
 const message = useMessage()
 
@@ -706,9 +707,6 @@ function toggleBottomPanel(panel: 'catalog' | 'progress' | 'background' | 'font'
   revealTools(immersiveMode.value === 'locked')
 }
 
-function cancelReaderDownload() {
-  void window.api.download.cancel()
-}
 
 function toggleImmersiveLock() {
   const result = resolveImmersiveKey('m', immersiveMode.value)
@@ -1106,6 +1104,10 @@ async function retryThisChapter() {
   } finally {
     retryingChapter.value = false
   }
+}
+
+function cancelReaderDownload() {
+  void window.api.download.cancel()
 }
 
 function prevChapter() {
@@ -1786,18 +1788,16 @@ onUnmounted(() => {
           <span>已下 {{ downloadRunning.done }} / {{ downloadRunning.total }} 章</span>
           <button class="reader-download-cancel" type="button" @click="cancelReaderDownload">取消</button>
         </div>
-        <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('open-shelf')">书架</button>
-        <button class="tool-button" title="搜索" aria-label="搜索" @click="openSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg></button>
-        <button class="tool-button" title="标记" aria-label="标记" @click="showMarks = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg></button>
-        <button class="tool-button" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg></button>
-        <button class="tool-button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg></button>
-        <button class="tool-button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+        <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('back')">书架</button>
+        <button class="tool-button tool-text" type="button" title="搜索" aria-label="搜索" @click="openSearch">搜索</button>
+        <button class="tool-button tool-text" type="button" title="标记" aria-label="标记" @click="showMarks = true">标记</button>
+        <button class="tool-button tool-text" type="button" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')">朗读</button>
+        <button class="tool-button tool-text" type="button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')">AI</button>
+        <button class="tool-button tool-text" type="button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock">沉浸</button>
         <span class="toolbar-gap" aria-hidden="true"></span>
         <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('open-browse')">浏览</button>
         <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('open-settings')">设置</button>
         <button class="tool-button tool-button-offstage" title="返回书库" aria-label="返回书库" @click="emit('back')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10"/></svg></button>
-        <button class="tool-button tool-button-offstage" title="目录" aria-label="目录" @click="toggleBottomPanel('catalog')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-        <button class="tool-button tool-button-offstage" title="外观" aria-label="外观" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z"/></svg></button>
         <button class="tool-button tool-button-offstage" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M7 10h1M10 10h1M13 10h1M16 10h1M7 14h7M16 14h1"/></svg></button>
 
         <div v-if="activeToolPanel" class="tool-panel" @click.stop>
