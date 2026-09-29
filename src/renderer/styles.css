@@ -1,5 +1,5 @@
 /* 双皮肤变量层：
-   默认（body 无标记）= 夜樱 sakura；
+   默认（body 无标记）= 暖纸；
    body[data-skin='minimal'] 覆盖为简约浅色。
    组件样式一律消费这些变量，不写死颜色。 */
 body {
@@ -16,7 +16,7 @@ body {
   --motion-duration: 150ms;
   --motion-easing: ease;
 
-  /* 夜樱语义色 */
+  /* 暖纸语义色 */
   --text-primary: #f3effc;
   --text-secondary: #d9d2ec;
   --text-muted: #a89fc4;
@@ -331,8 +331,11 @@ body,
   color: #2F2A24;
 }
 
-.app-bar,
 .sidebar {
+  display: none;
+}
+
+.app-bar {
   display: flex;
   flex-direction: row;
   align-items: center;
