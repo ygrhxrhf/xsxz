@@ -18,6 +18,38 @@ function visibleText(el: Element): string {
   return (el.textContent || '').replace(/\s+/g, ' ').trim()
 }
 
+const BODY_BLOCKS = new Set(['ADDRESS', 'ARTICLE', 'BLOCKQUOTE', 'DIV', 'H1', 'H2', 'H3', 'H4', 'LI', 'P', 'SECTION'])
+const BODY_SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG'])
+
+/** Preserve paragraph boundaries so standalone site notices can be identified safely. */
+function bodyText(el: Element): string {
+  const chunks: string[] = []
+  const walk = (node: Node): void => {
+    if (node.nodeType === 3) {
+      chunks.push(node.textContent ?? '')
+      return
+    }
+    if (node.nodeType !== 1) return
+    const element = node as Element
+    if (BODY_SKIP.has(element.tagName)) return
+    if (element.tagName === 'BR') {
+      chunks.push('\n\n')
+      return
+    }
+    const block = BODY_BLOCKS.has(element.tagName)
+    if (block) chunks.push('\n\n')
+    for (const child of element.childNodes) walk(child)
+    if (block) chunks.push('\n\n')
+  }
+  walk(el)
+  return chunks.join('')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 function linkDensity(el: Element): number {
   const total = visibleText(el).length || 1
   const linkLen = [...el.querySelectorAll('a')].reduce((s, a) => s + visibleText(a).length, 0)
@@ -173,7 +205,8 @@ function tryBodyFromRule(doc: Document, rule?: SiteRule): string | null {
   if (!sel) return null
   const el = querySafe(doc, sel)
   if (!el) return null
-  const text = cleanBodyText(visibleText(el))
+  // A site rule may intentionally point at a text/plain script carrying the chapter.
+  const text = cleanBodyText(el.tagName === 'SCRIPT' ? visibleText(el) : bodyText(el))
   if (effectiveLength(text) >= 80) return text
   return null
 }
@@ -303,6 +336,27 @@ function cleanBodyText(text: string): string {
     .trim()
 }
 
+const AD_PARAGRAPHS = [
+  /^(?:最新网址|最新地址|本站网址|本书地址|小说最新地址).{0,100}(?:https?:\/\/|www\.|\.(?:com|net|cn|cc|org)|请收藏|搜索)/i,
+  /^(?:请|记得)(?:先)?(?:收藏|关注)(?:本站|本书|本网站|我们的)?(?:网址|地址|域名|微信公众号|公众号|QQ群).{0,100}$/,
+  /^(?:广告|推广|友情提示)[:：]\s*.{5,120}(?:点击|下载|关注|访问|网址|公众号|扫码|注册)/,
+]
+
+function cleanAdParagraphs(raw: string): string {
+  let removed = 0
+  const kept = raw.split(/\n{2,}/).filter((paragraph) => {
+    const text = paragraph.trim()
+    if (!text || text.length > 160 || !AD_PARAGRAPHS.some((pattern) => pattern.test(text))) return true
+    removed++
+    return false
+  })
+  if (!removed) return raw
+  const cleaned = kept.join('\n\n').trim()
+  const rawLength = effectiveLength(raw)
+  const cleanedLength = effectiveLength(cleaned)
+  return cleanedLength >= 80 && cleanedLength >= rawLength * 0.7 ? cleaned : raw
+}
+
 function effectiveLength(text: string): number {
   // Count CJK + alphanumeric, skip whitespace and punctuation
   return text.replace(/[\s\p{P}]/gu, '').length
@@ -313,7 +367,7 @@ function tryExtractBody(doc: Document): { body: string; ok: boolean; partialText
   for (const sel of BODY_SELECTORS) {
     const el = doc.querySelector(sel)
     if (!el) continue
-    const text = cleanBodyText(visibleText(el))
+    const text = cleanBodyText(bodyText(el))
     if (effectiveLength(text) >= 80) return { body: text, ok: true, partialText: text }
     if (text.length > 0) return { body: '', ok: false, partialText: text }
   }
@@ -322,7 +376,9 @@ function tryExtractBody(doc: Document): { body: string; ok: boolean; partialText
   try {
     const article = new Readability(doc).parse()
     if (article && article.textContent) {
-      const text = cleanBodyText(article.textContent)
+      const articleDoc = doc.createElement('div')
+      articleDoc.innerHTML = article.content ?? ''
+      const text = cleanBodyText(bodyText(articleDoc))
       if (effectiveLength(text) >= 80) return { body: text, ok: true, partialText: text }
       if (text.length > 0) return { body: '', ok: false, partialText: text }
     }
@@ -333,13 +389,13 @@ function tryExtractBody(doc: Document): { body: string; ok: boolean; partialText
   let best: { el: Element; len: number } | null = null
   for (const el of blocks) {
     if (linkDensity(el) > 0.35) continue
-    const len = effectiveLength(visibleText(el))
+    const len = effectiveLength(bodyText(el))
     if (len >= 80 && (!best || len > best.len)) {
       best = { el, len }
     }
   }
   if (best) {
-    const text = cleanBodyText(visibleText(best.el))
+    const text = cleanBodyText(bodyText(best.el))
     return { body: text, ok: true, partialText: text }
   }
 
@@ -511,7 +567,7 @@ export function extractBody(
   html: string,
   pageUrl: string,
   rule?: SiteRule,
-): { body: string; ok: boolean; failCode?: FailCode; failMessage?: string } {
+): { body: string; bodyRaw?: string; ok: boolean; failCode?: FailCode; failMessage?: string } {
   const dom = new JSDOM(html, { url: pageUrl })
   const doc = dom.window.document
   const ruledBody = tryBodyFromRule(doc, rule)
@@ -522,7 +578,7 @@ export function extractBody(
     if (isInterceptedPage(doc, ruledBody)) {
       return { body: '', ok: false, failCode: 'Intercepted', failMessage: FAIL_CODE_ZH.Intercepted }
     }
-    return { body: ruledBody, ok: true }
+    return { body: cleanAdParagraphs(ruledBody), bodyRaw: ruledBody, ok: true }
   }
   const { body, ok, partialText } = tryExtractBody(doc)
   if (!ok) {
@@ -537,5 +593,5 @@ export function extractBody(
   if (isInterceptedPage(doc, body)) {
     return { body: '', ok: false, failCode: 'Intercepted', failMessage: FAIL_CODE_ZH.Intercepted }
   }
-  return { body, ok: true }
+  return { body: cleanAdParagraphs(body), bodyRaw: body, ok: true }
 }

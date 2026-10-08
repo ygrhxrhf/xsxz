@@ -23,6 +23,8 @@ import {
   markChapterStatus,
   readChapter,
   readAiMemory,
+  readAiUsage,
+  recordAiUsage,
   readAiMemoryCompat,
   readChat,
   readSummaries,
@@ -39,6 +41,7 @@ import {
   writeChat,
 } from './library'
 import type { AiMemoryFile, Book, CatalogChapter } from '../shared/types'
+import { setAtomicWriteBeforeCommitForTests } from './atomicFile'
 
 function book(partial?: Partial<Book>): Book {
   return {
@@ -540,6 +543,17 @@ describe('novel memory v1 storage', () => {
     expect(await readAiMemory('d_memory')).toBeNull()
   })
 
+  it('serializes concurrent model usage and counts calls without reported tokens', async () => {
+    await Promise.all([
+      recordAiUsage('d_memory', { inputTokens: 12, outputTokens: 3 }),
+      recordAiUsage('d_memory', undefined),
+      recordAiUsage('d_memory', { inputTokens: 7, cacheHitTokens: 2 }),
+    ])
+    expect(await readAiUsage('d_memory')).toMatchObject({
+      calls: 3, inputTokens: 19, outputTokens: 3, cacheHitTokens: 2,
+    })
+  })
+
   it('snapshots the validated value before asynchronous file work begins', async () => {
     const writing = writeAiMemory('d_memory', memory)
     memory.characters[0]!.name = '异步篡改'
@@ -637,6 +651,41 @@ describe('atomic AI file writes', () => {
     })).rejects.toMatchObject({ name: 'AbortError' })
     expect(await readFile(target, 'utf-8')).toBe('old-content')
     expect((await readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+})
+
+describe('critical library JSON writes', () => {
+  it('preserves book, chapter, and index JSON after a pre-commit failure', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spbf-critical-write-'))
+    try {
+      await setLibraryPath(dir)
+      const created = await createBookFromBootstrap({
+        bookId: 'd_atomic', title: '原书', author: '', importType: 'txt', chapterTitles: ['第一章'],
+      })
+      await writeChapterFile('d_atomic', 'c0001', { title: '第一章', body: '旧正文', status: 'ready' })
+      await rebuildIndex()
+      const targets = [
+        join(dir, 'd_atomic', 'book.json'),
+        join(dir, 'd_atomic', 'chapters', '0001.json'),
+        join(dir, 'index.json'),
+      ]
+      const originals = await Promise.all(targets.map((path) => readFile(path, 'utf-8')))
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i]!
+        setAtomicWriteBeforeCommitForTests((path) => { if (path === target) throw new Error('disk full') })
+        if (i === 0) await expect(saveBook({ ...created, title: '新书' })).rejects.toThrow('disk full')
+        if (i === 1) await expect(writeChapterFile('d_atomic', 'c0001', {
+          title: '第一章', body: '新正文', status: 'ready',
+        })).rejects.toThrow('disk full')
+        if (i === 2) await expect(rebuildIndex()).rejects.toThrow('disk full')
+        expect(await readFile(target, 'utf-8')).toBe(originals[i])
+        expect((await readdir(i === 1 ? join(dir, 'd_atomic', 'chapters') : i === 0 ? join(dir, 'd_atomic') : dir))
+          .filter((name) => name.endsWith('.tmp'))).toEqual([])
+      }
+    } finally {
+      setAtomicWriteBeforeCommitForTests(null)
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })
 

@@ -4,6 +4,7 @@ import {
   NButton,
   NCard,
   NInput,
+  NInputNumber,
   NInputGroup,
   NInputGroupLabel,
   NSpace,
@@ -20,7 +21,7 @@ import {
   NSpin,
   useMessage,
 } from 'naive-ui'
-import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, Settings, SiteRule, Skin } from '@shared/types'
+import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, Settings, SiteRule, SiteRulePreview, Skin } from '@shared/types'
 import { AI_PROMPT_KINDS, DEFAULT_AI_PREFS } from '@shared/types'
 import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
 import {
@@ -40,12 +41,15 @@ const emit = defineEmits<{
   (e: 'change-skin', skin: Skin): void
 }>()
 const message = useMessage()
-type SettingsSection = 'appearance' | 'library' | 'ai' | 'siteRules' | 'backup' | 'about'
+const rulePreview = ref<SiteRulePreview | null>(null)
+const rulePreviewing = ref(false)
+type SettingsSection = 'appearance' | 'library' | 'tts' | 'ai' | 'siteRules' | 'backup' | 'about'
 const activeSection = ref<SettingsSection>('appearance')
 const settingsLoading = ref(true)
 const sectionOptions: { id: SettingsSection; label: string }[] = [
   { id: 'appearance', label: '外观' },
   { id: 'library', label: '书库' },
+  { id: 'tts', label: '听书' },
   { id: 'ai', label: 'AI' },
   { id: 'siteRules', label: '站点规则' },
   { id: 'backup', label: '备份与恢复' },
@@ -62,8 +66,16 @@ const settings = ref<Settings | null>(null)
 const baseUrl = ref('')
 const model = ref('')
 const apiKey = ref('')
+const ttsEndpoint = ref('')
+const ttsModel = ref('')
+const ttsVoice = ref('')
+const ttsApiKey = ref('')
+const ttsSaving = ref(false)
+const ttsTesting = ref(false)
 const provider = ref<AiProvider>('deepseek')
 const thinkingEnabled = ref(true)
+const autoBookOverview = ref(false)
+const budgetWarningTokens = ref(DEFAULT_AI_PREFS.budgetWarningTokens)
 const trustedCustomOrigins = ref<string[]>([])
 const selectedPromptKind = ref<AiPromptKind>('clean')
 const promptMode = ref<Record<AiPromptKind, AiPromptMode>>({ ...DEFAULT_AI_PREFS.promptMode })
@@ -100,6 +112,8 @@ const ruleTitle = ref('')
 const ruleAuthor = ref('')
 const ruleCatalog = ref('')
 const ruleBody = ref('')
+const ruleAdFilterEnabled = ref(true)
+const ruleAdHideSelectors = ref('')
 const ruleSaving = ref(false)
 const ruleMsg = ref('')
 const ruleMsgType = ref<'success' | 'error' | 'info'>('info')
@@ -115,6 +129,7 @@ function previewRule(rule: SiteRule): string {
     previewField('作者', rule.author),
     previewField('目录', rule.catalog),
     previewField('正文', rule.body),
+    `浏览去广告 ${rule.adFilterEnabled === false ? '关闭' : '开启'}`,
   ].join(' · ')
 }
 
@@ -124,11 +139,17 @@ function fillRuleForm(rule: SiteRule) {
   ruleAuthor.value = rule.author ?? ''
   ruleCatalog.value = rule.catalog ?? ''
   ruleBody.value = rule.body ?? ''
+  ruleAdFilterEnabled.value = rule.adFilterEnabled !== false
+  ruleAdHideSelectors.value = rule.adHideSelectors ?? ''
 }
 
 async function loadRules() {
   const res = await window.api.siteRules.list()
   rules.value = res.rules
+  if (props.prefillHost && ruleHost.value === props.prefillHost && activeSection.value === 'siteRules') {
+    const stored = rules.value.find((rule) => rule.host === props.prefillHost)
+    if (stored) fillRuleForm(stored)
+  }
 }
 
 async function load() {
@@ -137,9 +158,14 @@ async function load() {
     settings.value = await window.api.settings.get()
     baseUrl.value = settings.value.baseUrl
     model.value = settings.value.model
+    ttsEndpoint.value = settings.value.tts?.onlineEndpoint ?? ''
+    ttsModel.value = settings.value.tts?.onlineModel ?? ''
+    ttsVoice.value = settings.value.tts?.onlineVoice ?? ''
     const ai = settings.value.ai ?? DEFAULT_AI_PREFS
     provider.value = inferAiProvider(settings.value.baseUrl, ai.provider)
     thinkingEnabled.value = ai.thinkingEnabled
+    autoBookOverview.value = ai.autoBookOverview
+    budgetWarningTokens.value = ai.budgetWarningTokens
     trustedCustomOrigins.value = [...ai.trustedCustomOrigins]
     promptMode.value = { ...ai.promptMode }
     customPrompts.value = { ...ai.customPrompts }
@@ -149,6 +175,51 @@ async function load() {
   } finally {
     settingsLoading.value = false
   }
+}
+
+async function saveTts(): Promise<boolean> {
+  const endpoint = ttsEndpoint.value.trim()
+  if (endpoint) {
+    try {
+      const url = new URL(endpoint)
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+      if ((url.protocol !== 'https:' && !(local && url.protocol === 'http:')) || url.username || url.password || url.hash) throw new Error()
+    } catch { message.error('请输入完整 HTTPS 语音接口地址；本机地址可用 HTTP'); return false }
+  }
+  ttsSaving.value = true
+  try {
+    settings.value = await window.api.settings.set({
+      tts: { onlineEndpoint: endpoint, onlineModel: ttsModel.value.trim(), onlineVoice: ttsVoice.value.trim() },
+      ...(ttsApiKey.value ? { ttsApiKey: ttsApiKey.value } : {}),
+    })
+    ttsApiKey.value = ''
+    message.success('听书设置已保存')
+    return true
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '听书设置保存失败')
+    return false
+  } finally { ttsSaving.value = false }
+}
+
+async function clearTtsKey() {
+  settings.value = await window.api.settings.set({ ttsApiKey: '' })
+  ttsApiKey.value = ''
+  message.success('在线语音密钥已清除')
+}
+
+async function testTts() {
+  if (!await saveTts()) return
+  ttsTesting.value = true
+  const requestId = `test_${Date.now()}`
+  try {
+    const bytes = await window.api.tts.synthesize(requestId, '你好，这是听书语音测试。')
+    const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'audio/mpeg' }))
+    const audio = new Audio(url)
+    audio.onended = () => URL.revokeObjectURL(url)
+    audio.onerror = () => { URL.revokeObjectURL(url); message.error('试音文件无法播放') }
+    await audio.play()
+  } catch (error) { message.error(error instanceof Error ? error.message : '在线语音试音失败') }
+  finally { ttsTesting.value = false }
 }
 
 async function pickLibrary() {
@@ -212,13 +283,24 @@ async function setDownloadPace(next: DownloadPace) {
 }
 
 async function saveLibrary() {
+  const target = libraryPath.value.trim()
+  const original = settings.value?.libraryPath || ''
+  if (target === original) return
+  if (!window.confirm(`将书库复制到新目录并校验，成功后切换；原目录会保留。\n\n目标：${target}\n\n确定开始？`)) return
   saving.value = true
   msg.value = ''
   try {
-    settings.value = await window.api.settings.set({ libraryPath: libraryPath.value })
-    libraryPath.value = settings.value.libraryPath
-    msg.value = '书库路径已保存。新路径立即生效，不会迁移旧目录里的书。'
-    msgType.value = 'success'
+    const result = await window.api.library.migrate(target)
+    if (result.ok) {
+      settings.value = await window.api.settings.get()
+      libraryPath.value = result.newPath
+      msg.value = `已搬迁 ${result.files} 个文件到 ${result.newPath}；旧书库保留在 ${result.oldPath}`
+      msgType.value = 'success'
+    } else {
+      libraryPath.value = original
+      msg.value = result.message
+      msgType.value = 'error'
+    }
   } catch (e: unknown) {
     msg.value = String(e)
     msgType.value = 'error'
@@ -239,6 +321,8 @@ async function saveAi(): Promise<boolean> {
       ai: {
         provider: provider.value,
         thinkingEnabled: thinkingEnabled.value,
+        autoBookOverview: autoBookOverview.value,
+        budgetWarningTokens: budgetWarningTokens.value,
         trustedCustomOrigins: trustedOrigins,
         promptMode: { ...promptMode.value },
         customPrompts: { ...customPrompts.value },
@@ -405,6 +489,8 @@ async function saveRule() {
       author: ruleAuthor.value,
       catalog: ruleCatalog.value,
       body: ruleBody.value,
+      adFilterEnabled: ruleAdFilterEnabled.value,
+      adHideSelectors: ruleAdHideSelectors.value,
     })
     if (!res.ok) {
       ruleMsg.value = res.message || '保存失败'
@@ -421,6 +507,19 @@ async function saveRule() {
   } finally {
     ruleSaving.value = false
   }
+}
+
+async function testRule() {
+  rulePreviewing.value = true
+  rulePreview.value = null
+  try {
+    const res = await window.api.siteRules.preview({
+      host: ruleHost.value, title: ruleTitle.value, author: ruleAuthor.value,
+      catalog: ruleCatalog.value, body: ruleBody.value,
+    })
+    if (res.ok) rulePreview.value = res.preview
+    else message.error(res.message)
+  } finally { rulePreviewing.value = false }
 }
 
 async function removeRule(host: string) {
@@ -445,6 +544,8 @@ async function removeRule(host: string) {
       ruleAuthor.value = ''
       ruleCatalog.value = ''
       ruleBody.value = ''
+      ruleAdFilterEnabled.value = true
+      ruleAdHideSelectors.value = ''
     }
     ruleMsg.value = '规则已删除'
     ruleMsgType.value = 'info'
@@ -461,6 +562,28 @@ function removeCurrentRule() {
 // 备份与恢复
 const backingUp = ref(false)
 const restoring = ref(false)
+const configuringAutoBackup = ref(false)
+
+async function enableAutoBackup() {
+  const { filePaths } = await window.api.dialog.openDirectory()
+  const destDir = filePaths?.[0]
+  if (!destDir) return
+  configuringAutoBackup.value = true
+  try {
+    settings.value = await window.api.settings.set({ autoBackup: { destDir, lastError: '' } })
+    const result = await window.api.backup.runAuto()
+    settings.value = await window.api.settings.get()
+    msg.value = result.status === 'created' ? `已启用每周自动备份，首份已保存到 ${result.message}`
+      : result.status === 'failed' ? `已启用，但首份备份失败：${result.message}` : '已启用每周自动备份'
+    msgType.value = result.status === 'failed' ? 'error' : 'success'
+  } finally { configuringAutoBackup.value = false }
+}
+
+async function disableAutoBackup() {
+  settings.value = await window.api.settings.set({ autoBackup: { destDir: '', lastError: '' } })
+  msg.value = '已关闭自动备份；已有备份文件保留'
+  msgType.value = 'success'
+}
 
 async function handleBackup() {
   const { filePaths } = await window.api.dialog.openDirectory()
@@ -483,7 +606,7 @@ async function handleRestore() {
   const { filePaths } = await window.api.dialog.openZip()
   const zipPath = filePaths?.[0]
   if (!zipPath) return
-  if (!window.confirm('恢复会清空当前书库，再用备份文件覆盖。确定继续吗？')) return
+  if (!window.confirm('恢复会整库覆盖当前书库。软件会先校验备份，失败时保留原书库。确定继续吗？')) return
   restoring.value = true
   try {
     const res = await window.api.backup.restore(zipPath)
@@ -512,6 +635,18 @@ watch(
   () => props.prefillNonce,
   () => {
     ruleHost.value = props.prefillHost ?? ''
+    const host = ruleHost.value
+    const stored = rules.value.find((rule) => rule.host === host)
+    if (stored) fillRuleForm(stored)
+    else {
+      ruleHost.value = host
+      ruleTitle.value = ''
+      ruleAuthor.value = ''
+      ruleCatalog.value = ''
+      ruleBody.value = ''
+      ruleAdFilterEnabled.value = true
+      ruleAdHideSelectors.value = ''
+    }
     activeSection.value = 'siteRules'
   },
 )
@@ -576,9 +711,9 @@ onMounted(load)
           <n-button @click="pickLibrary">选择目录</n-button>
         </n-input-group>
         <p style="color:var(--text-muted);font-size:13px;margin:0">
-          保存后立即使用新路径，不会把旧书拷过去。旧目录里的文件仍留在原处。
+          搬迁仅接受空目录；复制并校验成功后切换，旧目录仍保留。
         </p>
-        <n-button type="primary" :loading="saving" @click="saveLibrary">保存路径</n-button>
+        <n-button type="primary" :loading="saving" @click="saveLibrary">搬迁书库</n-button>
         <div class="pace-row">
           <div>
             <div class="field-label">下载速度</div>
@@ -590,6 +725,23 @@ onMounted(load)
             <n-radio-button value="fast">快</n-radio-button>
           </n-radio-group>
         </div>
+      </n-space>
+    </n-card>
+
+    <n-card v-show="activeSection === 'tts'" title="在线听书" class="settings-card">
+      <n-space vertical :size="12">
+        <n-alert type="warning">选择在线语音播放时，当前正文片段会发送到你填写的服务地址，可能产生费用。系统语音无需网络和密钥。</n-alert>
+        <n-alert v-if="settings?.tts.onlineKeyConfigured" type="success">在线语音 API Key 已加密保存</n-alert>
+        <n-input-group><n-input-group-label style="width:90px">接口地址</n-input-group-label><n-input v-model:value="ttsEndpoint" placeholder="https://服务地址/v1/audio/speech" /></n-input-group>
+        <n-input-group><n-input-group-label style="width:90px">模型名</n-input-group-label><n-input v-model:value="ttsModel" placeholder="例如 tts-1" /></n-input-group>
+        <n-input-group><n-input-group-label style="width:90px">音色名</n-input-group-label><n-input v-model:value="ttsVoice" placeholder="例如 alloy" /></n-input-group>
+        <n-input-group><n-input-group-label style="width:90px">API Key</n-input-group-label><n-input v-model:value="ttsApiKey" type="password" show-password-on="click" placeholder="留空则不更新" /></n-input-group>
+        <p class="field-help">接口须兼容 POST 音频生成协议，接收 model、voice、input 和 response_format=mp3，并返回 MP3。</p>
+        <n-space>
+          <n-button type="primary" :loading="ttsSaving" @click="saveTts">保存听书设置</n-button>
+          <n-button :loading="ttsTesting" @click="testTts">连接试音</n-button>
+          <n-button v-if="settings?.tts.onlineKeyConfigured" quaternary type="error" @click="clearTtsKey">清除密钥</n-button>
+        </n-space>
       </n-space>
     </n-card>
 
@@ -640,6 +792,20 @@ onMounted(load)
             <div class="field-help">人物、前情和证据问答使用思考模式；翻译、清正文和摘要使用快速模式。</div>
           </div>
           <n-switch v-model:value="thinkingEnabled" />
+        </div>
+        <div class="switch-row">
+          <div>
+            <div class="field-label">自动生成全书概览（含剧透）</div>
+            <div class="field-help">保存并开启后，完整入库的已有书和新书会逐本向当前 AI 服务发送全部章节正文。长篇会产生多次调用并消耗额度；关闭后停止后续调用。</div>
+          </div>
+          <n-switch v-model:value="autoBookOverview" aria-label="自动生成全书概览" />
+        </div>
+        <div class="switch-row">
+          <div>
+            <div class="field-label">单次输入提醒阈值</div>
+            <div class="field-help">预计输入达到阈值时，发送前要求确认；实际 token 和费用以服务商为准。</div>
+          </div>
+          <n-input-number v-model:value="budgetWarningTokens" :min="1000" :max="50000" :step="1000" style="width:140px" />
         </div>
         <n-alert v-if="usesCustomEndpoint" type="warning">
           {{ AI_CUSTOM_SERVICE_NOTICE }}
@@ -699,7 +865,7 @@ onMounted(load)
 
     <n-card v-show="activeSection === 'siteRules'" title="站点规则" class="settings-card">
       <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">
-        按域名配置四条可选 CSS。保存时不检查选择器是否合法。空选择器走通用提取。
+        按域名配置提取规则与浏览页去广告。提取选择器留空时走通用提取。
       </p>
       <n-space vertical :size="12">
         <n-input-group>
@@ -722,8 +888,15 @@ onMounted(load)
           <n-input-group-label style="width:110px">正文选择器</n-input-group-label>
           <n-input v-model:value="ruleBody" placeholder="可选，空则走通用提取" />
         </n-input-group>
+        <n-space align="center">
+          <span>浏览页去广告</span>
+          <n-switch v-model:value="ruleAdFilterEnabled" aria-label="浏览页去广告" />
+        </n-space>
+        <div class="field-help">浏览页会后台更新 AdGuard 网络规则；离线时使用缓存，首次离线仍可隐藏广告元素。下载章节不受网络过滤。</div>
+        <n-input v-model:value="ruleAdHideSelectors" type="textarea" :rows="3" placeholder="额外隐藏的广告元素 CSS 选择器，每行一条" />
         <n-space>
           <n-button type="primary" :loading="ruleSaving" @click="saveRule">保存</n-button>
+          <n-button :loading="rulePreviewing" @click="testRule">在当前浏览页试运行</n-button>
           <n-popconfirm @positive-click="removeCurrentRule">
             <template #trigger>
               <n-button quaternary type="error">删除</n-button>
@@ -731,6 +904,14 @@ onMounted(load)
             确认删除该站点规则？
           </n-popconfirm>
         </n-space>
+        <n-card v-if="rulePreview" size="small" title="试运行结果">
+          <div>书名：{{ rulePreview.title || '未识别' }} · 作者：{{ rulePreview.author || '未识别' }}</div>
+          <div>目录：{{ rulePreview.chapterCount }} 章 {{ rulePreview.chapterTitles.join('、') }}</div>
+          <div v-for="field in (['title', 'author', 'catalog', 'body'] as const)" :key="field">
+            {{ { title: '书名', author: '作者', catalog: '目录', body: '正文' }[field] }}：{{ rulePreview.diagnostics[field] }}
+          </div>
+          <div style="white-space:pre-wrap;max-height:180px;overflow:auto">{{ rulePreview.bodySample || '没有正文样本' }}</div>
+        </n-card>
         <div v-if="ruleMsg" class="form-msg" :class="ruleMsgType">{{ ruleMsg }}</div>
       </n-space>
 
@@ -755,12 +936,23 @@ onMounted(load)
 
     <n-card v-show="activeSection === 'backup'" title="备份与恢复" class="settings-card">
       <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">
-        备份把整个书库（不含回收站）打包成 zip 存到你选的文件夹。恢复是整库覆盖：会先清空当前书库再导入备份。
+        备份把整个书库（不含回收站）打包成 zip 存到你选的文件夹。恢复是整库覆盖：先校验并准备备份，切换失败时自动还原原书库。
       </p>
       <n-space>
         <n-button :loading="backingUp" @click="handleBackup">备份书库…</n-button>
         <n-button type="warning" :loading="restoring" @click="handleRestore">从备份恢复…</n-button>
       </n-space>
+      <div style="margin-top:18px">
+        <strong>每周自动备份</strong>
+        <p>启动时检查到期备份，仅保留最近五份自动备份。手动备份不会被清理。</p>
+        <p>目录：{{ settings?.autoBackup?.destDir || '未启用' }}</p>
+        <p v-if="settings?.autoBackup?.lastSuccessAt">上次成功：{{ settings.autoBackup.lastSuccessAt }}</p>
+        <p v-if="settings?.autoBackup?.lastError" role="alert">上次错误：{{ settings.autoBackup.lastError }}</p>
+        <n-space>
+          <n-button :loading="configuringAutoBackup" @click="enableAutoBackup">{{ settings?.autoBackup?.destDir ? '更换目录' : '启用并选择目录' }}</n-button>
+          <n-button v-if="settings?.autoBackup?.destDir" @click="disableAutoBackup">关闭自动备份</n-button>
+        </n-space>
+      </div>
     </n-card>
 
     <n-card v-show="activeSection === 'appearance'" title="阅读偏好" class="settings-card">

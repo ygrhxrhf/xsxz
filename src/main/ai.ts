@@ -515,7 +515,7 @@ export function aiCompletionDoneEvent(
   jobId: string,
   result: AiCompletionResult,
   text = result.text,
-): AiDoneEvent {
+): AiSuccessDoneEvent {
   return {
     jobId,
     ok: true,
@@ -525,7 +525,7 @@ export function aiCompletionDoneEvent(
   }
 }
 
-export function aiStoppedDoneEvent(jobId: string, text: string): AiDoneEvent {
+export function aiStoppedDoneEvent(jobId: string, text: string): AiSuccessDoneEvent {
   return { jobId, ok: true, text, stopped: true }
 }
 
@@ -753,6 +753,7 @@ export async function cleanChapterBody(
   taskInstruction = BUILTIN_AI_PROMPTS.clean,
   signal?: AbortSignal,
   plan = planCleanChapterRequest(chapterTitle, body, taskInstruction),
+  onUsage?: (usage: AiUsage | undefined) => Promise<void>,
 ): Promise<AiCleanResult> {
   const cleanedBatches: string[] = []
   for (const batch of plan.batches) {
@@ -765,6 +766,7 @@ export async function cleanChapterBody(
         signal,
       },
     )
+    await onUsage?.(result.usage)
     if (result.truncated) throw new Error('模型输出被截断，未生成可应用的清理预览')
     cleanedBatches.push(result.text.trim())
   }

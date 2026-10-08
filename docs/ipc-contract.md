@@ -54,6 +54,8 @@
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
 | `library.list` | invoke | 无 | `{ books: BookListItem[] }` |
+| `bookOverview.retry` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
+| `bookOverview.changed` | 主→渲染 | — | 无；提示刷新书库概览状态 |
 | `library.get` | invoke | `{ bookId: string }` | `{ book: Book } \| { ok: false; message: string }` |
 | `library.readChapter` | invoke | `{ bookId: string; chapterId: string }` | `{ chapter: ChapterFile } \| { ok: false; message: string }` |
 | `library.delete` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
@@ -65,10 +67,19 @@
 | `library.updateChapterBody` | invoke | `{ bookId: string; chapterId: string; body: string; restoreRaw?: boolean }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.export` | invoke | `{ bookId: string; format: 'txt' \| 'epub'; destDir: string }` | `{ ok: true; path: string } \| { ok: false; message: string }` |
 | `library.searchInBook` | invoke | `{ bookId: string; query: string }` | `{ ok: true; hits: BookSearchHit[] } \| { ok: false; message: string }` |
+| `library.audit` | invoke | `{ bookId: string }` | `{ ok: true; report: QualityReport } \| { ok: false; message: string }` |
+| `library.repairChapterBody` | invoke | `{ bookId: string; chapterId: string; body: string }` | `{ ok: true } \| { ok: false; message: string }` |
+| `library.migrate` | invoke | `{ targetPath: string }` | `{ ok: true; oldPath: string; newPath: string; files: number } \| { ok: false; message: string }` |
 
 `library.searchInBook` 只扫本书 `ready` 章节正文，大小写不敏感，按章节顺序返回命中（每章一条：次数、首个命中的摘录与段落下标）。纯本机操作。
 
+`library.audit` 只报告疑似短章、重复正文/链接及广告或拦截残页，不自动改章状态。`library.repairChapterBody` 保存非空纯文本，首次编辑前的正文留在 `bodyRaw`，并把该章设为 ready。`library.migrate` 仅接受空目标目录，在目标同级临时目录复制并逐文件校验；切换失败仍使用原书库，成功后原目录保留。搬迁与恢复共用书库维护锁。
+
 `Book.tags` / `BookListItem.tags` 始终是 `string[]`，缺省 `[]`。磁盘上旧书没有 `tags` 时按空数组读取，不得因此失败。`BookListItem.coverPath` 可选，有封面时给出相对书目录的路径。`library.updateMeta` 只改书名、作者和标签；`library.setCover` 用本机图片写入封面并返回 `coverPath`。`library.pickCoverFile` 打开本机选图对话框，取消时返回 `null`。
+
+`BookListItem.overview` 是列表读取时附加的可选视图状态，包含 `status`、可选 `text` 和 `message`。状态为 `off | waiting | pending | running | ready | stale | failed`。`bookOverview.retry` 清除本书当前失败标记并唤醒后台队列；自动生成设置关闭时不发起模型调用。
+
+`Settings.ai.autoBookOverview` 缺省为 `false`，只能由用户在设置页保存开启。开启后后台逐本处理已完整入库的书；无 API Key 或自定义服务地址未获信任时等待。概览使用全书正文，可能包含未读剧情与结局；各次 AI 调用计入该书用量。
 
 `library.import` 的路径由主进程 `dialog.showOpenDialog` 选出后传入，或设置页先选文件再 invoke。只接受 `.txt` / `.epub`（大小写不敏感）；其它后缀或不带后缀返回 `{ ok: false, message }`（中文，说明不支持的类型）。不得把 `.docx` 等当 txt 硬读。
 
@@ -92,7 +103,9 @@
 
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
-| `download.start` | invoke | 无（以当前浏览页为起点） | `{ ok: true; bookId: string } \| { ok: false; code: FailCode; message: string }` |
+| `download.preview` | invoke | 无（以当前浏览页为起点） | `{ ok: true; preview: DownloadPreview } \| { ok: false; message: string }` |
+| `download.confirm` | invoke | `{ token: string }` | `{ ok: true; bookId: string } \| { ok: false; message: string }` |
+| `download.redownloadChapter` | invoke | `{ bookId: string; chapterId: string; url: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `download.cancel` | invoke | `{ bookId?: string }` | `{ ok: true }` |
 | `download.retryFailed` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `download.checkUpdate` | invoke | `{ bookId: string }` | `{ ok: true; bookId: string; added: number } \| { ok: false; code?: FailCode; message: string }` |
@@ -101,7 +114,9 @@
 | `download.progress` | 主→渲染 | — | `DownloadProgress` |
 | `download.checkAll.progress` | 主→渲染 | — | `CheckAllProgress` |
 
-不新增频道。`DownloadProgress.failedChapters` 可选，结束事件（`done` / `error` / `cancelled`）必带，没有失败或空章时为 `[]`；`running`（及 `paused`）省略。元素字段：`chapterId`、`title`、`index`（磁盘 `ChapterMeta.index`，界面不再加减）、`reason`（优先 `failMessage`，否则 `FAIL_CODE_ZH[failCode]`，再否则「正文为空或过短」）。来源是该书 `status` 为 `failed` 或 `empty` 的章。
+`DownloadProgress.failedChapters` 可选，结束事件（`done` / `error` / `cancelled`）必带，没有失败或空章时为 `[]`；`running`（及 `paused`）省略。元素字段：`chapterId`、`title`、`index`（磁盘 `ChapterMeta.index`，界面不再加减）、`reason`（优先 `failMessage`，否则 `FAIL_CODE_ZH[failCode]`，再否则「正文为空或过短」）。来源是该书 `status` 为 `failed` 或 `empty` 的章。结束事件可带 `qualityIssueCount`。
+
+`download.preview` 不写书库；样本章也用 `persist:novel` 隐藏 webContents 加载。确认令牌一次性、十分钟内有效，当前浏览页 URL 改变后拒绝确认。`download.redownloadChapter` 只提取指定章节，失败时保留原正文与原 URL。
 
 禁止用裸 `fetch(chapterUrl)` 作为下书主路径。必须走同一 `persist:novel` 的隐藏 webContents。
 
@@ -117,8 +132,11 @@
 |---|---|---|---|
 | `backup.create` | invoke | `{ destDir: string }` | `{ ok: true; path: string; files: number } \| { ok: false; message: string }` |
 | `backup.restore` | invoke | `{ zipPath: string }` | `{ ok: true; books: number; files: number } \| { ok: false; message: string }` |
+| `backup.runAuto` | invoke | 无 | `{ status: 'disabled' \| 'notDue' \| 'created' \| 'failed'; message?: string }` |
 
-`backup.create` 把整个书库打包成 `spbf-backup-<日期>-<时间>.zip` 写入用户选的目录；顶层跳过 `__trash__` / `__tmp__`。空书库拒绝备份。`backup.restore` 是**整库覆盖**：校验 zip 含 `index.json` 后清空现有书库再解压导入，随后 `rebuildIndex()`。zip 内路径含 `..` 或绝对路径的条目一律丢弃。二次确认由渲染层负责。
+`backup.create` 把整个书库打包成 `spbf-backup-<日期>-<时间>.zip` 写入用户选的目录；顶层跳过 `__trash__` / `__tmp__`。空书库拒绝备份。`backup.restore` 是**整库覆盖**：先在书库同盘临时目录解压，拒绝不安全路径并校验索引、书籍元数据与已就绪章节；通过后将旧库移到临时回滚目录，再切换新库并重建索引。切换或重建失败时还原旧库；成功后清理旧库副本。下载、导入或 AI 保存进行中不启动恢复，恢复中拒绝新的书库写入。二次确认由渲染层负责。
+
+自动备份使用 `spbf-auto-<日期>-<时间>.zip`，配置目录后启动时若距上次成功满七天就执行；只轮换最近五份自动备份，不动手动备份。失败记录在 `Settings.autoBackup.lastError`，下次启动重试。备份不含设置和 API Key。
 
 ---
 
@@ -130,6 +148,17 @@
 | `settings.set` | invoke | `SettingsUpdate` | `Settings` |
 
 `apiKey` 仅在 `settings.set` 时由渲染提交；落盘经 `safeStorage`。`settings.get` 只给 `apiKeyConfigured: boolean`。站点规则**不**经 `settings.*`，也**不**写入 `settings.json`。
+
+在线听书配置仍经 `settings.get/set`：`tts.source` 为 `system | online`，并包含系统音色 URI、在线完整接口地址、模型、音色、语速和自动下一章。`SettingsUpdate.ttsApiKey` 单独设置在线语音密钥，空串清除；主进程加密保存，`settings.get` 仅返回 `tts.onlineKeyConfigured`，绝不返回明文。在线接口按 OpenAI 兼容的 `POST` 语音生成协议发送 `model`、`voice`、`input`、`response_format: mp3`。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `tts.getPosition` | invoke | `{ bookId }` | `TtsPosition | null` |
+| `tts.setPosition` | invoke | `{ bookId, position: TtsPosition }` | `{ ok: true }`，无效位置抛错 |
+| `tts.synthesize` | invoke | `{ requestId, text }`（最多 500 字符） | MP3 `Uint8Array`，失败抛错 |
+| `tts.cancel` | invoke | `{ requestId }` | `{ ok: true }` |
+
+在线语音由主进程读取已保存接口和密钥发起请求；渲染进程不能覆盖请求地址或获取密钥。缓存位于 `userData/tts-cache`，限额 500 MB。
 
 `Settings.downloadPace`（`'slow' | 'standard' | 'fast'`）是必填字段，`settings.get` 始终返回。默认 `'standard'`。旧 `settings.json` 缺该字段、空串或非法值都回退 `'standard'`。`SettingsUpdate.downloadPace` 可选；`settings.set` 写入合法档位，非法值回退 `'standard'` 后落盘并返回。它只影响下载时章与章之间的固定间隔：`slow` 2000ms、`standard` 600ms、`fast` 200ms。不新增 IPC 频道，仍走现有 `settings.get` / `settings.set`。
 
@@ -171,12 +200,16 @@
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
 | `siteRules.list` | invoke | 无 | `{ rules: SiteRule[] }` |
+| `siteRules.preview` | invoke | 未保存的 `SiteRule` | `{ ok: true; preview: SiteRulePreview } \| { ok: false; message: string }` |
 | `siteRules.upsert` | invoke | `SiteRule` | `{ ok: true; rule: SiteRule } \| { ok: false; message: string }` |
 | `siteRules.remove` | invoke | `{ host: string }` | `{ ok: true } \| { ok: false; message: string }` |
 
 - `host` 经 `normalizeHost`：trim、小写、去掉一层前导 `www.`；URL 形态（如 `https://www.Foo.com/path`）先取 hostname 再规范化。空 / 纯空白 host 拒绝。
+- `siteRules.preview` 对当前浏览页及样本章试运行，要求填写域名与当前站点一致；仅返回结果与逐项诊断，不保存规则。
 - 同一规范化 host 只留一条；`upsert` 整条替换。
 - 选择器字段均可空。空选择器 = 该字段走通用提取。非法 CSS 保存不拒，提取时当未命中。
+- `SiteRule.adFilterEnabled` 可选，缺省为 `true`；`adHideSelectors` 可选，每行一条浏览页额外隐藏选择器。关闭时同时停用该站的 CSS 隐藏和 AdGuard 网络规则。CSS 只注入浏览 View；网络请求只在 `webContentsId` 属于浏览 View 时匹配，下载 View 不受影响。
+- `siteRules.upsert` 仍整条替换；浏览页切换去广告时先读取当前规则并保留书名、作者、目录、正文等字段。保存规则后当前浏览页立即刷新隐藏 CSS，并重载页面以应用网络规则变化。
 - 落盘 `%APPDATA%/spbf/site-rules.json`（与 `settings.json` 同目录），不是 `settings.json`。
 - `siteRules.*` 不返回 API Key；文件内不得存 Key。
 
@@ -212,11 +245,16 @@
 | `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart` |
 | `ai.getChat` | invoke | `{ bookId: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省） |
 | `ai.clearChat` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
-| `ai.translateStream` | invoke | `{ text: string }` | `AiJobStart` |
+| `ai.translateStream` | invoke | `{ text: string; bookId?: string }` | `AiJobStart`；传入书籍 ID 时计入每书用量 |
 | `ai.getMemory` | invoke | `{ bookId: string }` | `{ ok: true; memory: AiMemoryFile \| CharacterCard \| null } \| { ok: false; message: string }` |
-| `ai.updateMemory` | invoke | `{ bookId: string; uptoChapterId: string }` | `AiJobStart` |
-| `ai.rebuildMemory` | invoke | `{ bookId: string; uptoChapterId: string }` | `AiJobStart` |
+| `ai.updateMemory` | invoke | `{ bookId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
+| `ai.rebuildMemory` | invoke | `{ bookId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | 同 `ai.updateMemory` |
+| `ai.rebuildMemoryFrom` | invoke | `{ bookId: string; fromChapterId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | 同 `ai.updateMemory`；仅重算已读范围内从来源章开始的记忆，保留此前证据及用户手工修正 |
 | `ai.markMemoryInaccurate` | invoke | `{ bookId: string; kind: 'character' \| 'relation' \| 'foreshadow' \| 'event'; itemId: string }` | `{ ok: true; item: AiMemoryBase } \| { ok: false; message: string }` |
+| `ai.correctMemorySummary` | invoke | `{ bookId: string; kind: 'character' \| 'relation' \| 'foreshadow' \| 'event'; itemId: string; summary: string }` | `{ ok: true; item: AiMemoryBase; affectedChapterIds: string[] } \| { ok: false; message: string }` |
+| `ai.correctCharacterAliases` | invoke | `{ bookId: string; itemId: string; aliases: string[] }` | `{ ok: true; character: AiMemoryCharacter; affectedChapterIds: string[] } \| { ok: false; message: string }` |
+| `ai.getMaterialCoverage` | invoke | `{ bookId: string }` | `{ ok: true; coverage: AiMaterialCoverage \| null } \| { ok: false; message: string }` |
+| `ai.getUsage` | invoke | `{ bookId: string }` | `{ ok: true; usage: AiBookUsage } \| { ok: false; message: string }` |
 | `ai.askEvidenceStream` | invoke | `{ bookId: string; chapterId: string; question: string }` | `AiJobStart` |
 | `ai.retrySave` | invoke | `{ saveToken: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.cancel` | invoke | `{ jobId?: string }` | `{ ok: true }` |
@@ -241,6 +279,8 @@
 
 `ai.askEvidenceStream` 成功时通过 `ai.done` 同时返回 `text`、候选白名单内的 `citations`、`uptoChapterId` 与 `stopped`。保存失败仍保留这些字段并追加 `saveToken`；重开后 `ai.getChat` 返回 `AiGetChatResult`，v1 消息按无来源兼容读取，v2 消息保留引用、已读截止和停止状态。
 
+`ai.getMaterialCoverage` 只统计已读截止内 `ready` 章：返回截止章节、已有本章摘要数，以及缺摘要的章节标题。无阅读进度时 `coverage` 为 `null`。`ai.correctCharacterAliases` 只改该人物的 `aliases`，不改姓名、摘要或来源；`affectedChapterIds` 是该条目来源章节，供界面从这些章节重新生成。`ai.getUsage` 读取 `<bookDir>/ai/usage.json` 的累计模型调用次数和服务报告的 token；文件缺失或损坏时返回全 0。清正文每批、前情、章节摘要、翻译、证据问答的改写和回答、记忆每批分别计次。模型服务未报告 token 时仍计次，token 记 0；不计算金额，保存重试不重复计次。
+
 A1.1 只冻结以上类型、频道与白名单形状；handler 与 preload 方法由后续 A1.4/B1/C1 切片实现。未实现前 UI 不得调用。
 
 ---
@@ -256,7 +296,7 @@ window.api = {
   settings: { get, set },
   backup: { create, restore },
   siteRules: { list, upsert, remove },
-  ai: { clean, summarize, translate, chat, getChat, clearChat, test, characterCard, getCharacterCard, summarizeChapter, storySoFar, getSummaries, chatStream, translateStream, getMemory, updateMemory, rebuildMemory, markMemoryInaccurate, askEvidenceStream, retrySave, cancel, onChunk, onStage, onDone },
+  ai: { clean, summarize, translate, chat, getChat, clearChat, test, characterCard, getCharacterCard, summarizeChapter, storySoFar, getSummaries, chatStream, translateStream, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, correctCharacterAliases, correctMemorySummary, markMemoryInaccurate, getMaterialCoverage, getUsage, askEvidenceStream, retrySave, cancel, onChunk, onStage, onDone },
   annotations: { list, add, update, remove },
 }
 ```

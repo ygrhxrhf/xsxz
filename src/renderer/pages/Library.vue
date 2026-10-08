@@ -2,7 +2,7 @@
 import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, NForm, NFormItem, NDynamicTags, useMessage } from 'naive-ui'
 import type { DropdownOption, InputInst } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, TrashItem } from '@shared/types'
+import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, QualityIssue, QualityReport, TrashItem } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
 import { aiSaveRecoveryActive } from '../aiSaveRecoveryLock'
 import {
@@ -39,6 +39,7 @@ const emit = defineEmits<{
 
 const message = useMessage()
 const books = ref<BookListItem[]>([])
+const expandedOverviews = ref<Set<string>>(new Set())
 const loading = ref(true)
 const retryingIds = ref<string[]>([])
 const checkingIds = ref<string[]>([])
@@ -69,7 +70,19 @@ const editTitle = ref('')
 const editAuthor = ref('')
 const editTags = ref<string[]>([])
 const libraryPath = ref('')
+const qualityOpen = ref(false)
+const qualityLoading = ref(false)
+const qualityReport = ref<QualityReport | null>(null)
+const qualityBookTitle = ref('')
+const qualityCounts = ref<Record<string, number>>({})
+const repairOpen = ref(false)
+const repairIssue = ref<QualityIssue | null>(null)
+const repairBody = ref('')
+const repairUrl = ref('')
+const repairCanUndo = ref(false)
+const repairSaving = ref(false)
 let unsubProgress: (() => void) | null = null
+let unsubOverview: (() => void) | null = null
 let unsubCheckAll: (() => void) | null = null
 let unsubAiChunk: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
@@ -104,6 +117,19 @@ const hasActiveFilter = computed(
   () => Boolean(query.value.trim()) || statusFilter.value !== 'all' || Boolean(selectedTag.value),
 )
 const deleteConfirmBook = computed(() => books.value.find((book) => book.id === deleteConfirmId.value) || null)
+
+function toggleOverview(bookId: string) {
+  const next = new Set(expandedOverviews.value)
+  if (next.has(bookId)) next.delete(bookId)
+  else next.add(bookId)
+  expandedOverviews.value = next
+}
+
+async function retryOverview(bookId: string) {
+  const result = await window.api.bookOverview.retry(bookId)
+  if (!result.ok) message.error(result.message)
+  await refresh()
+}
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
@@ -154,6 +180,78 @@ async function handleImport() {
   } else {
     message.error(res.message || '导入失败')
   }
+}
+
+async function checkQuality(bookId: string, show = true) {
+  qualityLoading.value = true
+  try {
+    const res = await window.api.library.audit(bookId)
+    if (!res.ok) { message.error(res.message); return }
+    qualityReport.value = res.report
+    qualityBookTitle.value = books.value.find((book) => book.id === bookId)?.title || ''
+    qualityCounts.value = { ...qualityCounts.value, [bookId]: res.report.issues.length }
+    if (show) qualityOpen.value = true
+  } finally { qualityLoading.value = false }
+}
+
+async function openRepair(issue: QualityIssue) {
+  const bookId = qualityReport.value?.bookId
+  if (!bookId) return
+  const [chapter, book] = await Promise.all([
+    window.api.library.readChapter(bookId, issue.chapterId),
+    window.api.library.get(bookId),
+  ])
+  repairIssue.value = issue
+  repairBody.value = chapter.chapter?.body || ''
+  repairCanUndo.value = Boolean(chapter.chapter?.bodyRaw && chapter.chapter.bodyRaw !== chapter.chapter.body)
+  repairUrl.value = book.book?.chapters.find((item) => item.id === issue.chapterId)?.url || ''
+  repairOpen.value = true
+}
+
+async function saveRepairBody() {
+  const bookId = qualityReport.value?.bookId
+  const issue = repairIssue.value
+  if (!bookId || !issue || !repairBody.value.trim()) return
+  repairSaving.value = true
+  try {
+    const res = await window.api.library.repairChapterBody(bookId, issue.chapterId, repairBody.value)
+    if (!res.ok) { message.error(res.message || '保存失败'); return }
+    message.success('正文已保存；原有标记会在打开章节时重新定位')
+    repairOpen.value = false
+    await checkQuality(bookId, false)
+    await refresh()
+  } finally { repairSaving.value = false }
+}
+
+async function redownloadRepairChapter() {
+  const bookId = qualityReport.value?.bookId
+  const issue = repairIssue.value
+  if (!bookId || !issue) return
+  repairSaving.value = true
+  try {
+    const res = await window.api.download.redownloadChapter(bookId, issue.chapterId, repairUrl.value)
+    if (!res.ok) { message.error(res.message || '重新提取失败；旧正文已保留'); return }
+    message.success('本章已重新提取')
+    repairOpen.value = false
+    await checkQuality(bookId, false)
+    await refresh()
+  } finally { repairSaving.value = false }
+}
+
+async function undoRepairBody() {
+  const bookId = qualityReport.value?.bookId
+  const issue = repairIssue.value
+  if (!bookId || !issue || !repairCanUndo.value) return
+  repairSaving.value = true
+  try {
+    const res = await window.api.library.updateChapterBody(bookId, issue.chapterId, '', true)
+    if (res?.ok === false) { message.error(res.message || '撤销失败'); return }
+    const chapter = await window.api.library.readChapter(bookId, issue.chapterId)
+    repairBody.value = chapter.chapter?.body || ''
+    repairCanUndo.value = false
+    await checkQuality(bookId, false)
+    message.success('已恢复原始正文')
+  } finally { repairSaving.value = false }
 }
 
 async function handleDelete(bookId: string) {
@@ -581,6 +679,7 @@ async function refreshRecap() {
 }
 
 onMounted(() => {
+  unsubOverview = window.api.bookOverview.onChanged(() => { void refresh() })
   window.addEventListener('keydown', onLibraryKeydown)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => { if (jobId === recapJobId.value) recapText.value += delta })
   unsubAiDone = window.api.ai.onDone((event) => {
@@ -625,6 +724,7 @@ onMounted(() => {
         if (failedOpen.value && failedBookId.value === p.bookId) void reloadFailedRows(p.bookId)
       }
       void refresh()
+      if (p.bookId && p.status !== 'cancelled') void checkQuality(p.bookId, false)
     }
   })
   unsubCheckAll = window.api.download.onCheckAllProgress((p) => {
@@ -633,6 +733,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  unsubOverview?.()
   window.removeEventListener('keydown', onLibraryKeydown)
   unsubProgress?.()
   unsubCheckAll?.()
@@ -747,7 +848,23 @@ onUnmounted(() => {
             {{ cardTaskLabel(b) }}
           </div>
         </button>
+        <div class="book-overview">
+          <div class="book-overview-heading">全书概览 <span>含剧透</span></div>
+          <p
+            v-if="b.overview?.text"
+            class="book-overview-text"
+            :class="{ 'book-overview-clamped': !expandedOverviews.has(b.id) }"
+          >{{ b.overview.text }}</p>
+          <p v-if="b.overview?.message" class="book-overview-status" role="status">{{ b.overview.message }}</p>
+          <n-button v-if="b.overview?.text" size="tiny" quaternary @click="toggleOverview(b.id)">
+            {{ expandedOverviews.has(b.id) ? '收起概览' : '展开概览' }}
+          </n-button>
+          <n-button v-if="b.overview?.status === 'failed'" size="tiny" @click="retryOverview(b.id)">重试概览</n-button>
+        </div>
         <n-button class="card-edit" size="small" @click="openEdit(b)">编辑信息</n-button>
+        <n-button v-if="b.importType === 'download'" size="small" quaternary :loading="qualityLoading && qualityReport?.bookId === b.id" @click="checkQuality(b.id)">
+          检查质量<span v-if="qualityCounts[b.id]">（{{ qualityCounts[b.id] }}）</span>
+        </n-button>
         <n-dropdown
           trigger="click"
           :options="cardMenuOptions(b)"
@@ -794,6 +911,30 @@ onUnmounted(() => {
           <n-button type="primary" :loading="editSaving" :disabled="editCoverSaving" @click="saveEdit">保存</n-button>
         </n-space>
       </template>
+    </n-modal>
+
+    <n-modal v-model:show="qualityOpen" preset="card" :title="`质量检查 · ${qualityBookTitle}`" style="width:min(720px, 92vw)">
+      <p>已检查 {{ qualityReport?.checked || 0 }} 章。以下均为疑似问题，请核对后修复。</p>
+      <n-empty v-if="!qualityReport?.issues.length" description="没有发现疑似问题" />
+      <div v-else class="fail-list" style="max-height:55vh;overflow:auto">
+        <div v-for="(issue, index) in qualityReport.issues" :key="`${issue.chapterId}-${issue.kind}-${index}`" class="fail-row">
+          <div><div class="fail-title">第 {{ issue.chapterIndex }} 章 · {{ issue.chapterTitle }}</div><div class="fail-reason">{{ issue.reason }}</div></div>
+          <n-button size="small" @click="openRepair(issue)">修复</n-button>
+        </div>
+      </div>
+    </n-modal>
+    <n-modal v-model:show="repairOpen" preset="card" :title="`修复章节 · ${repairIssue?.chapterTitle || ''}`" style="width:min(760px, 92vw)">
+      <n-space vertical>
+        <label>章节链接</label>
+        <n-input v-model:value="repairUrl" placeholder="https://…" />
+        <n-button :disabled="repairSaving || !repairUrl" :loading="repairSaving" @click="redownloadRepairChapter">按此链接重新提取</n-button>
+        <label>纯文本正文</label>
+        <n-input v-model:value="repairBody" type="textarea" :rows="12" />
+        <n-space justify="end">
+          <n-button v-if="repairCanUndo" :disabled="repairSaving" @click="undoRepairBody">恢复原始正文</n-button>
+          <n-button type="primary" :disabled="!repairBody.trim()" :loading="repairSaving" @click="saveRepairBody">保存正文</n-button>
+        </n-space>
+      </n-space>
     </n-modal>
     <n-modal
       :show="Boolean(deleteConfirmBook)"

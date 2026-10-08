@@ -1,6 +1,7 @@
 import { app, safeStorage } from 'electron'
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { atomicWriteText } from './atomicFile'
 import type {
   AiPrefs,
   AiPromptKind,
@@ -127,7 +128,11 @@ export function normalizeAiPrefs(value: unknown): AiPrefs {
     thinkingEnabled:
       typeof ai.thinkingEnabled === 'boolean' ? ai.thinkingEnabled : DEFAULT_AI_PREFS.thinkingEnabled,
     recapLength: readEnum(ai.recapLength, AI_RECAP_LENGTHS, DEFAULT_AI_PREFS.recapLength),
+    budgetWarningTokens: typeof ai.budgetWarningTokens === 'number' && Number.isSafeInteger(ai.budgetWarningTokens)
+      ? Math.max(1000, Math.min(50000, ai.budgetWarningTokens))
+      : DEFAULT_AI_PREFS.budgetWarningTokens,
     trustedCustomOrigins: normalizeTrustedCustomOrigins(ai.trustedCustomOrigins),
+    autoBookOverview: ai.autoBookOverview === true,
     promptMode,
     customPrompts,
   }
@@ -205,7 +210,7 @@ async function loadRaw(): Promise<Record<string, unknown>> {
 
 async function saveRaw(raw: Record<string, unknown>): Promise<void> {
   await mkdir(join(settingsPath(), '..'), { recursive: true }).catch(() => {})
-  await writeFile(settingsPath(), JSON.stringify(raw, null, 2), 'utf-8')
+  await atomicWriteText(settingsPath(), JSON.stringify(raw, null, 2))
   cache = raw
 }
 
@@ -223,6 +228,7 @@ export async function getSettings(): Promise<Settings> {
   const raw = await loadRaw()
   const tts = (raw.tts as Partial<TtsPrefs>) || {}
   const appearance = (raw.appearance as Partial<AppearancePrefs>) || {}
+  const backup = readRecord(raw.autoBackup)
   return {
     libraryPath:
       typeof raw.libraryPath === 'string' && raw.libraryPath.trim()
@@ -233,15 +239,36 @@ export async function getSettings(): Promise<Settings> {
     apiKeyConfigured: typeof raw.apiKeyEnc === 'string' && raw.apiKeyEnc.length > 0,
     reader: normalizeReaderPrefs(raw.reader),
     tts: {
-      rate: typeof tts.rate === 'number' ? tts.rate : DEFAULT_TTS_PREFS.rate,
+      rate: readFiniteClamped(tts.rate, 0.5, 2, DEFAULT_TTS_PREFS.rate),
       autoNextChapter:
         typeof tts.autoNextChapter === 'boolean' ? tts.autoNextChapter : DEFAULT_TTS_PREFS.autoNextChapter,
+      source: tts.source === 'online' ? 'online' : 'system',
+      systemVoiceURI: typeof tts.systemVoiceURI === 'string' ? tts.systemVoiceURI : '',
+      onlineEndpoint: typeof tts.onlineEndpoint === 'string' ? tts.onlineEndpoint : '',
+      onlineModel: typeof tts.onlineModel === 'string' ? tts.onlineModel : '',
+      onlineVoice: typeof tts.onlineVoice === 'string' ? tts.onlineVoice : '',
+      onlineKeyConfigured: typeof raw.ttsApiKeyEnc === 'string' && raw.ttsApiKeyEnc.length > 0,
     },
     appearance: {
       skin: normalizeSkin(appearance.skin),
     },
     ai: normalizeAiPrefs(raw.ai),
     downloadPace: readDownloadPace(raw.downloadPace),
+    autoBackup: {
+      destDir: typeof backup.destDir === 'string' ? backup.destDir.trim() : '',
+      lastSuccessAt: typeof backup.lastSuccessAt === 'string' ? backup.lastSuccessAt : '',
+      lastError: typeof backup.lastError === 'string' ? backup.lastError : '',
+    },
+  }
+}
+
+export async function getTtsApiKey(): Promise<string> {
+  const raw = await loadRaw()
+  if (typeof raw.ttsApiKeyEnc !== 'string' || !raw.ttsApiKeyEnc) return ''
+  try {
+    return safeStorage.decryptString(Buffer.from(raw.ttsApiKeyEnc, 'base64'))
+  } catch {
+    return ''
   }
 }
 
@@ -250,7 +277,7 @@ export function normalizeSettingsUpdatePayload(value: unknown): SettingsUpdate {
 }
 
 export async function updateSettings(update: SettingsUpdate | null | undefined): Promise<Settings> {
-  const raw = await loadRaw()
+  const raw = { ...await loadRaw() }
   const patch = normalizeSettingsUpdatePayload(update) as Record<string, unknown>
   if (typeof patch.libraryPath === 'string') {
     raw.libraryPath = patch.libraryPath.trim() || DEFAULT_LIBRARY_PATH
@@ -268,7 +295,19 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
     raw.reader = { ...readRecord(raw.reader), ...readRecord(patch.reader) }
   }
   if (patch.tts) {
-    raw.tts = { ...readRecord(raw.tts), ...readRecord(patch.tts) }
+    const incoming = readRecord(patch.tts)
+    const next = { ...readRecord(raw.tts) }
+    if ('rate' in incoming) next.rate = readFiniteClamped(incoming.rate, 0.5, 2, 1)
+    if (typeof incoming.autoNextChapter === 'boolean') next.autoNextChapter = incoming.autoNextChapter
+    if (incoming.source === 'system' || incoming.source === 'online') next.source = incoming.source
+    for (const field of ['systemVoiceURI', 'onlineEndpoint', 'onlineModel', 'onlineVoice'] as const) {
+      if (typeof incoming[field] === 'string') next[field] = incoming[field].trim()
+    }
+    raw.tts = next
+  }
+  if (typeof patch.ttsApiKey === 'string') {
+    if (patch.ttsApiKey) raw.ttsApiKeyEnc = safeStorage.encryptString(patch.ttsApiKey).toString('base64')
+    else delete raw.ttsApiKeyEnc
   }
   if (patch.appearance) {
     const next = { ...readRecord(raw.appearance), ...readRecord(patch.appearance) }
@@ -277,6 +316,16 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
   }
   if (patch.ai) raw.ai = mergeAiPrefs(raw.ai, patch.ai)
   if ('downloadPace' in patch) raw.downloadPace = readDownloadPace(patch.downloadPace)
+  if (patch.autoBackup) {
+    const previous = readRecord(raw.autoBackup)
+    const backupPatch = readRecord(patch.autoBackup)
+    raw.autoBackup = {
+      destDir: typeof backupPatch.destDir === 'string' ? backupPatch.destDir.trim() : previous.destDir,
+      lastSuccessAt: typeof backupPatch.lastSuccessAt === 'string' ? backupPatch.lastSuccessAt
+        : typeof backupPatch.destDir === 'string' && backupPatch.destDir.trim() !== previous.destDir ? '' : previous.lastSuccessAt,
+      lastError: typeof backupPatch.lastError === 'string' ? backupPatch.lastError : previous.lastError,
+    }
+  }
   await saveRaw(raw)
   return getSettings()
 }

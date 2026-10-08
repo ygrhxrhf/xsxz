@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { beginLibraryRestore } from './libraryMaintenance'
 
 vi.mock('electron', () => {
   class FakeWebContents {
@@ -71,6 +72,10 @@ import {
   setOwnerWindow,
   setTestHtmlLoader,
   retryFailed,
+  previewDownload,
+  confirmDownload,
+  previewCurrentSiteRule,
+  redownloadChapter,
   shouldRetryChapterFail,
   startDownload,
   startDownloadFromPage,
@@ -116,6 +121,8 @@ import {
   readChapter,
   saveBook,
   setLibraryPath,
+  updateChapterBody,
+  writeChapterFile,
 } from './library'
 import { extractPage } from './extract'
 import { setSiteRulesDir, upsertSiteRule } from './siteRules'
@@ -438,6 +445,17 @@ describe('startDownloadFromPage', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
+  it('rejects a new download while the library is restoring', async () => {
+    const release = beginLibraryRestore()
+    try {
+      await expect(startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/'))
+        .resolves.toMatchObject({ ok: false, message: '书库正在恢复，请稍后再试' })
+      expect(loadedUrls).toEqual([])
+    } finally {
+      release()
+    }
+  })
+
   it('maps login-wall.html to NeedLogin 需要登录 and does not create a book', async () => {
     const result = await startDownloadFromPage(
       fixture('login-wall.html'),
@@ -583,6 +601,79 @@ describe('startDownload reads the displayed guest view', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
+  it('previews without writing and rejects confirmation after navigation', async () => {
+    let currentUrl = 'https://example.com/book/index.html'
+    const { win } = trackingWindow()
+    setOwnerWindow(win as never)
+    setBrowseView({ webContents: {
+      isDestroyed: () => false,
+      getURL: () => currentUrl,
+      executeJavaScript: async () => fixture('catalog.html'),
+    } } as never)
+    setTestHtmlLoader(async (url) => url.includes('index.html') ? fixture('catalog.html') : fixture('chapter.html'))
+    const preview = await previewDownload()
+    expect(preview.ok).toBe(true)
+    expect(await listBooks()).toHaveLength(0)
+    if (!preview.ok) return
+    expect(preview.preview.chapterCount).toBeGreaterThan(0)
+    currentUrl = 'https://example.com/other'
+    expect(await confirmDownload(preview.preview.token)).toMatchObject({ ok: false })
+    expect(await listBooks()).toHaveLength(0)
+  })
+
+  it('confirms a preview only once and downloads through the hidden loader', async () => {
+    const { win } = trackingWindow()
+    setOwnerWindow(win as never)
+    setBrowseView({ webContents: {
+      isDestroyed: () => false,
+      getURL: () => 'https://example.com/book/index.html',
+      executeJavaScript: async () => fixture('catalog.html'),
+    } } as never)
+    setTestHtmlLoader(async (url) => url.includes('index.html') ? fixture('catalog.html') : fixture('chapter.html'))
+    const preview = await previewDownload()
+    if (!preview.ok) throw new Error(preview.message)
+    const confirmed = await confirmDownload(preview.preview.token)
+    expect(confirmed.ok).toBe(true)
+    expect(await confirmDownload(preview.preview.token)).toMatchObject({ ok: false })
+    await waitForIdle()
+    expect((await listBooks()).length).toBe(1)
+  })
+
+  it('keeps the old body and URL when one-chapter re-extraction fails', async () => {
+    await createBookFromBootstrap({ bookId: 'd_repair', title: '修复测试', author: '',
+      importType: 'download', chapterTitles: ['第一章'],
+      chapterUrls: ['https://example.com/old.html'] })
+    await writeChapterFile('d_repair', 'c0001', {
+      title: '第一章', url: 'https://example.com/old.html', body: '原来的正文', status: 'ready',
+    })
+    setTestHtmlLoader(async () => fixture('login-wall.html'))
+    expect((await redownloadChapter('d_repair', 'c0001', 'https://example.com/new.html')).ok).toBe(false)
+    expect((await readChapter('d_repair', 'c0001')).body).toBe('原来的正文')
+    expect((await loadBook('d_repair')).chapters[0].url).toBe('https://example.com/old.html')
+    setTestHtmlLoader(async () => fixture('chapter.html'))
+    expect((await redownloadChapter('d_repair', 'c0001', 'https://example.com/new.html')).ok).toBe(true)
+    expect((await loadBook('d_repair')).chapters[0].url).toBe('https://example.com/new.html')
+  })
+
+  it('tests unsaved selectors against the current site and sample chapter', async () => {
+    setBrowseView({ webContents: {
+      isDestroyed: () => false,
+      getURL: () => 'https://example.com/book/index.html',
+      executeJavaScript: async () => fixture('catalog.html'),
+    } } as never)
+    setTestHtmlLoader(async () => fixture('chapter.html'))
+    const result = await previewCurrentSiteRule({
+      host: 'example.com', title: 'h1', author: '.author', catalog: '#list', body: '#content',
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.preview.chapterCount).toBe(6)
+      expect(result.preview.diagnostics).toMatchObject({ title: '已命中', author: '已命中', catalog: '已命中', body: '已命中' })
+      expect(result.preview.bodySample).toContain('张若尘')
+    }
+    expect(await previewCurrentSiteRule({ host: 'elsewhere.com' })).toMatchObject({ ok: false })
+  })
+
   it('does not navigate the visible guest when crawling chapters', async () => {
     const { attached, win } = trackingWindow()
     const guest = {
@@ -674,6 +765,25 @@ describe('download resolves site rules per URL', () => {
     expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_ALPHA'))).toBe(true)
     expect(bodies.some((b) => b.body.includes('SPBF_RULE_BODY_BETA'))).toBe(true)
     expect(bodies.every((b) => !b.body.includes('DECOY_BANNER_CLICK'))).toBe(true)
+  })
+
+  it('saves cleaned text and raw text separately so a chapter can be restored', async () => {
+    await upsertSiteRule(matching)
+    const story = '夜风吹过城墙，林舟看见远处的灯火。他把信收进袖中，沿着石阶继续前行。第二天清晨，船终于靠岸，众人商量入城路线，把行李分给同行伙伴，约定天黑前在旧桥旁会合。'
+    setTestHtmlLoader(async (url) => url.includes('catalog.html')
+      ? ruleFixture('catalog.html')
+      : `<html><body><div id="spbf-body"><p>${story}</p><p>最新网址：www.example.com，请收藏本站网址以便继续阅读</p><p>${story}</p></div></body></html>`)
+    const started = await startDownloadFromPage(ruleFixture('catalog.html'), catalogUrl)
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    const book = await loadBook(started.bookId!)
+    const first = await readChapter(book.id, book.chapters[0].id)
+    expect(first.bodyRaw).toContain('最新网址')
+    expect(first.body).not.toContain('最新网址')
+    await updateChapterBody(book.id, book.chapters[0].id, '', true)
+    const restored = await readChapter(book.id, book.chapters[0].id)
+    expect(restored.body).toBe(first.bodyRaw)
   })
 
   it('start from a chapter page still follows the catalog via the matching rule', async () => {

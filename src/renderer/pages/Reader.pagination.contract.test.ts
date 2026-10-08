@@ -14,6 +14,8 @@ const EXISTING_API_CHANNELS = new Set([
   'window.api.ai.getCharacterCard',
   'window.api.ai.getChat',
   'window.api.ai.getMemory',
+  'window.api.ai.getMaterialCoverage',
+  'window.api.ai.getUsage',
   'window.api.ai.getSummaries',
   'window.api.ai.markMemoryInaccurate',
   'window.api.ai.onBudget',
@@ -21,6 +23,9 @@ const EXISTING_API_CHANNELS = new Set([
   'window.api.ai.onDone',
   'window.api.ai.onStage',
   'window.api.ai.rebuildMemory',
+  'window.api.ai.rebuildMemoryFrom',
+  'window.api.ai.correctCharacterAliases',
+  'window.api.ai.correctMemorySummary',
   'window.api.ai.retrySave',
   'window.api.ai.storySoFar',
   'window.api.ai.summarize',
@@ -28,6 +33,7 @@ const EXISTING_API_CHANNELS = new Set([
   'window.api.ai.translateStream',
   'window.api.ai.updateMemory',
   'window.api.download.onProgress',
+  'window.api.download.cancel',
   'window.api.download.retryFailed',
   'window.api.library.get',
   'window.api.library.readChapter',
@@ -36,6 +42,9 @@ const EXISTING_API_CHANNELS = new Set([
   'window.api.library.updateChapterBody',
   'window.api.settings.get',
   'window.api.settings.set',
+  'window.api.tts',
+  'window.api.tts.synthesize',
+  'window.api.tts.cancel',
 ])
 
 describe('Reader P3.3 visual pagination wrap-up', () => {
@@ -54,7 +63,7 @@ describe('Reader P3.3 visual pagination wrap-up', () => {
     expect(source).toContain('chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight)')
   })
 
-  it('does not use html, css columns, ipcRenderer, or new window.api channels', async () => {
+  it('does not use html, css columns, ipcRenderer, or unlisted window.api channels', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
     expect(source).not.toContain('v-html')
     expect(source).not.toContain('column-count')

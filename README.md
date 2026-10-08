@@ -4,15 +4,19 @@ Windows 单机阅读工具：在内置浏览器里**浏览**网页，对当前�
 
 产品路径：**浏览 → 下载本书 → 书库 / 阅读 → 自备 Key 的 AI**。
 
+下载前可预览目录和正文样本；下载后会提示疑似质量问题，书库可逐章检查、编辑纯文本正文或更正链接重下。设置页支持站点规则试运行、复制校验后搬迁书库，以及每周本地自动备份（保留最近五份自动备份）。
+
 ## 开发命令
 
 ```bash
 npm run dev
+npm run typecheck
 npm test
 npm run build
 ```
 
 - `npm run dev`：启动 Electron 开发窗（electron-vite）
+- `npm run typecheck`：检查主进程、预加载和渲染进程的 TypeScript 类型
 - `npm test`：跑 vitest（不 watch）
 - `npm run build`：编译主进程 / 预加载 / 渲染进程
 

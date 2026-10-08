@@ -195,7 +195,7 @@ function mergeItem(
   incoming: AiMemoryCharacter | AiMemoryRelation | AiMemoryForeshadow | AiMemoryEvent,
   updatedAt: string,
 ): { id: string; changed: boolean } {
-  const target = memory[collection] as Array<Record<string, unknown> & AiMemoryBase>
+  const target = memory[collection] as unknown as Array<Record<string, unknown> & AiMemoryBase>
   const key = itemKey(collection, incoming as unknown as Record<string, unknown>)!
   const existing = target.find((item) => sameKey(collection, item, key))
   if (!existing) {

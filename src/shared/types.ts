@@ -29,6 +29,17 @@ export interface ReadingProgress {
   chapterId: string
   /** 0–1，章内滚动比例 */
   scrollRatio: number
+  /** 规范化正文的段落位置；旧书缺省时回退到 scrollRatio。 */
+  paragraphIndex?: number
+  paragraphOffset?: number
+  updatedAt: string
+}
+
+/** 每本书独立的听书续播位置。 */
+export interface TtsPosition {
+  chapterId: string
+  paragraphIndex: number
+  bodyHash: string
   updatedAt: string
 }
 
@@ -81,6 +92,13 @@ export interface BookListItem {
   readyCount: number
   progress: ReadingProgress | null
   updatedAt: string
+  overview?: BookOverviewView
+}
+
+export interface BookOverviewView {
+  status: 'off' | 'waiting' | 'pending' | 'running' | 'ready' | 'stale' | 'failed'
+  text?: string
+  message?: string
 }
 
 /** 回收站条目（<libraryPath>/__trash__/<bookId>-<删除时间毫秒>）。 */
@@ -126,6 +144,43 @@ export interface DownloadProgress {
   lastError?: string
   /** 仅结束事件（done / error / cancelled）携带；无失败或空章时为 []。running 省略。 */
   failedChapters?: FailedChapterItem[]
+  qualityIssueCount?: number
+}
+
+export interface DownloadPreview {
+  token: string
+  pageUrl: string
+  bookTitle: string
+  author: string
+  chapterCount: number
+  chapterTitles: string[]
+  sampleTitle: string
+  sampleBody: string
+  sampleError?: string
+}
+
+export interface QualityIssue {
+  chapterId: string
+  chapterIndex: number
+  chapterTitle: string
+  kind: 'short' | 'duplicateBody' | 'duplicateUrl' | 'suspectedAd' | 'suspectedWall'
+  reason: string
+}
+
+export interface QualityReport {
+  bookId: string
+  checked: number
+  issues: QualityIssue[]
+}
+
+export interface SiteRulePreview {
+  pageUrl: string
+  title: string
+  author: string
+  chapterCount: number
+  chapterTitles: string[]
+  bodySample: string
+  diagnostics: Record<'title' | 'author' | 'catalog' | 'body', string>
 }
 
 /** 批量检查更新：逐本进度推送（download.checkAll.progress） */
@@ -244,6 +299,13 @@ export interface TtsPrefs {
   rate: number
   /** 一章读完后自动跳下一章继续 */
   autoNextChapter: boolean
+  source: 'system' | 'online'
+  systemVoiceURI: string
+  onlineEndpoint: string
+  onlineModel: string
+  onlineVoice: string
+  /** 在线密钥只存在主进程；此字段不含明文。 */
+  onlineKeyConfigured: boolean
 }
 
 /** 界面皮肤：暖纸 / 白纸 / 夜间 */
@@ -266,8 +328,12 @@ export interface AiPrefs {
   provider: AiProvider
   thinkingEnabled: boolean
   recapLength: 'short' | 'standard' | 'detailed'
+  /** 单次预计输入达到此 token 数时，联网前提醒确认。 */
+  budgetWarningTokens: number
   /** 已由用户确认信任的规范化 origin；不含路径、query 或 fragment。 */
   trustedCustomOrigins: string[]
+  /** 用户主动开启后，完整入库的书在后台串行生成含剧透的全书概览。 */
+  autoBookOverview: boolean
   promptMode: Record<AiPromptKind, AiPromptMode>
   customPrompts: Partial<Record<AiPromptKind, string>>
 }
@@ -285,6 +351,8 @@ export interface Settings {
   ai?: AiPrefs
   /** 章间间隔档位。getSettings 始终返回；缺省或非法回退 standard。 */
   downloadPace: DownloadPace
+  /** 主进程总补齐；可选仅用于兼容旧调用方和测试数据。 */
+  autoBackup?: { destDir: string; lastSuccessAt: string; lastError: string }
 }
 
 export interface SettingsUpdate {
@@ -295,10 +363,13 @@ export interface SettingsUpdate {
   apiKey?: string
   reader?: Partial<ReaderPrefs>
   tts?: Partial<TtsPrefs>
+  /** 空字符串清除在线语音密钥。 */
+  ttsApiKey?: string
   appearance?: Partial<AppearancePrefs>
   ai?: Partial<AiPrefs>
   /** 省略则不改已保存档位。 */
   downloadPace?: DownloadPace
+  autoBackup?: { destDir?: string; lastSuccessAt?: string; lastError?: string }
 }
 
 /** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */
@@ -308,6 +379,10 @@ export interface SiteRule {
   author?: string
   catalog?: string
   body?: string
+  /** 缺省开启；仅影响内置浏览页的广告元素显示。 */
+  adFilterEnabled?: boolean
+  /** 每行一个额外的广告元素 CSS 选择器。 */
+  adHideSelectors?: string
 }
 
 export interface AiCleanResult {
@@ -334,12 +409,16 @@ export interface AiMemoryBase {
   summary: string
   sources: AiCitation[]
   accuracy: 'normal' | 'review' | 'uncertain'
+  /** 用户直接修正的摘要，后续模型更新不得静默覆盖。 */
+  userEditedSummary?: boolean
   updatedAt: string
 }
 
 export interface AiMemoryCharacter extends AiMemoryBase {
   name: string
   aliases: string[]
+  /** 用户直接修正的别名，后续模型更新不得静默覆盖。 */
+  userEditedAliases?: boolean
   role: string
   status: string
 }
@@ -385,6 +464,25 @@ export interface AiUsage {
   outputTokens?: number
   cacheHitTokens?: number
   cacheMissTokens?: number
+}
+
+/** 每书累计用量，只记 token 计数，不估算金额。 */
+export interface AiBookUsage {
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  cacheHitTokens: number
+  cacheMissTokens: number
+  updatedAt: string
+}
+
+/** 已读范围内章节摘要覆盖情况；缺摘要的章节仍可被原文检索。 */
+export interface AiMaterialCoverage {
+  uptoChapterId: string
+  uptoChapterTitle: string
+  readyChapters: number
+  summarizedChapters: number
+  missing: Array<{ chapterId: string; title: string }>
 }
 
 export interface AiBudgetEstimate {
@@ -501,6 +599,12 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
 export const DEFAULT_TTS_PREFS: TtsPrefs = {
   rate: 1,
   autoNextChapter: true,
+  source: 'system',
+  systemVoiceURI: '',
+  onlineEndpoint: '',
+  onlineModel: '',
+  onlineVoice: '',
+  onlineKeyConfigured: false,
 }
 
 export const DEFAULT_APPEARANCE_PREFS: AppearancePrefs = {
@@ -520,7 +624,9 @@ export const DEFAULT_AI_PREFS: AiPrefs = {
   provider: 'deepseek',
   thinkingEnabled: true,
   recapLength: 'standard',
+  budgetWarningTokens: 8000,
   trustedCustomOrigins: [],
+  autoBookOverview: false,
   promptMode: {
     clean: 'builtin',
     translate: 'builtin',

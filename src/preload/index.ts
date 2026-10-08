@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  AiBookUsage,
   AiBudgetEstimate,
   AiBudgetEvent,
   AiChatMessage,
@@ -8,7 +9,9 @@ import type {
   AiDoneEvent,
   AiJobStart,
   AiMemoryBase,
+  AiMemoryCharacter,
   AiMemoryFile,
+  AiMaterialCoverage,
   AiProvider,
   AiStageEvent,
   AiSummaries,
@@ -17,6 +20,7 @@ import type {
   ChapterFile,
   DownloadProgress,
   ReadingProgress,
+  TtsPosition,
   Settings,
   SettingsUpdate,
   SiteRule,
@@ -35,6 +39,12 @@ const api = {
     openFile: () => ipcRenderer.invoke('dialog.openFile') as Promise<{ filePaths: string[] }>,
     openDirectory: () => ipcRenderer.invoke('dialog.openDirectory') as Promise<{ filePaths: string[] }>,
     openZip: () => ipcRenderer.invoke('dialog.openZip') as Promise<{ filePaths: string[] }>,
+  },
+  tts: {
+    getPosition: (bookId: string) => ipcRenderer.invoke('tts.getPosition', { bookId }) as Promise<TtsPosition | null>,
+    setPosition: (bookId: string, position: TtsPosition) => ipcRenderer.invoke('tts.setPosition', { bookId, position }) as Promise<{ ok: true }>,
+    synthesize: (requestId: string, text: string) => ipcRenderer.invoke('tts.synthesize', { requestId, text }) as Promise<Uint8Array>,
+    cancel: (requestId: string) => ipcRenderer.invoke('tts.cancel', { requestId }) as Promise<{ ok: true }>,
   },
   browse: {
     load: (url: string) => ipcRenderer.invoke('browse.load', { url }),
@@ -66,6 +76,14 @@ const api = {
     pickCoverFile: () => ipcRenderer.invoke('library.pickCoverFile') as Promise<string | null>,
     updateChapterBody: (bookId: string, chapterId: string, body: string, restoreRaw?: boolean) =>
       ipcRenderer.invoke('library.updateChapterBody', { bookId, chapterId, body, restoreRaw }),
+    repairChapterBody: (bookId: string, chapterId: string, body: string) =>
+      ipcRenderer.invoke('library.repairChapterBody', { bookId, chapterId, body }) as Promise<{ ok: boolean; message?: string }>,
+    audit: (bookId: string) => ipcRenderer.invoke('library.audit', { bookId }) as Promise<
+      { ok: true; report: import('../shared/types').QualityReport } | { ok: false; message: string }
+    >,
+    migrate: (targetPath: string) => ipcRenderer.invoke('library.migrate', { targetPath }) as Promise<
+      { ok: true; oldPath: string; newPath: string; files: number } | { ok: false; message: string }
+    >,
     export: (bookId: string, format: 'txt' | 'epub', destDir: string) =>
       ipcRenderer.invoke('library.export', { bookId, format, destDir }) as Promise<
         { ok: true; path: string } | { ok: false; message: string }
@@ -85,8 +103,19 @@ const api = {
         { ok: true; purged: number } | { ok: false; message: string }
       >,
   },
+  bookOverview: {
+    retry: (bookId: string) => ipcRenderer.invoke('bookOverview.retry', { bookId }) as Promise<{ ok: true } | { ok: false; message: string }>,
+    onChanged: (handler: () => void) => on('bookOverview.changed', handler),
+  },
   download: {
-    start: () => ipcRenderer.invoke('download.start'),
+    preview: () => ipcRenderer.invoke('download.preview') as Promise<
+      { ok: true; preview: import('../shared/types').DownloadPreview } | { ok: false; message: string }
+    >,
+    confirm: (token: string) => ipcRenderer.invoke('download.confirm', { token }) as Promise<
+      { ok: true; bookId: string } | { ok: false; message: string }
+    >,
+    redownloadChapter: (bookId: string, chapterId: string, url: string) =>
+      ipcRenderer.invoke('download.redownloadChapter', { bookId, chapterId, url }) as Promise<{ ok: boolean; message?: string }>,
     cancel: (bookId?: string) => ipcRenderer.invoke('download.cancel', { bookId }),
     retryFailed: (bookId: string) => ipcRenderer.invoke('download.retryFailed', { bookId }),
     checkUpdate: (bookId: string) => ipcRenderer.invoke('download.checkUpdate', { bookId }),
@@ -110,6 +139,9 @@ const api = {
       ipcRenderer.invoke('backup.restore', { zipPath }) as Promise<
         { ok: true; books: number; files: number } | { ok: false; message: string }
       >,
+    runAuto: () => ipcRenderer.invoke('backup.runAuto') as Promise<
+      { status: 'disabled' | 'notDue' | 'created' | 'failed'; message?: string }
+    >,
   },
   annotations: {
     list: (bookId: string) =>
@@ -133,6 +165,9 @@ const api = {
   },
   siteRules: {
     list: () => ipcRenderer.invoke('siteRules.list') as Promise<{ rules: SiteRule[] }>,
+    preview: (rule: SiteRule) => ipcRenderer.invoke('siteRules.preview', rule) as Promise<
+      { ok: true; preview: import('../shared/types').SiteRulePreview } | { ok: false; message: string }
+    >,
     upsert: (rule: SiteRule) =>
       ipcRenderer.invoke('siteRules.upsert', rule) as Promise<
         { ok: true; rule: SiteRule } | { ok: false; message: string }
@@ -187,16 +222,18 @@ const api = {
       >,
     chatStream: (bookId: string, chapterId: string, messages: AiChatMessage[]) =>
       ipcRenderer.invoke('ai.chatStream', { bookId, chapterId, messages }) as Promise<AiJobStart>,
-    translateStream: (text: string) =>
-      ipcRenderer.invoke('ai.translateStream', { text }) as Promise<AiJobStart>,
+    translateStream: (text: string, bookId?: string) =>
+      ipcRenderer.invoke('ai.translateStream', { text, bookId }) as Promise<AiJobStart>,
     getMemory: (bookId: string) => ipcRenderer.invoke('ai.getMemory', { bookId }) as Promise<
       | { ok: true; memory: AiMemoryFile | import('../shared/types').CharacterCard | null }
       | { ok: false; message: string }
     >,
-    updateMemory: (bookId: string, uptoChapterId: string) =>
-      ipcRenderer.invoke('ai.updateMemory', { bookId, uptoChapterId }) as Promise<AiJobStart>,
-    rebuildMemory: (bookId: string, uptoChapterId: string) =>
-      ipcRenderer.invoke('ai.rebuildMemory', { bookId, uptoChapterId }) as Promise<AiJobStart>,
+    updateMemory: (bookId: string, uptoChapterId: string, confirmOverBudget = false) =>
+      ipcRenderer.invoke('ai.updateMemory', { bookId, uptoChapterId, confirmOverBudget }) as Promise<AiJobStart | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }>,
+    rebuildMemory: (bookId: string, uptoChapterId: string, confirmOverBudget = false) =>
+      ipcRenderer.invoke('ai.rebuildMemory', { bookId, uptoChapterId, confirmOverBudget }) as Promise<AiJobStart | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }>,
+    rebuildMemoryFrom: (bookId: string, fromChapterId: string, uptoChapterId: string, confirmOverBudget = false) =>
+      ipcRenderer.invoke('ai.rebuildMemoryFrom', { bookId, fromChapterId, uptoChapterId, confirmOverBudget }) as Promise<AiJobStart | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }>,
     markMemoryInaccurate: (
       bookId: string,
       kind: 'character' | 'relation' | 'foreshadow' | 'event',
@@ -204,6 +241,30 @@ const api = {
     ) => ipcRenderer.invoke('ai.markMemoryInaccurate', { bookId, kind, itemId }) as Promise<
       { ok: true; item: AiMemoryBase } | { ok: false; message: string }
     >,
+    correctCharacterAliases: (bookId: string, itemId: string, aliases: string[]) =>
+      ipcRenderer.invoke('ai.correctCharacterAliases', { bookId, itemId, aliases }) as Promise<
+        | { ok: true; character: AiMemoryCharacter; affectedChapterIds: string[] }
+        | { ok: false; message: string }
+      >,
+    correctMemorySummary: (
+      bookId: string,
+      kind: 'character' | 'relation' | 'foreshadow' | 'event',
+      itemId: string,
+      summary: string,
+    ) => ipcRenderer.invoke('ai.correctMemorySummary', { bookId, kind, itemId, summary }) as Promise<
+      | { ok: true; item: AiMemoryBase; affectedChapterIds: string[] }
+      | { ok: false; message: string }
+    >,
+    getMaterialCoverage: (bookId: string) =>
+      ipcRenderer.invoke('ai.getMaterialCoverage', { bookId }) as Promise<
+        | { ok: true; coverage: AiMaterialCoverage | null }
+        | { ok: false; message: string }
+      >,
+    getUsage: (bookId: string) =>
+      ipcRenderer.invoke('ai.getUsage', { bookId }) as Promise<
+        | { ok: true; usage: AiBookUsage }
+        | { ok: false; message: string }
+      >,
     retrySave: (saveToken: string) => ipcRenderer.invoke('ai.retrySave', { saveToken }) as Promise<
       { ok: true } | { ok: false; message: string }
     >,

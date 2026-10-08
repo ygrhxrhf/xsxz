@@ -15,7 +15,7 @@ describe('Reader dual progress bars', () => {
     expect(source).toContain('本章')
     expect(source).toContain(':title="bookProgressDetail"')
     expect(source).toContain(':aria-label="bookProgressDetail"')
-    expect(source).toContain('全书 ${bookPercent.value}% · 本章 ${chapterPercent.value}%')
+    expect(source).toContain('全书约 ${bookPercent.value}% · 本章 ${chapterPercent.value}%')
     expect(source).toContain('position: absolute')
     expect(source).toContain('pointer-events: none')
     expect(source.includes('height: 4px') || source.includes('reader-progress-row')).toBe(true)

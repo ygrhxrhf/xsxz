@@ -1,4 +1,4 @@
-import type { AiCitation, ChapterStatus } from '../shared/types'
+import type { AiCitation, AiMemoryFile, AiSummaries, ChapterStatus } from '../shared/types'
 
 export interface EvidenceSearchChapter {
   id: string
@@ -21,6 +21,8 @@ export interface EvidenceSearchOptions {
   maxResults?: number
   maxChapters?: number
   excerptCharacters?: number
+  memory?: AiMemoryFile | null
+  summaries?: AiSummaries | null
 }
 
 interface Candidate {
@@ -69,6 +71,55 @@ function normalizedTerm(text: string): string {
 function boundedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
   if (!Number.isFinite(value)) return fallback
   return Math.max(minimum, Math.min(maximum, Math.trunc(value!)))
+}
+
+function aliasExpansions(memory: AiMemoryFile | null | undefined, question: string): string[] {
+  if (!memory) return []
+  const normalizedQuestion = normalizedTerm(question)
+  const expansions: string[] = []
+  const seen = new Set<string>()
+  for (const character of memory.characters) {
+    if (character.accuracy !== 'normal') continue
+    const names = [character.name, ...character.aliases]
+      .map((label) => label.trim())
+      .filter((label) => codePointLength(label) >= 2)
+    const matched = names.some((label) => normalizedQuestion.includes(normalizedTerm(label)))
+    if (!matched) continue
+    for (const label of names) {
+      const term = normalizedTerm(label)
+      if (seen.has(term) || normalizedQuestion.includes(term)) continue
+      seen.add(term)
+      expansions.push(term)
+    }
+  }
+  return expansions
+}
+
+/** Memory is only a locator. The returned evidence still comes from a ready, read chapter. */
+function memoryParagraphHints(memory: AiMemoryFile | null | undefined, question: string): Map<string, Map<number, string[]>> {
+  const hints = new Map<string, Map<number, string[]>>()
+  if (!memory) return hints
+  const normalizedQuestion = normalizedTerm(`${question} ${aliasExpansions(memory, question).join(' ')}`)
+  const items = [...memory.characters, ...memory.relations, ...memory.foreshadows, ...memory.events]
+  for (const item of items) {
+    if (item.accuracy !== 'normal') continue
+    const labels = 'name' in item ? [item.name, ...item.aliases]
+      : 'from' in item ? [item.from, item.to]
+      : 'desc' in item ? [item.desc]
+      : [item.title]
+    if (!labels.some((label) => codePointLength(label.trim()) >= 2 && normalizedQuestion.includes(normalizedTerm(label)))) continue
+    for (const source of item.sources) {
+      const positions = hints.get(source.chapterId) ?? new Map<number, string[]>()
+      positions.set(source.paragraphIndex, [...(positions.get(source.paragraphIndex) ?? []), source.excerpt])
+      hints.set(source.chapterId, positions)
+    }
+  }
+  return hints
+}
+
+function quotedSelectionAnchor(question: string): string {
+  const selected = /「([^」]{2,})」/u.exec(question)?.[1]
+  return selected ? Array.from(normalizedTerm(selected)).slice(0, 30).join('') : ''
 }
 
 export function normalizeEvidenceSearchTerms(query: EvidenceSearchQuery): {
@@ -129,7 +180,22 @@ export function selectLocalEvidence(
   const uptoChapterId = ordered[cutoffPosition]!.id
   const currentPosition = ordered.findIndex((chapter) => chapter.id === options.currentChapterId)
   const terms = normalizeEvidenceSearchTerms(query)
-  if (!terms.corePhrase && !terms.keywords.length) return { citations: [], fallbackQuery: terms.fallback, uptoChapterId }
+  const expandedAliases = aliasExpansions(options.memory, `${query.originalQuestion} ${query.corePhrase ?? ''} ${(query.keywords ?? []).join(' ')}`)
+  const keywords = [...terms.keywords]
+  for (const alias of expandedAliases) {
+    if (keywords.includes(alias) || alias === terms.corePhrase || keywords.length >= 8) continue
+    keywords.push(alias)
+  }
+  const searchTerms = { ...terms, keywords }
+  const memoryHints = memoryParagraphHints(options.memory, query.originalQuestion)
+  const selectedAnchor = quotedSelectionAnchor(query.originalQuestion)
+  const summaryHints = new Set(Object.entries(options.summaries?.byChapter ?? {})
+    .filter(([, summary]) => {
+      const text = normalizedTerm(summary)
+      return (searchTerms.corePhrase && text.includes(searchTerms.corePhrase)) ||
+        searchTerms.keywords.some((term) => text.includes(term))
+    }).map(([chapterId]) => chapterId))
+  if (!searchTerms.corePhrase && !searchTerms.keywords.length && !memoryHints.size && !selectedAnchor) return { citations: [], fallbackQuery: terms.fallback, uptoChapterId }
   const excerptLimit = boundedInteger(options.excerptCharacters, 300, 80, 600)
   const candidates: Candidate[] = []
 
@@ -138,19 +204,29 @@ export function selectLocalEvidence(
     const title = normalizedSearchView(chapter.title).text
     paragraphRanges(chapter.body).forEach((paragraph) => {
       const view = normalizedSearchView(paragraph.text)
-      const corePosition = terms.corePhrase ? view.text.indexOf(terms.corePhrase) : -1
-      const matchingKeywords = terms.keywords.filter((term) => view.text.includes(term))
-      if (corePosition < 0 && !matchingKeywords.length) return
+      const corePosition = searchTerms.corePhrase ? view.text.indexOf(searchTerms.corePhrase) : -1
+      const selectedPosition = selectedAnchor ? view.text.indexOf(selectedAnchor) : -1
+      const matchingKeywords = searchTerms.keywords.filter((term) => view.text.includes(term))
+      const aliasOnlyMatch = expandedAliases.some((term) => view.text.includes(term)) &&
+        !(terms.corePhrase && view.text.includes(terms.corePhrase)) &&
+        !terms.keywords.some((term) => view.text.includes(term))
+      const hinted = memoryHints.get(chapter.id)?.get(paragraph.index)?.some((excerpt) =>
+        Boolean(excerpt.trim()) && view.text.includes(normalizedTerm(excerpt))) === true
+      if (corePosition < 0 && selectedPosition < 0 && !matchingKeywords.length && !hinted) return
       const firstKeywordPosition = matchingKeywords.reduce((best, term) => {
         const found = view.text.indexOf(term)
         return best < 0 || (found >= 0 && found < best) ? found : best
       }, -1)
-      const paragraphMatchPosition = corePosition >= 0 ? corePosition : firstKeywordPosition
+      const paragraphMatchPosition = selectedPosition >= 0 ? selectedPosition : corePosition >= 0 ? corePosition : firstKeywordPosition
       const originalMatchOffset = view.originalOffsets[Math.max(0, paragraphMatchPosition)] ?? 0
       let score = corePosition >= 0 ? 100 : 0
+      if (selectedPosition >= 0) score += 150
       score += matchingKeywords.length * 20
-      if (terms.corePhrase && title.includes(terms.corePhrase)) score += 15
-      score += terms.keywords.filter((term) => title.includes(term)).length * 5
+      if (hinted) score += 80
+      if (aliasOnlyMatch) score += 70
+      if (summaryHints.has(chapter.id)) score += 25
+      if (searchTerms.corePhrase && title.includes(searchTerms.corePhrase)) score += 15
+      score += searchTerms.keywords.filter((term) => title.includes(term)).length * 5
       if (chapter.id === options.currentChapterId) score += 30
       if (currentPosition >= 0) score += Math.max(0, 10 - Math.abs(position - currentPosition))
       candidates.push({

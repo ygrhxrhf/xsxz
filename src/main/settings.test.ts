@@ -29,6 +29,7 @@ import {
   resolveEffectiveAiProvider,
   updateSettings,
 } from './settings'
+import { setAtomicWriteBeforeCommitForTests } from './atomicFile'
 
 const TEST_DIR = '/tmp/spbf-settings-test'
 const SETTINGS_FILE = `${TEST_DIR}/settings.json`
@@ -36,6 +37,44 @@ const SETTINGS_FILE = `${TEST_DIR}/settings.json`
 beforeEach(async () => {
   resetSettingsCacheForTests()
   await rm(TEST_DIR, { recursive: true, force: true })
+})
+
+describe('settings atomic persistence', () => {
+  it('stores the online speech key separately and never returns its plaintext', async () => {
+    await updateSettings({ ttsApiKey: 'tts-secret', tts: { source: 'online', onlineEndpoint: 'https://voice.example/v1/audio/speech', onlineModel: 'model', onlineVoice: 'voice' } })
+    const settings = await getSettings()
+    expect(settings.tts.onlineKeyConfigured).toBe(true)
+    expect(settings.tts.source).toBe('online')
+    expect(JSON.stringify(settings)).not.toContain('tts-secret')
+    expect(await readFile(SETTINGS_FILE, 'utf8')).not.toContain('tts-secret')
+    await updateSettings({ ttsApiKey: '' })
+    expect((await getSettings()).tts.onlineKeyConfigured).toBe(false)
+  })
+  it('keeps automatic book overview disabled until explicitly enabled', async () => {
+    expect((await getSettings()).ai?.autoBookOverview).toBe(false)
+    await updateSettings({ ai: { autoBookOverview: true } })
+    resetSettingsCacheForTests()
+    expect((await getSettings()).ai?.autoBookOverview).toBe(true)
+    await updateSettings({ ai: { autoBookOverview: false } })
+    expect((await getSettings()).ai?.autoBookOverview).toBe(false)
+  })
+
+  it('keeps both disk and cache at the previous value when commit fails', async () => {
+    await updateSettings({ model: 'old-model' })
+    const before = await readFile(SETTINGS_FILE, 'utf-8')
+    setAtomicWriteBeforeCommitForTests((path) => {
+      if (path === SETTINGS_FILE) throw new Error('disk full')
+    })
+    try {
+      await expect(updateSettings({ model: 'new-model' })).rejects.toThrow('disk full')
+      expect(await readFile(SETTINGS_FILE, 'utf-8')).toBe(before)
+      expect((await getSettings()).model).toBe('old-model')
+      expect((await import('node:fs/promises').then(({ readdir }) => readdir(TEST_DIR)))
+        .filter((name) => name.endsWith('.tmp'))).toEqual([])
+    } finally {
+      setAtomicWriteBeforeCommitForTests(null)
+    }
+  })
 })
 
 describe('normalizeReaderPrefs', () => {
@@ -301,7 +340,9 @@ describe('AI settings compatibility', () => {
       provider: 'custom',
       thinkingEnabled: true,
       recapLength: 'detailed',
+      budgetWarningTokens: DEFAULT_AI_PREFS.budgetWarningTokens,
       trustedCustomOrigins: ['https://example.com', 'http://example.com:8080'],
+      autoBookOverview: false,
       promptMode: {
         clean: 'custom',
         translate: 'builtin',
@@ -403,5 +444,12 @@ describe('AI settings compatibility', () => {
     first.customPrompts.clean = 'mutated'
 
     expect(normalizeAiPrefs(undefined)).toEqual(DEFAULT_AI_PREFS)
+  })
+
+  it('normalizes the per-request token reminder', () => {
+    expect(normalizeAiPrefs({ budgetWarningTokens: 9000 }).budgetWarningTokens).toBe(9000)
+    expect(normalizeAiPrefs({ budgetWarningTokens: 100 }).budgetWarningTokens).toBe(1000)
+    expect(normalizeAiPrefs({ budgetWarningTokens: 100000 }).budgetWarningTokens).toBe(50000)
+    expect(normalizeAiPrefs({ budgetWarningTokens: 'bad' }).budgetWarningTokens).toBe(DEFAULT_AI_PREFS.budgetWarningTokens)
   })
 })

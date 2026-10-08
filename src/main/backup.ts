@@ -1,7 +1,9 @@
-import { mkdir, readdir, readFile, writeFile, rm } from 'node:fs/promises'
-import { dirname, isAbsolute, join, normalize } from 'node:path'
+import { mkdir, mkdtemp, readdir, readFile, writeFile, rm, rename, stat } from 'node:fs/promises'
+import { dirname, isAbsolute, join, normalize, relative, resolve, win32 } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import JSZip from 'jszip'
-import { ensureLibrary, getLibraryPath, rebuildIndex } from './library'
+import { getLibraryPath, rebuildIndex } from './library'
+import { getSettings, updateSettings } from './settings'
 
 const SKIP_DIRS = new Set(['__trash__', '__tmp__'])
 
@@ -20,21 +22,27 @@ async function collectFiles(root: string, rel = ''): Promise<string[]> {
   return files
 }
 
-export function backupFileName(now = new Date()): string {
+export function backupFileName(now = new Date(), automatic = false): string {
   const p = (n: number): string => String(n).padStart(2, '0')
   return (
-    `spbf-backup-${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}` +
+    `spbf-${automatic ? 'auto' : 'backup'}-${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}` +
     `-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}.zip`
   )
 }
 
 export async function createBackup(
   destDir: string,
+  automatic = false,
 ): Promise<{ ok: true; path: string; files: number } | { ok: false; message: string }> {
   const dir = (destDir || '').trim()
   if (!dir) return { ok: false, message: '请选择备份保存目录' }
 
   const lib = getLibraryPath()
+  const rel = relative(resolve(lib), resolve(dir))
+  if (!rel || (!rel.startsWith('..') && !isAbsolute(rel))) {
+    return { ok: false, message: '备份目录不能位于书库内' }
+  }
+  if ((await rebuildIndex()).length === 0) return { ok: false, message: '书库是空的，没有可备份的内容' }
   let files: string[]
   try {
     files = await collectFiles(lib)
@@ -51,16 +59,114 @@ export async function createBackup(
 
   try {
     await mkdir(dir, { recursive: true })
-    const dest = join(dir, backupFileName())
-    await writeFile(dest, buf)
+    const dest = join(dir, backupFileName(new Date(), automatic))
+    const staged = `${dest}.${randomUUID()}.tmp`
+    try {
+      await writeFile(staged, buf)
+      await rename(staged, dest)
+    } catch (error) {
+      await rm(staged, { force: true }).catch(() => {})
+      throw error
+    }
     return { ok: true, path: dest, files: files.length }
   } catch (e: unknown) {
     return { ok: false, message: e instanceof Error ? `备份写入失败：${e.message}` : '备份写入失败' }
   }
 }
 
+/** 仅删除本应用自动备份文件；手动备份及其它文件不受影响。 */
+export async function pruneAutoBackups(destDir: string, keep = 5): Promise<void> {
+  const names = (await readdir(destDir)).filter((name) => /^spbf-auto-\d{8}-\d{6}\.zip$/.test(name)).sort()
+  for (const name of names.slice(0, Math.max(0, names.length - keep))) {
+    await rm(join(destDir, name), { force: true })
+  }
+}
+
+export async function runAutoBackupIfDue(now = new Date()): Promise<
+  { status: 'disabled' | 'notDue' | 'created' | 'failed'; message?: string }
+> {
+  const prefs = (await getSettings()).autoBackup
+  if (!prefs?.destDir) return { status: 'disabled' }
+  const last = Date.parse(prefs.lastSuccessAt)
+  if (Number.isFinite(last) && now.getTime() - last < 7 * 24 * 60 * 60_000) return { status: 'notDue' }
+  let result: Awaited<ReturnType<typeof createBackup>>
+  try { result = await createBackup(prefs.destDir, true) }
+  catch (error) { result = { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  if (!result.ok) {
+    await updateSettings({ autoBackup: { lastError: result.message } })
+    return { status: 'failed', message: result.message }
+  }
+  try { await pruneAutoBackups(prefs.destDir) }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await updateSettings({ autoBackup: { lastSuccessAt: now.toISOString(), lastError: `备份成功，但清理旧备份失败：${message}` } })
+    return { status: 'failed', message }
+  }
+  await updateSettings({ autoBackup: { lastSuccessAt: now.toISOString(), lastError: '' } })
+  return { status: 'created', message: result.path }
+}
+
+interface RestoreOptions {
+  /** 仅供故障测试模拟目录切换失败。 */
+  rename?: typeof rename
+  /** 仅供故障测试模拟解压写入失败。 */
+  beforeExtractWrite?: (relativePath: string) => void | Promise<void>
+}
+
+function safeZipPath(name: string): string | null {
+  const segments = name.replaceAll('\\', '/').split('/')
+  if (!name || name.includes('\0') || name.includes(':') ||
+    segments.some((part) => part === '..' || part === '.' || !part) ||
+    isAbsolute(name) || win32.isAbsolute(name)) return null
+  const normalized = normalize(segments.join('/'))
+  return normalized === '.' ? null : normalized
+}
+
+export async function validateStagedLibrary(root: string, allowEmpty = false): Promise<number> {
+  const index = JSON.parse(await readFile(join(root, 'index.json'), 'utf-8')) as unknown
+  if (!index || typeof index !== 'object' || !('version' in index) || index.version !== 1 ||
+    !('books' in index) || !Array.isArray(index.books)) throw new Error('索引格式无效')
+  const entries = await readdir(root, { withFileTypes: true })
+  const directories = entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('__'))
+  if (directories.length === 0 && !allowEmpty) throw new Error('备份中没有书籍')
+  const indexedIds = new Set<string>()
+  for (const item of index.books as unknown[]) {
+    if (!item || typeof item !== 'object' || !('id' in item) ||
+      typeof item.id !== 'string' || indexedIds.has(item.id)) {
+      throw new Error('索引中的书籍信息无效')
+    }
+    indexedIds.add(item.id)
+  }
+  if (indexedIds.size !== directories.length || directories.some((entry) => !indexedIds.has(entry.name))) {
+    throw new Error('索引与书籍目录不一致')
+  }
+  for (const entry of directories) {
+    const book = JSON.parse(await readFile(join(root, entry.name, 'book.json'), 'utf-8')) as unknown
+    if (!book || typeof book !== 'object' || !('id' in book) || book.id !== entry.name ||
+      !('title' in book) || typeof book.title !== 'string' ||
+      !('chapters' in book) || !Array.isArray(book.chapters)) throw new Error(`书籍 ${entry.name} 的元数据无效`)
+    const chapterIds = new Set<string>()
+    for (const chapter of book.chapters as unknown[]) {
+      if (!chapter || typeof chapter !== 'object' || !('id' in chapter) || !('file' in chapter) ||
+        !('status' in chapter) || typeof chapter.id !== 'string' ||
+        chapterIds.has(chapter.id) || typeof chapter.file !== 'string' ||
+        !safeZipPath(chapter.file) || !chapter.file.startsWith('chapters/')) {
+        throw new Error(`书籍 ${entry.name} 的章节路径无效`)
+      }
+      chapterIds.add(chapter.id)
+      if (chapter.status !== 'ready') continue
+      const file = JSON.parse(await readFile(join(root, entry.name, chapter.file), 'utf-8')) as unknown
+      if (!file || typeof file !== 'object' || !('body' in file) || typeof file.body !== 'string') {
+        throw new Error(`书籍 ${entry.name} 的章节正文无效`)
+      }
+    }
+  }
+  return directories.length
+}
+
 export async function restoreBackup(
   zipPath: string,
+  options: RestoreOptions = {},
 ): Promise<{ ok: true; books: number; files: number } | { ok: false; message: string }> {
   if (!zipPath || !zipPath.toLowerCase().endsWith('.zip')) {
     return { ok: false, message: '请选择 .zip 备份文件' }
@@ -74,30 +180,62 @@ export async function restoreBackup(
   if (!zip.file('index.json')) {
     return { ok: false, message: '这不是有效的书库备份（缺少 index.json）' }
   }
-
   const lib = getLibraryPath()
-  // 整库覆盖：先清空现有内容（__tmp__ 由 ensureLibrary 重建）
+  const parent = dirname(lib)
+  const previous = join(parent, `.spbf-previous-${randomUUID()}`)
+  let staged = ''
+  let movedOld = false
+  let switched = false
+  const move = options.rename ?? rename
   try {
-    for (const ent of await readdir(lib, { withFileTypes: true })) {
-      if (ent.name === '__tmp__') continue
-      await rm(join(lib, ent.name), { recursive: true, force: true })
+    await mkdir(parent, { recursive: true })
+    staged = await mkdtemp(join(parent, '.spbf-restore-'))
+    const entries = Object.values(zip.files).filter((file) => !file.dir)
+    for (const file of entries) {
+      const originalName = 'unsafeOriginalName' in file && typeof file.unsafeOriginalName === 'string'
+        ? file.unsafeOriginalName : file.name
+      const rel = safeZipPath(originalName)
+      const topLevel = rel?.split(/[\\/]/)[0]
+      if (!rel || !safeZipPath(file.name) || rel !== safeZipPath(file.name) ||
+        topLevel === '__trash__' || topLevel === '__tmp__') {
+        throw new Error('备份包含不安全的文件路径')
+      }
+      const dest = join(staged, rel)
+      await options.beforeExtractWrite?.(rel)
+      await mkdir(dirname(dest), { recursive: true })
+      await writeFile(dest, await file.async('nodebuffer'))
     }
-  } catch {
-    /* 书库目录可能还不存在，交给后面的 mkdir */
+    const count = await validateStagedLibrary(staged)
+    await mkdir(join(staged, '__tmp__'), { recursive: true })
+    try {
+      await stat(lib)
+      await move(lib, previous)
+      movedOld = true
+    } catch (error: unknown) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+    }
+    await move(staged, lib)
+    switched = true
+    await rebuildIndex()
+    if (movedOld) {
+      await rm(previous, { recursive: true, force: true }).catch((error: unknown) => {
+        console.warn('恢复已完成，但旧书库临时目录清理失败：', previous, error)
+      })
+    }
+    return { ok: true, books: count, files: entries.length }
+  } catch (error: unknown) {
+    if (movedOld) {
+      try {
+        if (switched) await move(lib, staged)
+        await move(previous, lib)
+      } catch {
+        return { ok: false, message: `恢复失败且自动回滚未完成；原书库保存在 ${previous}` }
+      }
+    } else if (switched) {
+      await rm(lib, { recursive: true, force: true }).catch(() => {})
+    }
+    return { ok: false, message: `恢复失败，原书库未改动：${error instanceof Error ? error.message : String(error)}` }
+  } finally {
+    if (staged) await rm(staged, { recursive: true, force: true }).catch(() => {})
   }
-
-  let restored = 0
-  const entries = Object.values(zip.files).filter((f) => !f.dir)
-  for (const f of entries) {
-    const norm = normalize(f.name).split('\\').join('/')
-    if (norm.startsWith('..') || isAbsolute(norm)) continue
-    const dest = join(lib, norm)
-    await mkdir(dirname(dest), { recursive: true })
-    await writeFile(dest, await f.async('nodebuffer'))
-    restored++
-  }
-
-  await ensureLibrary()
-  const books = await rebuildIndex()
-  return { ok: true, books: books.length, files: restored }
 }

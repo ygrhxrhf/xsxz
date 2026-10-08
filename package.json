@@ -10,11 +10,13 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test:live-ai": "node scripts/ai-live-smoke.mjs",
-    "pack": "electron-vite build && electron-builder --dir",
-    "dist": "electron-vite build && electron-builder"
+    "pack": "npm run typecheck && electron-vite build && electron-builder --dir",
+    "dist": "npm run typecheck && electron-vite build && electron-builder"
   },
   "dependencies": {
+    "@ghostery/adblocker": "^2.18.2",
     "@mozilla/readability": "^0.6.0",
     "jsdom": "^30.0.1",
     "jszip": "^3.10.1"

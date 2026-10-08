@@ -1,6 +1,6 @@
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import JSZip from 'jszip'
 import {
@@ -13,6 +13,7 @@ import {
   writeChapterFile,
 } from './library'
 import { backupFileName, createBackup, restoreBackup } from './backup'
+import { setAtomicWriteBeforeCommitForTests } from './atomicFile'
 
 describe('backup（书库备份/恢复）', () => {
   let libDir: string
@@ -107,5 +108,93 @@ describe('backup（书库备份/恢复）', () => {
     const outDir = join(tmpdir(), 'spbf-backup-out')
     const res = await createBackup(outDir)
     expect(res).toMatchObject({ ok: false })
+  })
+
+  it('keeps the old book when a backup has an index but no ready chapter body', async () => {
+    await seedBook('d_old', '原书')
+    const outDir = join(tmpdir(), 'spbf-backup-out')
+    const created = await createBackup(outDir)
+    if (!created.ok) throw new Error('backup failed')
+    const zip = await JSZip.loadAsync(await readFile(created.path))
+    zip.remove('d_old/chapters/0001.json')
+    await writeFile(created.path, await zip.generateAsync({ type: 'nodebuffer' }))
+
+    const result = await restoreBackup(created.path)
+    expect(result.ok).toBe(false)
+    expect((await loadBook('d_old')).title).toBe('原书')
+    expect((await readFile(join(libDir, 'd_old', 'chapters', '0001.json'), 'utf-8'))).toContain('正文一')
+  })
+
+  it('rejects unsafe zip paths before touching the current library', async () => {
+    await seedBook('d_old', '原书')
+    const zip = new JSZip()
+    zip.file('index.json', JSON.stringify({ version: 1, books: [] }))
+    zip.file('../outside.json', '{}')
+    const outDir = join(tmpdir(), 'spbf-backup-out')
+    await mkdir(outDir, { recursive: true })
+    const path = join(outDir, 'unsafe.zip')
+    await writeFile(path, await zip.generateAsync({ type: 'nodebuffer' }))
+    const result = await restoreBackup(path)
+    expect(result).toMatchObject({ ok: false, message: expect.stringContaining('不安全') })
+    expect((await loadBook('d_old')).title).toBe('原书')
+  })
+
+  it('keeps the old library when staging extraction or directory switch fails', async () => {
+    await seedBook('d_old', '原书')
+    const outDir = join(tmpdir(), 'spbf-backup-out')
+    const created = await createBackup(outDir)
+    if (!created.ok) throw new Error('backup failed')
+    const before = await readFile(join(libDir, 'd_old', 'book.json'), 'utf-8')
+
+    const extraction = await restoreBackup(created.path, {
+      beforeExtractWrite: () => { throw new Error('disk full') },
+    })
+    expect(extraction.ok).toBe(false)
+    expect(await readFile(join(libDir, 'd_old', 'book.json'), 'utf-8')).toBe(before)
+
+    let moves = 0
+    const switching = await restoreBackup(created.path, {
+      rename: async (from, to) => {
+        moves++
+        if (moves === 2) throw new Error('switch failed')
+        await rename(from, to)
+      },
+    })
+    expect(switching.ok).toBe(false)
+    expect(moves, JSON.stringify(switching)).toBe(3)
+    expect(await readFile(join(libDir, 'd_old', 'book.json'), 'utf-8')).toBe(before)
+  })
+
+  it('removes the temporary old-library copy after a successful restore', async () => {
+    await seedBook('d_backup', '备份书')
+    const outDir = join(tmpdir(), 'spbf-backup-out')
+    const created = await createBackup(outDir)
+    if (!created.ok) throw new Error('backup failed')
+    await seedBook('d_current', '当前书')
+    const result = await restoreBackup(created.path)
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, books: 1 })
+    expect((await listBooks()).map((book) => book.id)).toEqual(['d_backup'])
+    const leftovers = (await readdir(dirname(libDir))).filter((name) =>
+      name.startsWith('.spbf-previous-') || name.startsWith('.spbf-restore-'))
+    expect(leftovers).toEqual([])
+  })
+
+  it('rolls back when rebuilding the restored index fails', async () => {
+    await seedBook('d_backup', '备份书')
+    const outDir = join(tmpdir(), 'spbf-backup-out')
+    const created = await createBackup(outDir)
+    if (!created.ok) throw new Error('backup failed')
+    await seedBook('d_current', '当前书')
+    const before = await readFile(join(libDir, 'd_current', 'book.json'), 'utf-8')
+    setAtomicWriteBeforeCommitForTests((path) => {
+      if (path === join(libDir, 'index.json')) throw new Error('index write failed')
+    })
+    try {
+      const result = await restoreBackup(created.path)
+      expect(result.ok).toBe(false)
+      expect(await readFile(join(libDir, 'd_current', 'book.json'), 'utf-8')).toBe(before)
+    } finally {
+      setAtomicWriteBeforeCommitForTests(null)
+    }
   })
 })

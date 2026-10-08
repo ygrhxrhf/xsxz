@@ -5,7 +5,7 @@ describe('Reader selection toolbar contract', () => {
   it('positions from Range via selectionPopupPosition, not mouse client coordinates', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
     expect(source).toContain('selectionPopupPosition')
-    expect(source).toContain('applySelPopupPosition({ width: 360, height: 40 })')
+    expect(source).toContain('applySelPopupPosition({ width: 360, height: 88 })')
     expect(source).toContain('applySelPopupPosition({ width: 340, height: 220 })')
     expect(source).toContain('getBoundingClientRect')
     expect(source).toContain('if (selectionOpen()) closeSelectionTools()')

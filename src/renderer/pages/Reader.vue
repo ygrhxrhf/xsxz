@@ -3,10 +3,13 @@ import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPopconfirm, NRadioButton, NRadioGroup, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
 import type {
+  AiBookUsage,
   AiBudgetEstimate,
   AiCitation,
   AiEvidenceChatMessage,
+  AiMaterialCoverage,
   AiMemoryBase,
+  AiMemoryCharacter,
   AiMemoryFile,
   AiRequestStage,
   AiUsage,
@@ -19,6 +22,8 @@ import type {
   ReaderReadingMode,
   ReaderParagraphSpacing,
   ReaderPrefs,
+  ReadingProgress,
+  TtsPosition,
   ReaderTheme,
 } from '@shared/types'
 import {
@@ -50,6 +55,7 @@ import {
   visualPageLabel,
 } from './readerPager'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
+import { ttsBodyHash, validTtsPosition } from './ttsPosition'
 import { decorateText, relocateRange } from '@shared/paragraphSearch'
 import type { Annotation, BookSearchHit } from '@shared/types'
 import { libraryCoverSrc, libraryCoverText } from './libraryCard'
@@ -57,6 +63,7 @@ import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
+import { enqueueCompletedChapter, finishOrganizedChapter, normalizeOrganizeQueue, pauseOrganizeQueue, resumeOrganizeQueue } from './aiOrganizeQueue'
 import { displayAiServiceOrigin } from './aiAssistantTransparency'
 import {
   assistantKindForJob,
@@ -111,6 +118,7 @@ const aiResult = ref('')
 const aiResultTitle = ref('')
 const showAiResult = ref(false)
 const cleanBudget = ref<AiBudgetEstimate | null>(null)
+const cleanBudgetMessage = ref('')
 const showCleanBudgetConfirm = ref(false)
 const lastCleanBudget = ref<AiBudgetEstimate | null>(null)
 const showAiAssistant = ref(false)
@@ -128,7 +136,7 @@ const recapLength = ref<'short' | 'standard' | 'detailed'>('standard')
 const memoryData = ref<AiMemoryFile | null>(null)
 const memorySourceJumping = ref(false)
 const memoryJobId = ref('')
-const memoryJobKind = ref<'update' | 'rebuild' | ''>('')
+const memoryJobKind = ref<'update' | 'rebuild' | 'fromSource' | ''>('')
 const memoryStarting = ref(false)
 const memoryStopping = ref(false)
 const memoryLoading = computed(() => memoryStarting.value || Boolean(memoryJobId.value))
@@ -139,7 +147,12 @@ const lastAssistantTruncated = ref(false)
 const assistantSaveState = ref<{ token: string; kind: 'recap' | 'memory' | 'qa' | '' }>({ token: '', kind: '' })
 const assistantSaveRetrying = aiSaveRecoveryActive
 const chapterSummaryBudget = ref<AiBudgetEstimate | null>(null)
+const chapterSummaryBudgetMessage = ref('')
 const showChapterSummaryBudgetConfirm = ref(false)
+const memoryBudget = ref<AiBudgetEstimate | null>(null)
+const memoryBudgetMessage = ref('')
+const showMemoryBudgetConfirm = ref(false)
+const memoryBudgetRequest = ref<{ kind: 'update' | 'rebuild' | 'fromSource'; fromChapterId?: string } | null>(null)
 const recapBudgetConfirmKind = ref<'chapter' | 'story'>('chapter')
 const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
@@ -150,7 +163,25 @@ const chatLoading = ref(false)
 const chatStarting = ref(false)
 const chatJobId = ref('')
 const chatAssistantIndex = ref(-1)
-const assistantBusy = computed(() => recapStarting.value || recapLoading.value || memoryLoading.value || chatStarting.value || chatLoading.value)
+type ReadingAiMode = 'manual' | 'ask' | 'auto'
+const readingAiMode = ref<ReadingAiMode>('manual')
+const completedChapterQueue = ref<string[]>([])
+const organizeQueuePaused = ref(false)
+const queueBudget = ref<AiBudgetEstimate | null>(null)
+const queueBudgetMessage = ref('')
+const queueBudgetApproved = ref(false)
+const materialCoverage = ref<AiMaterialCoverage | null>(null)
+const bookUsage = ref<AiBookUsage | null>(null)
+const aliasDrafts = ref<Record<string, string>>({})
+const summaryDrafts = ref<Record<string, string>>({})
+const correctingAliasId = ref('')
+const correctingSummaryId = ref('')
+const organizingChapterId = ref('')
+const organizingJobId = ref('')
+const organizingStage = ref<'summary' | 'memory' | ''>('')
+const organizingBusy = ref(false)
+const completedChapterTitle = computed(() => book.value?.chapters.find((chapter) => chapter.id === completedChapterQueue.value[0])?.title ?? '')
+const assistantBusy = computed(() => organizingBusy.value || recapStarting.value || recapLoading.value || memoryLoading.value || chatStarting.value || chatLoading.value)
 const assistantJobIds = computed(() => ({
   recap: recapJobId.value,
   memory: memoryJobId.value,
@@ -197,35 +228,129 @@ let prefsFailureNotified = false
 // TTS 朗读
 const ttsRate = ref(1)
 const ttsAutoNext = ref(true)
+const ttsSource = ref<'system' | 'online'>('system')
+const ttsVoiceURI = ref('')
+const ttsVoices = ref<SpeechSynthesisVoice[]>([])
+const ttsSavedPosition = ref<TtsPosition | null>(null)
+let ttsPositionWrite: Promise<unknown> = Promise.resolve()
+function refreshTtsVoices() { ttsVoices.value = window.speechSynthesis?.getVoices?.() ?? [] }
+function saveTtsParagraph(index: number) {
+  if (!book.value || !currentChapter.value || index < 0) return
+  const bookId = book.value.id
+  const position: TtsPosition = { chapterId: currentChapter.value.id, paragraphIndex: index,
+    bodyHash: ttsBodyHash(chapterBody.value), updatedAt: new Date().toISOString() }
+  ttsSavedPosition.value = position
+  ttsPositionWrite = ttsPositionWrite.then(() => window.api.tts?.setPosition?.(bookId, position)).catch(() => {
+    message.warning('听书位置保存失败')
+  })
+}
 const paras = computed(() => splitIntoParagraphs(chapterBody.value))
+const renderedCount = ref(120)
+let renderGeneration = 0
+let renderTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleParagraphChunks(generation: number) {
+  if (renderTimer) clearTimeout(renderTimer)
+  if (renderedCount.value >= paras.value.length) return
+  renderTimer = setTimeout(() => {
+    if (generation !== renderGeneration) return
+    renderedCount.value = Math.min(paras.value.length, renderedCount.value + 120)
+    scheduleParagraphChunks(generation)
+  }, 16)
+}
+
+watch(chapterBody, () => {
+  renderGeneration++
+  renderedCount.value = Math.min(120, paras.value.length)
+  scheduleParagraphChunks(renderGeneration)
+}, { flush: 'sync' })
+
+async function waitForParagraph(index: number, generation = renderGeneration): Promise<boolean> {
+  while (generation === renderGeneration && renderedCount.value <= index && index < paras.value.length) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 20))
+  }
+  return generation === renderGeneration
+}
 const {
   supported: ttsSupported,
   speaking: ttsSpeaking,
   paused: ttsPaused,
   spokenPara,
+  error: ttsError,
+  sleepMinutes: ttsSleepMinutes,
   start: ttsStart,
   pause: ttsPause,
   resume: ttsResume,
   stop: ttsStop,
+  retry: ttsRetry,
+  next: ttsNext,
+  previous: ttsPrevious,
+  setSleepMinutes: setTtsSleepMinutes,
+  updateRate: updateTtsRate,
 } = useTts({
   paragraphs: () => paras.value,
   rate: () => ttsRate.value,
   autoNext: () => ttsAutoNext.value,
-  onChapterEnd: () => nextChapter(),
+  onChapterEnd: () => continueTtsChapter(),
+  source: () => ttsSource.value,
+  voiceURI: () => ttsVoiceURI.value,
+  synthesize: (requestId, text) => window.api.tts.synthesize(requestId, text),
+  cancelSynthesis: (requestId) => { void window.api.tts.cancel(requestId) },
+  onParagraphStart: saveTtsParagraph,
 })
+
+async function continueTtsChapter() {
+  const next = followingChapter.value
+  if (!next) { message.info('已听完本书'); ttsStop(); return }
+  try {
+    await openChapter(next, 0, undefined, true)
+    if (!chapterReady.value) { message.warning('下一章尚不可读，已停止听书'); ttsStop(); return }
+    ttsStart(0, true)
+  } catch {
+    message.error('下一章加载失败，已停止听书')
+    ttsStop()
+  }
+}
+
+function ttsStartCurrent() { if (chapterReady.value) ttsStart(Math.max(0, viewportCenterPara.value)) }
+function ttsStartBeginning() { if (chapterReady.value) ttsStart(0) }
+async function ttsContinueSaved() {
+  const position = ttsSavedPosition.value
+  if (!book.value || !position) { ttsStartCurrent(); return }
+  const chapter = chapters.value.find((item) => item.id === position.chapterId)
+  if (!chapter || chapter.status !== 'ready') { message.warning('上次听书章节不可用，已从当前位置播放'); ttsStartCurrent(); return }
+  if (currentChapter.value?.id !== chapter.id) {
+    const savedChapter = await window.api.library.readChapter(book.value.id, chapter.id).catch(() => null)
+    if (!savedChapter?.chapter || savedChapter.chapter.status !== 'ready' || !validTtsPosition(position, chapter.id, savedChapter.chapter.body)) {
+      message.warning('上次听书位置已失效，已从当前位置播放')
+      ttsStartCurrent()
+      return
+    }
+    await openChapter(chapter)
+  }
+  if (!chapterReady.value || !validTtsPosition(position, chapter.id, chapterBody.value)) {
+    message.warning('上次听书位置已失效，已从当前位置播放')
+    ttsStartCurrent()
+    return
+  }
+  ttsStart(position.paragraphIndex)
+}
 
 watch(spokenPara, (i) => {
   if (i < 0 || !contentRef.value) return
-  const el = contentRef.value.querySelector(`[data-p="${i}"]`)
-  el?.scrollIntoView({
-    block: 'center',
-    behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true),
+  void waitForParagraph(i).then((ready) => {
+    if (!ready) return
+    contentRef.value?.querySelector(`[data-p="${i}"]`)?.scrollIntoView({
+      block: 'center',
+      behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true),
+    })
   })
 })
 
 // 本书内全文搜索
 const showSearch = ref(false)
 const searchQuery = ref('')
+const searchHighlightCenter = ref(0)
 const searching = ref(false)
 const searchHits = ref<BookSearchHit[]>([])
 let pendingScrollPara = -1
@@ -276,19 +401,27 @@ const currentHighlightRanges = computed(() => {
 })
 
 /** 当前章各段的渲染切片：叠加搜索命中与划线 */
+const plainDecoratedParas = computed(() => paras.value.map((text) => decorateText(text, '', [])))
 const renderedParas = computed(() => {
   const q = searchQuery.value.trim()
   const searchingNow = showSearch.value && !!q
+  const highlights = currentHighlightRanges.value
+  if (!searchingNow && highlights.length === 0) return plainDecoratedParas.value
   const starts = paraNormStarts.value
+  const large = paras.value.length > 2000
   return paras.value.map((text, i) => {
+    if (searchingNow && large && Math.abs(i - searchHighlightCenter.value) > 80) {
+      return plainDecoratedParas.value[i]!
+    }
     const base = starts[i] ?? 0
     const localHl =
       searchingNow && q
         ? []
-        : currentHighlightRanges.value.map((a) => ({ start: a.start - base, end: a.end - base }))
+        : highlights.map((a) => ({ start: a.start - base, end: a.end - base }))
     return decorateText(text, searchingNow ? q : '', localHl)
   })
 })
+const visibleParas = computed(() => renderedParas.value.slice(0, renderedCount.value))
 
 async function reloadAnnotations() {
   if (!book.value) return
@@ -371,7 +504,7 @@ function onContentMouseup(_e: MouseEvent) {
     lastSelRect.value = rect
       ? { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height }
       : { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 }
-    applySelPopupPosition({ width: 360, height: 40 })
+    applySelPopupPosition({ width: 360, height: 88 })
     showSelPopup.value = true
   }, 0)
 }
@@ -448,7 +581,7 @@ async function addHighlight() {
   closeSelectionTools()
 }
 
-async function askSelectedText() {
+async function askSelectedText(kind: 'explain' | 'person' | 'backstory' = 'explain') {
   const excerpt = selectedExcerpt.value || getSelectedText()
   showSelPopup.value = false
   if (!excerpt) {
@@ -476,7 +609,12 @@ async function askSelectedText() {
   } finally {
     restoringChat.value = false
   }
-  chatInput.value = `这段话是什么意思？结合剧情解释一下。\n\n「${excerpt}」`
+  const question = kind === 'person'
+    ? '这段话提到的人物是谁？只根据已读内容说明其身份、别名和与当前情节的关系。'
+    : kind === 'backstory'
+      ? '这件事之前发生了什么？按已读时间线简要追溯相关事件。'
+      : '这段话是什么意思？结合已读剧情解释一下。'
+  chatInput.value = `${question}\n\n「${excerpt}」`
   closeSelectionTools()
   await sendChat()
 }
@@ -567,6 +705,7 @@ async function deleteAnnotation(a: Annotation) {
 }
 
 function openSearch() {
+  searchHighlightCenter.value = Math.max(0, viewportCenterPara.value)
   showSearch.value = true
 }
 
@@ -591,6 +730,7 @@ async function jumpToHit(hit: BookSearchHit) {
   const ch = chapters.value.find((c) => c.id === hit.chapterId)
   if (!ch) return
   pendingScrollPara = hit.paraIndex
+  searchHighlightCenter.value = hit.paraIndex
   await openChapter(ch, 0)
 }
 
@@ -598,7 +738,10 @@ function scrollToPendingPara() {
   if (pendingScrollPara < 0 || !contentRef.value) return
   const i = pendingScrollPara
   pendingScrollPara = -1
-  void nextTick(() => {
+  const generation = renderGeneration
+  void waitForParagraph(i, generation).then(async (ready) => {
+    if (!ready) return
+    await nextTick()
     contentRef.value?.querySelector(`[data-p="${i}"]`)?.scrollIntoView({ block: 'center' })
   })
 }
@@ -631,7 +774,8 @@ function clearToolHideTimer() {
 
 function scheduleToolHide() {
   clearToolHideTimer()
-  if (anyDrawerOpen() || selectionOpen() || pointerInToolbar.value) {
+  const focusedTool = document.activeElement?.closest('.reader-toolbar, .reader-bottombar')
+  if (anyDrawerOpen() || selectionOpen() || pointerInToolbar.value || focusedTool) {
     toolsVisible.value = true
     return
   }
@@ -643,7 +787,7 @@ function scheduleToolHide() {
         idleMs,
         overlayOpen: anyDrawerOpen(),
         selectionOpen: selectionOpen(),
-        pointerInToolbar: pointerInToolbar.value,
+        pointerInToolbar: pointerInToolbar.value || Boolean(document.activeElement?.closest('.reader-toolbar, .reader-bottombar')),
       })
     ) {
       toolsVisible.value = false
@@ -683,6 +827,10 @@ function onToolbarLeave() {
   }
   lastToolActivityAt = Date.now()
   scheduleToolHide()
+}
+
+function onReaderFocusIn() {
+  revealTools(immersiveMode.value === 'locked')
 }
 
 function toggleToolPanel(panel: 'tts' | 'ai' | 'shortcuts') {
@@ -726,7 +874,8 @@ function toggleTtsFromShortcut() {
   activeToolPanel.value = 'tts'
   revealTools(immersiveMode.value === 'locked')
   if (!ttsSupported) return
-  if (!ttsSpeaking.value) ttsStart(0)
+  if (!ttsSpeaking.value) void ttsContinueSaved()
+  else if (ttsPaused.value && ttsError.value) ttsRetry()
   else if (ttsPaused.value) ttsResume()
   else ttsPause()
 }
@@ -934,7 +1083,7 @@ const bookProgressRatio = computed(() => approximateBookRatio(chapters.value, cu
 const chapterPercent = computed(() => Math.round(scrollRatioView.value * 100))
 const bookPercent = computed(() => Math.round(bookProgressRatio.value * 100))
 const remainingChapters = computed(() => remainingChapterCount(chapters.value, currentChapter.value?.id))
-const bookProgressDetail = computed(() => `全书 ${bookPercent.value}% · 本章 ${chapterPercent.value}% · 还剩 ${remainingChapters.value} 章`)
+const bookProgressDetail = computed(() => `全书约 ${bookPercent.value}% · 本章 ${chapterPercent.value}% · 还剩 ${remainingChapters.value} 章`)
 const progressSummary = computed(() =>
   readerProgressLabel(chapters.value, currentChapter.value?.id, scrollRatioView.value),
 )
@@ -946,12 +1095,44 @@ const spineInitial = computed(() => libraryCoverText(book.value?.title || ''))
 
 async function loadBook(bookId: string) {
   assistantBudgets.value = {}
+  ttsStop()
+  ttsSavedPosition.value = null
+  if (book.value && book.value.id !== bookId) {
+    if (organizingJobId.value) void window.api.ai.cancel(organizingJobId.value)
+    if (memoryJobId.value === organizingJobId.value) {
+      memoryJobId.value = ''
+      memoryJobKind.value = ''
+    }
+    completedChapterQueue.value = []
+    organizingJobId.value = ''
+    organizingChapterId.value = ''
+    organizingStage.value = ''
+    organizingBusy.value = false
+    queueBudget.value = null
+    queueBudgetMessage.value = ''
+    queueBudgetApproved.value = false
+  }
   chapterPrefetch.onBookChange(bookId)
   const previousChapterId = currentChapter.value?.id
   saveProgress()
   const res = await window.api.library.get(bookId)
   if (res.book) {
     book.value = res.book
+    ttsSavedPosition.value = await (window.api.tts?.getPosition?.(bookId) ?? Promise.resolve(null)).catch(() => null)
+    const savedMode = localStorage.getItem(`spbf:reading-ai:${bookId}`)
+    readingAiMode.value = savedMode === 'ask' || savedMode === 'auto' ? savedMode : 'manual'
+    try {
+      const savedQueue: unknown = JSON.parse(localStorage.getItem(`spbf:reading-ai-queue:${bookId}`) ?? '[]')
+      const cutoff = res.book.chapters.findIndex((chapter) => chapter.id === res.book?.progress?.chapterId)
+      organizeQueuePaused.value = localStorage.getItem(`spbf:reading-ai-paused:${bookId}`) === '1'
+      completedChapterQueue.value = readingAiMode.value !== 'manual'
+        ? normalizeOrganizeQueue(savedQueue)
+          .filter((id) => res.book!.chapters.some((chapter, position) => chapter.id === id && chapter.status === 'ready' && position <= cutoff))
+        : []
+    } catch { completedChapterQueue.value = [] }
+    if (readingAiMode.value === 'auto' && !organizeQueuePaused.value && completedChapterQueue.value.length) {
+      setTimeout(() => void organizeNextCompletedChapter(), 0)
+    }
     chapters.value = res.book.chapters
     currentChapter.value = null
     lostHighlightIds.value = new Set()
@@ -967,7 +1148,7 @@ async function loadBook(bookId: string) {
     if (res.book.progress) {
       const ch = chapters.value.find((c) => c.id === res.book!.progress!.chapterId)
       if (ch) {
-        await openChapter(ch, res.book.progress.scrollRatio)
+        await openChapter(ch, res.book.progress.scrollRatio, res.book.progress)
         return
       }
     }
@@ -975,12 +1156,20 @@ async function loadBook(bookId: string) {
   }
 }
 
-async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
+async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingProgress, continueListening = false) {
   if (!book.value) return
+  const openingBookId = book.value.id
+  const finishedChapterId = currentChapter.value?.id !== ch.id && currentChapter.value?.status === 'ready' && contentRef.value &&
+    currentChapterRatio(contentRef.value) >= 0.9 ? currentChapter.value.id : ''
   chapterPrefetch.beginNavigation()
   closeSelectionTools()
-  ttsStop()
-  if (currentChapter.value && currentChapter.value.id !== ch.id) saveProgress()
+  ttsStop(continueListening)
+  const progressSave = currentChapter.value && currentChapter.value.id !== ch.id
+    ? saveProgress().then(() => true, () => {
+      message.warning('阅读进度保存失败，已跳过本章自动整理')
+      return false
+    })
+    : Promise.resolve(true)
   chapterLoading.value = true
   try {
     const cached = chapterPrefetch.get(book.value.id, ch.id)
@@ -1004,6 +1193,8 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
       await nextTick()
       if (pendingScrollPara >= 0) {
         scrollToPendingPara()
+      } else if (progress && scrollRatio < 0.999 && scrollToParagraphAnchor(progress)) {
+        // Anchor restore is scheduled after layout; old books use the ratio below.
       } else {
         scrollToRatio(scrollRatio)
       }
@@ -1012,6 +1203,9 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
         previous: previousChapter.value,
         following: followingChapter.value,
         readChapter: (bookId, chapterId) => window.api.library.readChapter(bookId, chapterId),
+      })
+      if (finishedChapterId) void progressSave.then((saved) => {
+        if (saved && book.value?.id === openingBookId) queueCompletedChapter(finishedChapterId)
       })
     } else {
       currentChapter.value = ch
@@ -1024,10 +1218,92 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
   }
 }
 
+function paragraphTextNodes(paragraph: Element): Text[] {
+  const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT)
+  const nodes: Text[] = []
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.parentElement?.closest('button')) nodes.push(node as Text)
+  }
+  return nodes
+}
+
+function textPoint(nodes: Text[], offset: number): { node: Text; offset: number } | null {
+  let left = offset
+  for (const node of nodes) {
+    if (left <= node.length) return { node, offset: left }
+    left -= node.length
+  }
+  const last = nodes.at(-1)
+  return last ? { node: last, offset: last.length } : null
+}
+
+function paragraphAnchor(): Pick<ReadingProgress, 'paragraphIndex' | 'paragraphOffset'> | null {
+  const pane = contentRef.value
+  if (!pane) return null
+  const top = pane.getBoundingClientRect().top + 4
+  const paragraphs = pane.querySelectorAll<HTMLElement>('[data-p]')
+  let low = 0
+  let high = paragraphs.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (paragraphs[middle]!.getBoundingClientRect().bottom > top) high = middle
+    else low = middle + 1
+  }
+  const visible = paragraphs[low]
+  if (!visible) return null
+  const index = Number(visible.dataset.p)
+  if (!Number.isInteger(index)) return null
+  const nodes = paragraphTextNodes(visible)
+  const total = nodes.reduce((sum, node) => sum + node.length, 0)
+  if (!total || visible.getBoundingClientRect().top >= top) return { paragraphIndex: index, paragraphOffset: 0 }
+  low = 0
+  high = total - 1
+  const range = document.createRange()
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    const point = textPoint(nodes, middle)
+    if (!point) break
+    range.setStart(point.node, Math.min(point.offset, point.node.length - 1))
+    range.setEnd(point.node, Math.min(point.offset + 1, point.node.length))
+    if (range.getBoundingClientRect().bottom > top) high = middle
+    else low = middle + 1
+  }
+  return { paragraphIndex: index, paragraphOffset: low }
+}
+
+function scrollToParagraphAnchor(progress: ReadingProgress): boolean {
+  const pane = contentRef.value
+  const index = progress.paragraphIndex
+  const offset = progress.paragraphOffset
+  if (!pane || !Number.isInteger(index) || !Number.isInteger(offset) || index! < 0 || offset! < 0) return false
+  if (index! >= paras.value.length || offset! > (paras.value[index!]?.length ?? 0)) return false
+  const generation = renderGeneration
+  void waitForParagraph(index!, generation).then((ready) => {
+    if (!ready) return
+    requestAnimationFrame(() => {
+    const paragraph = pane.querySelector<HTMLElement>(`[data-p="${index}"]`)
+    if (!paragraph) { scrollToRatio(progress.scrollRatio); return }
+    const nodes = paragraphTextNodes(paragraph)
+    const point = textPoint(nodes, offset!)
+    if (!point) { scrollToRatio(progress.scrollRatio); return }
+    const range = document.createRange()
+    range.setStart(point.node, point.offset)
+    range.setEnd(point.node, Math.min(point.offset + 1, point.node.length))
+    const targetTop = range.getBoundingClientRect().top
+    pane.scrollTop += targetTop - pane.getBoundingClientRect().top - 4
+    syncVisualPage()
+    })
+  })
+  return true
+}
+
 function scrollToRatio(ratio: number) {
   const el = contentRef.value
   if (!el) return
-  requestAnimationFrame(() => {
+  const generation = renderGeneration
+  void waitForParagraph(paras.value.length - 1, generation).then((ready) => {
+    if (!ready) return
+    requestAnimationFrame(() => {
     let top = scrollTopFromRatio(ratio, el.scrollHeight, el.clientHeight)
     if (readingMode.value === 'screen') {
       top = scrollTopForVisualPage(
@@ -1038,18 +1314,30 @@ function scrollToRatio(ratio: number) {
     }
     el.scrollTop = top
     syncVisualPage()
+    })
   })
 }
 
-function saveProgress() {
+async function saveProgress(): Promise<void> {
   if (!book.value || !currentChapter.value || !contentRef.value) return
   const el = contentRef.value
-  const scrollRatio = chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight)
-  void window.api.library.setProgress(book.value.id, {
+  const scrollRatio = currentChapterRatio(el)
+  const anchor = paragraphAnchor()
+  const progress: ReadingProgress = {
     chapterId: currentChapter.value.id,
     scrollRatio,
+    ...(anchor && scrollRatio < 0.999 ? anchor : {}),
     updatedAt: new Date().toISOString(),
-  })
+  }
+  book.value.progress = progress
+  await window.api.library.setProgress(book.value.id, progress)
+}
+
+function currentChapterRatio(el: HTMLElement): number {
+  const visibleRatio = chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight)
+  return renderedCount.value < paras.value.length && paras.value.length > 0
+    ? visibleRatio * renderedCount.value / paras.value.length
+    : visibleRatio
 }
 
 function updateViewportFocusAnchor() {
@@ -1058,21 +1346,30 @@ function updateViewportFocusAnchor() {
     viewportCenterPara.value = -1
     return
   }
-  const nodes = [...el.querySelectorAll<HTMLElement>('[data-p]')]
-  const centers = nodes.map((n) => n.offsetTop + n.offsetHeight / 2)
-  viewportCenterPara.value = paragraphIndexAtViewportCenter({
-    viewportCenter: el.scrollTop + el.clientHeight / 2,
-    paragraphCenters: centers,
-  })
+  const nodes = el.querySelectorAll<HTMLElement>('[data-p]')
+  const viewportCenter = el.scrollTop + el.clientHeight / 2
+  let low = 0
+  let high = nodes.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    const node = nodes[middle]!
+    if (node.offsetTop + node.offsetHeight / 2 < viewportCenter) low = middle + 1
+    else high = middle
+  }
+  viewportCenterPara.value = nodes.length ? Math.min(low, nodes.length - 1) : -1
 }
 
 function onScroll() {
   if (selectionOpen()) closeSelectionTools()
   const el = contentRef.value
-  if (el) scrollRatioView.value = chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight)
+  if (el) scrollRatioView.value = currentChapterRatio(el)
   if (scrollTimer) clearTimeout(scrollTimer)
   scrollTimer = setTimeout(saveProgress, 1000)
   updateViewportFocusAnchor()
+  if (showSearch.value && paras.value.length > 2000 &&
+      Math.abs(viewportCenterPara.value - searchHighlightCenter.value) > 100) {
+    searchHighlightCenter.value = viewportCenterPara.value
+  }
   syncVisualPage()
 }
 
@@ -1194,6 +1491,8 @@ async function loadPrefs() {
   readingMode.value = s.reader.readingMode
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
+  ttsSource.value = s.tts?.source === 'online' ? 'online' : 'system'
+  ttsVoiceURI.value = s.tts?.systemVoiceURI ?? ''
   recapLength.value = s.ai?.recapLength ?? 'standard'
   aiServiceOrigin.value = displayAiServiceOrigin(s.baseUrl)
   libraryPath.value = s.libraryPath
@@ -1212,10 +1511,12 @@ async function runCleanBody(confirmOverBudget: boolean) {
       aiResult.value = res.result.cleaned
       lastCleanBudget.value = res.budget
       showAiResult.value = true
+      void loadAssistantMaterial()
       return
     }
     if ('confirmationRequired' in res && res.confirmationRequired) {
       cleanBudget.value = res.budget
+      cleanBudgetMessage.value = res.message
       showCleanBudgetConfirm.value = true
       return
     }
@@ -1316,6 +1617,165 @@ async function loadStoredMemory() {
     return
   }
   memoryData.value = isStructuredMemory(result.memory) ? result.memory : null
+  for (const character of memoryData.value?.characters ?? []) {
+    if (!(character.id in aliasDrafts.value)) aliasDrafts.value[character.id] = character.aliases.join('、')
+  }
+  for (const item of [
+    ...(memoryData.value?.characters ?? []), ...(memoryData.value?.relations ?? []),
+    ...(memoryData.value?.foreshadows ?? []), ...(memoryData.value?.events ?? []),
+  ]) {
+    if (!(item.id in summaryDrafts.value)) summaryDrafts.value[item.id] = item.summary
+  }
+}
+
+async function loadAssistantMaterial() {
+  if (!book.value) return
+  const [coverage, usage] = await Promise.all([
+    window.api.ai.getMaterialCoverage(book.value.id),
+    window.api.ai.getUsage(book.value.id),
+  ])
+  if (coverage.ok) materialCoverage.value = coverage.coverage
+  if (usage.ok) bookUsage.value = usage.usage
+}
+
+function queueCompletedChapter(chapterId: string) {
+  if (!book.value || readingAiMode.value === 'manual') return
+  const next = enqueueCompletedChapter({
+    chapters: completedChapterQueue.value,
+    paused: organizeQueuePaused.value,
+  }, chapterId, organizingChapterId.value)
+  if (next.chapters === completedChapterQueue.value) return
+  completedChapterQueue.value = next.chapters
+  persistCompletedQueue()
+  if (readingAiMode.value === 'ask') message.info('这一章已读完，可在 AI 助手中整理摘要和小说记忆')
+  if (readingAiMode.value === 'auto' && !organizeQueuePaused.value) void organizeNextCompletedChapter()
+}
+
+function pauseCompletedQueue() {
+  organizeQueuePaused.value = pauseOrganizeQueue({ chapters: completedChapterQueue.value, paused: organizeQueuePaused.value }).paused
+  if (book.value) localStorage.setItem(`spbf:reading-ai-paused:${book.value.id}`, '1')
+}
+
+function resumeCompletedQueue() {
+  if (queueBudget.value) {
+    showAiAssistant.value = true
+    message.warning('请先确认本次整理的发送预算')
+    return
+  }
+  organizeQueuePaused.value = resumeOrganizeQueue({ chapters: completedChapterQueue.value, paused: organizeQueuePaused.value }).paused
+  if (book.value) localStorage.removeItem(`spbf:reading-ai-paused:${book.value.id}`)
+  if (readingAiMode.value === 'auto') void organizeNextCompletedChapter()
+}
+
+function persistCompletedQueue() {
+  if (book.value) localStorage.setItem(`spbf:reading-ai-queue:${book.value.id}`, JSON.stringify(completedChapterQueue.value))
+}
+
+function setReadingAiMode(mode: ReadingAiMode) {
+  readingAiMode.value = mode
+  if (book.value) localStorage.setItem(`spbf:reading-ai:${book.value.id}`, mode)
+  if (mode === 'manual') {
+    completedChapterQueue.value = []
+    queueBudget.value = null
+    queueBudgetApproved.value = false
+    persistCompletedQueue()
+  }
+  if (mode === 'auto') void organizeNextCompletedChapter()
+}
+
+async function organizeNextCompletedChapter() {
+  if (!book.value || organizeQueuePaused.value || queueBudget.value || !completedChapterQueue.value.length || organizingBusy.value || assistantBusy.value || assistantSaveRetrying.value) return
+  const bookId = book.value.id
+  const chapterId = completedChapterQueue.value[0]!
+  organizingBusy.value = true
+  organizingChapterId.value = chapterId
+  try {
+    const stored = await window.api.ai.getSummaries(bookId)
+    if (!stored.ok) throw new Error(stored.message)
+    if (!stored.summaries.byChapter[chapterId]) {
+      const started = await window.api.ai.summarizeChapter(bookId, chapterId, queueBudgetApproved.value)
+      queueBudgetApproved.value = false
+      if (!started.ok) {
+        if ('confirmationRequired' in started && started.confirmationRequired) {
+          queueBudget.value = started.budget
+          queueBudgetMessage.value = started.message
+          organizeQueuePaused.value = true
+          persistQueuePaused()
+          message.warning('整理队列已暂停，请确认发送预算')
+        } else message.warning(started.message)
+        return
+      }
+      organizingJobId.value = started.jobId
+      organizingStage.value = 'summary'
+      return
+    }
+    await organizeMemoryAfterSummary()
+  } catch (error) {
+    message.warning(error instanceof Error ? error.message : '整理已读章节失败')
+  } finally {
+    if (!organizingJobId.value) {
+      organizingBusy.value = false
+      organizingChapterId.value = ''
+    }
+  }
+}
+
+async function organizeMemoryAfterSummary() {
+  if (!book.value || !organizingChapterId.value) return
+  const started = await window.api.ai.updateMemory(book.value.id, organizingChapterId.value, queueBudgetApproved.value)
+  queueBudgetApproved.value = false
+  if (!started.ok) {
+    if ('confirmationRequired' in started && started.confirmationRequired) {
+      queueBudget.value = started.budget
+      queueBudgetMessage.value = started.message
+      organizeQueuePaused.value = true
+      persistQueuePaused()
+      message.warning('整理队列已暂停，请确认发送预算')
+    } else message.warning(started.message)
+    return
+  }
+  organizingJobId.value = started.jobId
+  organizingStage.value = 'memory'
+  memoryJobId.value = started.jobId
+  memoryJobKind.value = 'update'
+}
+
+function finishOrganizingChapter(success: boolean) {
+  const chapterId = organizingChapterId.value
+  organizingJobId.value = ''
+  organizingStage.value = ''
+  organizingBusy.value = false
+  organizingChapterId.value = ''
+  queueBudgetApproved.value = false
+  if (success && completedChapterQueue.value[0] === chapterId) {
+    completedChapterQueue.value = finishOrganizedChapter({
+      chapters: completedChapterQueue.value,
+      paused: organizeQueuePaused.value,
+    }, chapterId).chapters
+    persistCompletedQueue()
+  }
+  if (success && readingAiMode.value === 'auto' && !organizeQueuePaused.value) setTimeout(() => void organizeNextCompletedChapter(), 0)
+}
+
+function persistQueuePaused() {
+  if (book.value) localStorage.setItem(`spbf:reading-ai-paused:${book.value.id}`, '1')
+}
+
+async function confirmQueueBudget() {
+  queueBudget.value = null
+  queueBudgetApproved.value = true
+  organizeQueuePaused.value = false
+  if (book.value) localStorage.removeItem(`spbf:reading-ai-paused:${book.value.id}`)
+  if (organizingChapterId.value && organizingStage.value === 'summary' && !organizingJobId.value) {
+    await organizeMemoryAfterSummary()
+    if (!organizingJobId.value && !queueBudget.value) finishOrganizingChapter(false)
+  } else {
+    void organizeNextCompletedChapter()
+  }
+}
+
+function stopOrganizing() {
+  if (organizingJobId.value) void window.api.ai.cancel(organizingJobId.value)
 }
 
 async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
@@ -1325,19 +1785,27 @@ async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
   await Promise.allSettled([
     recapLoading.value ? Promise.resolve() : loadStoredRecap(),
     loadStoredMemory(),
+    loadAssistantMaterial(),
     chatLoading.value || restoringChat.value
       ? Promise.resolve()
       : window.api.ai.getChat(book.value.id).then((res) => { if (res.ok) chatMessages.value = normalizeEvidenceChatHistory(res.messages) }),
   ])
 }
 
-async function startMemoryJob(kind: 'update' | 'rebuild') {
+async function startMemoryJob(kind: 'update' | 'rebuild', confirmOverBudget = false) {
   if (!book.value?.progress?.chapterId || assistantBusy.value || assistantSaveRetrying.value) return
   memoryStarting.value = true
   try {
     const start = kind === 'update' ? window.api.ai.updateMemory : window.api.ai.rebuildMemory
-    const result = await start(book.value.id, book.value.progress.chapterId)
+    const result = await start(book.value.id, book.value.progress.chapterId, confirmOverBudget)
     if (!result.ok) {
+      if ('confirmationRequired' in result && result.confirmationRequired) {
+        memoryBudget.value = result.budget
+        memoryBudgetMessage.value = result.message
+        memoryBudgetRequest.value = { kind }
+        showMemoryBudgetConfirm.value = true
+        return
+      }
       message.warning(result.message)
       return
     }
@@ -1398,6 +1866,107 @@ async function jumpToMemorySource(source: AiCitation) {
   }
 }
 
+function earliestMemorySource(item: AiMemoryBase): string | null {
+  if (!book.value) return null
+  const positions = new Map(book.value.chapters.map((chapter, index) => [chapter.id, index]))
+  return [...item.sources]
+    .filter((source) => positions.has(source.chapterId))
+    .sort((a, b) => positions.get(a.chapterId)! - positions.get(b.chapterId)!)[0]?.chapterId ?? null
+}
+
+async function rebuildMemoryFromSource(item: AiMemoryBase, confirmOverBudget = false, savedFromChapterId?: string) {
+  if (!book.value?.progress?.chapterId || assistantBusy.value || assistantSaveRetrying.value) return
+  const fromChapterId = savedFromChapterId ?? earliestMemorySource(item)
+  if (!fromChapterId) {
+    message.warning('来源章节不存在，无法从此处重建')
+    return
+  }
+  memoryStarting.value = true
+  try {
+    const result = await window.api.ai.rebuildMemoryFrom(book.value.id, fromChapterId, book.value.progress.chapterId, confirmOverBudget)
+    if (!result.ok) {
+      if ('confirmationRequired' in result && result.confirmationRequired) {
+        memoryBudget.value = result.budget
+        memoryBudgetMessage.value = result.message
+        memoryBudgetRequest.value = { kind: 'fromSource', fromChapterId }
+        showMemoryBudgetConfirm.value = true
+        return
+      }
+      message.warning(result.message)
+      return
+    }
+    memoryJobId.value = result.jobId
+    memoryJobKind.value = 'fromSource'
+    message.info('正在从来源章节重新分析已读记忆')
+  } catch {
+    message.error('无法启动来源章节重建')
+  } finally {
+    memoryStarting.value = false
+  }
+}
+
+async function confirmMemoryBudget() {
+  showMemoryBudgetConfirm.value = false
+  const request = memoryBudgetRequest.value
+  memoryBudgetRequest.value = null
+  if (!request) return
+  if (request.kind === 'fromSource') {
+    if (!book.value?.progress?.chapterId || !request.fromChapterId) return
+    memoryStarting.value = true
+    try {
+      const result = await window.api.ai.rebuildMemoryFrom(book.value.id, request.fromChapterId, book.value.progress.chapterId, true)
+      if (result.ok) {
+        memoryJobId.value = result.jobId
+        memoryJobKind.value = 'fromSource'
+      } else message.warning(result.message)
+    } finally {
+      memoryStarting.value = false
+    }
+  } else await startMemoryJob(request.kind, true)
+}
+
+async function saveCharacterAliases(item: AiMemoryCharacter) {
+  if (!book.value || correctingAliasId.value || assistantBusy.value) return
+  correctingAliasId.value = item.id
+  const aliases = (aliasDrafts.value[item.id] ?? '').split(/[、,，]/).map((alias) => alias.trim()).filter(Boolean)
+  try {
+    const result = await window.api.ai.correctCharacterAliases(book.value.id, item.id, aliases)
+    if (!result.ok) {
+      message.warning(result.message)
+      return
+    }
+    item.aliases = result.character.aliases
+    item.userEditedAliases = true
+    aliasDrafts.value[item.id] = result.character.aliases.join('、')
+    message.success('别名已保存；需要重新分析时可从来源章节重建')
+  } catch {
+    message.error('无法保存人物别名')
+  } finally {
+    correctingAliasId.value = ''
+  }
+}
+
+async function saveMemorySummary(kind: 'character' | 'relation' | 'foreshadow' | 'event', item: AiMemoryBase) {
+  if (!book.value || correctingSummaryId.value || assistantBusy.value || assistantSaveRetrying.value) return
+  correctingSummaryId.value = item.id
+  try {
+    const result = await window.api.ai.correctMemorySummary(book.value.id, kind, item.id, summaryDrafts.value[item.id] ?? '')
+    if (!result.ok) {
+      message.warning(result.message)
+      return
+    }
+    item.summary = result.item.summary
+    item.accuracy = result.item.accuracy
+    item.userEditedSummary = true
+    summaryDrafts.value[item.id] = result.item.summary
+    message.success('记忆说明已保存；需要重新分析时可从来源章节重建')
+  } catch {
+    message.error('无法保存记忆修正')
+  } finally {
+    correctingSummaryId.value = ''
+  }
+}
+
 async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'event', item: AiMemoryBase) {
   if (!book.value || item.accuracy !== 'normal' || assistantSaveRetrying.value) return
   const result = await window.api.ai.markMemoryInaccurate(book.value.id, kind, item.id)
@@ -1406,7 +1975,7 @@ async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'e
     return
   }
   item.accuracy = result.item.accuracy
-  message.success('已标记，将在下次更新时复核。')
+  message.success('已标记，可从来源章节重新分析此条记忆')
 }
 
 async function retryAssistantSave() {
@@ -1455,6 +2024,7 @@ async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) 
       if ('confirmationRequired' in res && res.confirmationRequired) {
         recapBudgetConfirmKind.value = kind
         chapterSummaryBudget.value = res.budget
+        chapterSummaryBudgetMessage.value = res.message
         showChapterSummaryBudgetConfirm.value = true
         return
       }
@@ -1511,7 +2081,7 @@ async function translateSelectedText() {
     message.warning('请先停止当前生成')
     return
   }
-  const res = await window.api.ai.translateStream(text)
+  const res = await window.api.ai.translateStream(text, book.value?.id)
   if (!res.ok) {
     message.error(res.message)
     return
@@ -1611,16 +2181,24 @@ watch(
   },
 )
 
-watch([ttsRate, ttsAutoNext], () => {
+watch([ttsRate, ttsAutoNext, ttsSource, ttsVoiceURI], () => {
   if (!prefsReady.value) return
   void window.api.settings.set({
-    tts: { rate: clampTtsRate(ttsRate.value), autoNextChapter: ttsAutoNext.value },
+    tts: { rate: clampTtsRate(ttsRate.value), autoNextChapter: ttsAutoNext.value,
+      source: ttsSource.value, systemVoiceURI: ttsVoiceURI.value },
   })
 })
+watch(ttsRate, () => updateTtsRate())
+watch(ttsSource, () => { if (ttsSpeaking.value) ttsStop() })
 
 watch(() => props.bookId, (id) => { if (id) loadBook(id) })
 watch([renderedParas, chapterBody], () => {
   void nextTick(() => updateViewportFocusAnchor())
+})
+watch(renderedCount, (count) => {
+  if (count === paras.value.length && contentRef.value) {
+    scrollRatioView.value = currentChapterRatio(contentRef.value)
+  }
 })
 watch(showDrawer, (open) => { if (open) void scrollCatalogToCurrent() })
 watch(
@@ -1633,6 +2211,8 @@ watch(
 )
 
 onMounted(async () => {
+  refreshTtsVoices()
+  if ('speechSynthesis' in window) window.speechSynthesis.addEventListener?.('voiceschanged', refreshTtsVoices)
   window.addEventListener('keydown', onReaderKeydown)
   window.addEventListener('resize', onReaderResize)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => {
@@ -1650,6 +2230,10 @@ onMounted(async () => {
     assistantBudgets.value = { ...assistantBudgets.value, [task]: budget }
   })
   unsubAiDone = window.api.ai.onDone((event) => {
+    if (readingAiMode.value === 'auto' && !organizeQueuePaused.value && completedChapterQueue.value.length) {
+      setTimeout(() => void organizeNextCompletedChapter(), 0)
+    }
+    if (event.ok && event.usage) void loadAssistantMaterial()
     const assistantKind = assistantKindForJob(event.jobId, assistantJobIds.value)
     if (assistantKind) {
       assistantCompleted.value = true
@@ -1658,6 +2242,18 @@ onMounted(async () => {
       assistantSaveState.value = updateAssistantSaveToken(assistantSaveState.value, assistantKind, event)
     }
     assistantStages.value = removeAssistantStage(assistantStages.value, event.jobId)
+    if (event.jobId === organizingJobId.value && organizingStage.value === 'summary') {
+      if (event.ok && !event.stopped && !event.saveToken) {
+        organizingJobId.value = ''
+        void organizeMemoryAfterSummary().then(() => {
+          if (!organizingJobId.value && !queueBudget.value) finishOrganizingChapter(false)
+        }).catch(() => finishOrganizingChapter(false))
+      } else {
+        message.warning(event.ok && event.saveToken ? '摘要未保存，请在 AI 助手中处理后重试' : event.ok ? '整理已停止' : event.message)
+        finishOrganizingChapter(false)
+      }
+      return
+    }
     if (event.jobId === translateJobId.value) {
       translateJobId.value = ''
       aiResult.value = event.ok ? event.text : `错误：${event.message}`
@@ -1683,6 +2279,7 @@ onMounted(async () => {
       return
     }
     if (event.jobId === memoryJobId.value) {
+      const wasOrganizing = event.jobId === organizingJobId.value && organizingStage.value === 'memory'
       const kind = memoryJobKind.value
       const stopped = event.ok ? event.stopped === true : event.message === '已停止生成'
       memoryJobId.value = ''
@@ -1692,11 +2289,25 @@ onMounted(async () => {
         message.info('更新已停止，原有记忆未改变。')
       } else if (event.ok && event.memoryUpdate) {
         memoryData.value = event.memoryUpdate.memory
+        for (const character of memoryData.value.characters) aliasDrafts.value[character.id] = character.aliases.join('、')
+        for (const item of [
+          ...memoryData.value.characters, ...memoryData.value.relations,
+          ...memoryData.value.foreshadows, ...memoryData.value.events,
+        ]) summaryDrafts.value[item.id] = item.summary
         message.success(kind === 'rebuild'
           ? '小说记忆已重建'
+          : kind === 'fromSource' ? '来源章节以后的记忆已重新分析'
           : `本次处理 ${event.memoryUpdate.processedChapters} 章，新增或更新 ${event.memoryUpdate.changedItems} 条记忆。`)
       } else if (!event.ok) {
         message.error(event.message)
+      }
+      if (wasOrganizing) {
+        if (event.ok && !stopped && !event.saveToken && (event.memoryUpdate?.remainingChapters ?? 0) > 0) {
+          organizingJobId.value = ''
+          setTimeout(() => void organizeMemoryAfterSummary().then(() => {
+            if (!organizingJobId.value) finishOrganizingChapter(false)
+          }).catch(() => finishOrganizingChapter(false)), 0)
+        } else finishOrganizingChapter(event.ok && !stopped && !event.saveToken)
       }
       return
     }
@@ -1736,11 +2347,14 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if ('speechSynthesis' in window) window.speechSynthesis.removeEventListener?.('voiceschanged', refreshTtsVoices)
   window.removeEventListener('keydown', onReaderKeydown)
   window.removeEventListener('resize', onReaderResize)
   chapterPrefetch.dispose()
   ttsStop()
   if (scrollTimer) clearTimeout(scrollTimer)
+  if (renderTimer) clearTimeout(renderTimer)
+  renderGeneration++
   clearToolHideTimer()
   void flushReaderPrefsSave()
   unsubDownload?.()
@@ -1753,7 +2367,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove">
+  <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove" @focusin="onReaderFocusIn">
     <!-- No book selected -->
     <div v-if="!book" class="page placeholder">
       <h2>阅读</h2>
@@ -1765,6 +2379,9 @@ onUnmounted(() => {
     <template v-else>
       <div
         class="reader-toolbar"
+        :class="{ 'reader-tools-hidden': !toolsVisible }"
+        :aria-hidden="!toolsVisible"
+        :inert="!toolsVisible"
         @mouseenter="onToolbarEnter"
         @mouseleave="onToolbarLeave"
       >
@@ -1786,11 +2403,39 @@ onUnmounted(() => {
 
         <div v-if="activeToolPanel" class="tool-panel" @click.stop>
           <template v-if="activeToolPanel === 'tts'">
-            <strong>朗读</strong>
+            <strong>听书</strong>
             <n-space vertical :size="6" v-if="ttsSupported">
-              <n-space :size="6"><n-button v-if="!ttsSpeaking" size="tiny" :disabled="!chapterReady" @click="ttsStart(0)">播放</n-button><n-button v-else-if="ttsPaused" size="tiny" type="primary" @click="ttsResume">继续</n-button><n-button v-else size="tiny" @click="ttsPause">暂停</n-button><n-button v-if="ttsSpeaking" size="tiny" @click="ttsStop">停止</n-button></n-space>
+              <n-space :size="6" v-if="!ttsSpeaking">
+                <n-button v-if="ttsSavedPosition" size="tiny" type="primary" @click="ttsContinueSaved">继续上次听书</n-button>
+                <n-button size="tiny" :disabled="!chapterReady" @click="ttsStartCurrent">从当前位置播放</n-button>
+                <n-button size="tiny" :disabled="!chapterReady" @click="ttsStartBeginning">从本章开头播放</n-button>
+              </n-space>
+              <n-space :size="6" v-else>
+                <n-button size="tiny" @click="ttsPrevious">上一段</n-button>
+                <n-button v-if="ttsPaused && ttsError" size="tiny" type="primary" @click="ttsRetry">重试</n-button>
+                <n-button v-else-if="ttsPaused" size="tiny" type="primary" @click="ttsResume">继续</n-button>
+                <n-button v-else size="tiny" @click="ttsPause">暂停</n-button>
+                <n-button size="tiny" @click="ttsNext">下一段</n-button>
+                <n-button size="tiny" @click="ttsStop()">停止</n-button>
+              </n-space>
+              <div v-if="ttsError" class="control-label" role="alert">{{ ttsError }}。{{ ttsSource === 'online' ? '可重试或切换系统语音。' : '可重试或更换系统音色。' }}</div>
+              <div v-if="ttsSpeaking && spokenPara >= 0" class="control-label" role="status">本章第 {{ spokenPara + 1 }} / {{ paras.length }} 段</div>
+              <progress v-if="ttsSpeaking && spokenPara >= 0" :value="spokenPara + 1" :max="paras.length" :aria-label="`本章听书进度 ${spokenPara + 1} / ${paras.length} 段`" style="width:100%"></progress>
+              <div class="control-label">语音来源</div>
+              <select v-model="ttsSource" aria-label="语音来源"><option value="system">系统语音</option><option value="online">在线语音</option></select>
+              <template v-if="ttsSource === 'system'">
+                <div class="control-label">系统音色</div>
+                <select v-model="ttsVoiceURI" aria-label="系统音色"><option value="">系统默认</option><option v-for="voice in ttsVoices" :key="voice.voiceURI" :value="voice.voiceURI">{{ voice.name }}（{{ voice.lang }}）</option></select>
+              </template>
+              <div v-else class="control-label">在线模型、音色和密钥在设置页配置。<n-button size="tiny" text @click="emit('go-settings')">去设置</n-button></div>
               <div class="control-label">语速 {{ ttsRate.toFixed(1) }}x</div><n-slider v-model:value="ttsRate" :min="0.5" :max="2" :step="0.1" />
+              <div class="control-label">{{ ttsSource === 'system' ? '系统语速从下一语音片段生效' : '在线音频立即调整播放速度' }}</div>
               <div class="control-label"><n-switch v-model:value="ttsAutoNext" /> 自动下一章</div>
+              <label class="control-label">定时停止
+                <select :value="ttsSleepMinutes" aria-label="定时停止" @change="setTtsSleepMinutes(Number(($event.target as HTMLSelectElement).value))">
+                  <option :value="0">关闭</option><option :value="10">10 分钟</option><option :value="20">20 分钟</option><option :value="30">30 分钟</option><option :value="60">60 分钟</option>
+                </select>
+              </label>
             </n-space>
             <div v-else class="control-label">当前环境不支持朗读</div>
           </template>
@@ -1818,7 +2463,7 @@ onUnmounted(() => {
         </button>
         <div class="reader-body">
         <button class="chapter-hotzone left" :disabled="!previousChapter" :title="previousChapter ? `上一章：${previousChapter.title}` : '已经是第一章'" aria-label="上一章" @click="prevChapter"><span>‹</span></button>
-        <div class="reader-content reader-pane" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup" @wheel="onContentWheel">
+        <div class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000 }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup" @wheel="onContentWheel">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>
@@ -1833,12 +2478,13 @@ onUnmounted(() => {
               </n-button>
             </n-space>
             <p
-              v-for="(segs, i) in renderedParas"
+              v-for="(segs, i) in visibleParas"
               :key="i"
               :data-p="i"
               :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: renderedParas.length }) }]"
             ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
-            <button v-if="chapterReady && followingChapter" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
+            <div v-if="renderedCount < paras.length" class="loading-hint" role="status">正在排版：{{ renderedCount }} / {{ paras.length }} 段</div>
+            <button v-else-if="chapterReady && followingChapter" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
             <div v-else-if="chapterReady && currentChapterIndex === chapters.length - 1" class="chapter-end-card finished">
               <strong>已读完《{{ book.title }}》</strong>
               <n-button size="small" @click="emit('back')">返回书库</n-button>
@@ -1850,7 +2496,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="reader-bottombar">
+      <div class="reader-bottombar" :class="{ 'reader-tools-hidden': !toolsVisible }" :aria-hidden="!toolsVisible" :inert="!toolsVisible" @mouseenter="onToolbarEnter" @mouseleave="onToolbarLeave">
         <button class="bottom-button" type="button" aria-label="目录" :class="{ active: activeBottomPanel === 'catalog' || showDrawer }" @click="toggleBottomPanel('catalog')">目录</button>
         <button class="bottom-button" type="button" aria-label="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')">进度</button>
         <button class="bottom-button" type="button" aria-label="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')">背景</button>
@@ -1859,7 +2505,7 @@ onUnmounted(() => {
           <template v-if="activeBottomPanel === 'progress'">
             <strong>进度</strong>
             <div class="control-label">{{ bookProgressDetail }}</div>
-            <div class="control-label">全书 {{ bookPercent }}%</div>
+            <div class="control-label">全书约 {{ bookPercent }}%（按章节估算）</div>
             <div class="reader-progress-row panel" aria-hidden="true"><div class="reader-progress-fill book" :style="{ width: `${bookPercent}%` }"></div></div>
             <div class="control-label">本章 {{ chapterPercent }}%</div>
             <div class="reader-progress-row panel" aria-hidden="true"><div class="reader-progress-fill chapter" :style="{ width: `${chapterPercent}%` }"></div></div>
@@ -1945,6 +2591,7 @@ onUnmounted(() => {
       <ai-budget-confirm
         :show="showCleanBudgetConfirm"
         :budget="cleanBudget"
+        :message="cleanBudgetMessage"
         :loading="cleanRunning"
         @confirm="confirmOverBudgetClean"
         @cancel="cancelOverBudgetClean"
@@ -1952,8 +2599,16 @@ onUnmounted(() => {
       <ai-budget-confirm
         :show="showChapterSummaryBudgetConfirm"
         :budget="chapterSummaryBudget"
+        :message="chapterSummaryBudgetMessage"
         @confirm="confirmOverBudgetChapterSummary"
         @cancel="cancelOverBudgetChapterSummary"
+      />
+      <ai-budget-confirm
+        :show="showMemoryBudgetConfirm"
+        :budget="memoryBudget"
+        :message="memoryBudgetMessage"
+        @confirm="confirmMemoryBudget"
+        @cancel="showMemoryBudgetConfirm = false; memoryBudgetRequest = null"
       />
 
       <n-drawer v-model:show="showAiAssistant" placement="right" :width="420">
@@ -1984,6 +2639,29 @@ onUnmounted(() => {
             结果已生成，但未能保存到书库。
             <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantBusy" @click="retryAssistantSave">重试保存</n-button>
           </div>
+          <div class="ai-budget-status">
+            <strong>读完一章后整理</strong>
+            <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
+              <n-radio-button value="manual">手动</n-radio-button>
+              <n-radio-button value="ask">提醒我</n-radio-button>
+              <n-radio-button value="auto">自动</n-radio-button>
+            </n-radio-group>
+            <div class="subtle">离开已读超过 90% 的章节时触发；自动模式会调用模型并消耗你的 API 额度。</div>
+            <div v-if="completedChapterQueue.length">待整理 {{ completedChapterQueue.length }} 章：{{ completedChapterTitle }}{{ organizeQueuePaused ? '（已暂停）' : '' }}</div>
+            <n-button v-if="completedChapterQueue.length && !organizeQueuePaused" size="small" @click="pauseCompletedQueue">暂停队列</n-button>
+            <n-button v-if="organizeQueuePaused" size="small" type="primary" @click="resumeCompletedQueue">继续队列</n-button>
+            <div v-if="queueBudget" class="ai-budget-status">
+              {{ queueBudgetMessage }}
+              <div>预计 {{ queueBudget.estimatedTokens }} tokens，{{ queueBudget.chapterCount }} 章。</div>
+              <n-button size="small" type="primary" @click="confirmQueueBudget">确认预算并继续</n-button>
+            </div>
+            <n-button v-if="completedChapterQueue.length && !organizingBusy" size="small" :disabled="assistantBusy || organizeQueuePaused" @click="organizeNextCompletedChapter">整理下一章</n-button>
+            <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens；未报告的用量不计入 token 总数。不计算金额。</div>
+            <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
+            <div v-if="organizingBusy">正在整理：{{ organizingStage === 'memory' ? '更新小说记忆' : '生成章节摘要' }}
+              <n-button v-if="organizingJobId" size="tiny" type="warning" @click="stopOrganizing">停止</n-button>
+            </div>
+          </div>
           <n-tabs v-model:value="aiAssistantTab" type="line" animated>
             <n-tab-pane name="recap" tab="前情">
               <div v-if="chapterSummaryBudget" class="ai-budget-status">
@@ -1996,6 +2674,11 @@ onUnmounted(() => {
                 <n-radio-button value="detailed">详细 · 约 1000 字</n-radio-button>
               </n-radio-group>
               <p class="subtle">前情只根据已经生成的本章摘要和小说记忆整理。</p>
+              <div v-if="materialCoverage" class="ai-budget-status">
+                材料覆盖到：{{ materialCoverage.uptoChapterTitle }}（{{ materialCoverage.summarizedChapters }}/{{ materialCoverage.readyChapters }} 章已有摘要）
+                <div v-if="materialCoverage.missing.length">缺摘要：{{ materialCoverage.missing.slice(0, 8).map((chapter) => chapter.title).join('、') }}<span v-if="materialCoverage.missing.length > 8"> 等 {{ materialCoverage.missing.length }} 章</span></div>
+                <div v-else>已读范围内的就绪章节都已有摘要。</div>
+              </div>
               <div class="ai-result">{{ recapText || '还没有前情提要。' }}</div>
               <n-space>
                 <n-button :disabled="!book?.progress?.chapterId || assistantBusy || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
@@ -2019,6 +2702,9 @@ onUnmounted(() => {
                 <div v-if="memoryData?.uptoChapterId" class="subtle">
                   已更新到：{{ book?.chapters.find((chapter) => chapter.id === memoryData?.uptoChapterId)?.title || memoryData.uptoChapterId }}
                 </div>
+                <div v-if="materialCoverage" class="subtle">
+                  摘要覆盖到 {{ materialCoverage.uptoChapterTitle }}，缺 {{ materialCoverage.missing.length }} 章摘要。
+                </div>
                 <n-empty
                   v-if="!memoryData || !(memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length)"
                   description="还没有人物与剧情记忆。"
@@ -2030,7 +2716,12 @@ onUnmounted(() => {
                     <h3>人物</h3>
                     <details v-for="item in memoryData.characters" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
                       <summary><strong>{{ item.name }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
-                      <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}</p><p>{{ item.summary }}</p>
+                      <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}<span v-if="item.userEditedAliases">（用户修正）</span></p><p>{{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
+                      <n-input :value="aliasDrafts[item.id] ?? item.aliases.join('、')" size="small" placeholder="纠正别名，用顿号分隔" @update:value="(value: string) => { aliasDrafts[item.id] = value }" />
+                      <n-button size="tiny" :loading="correctingAliasId === item.id" :disabled="assistantBusy" @click="saveCharacterAliases(item)">保存别名</n-button>
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusy" @click="saveMemorySummary('character', item)">保存说明</n-button>
+                      <n-button size="tiny" :disabled="assistantBusy" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
                     </details>
@@ -2039,7 +2730,11 @@ onUnmounted(() => {
                     <h3>关系</h3>
                     <details v-for="item in memoryData.relations" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
                       <summary><strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
-                      <p>{{ item.status }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
+                      <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusy" @click="saveMemorySummary('relation', item)">保存说明</n-button>
+                      <n-button size="tiny" :disabled="assistantBusy" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
                     </details>
                   </section>
@@ -2047,7 +2742,11 @@ onUnmounted(() => {
                     <h3>伏笔</h3>
                     <details v-for="item in memoryData.foreshadows" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
                       <summary><strong>{{ item.desc }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
-                      <p>{{ item.status }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
+                      <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusy" @click="saveMemorySummary('foreshadow', item)">保存说明</n-button>
+                      <n-button size="tiny" :disabled="assistantBusy" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
                     </details>
                   </section>
@@ -2055,7 +2754,11 @@ onUnmounted(() => {
                     <h3>关键事件</h3>
                     <details v-for="item in memoryData.events" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
                       <summary><strong>{{ item.title }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
-                      <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}</p><button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
+                      <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusy" @click="saveMemorySummary('event', item)">保存说明</n-button>
+                      <n-button size="tiny" :disabled="assistantBusy" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
                     </details>
                   </section>
@@ -2108,7 +2811,9 @@ onUnmounted(() => {
         <n-button size="tiny" type="primary" @click="addHighlight">划线</n-button>
         <n-button size="tiny" @click="openDirectNote">备注</n-button>
         <n-button size="tiny" @click="translateSelectedText">翻译</n-button>
-        <n-button size="tiny" @click="askSelectedText">问 AI</n-button>
+        <n-button size="tiny" @click="askSelectedText('explain')">问 AI · 解释这段</n-button>
+        <n-button size="tiny" @click="askSelectedText('person')">这个人物是谁</n-button>
+        <n-button size="tiny" @click="askSelectedText('backstory')">这件事之前发生了什么</n-button>
       </div>
 
       <div v-if="showDirectNote" class="direct-note-editor" :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }">
@@ -2344,6 +3049,8 @@ onUnmounted(() => {
   position: fixed;
   z-index: 1000;
   display: flex;
+  flex-wrap: wrap;
+  width: min(360px, calc(100vw - 16px));
   gap: 6px;
   background: var(--popover-bg);
   border: 1px solid var(--r-line, #372c52);
@@ -2680,6 +3387,16 @@ onUnmounted(() => {
   opacity: 1;
   pointer-events: auto;
 }
+.reader-toolbar.reader-tools-hidden,
+.reader-bottombar.reader-tools-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.reader-toolbar,
+.reader-bottombar {
+  transition: opacity .2s ease, visibility .2s ease;
+}
 .toolbar-gap { flex: 1 1 auto; min-width: 8px; }
 .tool-button.tool-text { width: auto; flex-basis: auto; padding: 0 10px; font: inherit; font-size: 13px; }
 .tool-button-offstage {
@@ -2770,6 +3487,7 @@ onUnmounted(() => {
 
 .reader-content {
   position: relative;
+  min-height: 0;
   width: min(100%, 38em);
   max-width: 38em;
   flex: 0 1 38em;
@@ -2845,6 +3563,7 @@ onUnmounted(() => {
 .chapter-end-card:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
 .chapter-end-card.finished { display: flex; flex-direction: column; align-items: center; gap: 12px; cursor: default; }
 .para { position: relative; text-indent: var(--paragraph-indent, 2em); margin-bottom: var(--paragraph-spacing, .45em); }
+.large-chapter .para { content-visibility: auto; contain-intrinsic-size: auto 4em; }
 .para-tts-start {
   position: absolute;
   top: 0;

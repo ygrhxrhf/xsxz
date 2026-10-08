@@ -12,7 +12,7 @@ const citation: AiCitation = {
   id: 'qa-c1-p2', chapterId: 'c1', chapterTitle: '第一章', paragraphIndex: 2, excerpt: '顾清在码头找到账册。',
 }
 
-function completion(json: Record<string, unknown>, usage = { inputTokens: 1, outputTokens: 2 }) {
+function completion(json: Record<string, unknown>, usage: { inputTokens: number; outputTokens?: number; cacheHitTokens?: number } = { inputTokens: 1, outputTokens: 2 }) {
   return { text: JSON.stringify(json), json, usage, truncated: false }
 }
 

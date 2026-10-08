@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   CLEAN_PARAGRAPH_SEGMENT_LIMIT,
+  aiBudgetWarning,
   countTextCharacters,
   estimateAiTokens,
   normalizeAiParagraphs,
@@ -26,5 +27,11 @@ describe('AI request budgeting', () => {
 
   it('ignores multiple empty paragraphs without creating empty targets', () => {
     expect(normalizeAiParagraphs('\n\n \n\n正文\n\n\n')).toEqual(['正文'])
+  })
+
+  it('warns at the configured token threshold', () => {
+    const budget = { originalCharacters: 1200, sentCharacters: 1200, estimatedTokens: 8000, chapterCount: 1, paragraphCount: 3, batchCount: 1, range: '本章' }
+    expect(aiBudgetWarning(budget, 8001)).toBeNull()
+    expect(aiBudgetWarning(budget, 8000)).toContain('8000 tokens')
   })
 })

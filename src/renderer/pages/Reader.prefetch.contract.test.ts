@@ -153,7 +153,7 @@ describe('Reader adjacent prefetch contract', () => {
     const openEnd = source.indexOf('function scrollToRatio', openStart)
     const openBlock = source.slice(openStart, openEnd)
     expect(openBlock).toContain('closeSelectionTools()')
-    expect(openBlock).toContain('ttsStop()')
+    expect(openBlock).toContain('ttsStop(continueListening)')
     expect(openBlock).toContain('saveProgress()')
     expect(openBlock.indexOf('closeSelectionTools()')).toBeLessThan(openBlock.indexOf('const cached'))
     expect(openBlock).toContain('cached')

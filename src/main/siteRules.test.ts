@@ -88,6 +88,19 @@ describe('findSiteRuleForUrl / persist', () => {
     expect(raw.rules[0].host).toBe('127.0.0.1')
   })
 
+  it('persists ad display preferences alongside extraction selectors', async () => {
+    await upsertSiteRule({ host: 'example.com', body: '#chapter', adFilterEnabled: false, adHideSelectors: '.floating-ad\n#banner' })
+    const found = await findSiteRuleForUrl('https://www.example.com/chapter/1')
+    expect(found).toMatchObject({
+      host: 'example.com',
+      body: '#chapter',
+      adFilterEnabled: false,
+      adHideSelectors: '.floating-ad\n#banner',
+    })
+    const disk = JSON.parse(await readFile(join(dir, 'site-rules.json'), 'utf-8'))
+    expect(disk.rules[0].adFilterEnabled).toBe(false)
+  })
+
   it('removeSiteRule drops the normalized host', async () => {
     await upsertSiteRule({ host: 'www.example.com', title: 'h1' })
     await removeSiteRule('https://WWW.example.com/x')

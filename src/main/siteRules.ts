@@ -58,6 +58,8 @@ function toStoredRule(rule: SiteRule, host: string): SiteRule {
   if (author !== undefined) stored.author = author
   if (catalog !== undefined) stored.catalog = catalog
   if (body !== undefined) stored.body = body
+  if (typeof rule.adFilterEnabled === 'boolean') stored.adFilterEnabled = rule.adFilterEnabled
+  if (typeof rule.adHideSelectors === 'string') stored.adHideSelectors = rule.adHideSelectors
   return stored
 }
 
@@ -82,6 +84,9 @@ function parseFile(raw: unknown): SiteRulesFile {
       author: asSelector((item as SiteRule).author),
       catalog: asSelector((item as SiteRule).catalog),
       body: asSelector((item as SiteRule).body),
+      adFilterEnabled: typeof (item as SiteRule).adFilterEnabled === 'boolean'
+        ? (item as SiteRule).adFilterEnabled : undefined,
+      adHideSelectors: asSelector((item as SiteRule).adHideSelectors),
     })
   }
   return { version: FILE_VERSION, rules }

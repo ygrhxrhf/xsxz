@@ -12,7 +12,7 @@ describe('evidence QA IPC contract', () => {
     expect(block).toContain('const local = await readChapter(args.bookId, chapter.id)')
     expect(block).toContain('executeEvidenceQaPipeline({')
     expect(block).not.toContain('buildBookChatMessages(')
-    expect(block).not.toContain('readSummaries(')
+    expect(block).toContain('selectLocalEvidence(searchChapters, query, {')
   })
 
   it('keeps the legacy channel compatible but disables its unsafe direct-book path', async () => {

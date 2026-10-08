@@ -21,7 +21,7 @@ describe('preload memory IPC contract', () => {
   })
 
   it('exposes the four frozen memory channels with exact payload fields', async () => {
-    const ai = (exposed?.ai ?? {}) as Record<string, (...args: never[]) => Promise<unknown>>
+    const ai = (exposed?.ai ?? {}) as Record<string, (...args: unknown[]) => Promise<unknown>>
     await ai.storySoFar?.('book-1', 'c0003', true)
     await ai.getMemory?.('book-1')
     await ai.updateMemory?.('book-1', 'c0005')
@@ -30,9 +30,19 @@ describe('preload memory IPC contract', () => {
     expect(invoke.mock.calls).toEqual([
       ['ai.storySoFar', { bookId: 'book-1', uptoChapterId: 'c0003', confirmOverBudget: true }],
       ['ai.getMemory', { bookId: 'book-1' }],
-      ['ai.updateMemory', { bookId: 'book-1', uptoChapterId: 'c0005' }],
-      ['ai.rebuildMemory', { bookId: 'book-1', uptoChapterId: 'c0010' }],
+      ['ai.updateMemory', { bookId: 'book-1', uptoChapterId: 'c0005', confirmOverBudget: false }],
+      ['ai.rebuildMemory', { bookId: 'book-1', uptoChapterId: 'c0010', confirmOverBudget: false }],
       ['ai.markMemoryInaccurate', { bookId: 'book-1', kind: 'foreshadow', itemId: 'foreshadow-1' }],
+    ])
+  })
+
+  it('forwards confirmed memory budget and source rebuild without dropping the cutoff', async () => {
+    const ai = (exposed?.ai ?? {}) as Record<string, (...args: unknown[]) => Promise<unknown>>
+    await ai.updateMemory?.('book-1', 'c0005', true)
+    await ai.rebuildMemoryFrom?.('book-1', 'c0002', 'c0005', true)
+    expect(invoke.mock.calls).toEqual([
+      ['ai.updateMemory', { bookId: 'book-1', uptoChapterId: 'c0005', confirmOverBudget: true }],
+      ['ai.rebuildMemoryFrom', { bookId: 'book-1', fromChapterId: 'c0002', uptoChapterId: 'c0005', confirmOverBudget: true }],
     ])
   })
 })

@@ -128,6 +128,65 @@ describe('local read-range evidence selection', () => {
     })).toEqual({ citations: [], fallbackQuery: true, uptoChapterId: 'c0002' })
   })
 
+  it('expands a canonical name to a stored alias and still cites the original paragraph', () => {
+    const memory = {
+      version: 1 as const, uptoChapterId: 'c0002', updatedAt: '', relations: [], foreshadows: [], events: [],
+      characters: [{
+        id: 'person-1', name: '顾清', aliases: ['账房先生'], role: '', status: '', summary: '',
+        accuracy: 'normal' as const, updatedAt: '',
+        sources: [{ id: 'source-1', chapterId: 'c0002', chapterTitle: '第2章 顾清', paragraphIndex: 1, excerpt: '顾清在码头询问账册来源' }],
+      }],
+    }
+    const aliased = [
+      chapter('c0001', 1, '开场。\n\n顾清发现旧账册，决定追查失踪案。'),
+      chapter('c0002', 2, '推进。\n\n账房先生在码头询问来源，没有再提本名。'),
+      chapter('c0003', 3, '未读秘密：账房先生已经找到真凶。'),
+    ]
+    const result = selectLocalEvidence(aliased, { originalQuestion: '顾清后来去了码头吗？', corePhrase: '码头' }, {
+      requestedUptoChapterId: 'c0003', progressChapterId: 'c0002', memory,
+    })
+    expect(result.citations[0]).toMatchObject({ chapterId: 'c0002', paragraphIndex: 1 })
+    expect(result.citations[0]?.excerpt).toContain('账房先生在码头')
+    expect(JSON.stringify(result.citations)).not.toContain('真凶')
+  })
+
+  it('uses an established character alias to locate a read original paragraph', () => {
+    const memory = {
+      version: 1 as const, uptoChapterId: 'c0002', updatedAt: '', relations: [], foreshadows: [], events: [],
+      characters: [{
+        id: 'person-1', name: '顾清', aliases: ['阿清'], role: '', status: '', summary: '',
+        accuracy: 'normal' as const, updatedAt: '',
+        sources: [{ id: 'source-1', chapterId: 'c0001', chapterTitle: '第1章 顾清', paragraphIndex: 1, excerpt: '顾清发现旧账册' }],
+      }],
+    }
+    const result = selectLocalEvidence(chapters, { originalQuestion: '阿清发现了什么？', corePhrase: '阿清' }, {
+      requestedUptoChapterId: 'c0003', progressChapterId: 'c0002', memory,
+    })
+    expect(result.citations[0]).toMatchObject({ chapterId: 'c0001', paragraphIndex: 1 })
+    expect(result.citations[0]?.excerpt).toContain('顾清发现旧账册')
+    expect(JSON.stringify(result.citations)).not.toContain('真凶')
+  })
+
+  it('grounds a selected-text question in the quoted original even when rewritten terms miss', () => {
+    const result = selectLocalEvidence(chapters, {
+      originalQuestion: '这段话是什么意思？「顾清发现旧账册，决定追查失踪案。」',
+      corePhrase: '不存在的改写词',
+    }, {
+      requestedUptoChapterId: 'c0003', progressChapterId: 'c0002', currentChapterId: 'c0001',
+    })
+    expect(result.citations[0]).toMatchObject({ chapterId: 'c0001', paragraphIndex: 1 })
+    expect(result.citations[0]?.excerpt).toContain('顾清发现旧账册')
+  })
+
+  it('uses a read chapter summary to rank matching original passages', () => {
+    const result = selectLocalEvidence(chapters, { originalQuestion: '账册', corePhrase: '账册' }, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002',
+      summaries: { version: 2, byChapter: { c0001: '顾清发现账册' }, updatedAt: '' },
+    })
+    expect(result.citations[0]?.chapterId).toBe('c0001')
+    expect(result.citations[0]?.excerpt).toContain('账册')
+  })
+
   it('rejects missing progress coordinates', () => {
     expect(() => selectLocalEvidence(chapters, { originalQuestion: '顾清' }, {
       requestedUptoChapterId: 'c0002', progressChapterId: 'missing',

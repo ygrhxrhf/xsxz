@@ -25,14 +25,14 @@ describe('Browse toolbar and drawer contract', () => {
     expect(source).toContain('const message = useMessage()')
     expect(source).toContain("message.warning('请先打开一个有效网址')")
     expect(source).toContain('message.error(res.message)')
-    expect(source).toContain("message.error(res.message || '下载失败')")
+    expect(source).toContain("message.error(res.message || '下载失败，请重新预览')")
     expect(source).not.toContain('window.alert')
   })
 
   it('keeps the 240px drawer and BrowserView pointer inset semantics', async () => {
     const source = await readFile(new URL('./Browse.vue', import.meta.url), 'utf-8')
     expect(source).toContain(':height="240"')
-    expect(source).toContain('slotHeight - 240')
+    expect(source).toContain('showPreview.value ? 430 : showProgress.value ? 240 : 0')
     expect(source).toContain('watch(showProgress, reportBounds)')
     expect(source).toContain('if (r.width < 8 || r.height < 8) return')
     expect(source).toContain('window.api.browse.setBounds({')

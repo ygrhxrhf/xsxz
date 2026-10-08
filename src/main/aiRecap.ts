@@ -1,6 +1,9 @@
 import type {
   AiBudgetEstimate,
-  AiMemoryBase,
+  AiMemoryCharacter,
+  AiMemoryRelation,
+  AiMemoryForeshadow,
+  AiMemoryEvent,
   AiMemoryFile,
   AiSummaries,
   ChapterStatus,
@@ -43,44 +46,45 @@ const LENGTH_RULES: Record<AiRecapLength, { target: number; min: number; max: nu
   detailed: { target: 1_000, min: 800, max: 1_200 },
 }
 
-function allMemoryItems(memory: AiMemoryFile): Array<{
-  collection: 'character' | 'relation' | 'foreshadow' | 'event'
-  item: AiMemoryBase & Record<string, unknown>
-}> {
+type RecapMemoryItem =
+  | { collection: 'character'; item: AiMemoryCharacter }
+  | { collection: 'relation'; item: AiMemoryRelation }
+  | { collection: 'foreshadow'; item: AiMemoryForeshadow }
+  | { collection: 'event'; item: AiMemoryEvent }
+
+function allMemoryItems(memory: AiMemoryFile): RecapMemoryItem[] {
   return [
-    ...memory.characters.map((item) => ({ collection: 'character' as const, item: item as AiMemoryBase & Record<string, unknown> })),
-    ...memory.relations.map((item) => ({ collection: 'relation' as const, item: item as AiMemoryBase & Record<string, unknown> })),
-    ...memory.foreshadows.map((item) => ({ collection: 'foreshadow' as const, item: item as AiMemoryBase & Record<string, unknown> })),
-    ...memory.events.map((item) => ({ collection: 'event' as const, item: item as AiMemoryBase & Record<string, unknown> })),
+    ...memory.characters.map((item) => ({ collection: 'character' as const, item })),
+    ...memory.relations.map((item) => ({ collection: 'relation' as const, item })),
+    ...memory.foreshadows.map((item) => ({ collection: 'foreshadow' as const, item })),
+    ...memory.events.map((item) => ({ collection: 'event' as const, item })),
   ]
 }
 
-function memoryFact(
-  collection: 'character' | 'relation' | 'foreshadow' | 'event',
-  item: AiMemoryBase & Record<string, unknown>,
-): RecapMemoryFact {
+function memoryFact(entry: RecapMemoryItem): RecapMemoryFact {
+  const { collection, item } = entry
   if (collection === 'character') {
     return {
-      id: item.id, kind: '人物', title: String(item.name), summary: item.summary,
-      status: String(item.status), sourceChapters: [...new Set(item.sources.map((source) => source.chapterTitle))],
+      id: item.id, kind: '人物', title: item.name, summary: item.summary,
+      status: item.status, sourceChapters: [...new Set(item.sources.map((source) => source.chapterTitle))],
     }
   }
   if (collection === 'relation') {
     return {
-      id: item.id, kind: '关系', title: `${String(item.from)} — ${String(item.to)}：${String(item.relation)}`,
-      summary: item.summary, status: String(item.status),
+      id: item.id, kind: '关系', title: `${item.from} — ${item.to}：${item.relation}`,
+      summary: item.summary, status: item.status,
       sourceChapters: [...new Set(item.sources.map((source) => source.chapterTitle))],
     }
   }
   if (collection === 'foreshadow') {
     return {
-      id: item.id, kind: '伏笔', title: String(item.desc), summary: item.summary,
-      status: String(item.status), sourceChapters: [...new Set(item.sources.map((source) => source.chapterTitle))],
+      id: item.id, kind: '伏笔', title: item.desc, summary: item.summary,
+      status: item.status, sourceChapters: [...new Set(item.sources.map((source) => source.chapterTitle))],
     }
   }
   return {
-    id: item.id, kind: '关键事件', title: String(item.title), summary: item.summary,
-    status: String(item.result), sourceChapters: [...new Set(item.sources.map((source) => source.chapterTitle))],
+    id: item.id, kind: '关键事件', title: item.title, summary: item.summary,
+    status: item.result, sourceChapters: [...new Set(item.sources.map((source) => source.chapterTitle))],
   }
 }
 
@@ -111,7 +115,7 @@ export function selectRecapMaterials(
   const memoryFacts = memory
     ? allMemoryItems(memory)
       .filter(({ item }) => item.accuracy === 'normal' && item.sources.every((source) => eligibleIds.has(source.chapterId)))
-      .map(({ collection, item }) => memoryFact(collection, item))
+      .map(memoryFact)
     : []
   return { uptoChapterId: cutoff.id, summaries, memoryFacts }
 }

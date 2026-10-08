@@ -6,9 +6,22 @@ export interface MemoryRunPayload extends MemoryBookPayload {
   uptoChapterId: string
 }
 
+export interface MemoryRebuildFromPayload extends MemoryRunPayload {
+  fromChapterId: string
+}
+
 export interface MemoryMarkPayload extends MemoryBookPayload {
   kind: 'character' | 'relation' | 'foreshadow' | 'event'
   itemId: string
+}
+
+export interface MemorySummaryPayload extends MemoryMarkPayload {
+  summary: string
+}
+
+export interface MemoryAliasPayload extends MemoryBookPayload {
+  itemId: string
+  aliases: string[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -38,6 +51,12 @@ export function parseMemoryRunPayload(payload: unknown): MemoryRunPayload {
   return { bookId, uptoChapterId: payload.uptoChapterId }
 }
 
+export function parseMemoryRebuildFromPayload(payload: unknown): MemoryRebuildFromPayload {
+  const base = parseMemoryRunPayload(payload)
+  if (!isRecord(payload) || !isChapterId(payload.fromChapterId)) throw new Error('来源章节不存在')
+  return { ...base, fromChapterId: payload.fromChapterId }
+}
+
 export function parseMemoryMarkPayload(payload: unknown): MemoryMarkPayload {
   const { bookId } = parseMemoryBookPayload(payload)
   if (!isRecord(payload) || !isMemoryItemId(payload.itemId)) throw new Error('记忆条目不存在')
@@ -51,4 +70,23 @@ export function parseMemoryMarkPayload(payload: unknown): MemoryMarkPayload {
   }
   if (!payload.itemId.startsWith(`${kind}-`)) throw new Error('记忆条目不存在')
   return { bookId, kind, itemId: payload.itemId }
+}
+
+export function parseMemoryAliasPayload(payload: unknown): MemoryAliasPayload {
+  const { bookId } = parseMemoryBookPayload(payload)
+  if (!isRecord(payload) || !isMemoryItemId(payload.itemId) || !payload.itemId.startsWith('character-')) {
+    throw new Error('记忆条目不存在')
+  }
+  if (!Array.isArray(payload.aliases) || payload.aliases.length > 12 || payload.aliases.some((alias) => typeof alias !== 'string')) {
+    throw new Error('别名格式无效')
+  }
+  return { bookId, itemId: payload.itemId, aliases: payload.aliases }
+}
+
+export function parseMemorySummaryPayload(payload: unknown): MemorySummaryPayload {
+  const base = parseMemoryMarkPayload(payload)
+  if (!isRecord(payload) || typeof payload.summary !== 'string') throw new Error('修正内容格式无效')
+  const summary = payload.summary.trim()
+  if (!summary || Array.from(summary).length > 500) throw new Error('修正内容须为 1 至 500 字')
+  return { ...base, summary }
 }

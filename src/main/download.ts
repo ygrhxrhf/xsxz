@@ -1,6 +1,8 @@
 import { BrowserWindow, WebContentsView, session } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { JSDOM } from 'jsdom'
 import { extractPage, extractCatalog, extractBody } from './extract'
-import { findSiteRuleForUrl } from './siteRules'
+import { findSiteRuleForUrl, normalizeHost } from './siteRules'
 import {
   bookExists,
   bookIdFromUrl,
@@ -21,13 +23,17 @@ import type {
   CheckOneResult,
   DownloadPace,
   DownloadProgress,
+  DownloadPreview,
   ExtractBootstrap,
   FailCode,
   SiteRule,
+  SiteRulePreview,
 } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 import { isPathLikeHash } from '../shared/urlHash'
 import { getSettings } from './settings'
+import { isLibraryRestoring } from './libraryMaintenance'
+import { auditBook } from './quality'
 
 export const DOWNLOAD_SESSION_PARTITION = 'persist:novel'
 /** Off the visible chrome so chapter crawl cannot flash over the guest slot. */
@@ -71,6 +77,7 @@ const runningJobs = new Set<Promise<void>>()
 const cancelWaiters = new Set<() => void>()
 let checkAllCancelled = false
 let checkAllRunning = false
+let pendingPreview: { token: string; pageUrl: string; createdAt: number; bootstrap: ExtractBootstrap } | null = null
 
 export function chapterNeedsDownload(status: ChapterStatus): boolean {
   return status === 'pending' || status === 'failed' || status === 'empty'
@@ -162,6 +169,7 @@ export function resetDownloadStateForTests(): void {
   ownerWindow = null
   checkAllCancelled = false
   checkAllRunning = false
+  pendingPreview = null
 }
 
 export async function waitForIdle(timeoutMs = 15_000): Promise<void> {
@@ -172,6 +180,10 @@ export async function waitForIdle(timeoutMs = 15_000): Promise<void> {
     }
     await delay(20)
   }
+}
+
+export function isDownloadBusy(): boolean {
+  return active.size > 0 || runningJobs.size > 0 || checkAllRunning
 }
 
 export function getHiddenView(): WebContentsView {
@@ -249,6 +261,7 @@ async function emitProgress(bookId: string): Promise<void> {
   }
   if (status === 'done' || status === 'error' || status === 'cancelled') {
     progress.failedChapters = (await loadFailedChapters(bookId)) ?? []
+    try { progress.qualityIssueCount = (await auditBook(bookId)).issues.length } catch { /* report remains available on demand */ }
   }
   try {
     ownerWindow.webContents.send('download.progress', progress)
@@ -547,6 +560,7 @@ export async function startDownloadFromPage(
   pageHtml: string,
   pageUrl: string,
 ): Promise<{ ok: boolean; bookId?: string; code?: FailCode; message?: string }> {
+  if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
   if (active.size > 0) {
     return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
   }
@@ -559,6 +573,7 @@ export async function startDownloadFromPage(
 }
 
 export async function startDownload(): Promise<{ ok: boolean; bookId?: string; code?: FailCode; message?: string }> {
+  if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
   if (active.size > 0) {
     return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
   }
@@ -576,10 +591,119 @@ export async function startDownload(): Promise<{ ok: boolean; bookId?: string; c
   return startFromExtractedHtml(pageHtml, pageUrl)
 }
 
+/** 识别当前页和样本，不创建书籍。确认令牌只在当前浏览页有效。 */
+export async function previewDownload(): Promise<
+  { ok: true; preview: DownloadPreview } | { ok: false; code?: FailCode; message: string }
+> {
+  pendingPreview = null
+  if (isLibraryRestoring() || isDownloadBusy()) return { ok: false, message: '书库或下载任务正忙，请稍后再试' }
+  const wc = browseView?.webContents
+  if (!wc || wc.isDestroyed()) return { ok: false, code: 'NavFailed', message: '无法获取当前页面' }
+  const pageUrl = wc.getURL()
+  if (!/^https?:\/\//i.test(pageUrl)) return { ok: false, code: 'UnknownPage', message: '请先打开一本书的目录页或章节页' }
+  const html = await wc.executeJavaScript('document.documentElement.outerHTML') as string
+  const rule = await ruleForPage(pageUrl)
+  let extracted = extractPage(html, pageUrl, undefined, rule)
+  if ((!extracted.ok || !extracted.bootstrap) && pageUrlHasPathLikeHash(pageUrl) && extractLooksEmpty(extracted)) {
+    const reloaded = await loadPageHtml(pageUrl)
+    extracted = extractPage(reloaded, pageUrl, undefined, rule)
+  }
+  if (!extracted.ok || !extracted.bootstrap) {
+    return { ok: false, code: extracted.failCode || 'UnknownPage', message: extracted.failMessage || '无法识别为书' }
+  }
+  const followed = await followCatalogIfNeeded(extracted.bootstrap, loadPageHtml)
+  if (!followed.ok) return { ok: false, code: followed.code, message: followed.message || '无法识别目录' }
+  if (wc.isDestroyed() || wc.getURL() !== pageUrl) return { ok: false, message: '网页已切换，请重新预览' }
+  const bootstrap = followed.bootstrap
+  const sampleChapter = bootstrap.chapters[0]
+  let sampleBody = ''
+  let sampleError: string | undefined
+  if (sampleChapter) {
+    try {
+      const sampleHtml = await loadPageHtml(sampleChapter.url)
+      const body = extractBody(sampleHtml, sampleChapter.url, await ruleForPage(sampleChapter.url))
+      if (body.ok) sampleBody = body.body.slice(0, 800)
+      else sampleError = body.failMessage || '样本正文无法提取'
+    } catch (error) {
+      sampleError = error instanceof Error ? error.message : '样本正文加载失败'
+    }
+  }
+  if (wc.isDestroyed() || wc.getURL() !== pageUrl) return { ok: false, message: '网页已切换，请重新预览' }
+  const token = randomUUID()
+  pendingPreview = { token, pageUrl, createdAt: Date.now(), bootstrap }
+  return { ok: true, preview: {
+    token, pageUrl, bookTitle: bootstrap.bookTitle, author: bootstrap.author,
+    chapterCount: bootstrap.chapters.length,
+    chapterTitles: bootstrap.chapters.slice(0, 8).map((chapter) => chapter.title),
+    sampleTitle: sampleChapter?.title || '', sampleBody, sampleError,
+  } }
+}
+
+export async function confirmDownload(token: string): Promise<
+  { ok: true; bookId: string } | { ok: false; message: string }
+> {
+  const preview = pendingPreview
+  pendingPreview = null
+  if (!preview || preview.token !== token || Date.now() - preview.createdAt > 10 * 60_000) {
+    return { ok: false, message: '预览已过期，请重新预览' }
+  }
+  if (browseView?.webContents.isDestroyed() || browseView?.webContents.getURL() !== preview.pageUrl) {
+    return { ok: false, message: '网页已切换，请重新预览' }
+  }
+  const started = await beginDownloadFromBootstrap(preview.bootstrap, preview.pageUrl)
+  return started.ok ? started : { ok: false, message: started.message || '下载失败，请重新预览' }
+}
+
+/** 对未保存的选择器试运行；当前浏览页与样本章均不落盘。 */
+export async function previewCurrentSiteRule(rule: SiteRule): Promise<
+  { ok: true; preview: SiteRulePreview } | { ok: false; message: string }
+> {
+  const wc = browseView?.webContents
+  if (!wc || wc.isDestroyed()) return { ok: false, message: '请先在浏览页打开站点' }
+  const pageUrl = wc.getURL()
+  if (!/^https?:\/\//i.test(pageUrl)) return { ok: false, message: '请先在浏览页打开站点' }
+  let host: string
+  try { host = normalizeHost(rule.host) } catch { return { ok: false, message: '域名无效' } }
+  if (host !== normalizeHost(new URL(pageUrl).hostname)) return { ok: false, message: '当前浏览页与填写的域名不同' }
+  const html = await wc.executeJavaScript('document.documentElement.outerHTML') as string
+  const extracted = extractPage(html, pageUrl, undefined, rule)
+  let bootstrap = extracted.ok ? extracted.bootstrap : undefined
+  if (bootstrap) {
+    const followed = await followCatalogIfNeeded(bootstrap, loadPageHtml)
+    if (followed.ok) bootstrap = followed.bootstrap
+  }
+  const sample = bootstrap?.chapters[0]
+  let sampleHtml = html
+  let sampleUrl = pageUrl
+  if (sample) {
+    try { sampleHtml = await loadPageHtml(sample.url); sampleUrl = sample.url } catch { /* diagnostics show missing sample */ }
+  }
+  const sourceDoc = new JSDOM(html, { url: pageUrl }).window.document
+  const sampleDoc = new JSDOM(sampleHtml, { url: sampleUrl }).window.document
+  const diagnostics = {} as SiteRulePreview['diagnostics']
+  for (const field of ['title', 'author', 'catalog', 'body'] as const) {
+    const selector = rule[field]?.trim()
+    if (!selector) { diagnostics[field] = '未填写，使用通用提取'; continue }
+    try {
+      const found = (field === 'body' ? sampleDoc : sourceDoc).querySelector(selector)
+      diagnostics[field] = found ? '已命中' : '未命中'
+    } catch { diagnostics[field] = '选择器无效' }
+  }
+  const body = extractBody(sampleHtml, sampleUrl, rule)
+  if (wc.isDestroyed() || wc.getURL() !== pageUrl) return { ok: false, message: '网页已切换，请重新试运行' }
+  return { ok: true, preview: {
+    pageUrl, title: bootstrap?.bookTitle || '', author: bootstrap?.author || '',
+    chapterCount: bootstrap?.chapters.length || 0,
+    chapterTitles: bootstrap?.chapters.slice(0, 5).map((chapter) => chapter.title) || [],
+    bodySample: body.ok ? body.body.slice(0, 500) : '', diagnostics,
+  } }
+}
+
 async function beginDownloadFromBootstrap(
   bs: ExtractBootstrap,
   pageUrl: string,
 ): Promise<{ ok: true; bookId: string } | { ok: false; code?: FailCode; message?: string }> {
+  if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
   if (active.size > 0) {
     return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
   }
@@ -668,7 +792,7 @@ export async function downloadChapters(bookId: string): Promise<void> {
             title: ch.title,
             url: chapterUrl,
             body: bodyResult.body,
-            bodyRaw: bodyResult.body,
+            bodyRaw: bodyResult.bodyRaw ?? bodyResult.body,
             status: 'ready',
           })
           ch.status = 'ready'
@@ -759,6 +883,7 @@ export function cancelDownload(bookId?: string): void {
 export async function checkUpdate(
   bookId: string,
 ): Promise<{ ok: true; bookId: string; added: number } | { ok: false; code?: FailCode; message: string }> {
+  if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
   if (active.size > 0) {
     return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
   }
@@ -823,6 +948,9 @@ function emitCheckAllProgress(p: CheckAllProgress): void {
  * 中途 cancelCheckAll 只影响尚未检查的书。
  */
 export async function checkAllUpdates(): Promise<CheckAllResult> {
+  if (isLibraryRestoring()) {
+    return { ok: false, message: '书库正在恢复，请稍后再试', total: 0, checked: 0, booksWithUpdates: 0, results: [] }
+  }
   if (checkAllRunning) {
     return { ok: false, message: '已有批量检查更新在进行中', total: 0, checked: 0, booksWithUpdates: 0, results: [] }
   }
@@ -891,6 +1019,7 @@ export function cancelCheckAll(): void {
 }
 
 export async function retryFailed(bookId: string): Promise<{ ok: boolean; message?: string }> {
+  if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
   if (active.size > 0) {
     return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
   }
@@ -931,5 +1060,56 @@ export async function retryFailed(bookId: string): Promise<{ ok: boolean; messag
     return { ok: true }
   } catch (e: unknown) {
     return { ok: false, message: String(e) }
+  }
+}
+
+/** 仅重新提取指定章节；失败时保留原 URL 和正文。 */
+export async function redownloadChapter(
+  bookId: string, chapterId: string, rawUrl: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (isLibraryRestoring() || isDownloadBusy()) return { ok: false, message: '已有书库或下载任务在进行中' }
+  let url: URL
+  try { url = new URL(rawUrl.trim()) } catch { return { ok: false, message: '章节地址无效' } }
+  if (!['http:', 'https:'].includes(url.protocol)) return { ok: false, message: '章节地址只支持 http(s)' }
+  try {
+    const book = await loadBook(bookId)
+    const chapter = book.chapters.find((item) => item.id === chapterId)
+    if (!chapter || book.importType !== 'download') return { ok: false, message: '下载章节不存在' }
+    const dl: ActiveDownload = {
+      bookId, title: book.title, total: 1, done: 0, failed: 0,
+      currentTitle: chapter.title, cancelled: false,
+    }
+    active.set(bookId, dl)
+    await emitProgress(bookId)
+    let message = ''
+    try {
+      const html = await loadPageHtml(url.toString())
+      if (dl.cancelled) return { ok: false, message: '已取消' }
+      const extracted = extractBody(html, url.toString(), await ruleForPage(url.toString()))
+      if (!extracted.ok) {
+        message = extracted.failMessage || failMessage(extracted.failCode)
+        return { ok: false, message }
+      }
+      await writeChapterFile(bookId, chapterId, {
+        title: chapter.title, url: url.toString(), body: extracted.body,
+        bodyRaw: extracted.bodyRaw ?? extracted.body, status: 'ready',
+      })
+      await refreshBookStatus(bookId)
+      dl.done = 1
+      return { ok: true }
+    } catch (error) {
+      message = error instanceof Error ? error.message : '重新提取失败'
+      return { ok: false, message }
+    } finally {
+      if (!dl.done && !dl.cancelled) {
+        dl.failed = 1
+        dl.lastError = `${message || '重新提取失败'}；旧正文已保留`
+      }
+      dl.currentTitle = undefined
+      await emitProgress(bookId)
+      active.delete(bookId)
+    }
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) }
   }
 }

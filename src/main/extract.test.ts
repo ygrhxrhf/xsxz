@@ -90,6 +90,37 @@ describe('extractPage — chapter page', () => {
   })
 })
 
+describe('chapter ad paragraph cleanup', () => {
+  const story = '夜风吹过城墙，林舟看见远处的灯火，想起昨夜在山路上听到的脚步声。他没有回头，只把信收进袖中，沿着石阶继续前行。'
+  const storyTwo = '第二天清晨，船终于靠岸。众人商量好入城的路线，又把行李分给同行的伙伴，约定天黑前在旧桥旁会合。'
+
+  it('keeps paragraph breaks and raw text while dropping a standalone site address ad', () => {
+    const html = `<html><body><div id="content"><p>${story}</p><p>最新网址：www.example.com，请收藏本站网址以便继续阅读</p><p>${storyTwo}</p><p>作者有话说：感谢大家阅读，明天继续更新。</p></div></body></html>`
+    const result = extractBody(html, 'https://example.com/book/1.html', { host: 'example.com', body: '#content' })
+    expect(result.ok).toBe(true)
+    expect(result.bodyRaw).toContain('最新网址')
+    expect(result.body).not.toContain('最新网址')
+    expect(result.body).toContain(`${story}\n\n${storyTwo}`)
+    expect(result.body).toContain('作者有话说')
+  })
+
+  it('keeps ambiguous story text containing a website address', () => {
+    const html = `<html><body><div id="content"><p>${story}</p><p>她在纸上写下网址：www.example.com，随后把它交给守门人。</p><p>最新网址：www.example.com，请收藏本站网址以便继续阅读</p></div></body></html>`
+    const result = extractBody(html, 'https://example.com/book/2.html', { host: 'example.com', body: '#content' })
+    expect(result.ok).toBe(true)
+    expect(result.body).toContain('她在纸上写下网址')
+    expect(result.bodyRaw).toContain('最新网址')
+  })
+
+  it('falls back to the raw chapter if ad removal would cut too much text', () => {
+    const largeNotice = `最新网址：www.example.com，请收藏本站网址以便继续阅读。${'请记住我们的地址以便访问。'.repeat(6)}`
+    const html = `<html><body><div id="content"><p>${story}${storyTwo}</p><p>${largeNotice}</p></div></body></html>`
+    const result = extractBody(html, 'https://example.com/book/3.html', { host: 'example.com', body: '#content' })
+    expect(result.ok).toBe(true)
+    expect(result.body).toBe(result.bodyRaw)
+  })
+})
+
 describe('extractCatalog', () => {
   it('extracts chapter list from catalog HTML', () => {
     const html = fixture('catalog.html')

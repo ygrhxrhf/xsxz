@@ -1,3 +1,5 @@
+import type { AiBudgetEstimate } from '../shared/types'
+
 export const AI_INPUT_CHARACTER_BUDGET = 30_000
 export const CLEAN_PARAGRAPH_SEGMENT_LIMIT = 8_000
 
@@ -13,6 +15,11 @@ export function estimateAiTokens(text: string): number {
     else other += 1
   }
   return Math.ceil((cjk / 1.5 + other / 4) * 1.1)
+}
+
+export function aiBudgetWarning(budget: AiBudgetEstimate, warningTokens: number): string | null {
+  if (budget.estimatedTokens < warningTokens) return null
+  return `本次预计输入约 ${budget.estimatedTokens} tokens，达到设置的 ${warningTokens} tokens 提醒阈值。是否继续？`
 }
 
 export function normalizeAiParagraphs(

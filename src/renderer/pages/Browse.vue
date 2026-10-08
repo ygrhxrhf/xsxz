@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NProgress, NTag, useMessage } from 'naive-ui'
-import type { BrowseState, DownloadProgress } from '@shared/types'
+import type { BrowseState, DownloadPreview, DownloadProgress } from '@shared/types'
 
 const props = defineProps<{
   active?: boolean
@@ -32,6 +32,12 @@ const downloading = ref(false)
 const retryingFailed = ref(false)
 const downloadProgress = ref<DownloadProgress | null>(null)
 const showProgress = ref(false)
+const showPreview = ref(false)
+const previewing = ref(false)
+const downloadPreview = ref<DownloadPreview | null>(null)
+const adFilterEnabled = ref(true)
+const adFilterBusy = ref(false)
+let lastAdHost = ''
 
 const canOpenDownloadedBook = computed(() => {
   const p = downloadProgress.value
@@ -47,10 +53,52 @@ const failedChapterRows = computed(() => downloadProgress.value?.failedChapters 
 
 function currentHost(): string {
   try {
-    const u = new URL(address.value || state.value.url)
+    const u = new URL(state.value.url)
     return u.hostname.replace(/^www\./i, '')
   } catch {
     return ''
+  }
+}
+
+async function refreshAdSetting(host: string): Promise<void> {
+  if (!host) {
+    adFilterEnabled.value = true
+    return
+  }
+  try {
+    const { rules } = await window.api.siteRules.list()
+    if (currentHost() !== host) return
+    adFilterEnabled.value = rules.find((rule) => rule.host === host)?.adFilterEnabled !== false
+  } catch {
+    adFilterEnabled.value = true
+  }
+}
+
+async function toggleAdFilter(): Promise<void> {
+  const host = currentHost()
+  if (!host || adFilterBusy.value) return
+  adFilterBusy.value = true
+  try {
+    const { rules } = await window.api.siteRules.list()
+    const existing = rules.find((rule) => rule.host === host)
+    const enabled = !(existing?.adFilterEnabled !== false)
+    const result = await window.api.siteRules.upsert({ ...existing, host, adFilterEnabled: enabled })
+    if (!result.ok) {
+      message.error(result.message || '去广告设置保存失败')
+      return
+    }
+    if (currentHost() === host) {
+      adFilterEnabled.value = enabled
+      try {
+        await window.api.browse.reload()
+      } catch {
+        message.warning('去广告设置已保存，请手动刷新网页')
+      }
+    }
+  } catch (e: unknown) {
+    message.error(e instanceof Error ? e.message : '去广告设置保存失败')
+  } finally {
+    adFilterBusy.value = false
   }
 }
 
@@ -88,7 +136,8 @@ function reportBounds() {
   const slotHeight = Math.round(r.height)
   // Native persist:novel view sits above Vue; inset by the 240px drawer so
   // 打开这本书 / 取消下载 receive the real pointer. ResizeObserver will not fire.
-  const height = showProgress.value ? Math.max(1, slotHeight - 240) : Math.max(1, slotHeight)
+  const inset = showPreview.value ? 430 : showProgress.value ? 240 : 0
+  const height = Math.max(1, slotHeight - inset)
   void window.api.browse.setBounds({
     x: Math.round(r.x),
     y: Math.round(r.y),
@@ -98,6 +147,10 @@ function reportBounds() {
 }
 
 watch(showProgress, reportBounds)
+watch(showPreview, reportBounds)
+watch(() => props.active, (active) => {
+  if (active) void refreshAdSetting(currentHost())
+})
 
 watch(
   () => props.prefillNonce,
@@ -132,17 +185,34 @@ function stop() {
 }
 
 async function startDownload() {
+  if (previewing.value || downloading.value) return
+  previewing.value = true
+  try {
+    const res = await window.api.download.preview()
+    if (!res.ok) { message.error(res.message); return }
+    downloadPreview.value = res.preview
+    showPreview.value = true
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '预览失败')
+  } finally { previewing.value = false }
+}
+
+async function confirmDownload() {
+  const token = downloadPreview.value?.token
+  if (!token) return
   downloading.value = true
   downloadProgress.value = null
-  showProgress.value = true
-  const res = await window.api.download.start()
+  const res = await window.api.download.confirm(token)
   if (!res.ok) {
-    message.error(res.message || '下载失败')
     downloading.value = false
-    showProgress.value = false
-    downloadProgress.value = null
+    message.error(res.message || '下载失败，请重新预览')
+    showPreview.value = false
+    downloadPreview.value = null
     return
   }
+  showPreview.value = false
+  downloadPreview.value = null
+  showProgress.value = true
 }
 
 async function cancelDownload() {
@@ -182,6 +252,11 @@ onMounted(async () => {
   unsubs.push(window.api.browse.onState((s) => {
     state.value = s
     if (s.url && s.url !== 'about:blank') address.value = s.url
+    const host = currentHost()
+    if (host !== lastAdHost) {
+      lastAdHost = host
+      void refreshAdSetting(host)
+    }
   }))
   unsubs.push(window.api.browse.onUrl(({ url }) => {
     if (url && url !== 'about:blank') address.value = url
@@ -237,13 +312,16 @@ onUnmounted(() => {
             type="primary"
             size="small"
             :disabled="downloading || !address"
-            :loading="downloading"
+            :loading="previewing || downloading"
             @click.prevent="startDownload"
           >
             下载本书
           </n-button>
           <n-button size="small" secondary :disabled="!currentHost()" @click.prevent="editCurrentSiteRule">
             配置本站规则
+          </n-button>
+          <n-button size="small" secondary :disabled="!currentHost()" :loading="adFilterBusy" @click.prevent="toggleAdFilter">
+            {{ adFilterEnabled ? '关闭去广告' : '开启去广告' }}
           </n-button>
           <n-button
             v-if="downloadProgress && !showProgress"
@@ -257,6 +335,20 @@ onUnmounted(() => {
       </div>
     </form>
     <div ref="slot" class="browse-slot" />
+
+    <n-drawer v-model:show="showPreview" placement="bottom" :height="430">
+      <n-drawer-content title="下载前预览" closable>
+        <div v-if="downloadPreview" class="dl-progress">
+          <strong>{{ downloadPreview.bookTitle || '未识别书名' }}</strong>
+          <div>作者：{{ downloadPreview.author || '未识别' }} · 目录 {{ downloadPreview.chapterCount }} 章</div>
+          <div>前几章：{{ downloadPreview.chapterTitles.join('、') }}</div>
+          <strong>样本：{{ downloadPreview.sampleTitle }}</strong>
+          <p v-if="downloadPreview.sampleError" role="alert">样本提取失败：{{ downloadPreview.sampleError }}</p>
+          <div v-else class="download-preview-sample">{{ downloadPreview.sampleBody || '没有可预览的正文' }}</div>
+          <n-button type="primary" :loading="downloading" @click="confirmDownload">确认下载这本书</n-button>
+        </div>
+      </n-drawer-content>
+    </n-drawer>
 
     <!-- Download progress drawer -->
     <n-drawer v-model:show="showProgress" placement="bottom" :height="240">
@@ -282,6 +374,9 @@ onUnmounted(() => {
           </div>
           <div v-if="downloadProgress.lastError" class="dl-error">
             错误：{{ downloadProgress.lastError }}
+          </div>
+          <div v-if="progressEnded && downloadProgress.qualityIssueCount" class="dl-error">
+            质量检查发现 {{ downloadProgress.qualityIssueCount }} 项疑似问题，可到书库核对。
           </div>
           <div v-if="progressEnded" class="dl-failed">
             <div class="dl-failed-title">失败章节</div>
@@ -676,6 +771,13 @@ onUnmounted(() => {
 
 .dl-failed-empty {
   color: #a89884;
+}
+.download-preview-sample {
+  white-space: pre-wrap;
+  max-height: 120px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
 }
 
 .dl-retry-sample {

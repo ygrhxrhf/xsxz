@@ -1,14 +1,20 @@
-import { mkdir, open, readFile, writeFile, readdir, rm, rename, stat, cp } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, rename, stat, cp } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
-import { basename, dirname, extname, join } from 'node:path'
-import { createHash, randomUUID } from 'node:crypto'
+import { basename, extname, join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { atomicWriteText, type AtomicWriteOptions } from './atomicFile'
+import { withLibraryWrite } from './libraryMaintenance'
+export { atomicWriteText } from './atomicFile'
 import type {
+  AiBookUsage,
   AiChatFile,
   AiChatFileV2,
   AiEvidenceChatMessage,
   AiMemoryBase,
+  AiMemoryCharacter,
   AiMemoryFile,
   AiSummaries,
+  AiUsage,
   Book,
   BookListItem,
   CatalogChapter,
@@ -23,42 +29,11 @@ import type {
 } from '../shared/types'
 import { DEFAULT_LIBRARY_PATH } from '../shared/types'
 import { canonicalizeUrl } from '../shared/urlHash'
+import { correctCharacterAliases, correctMemorySummary, type MemoryItemKind } from './aiMaterial'
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-export interface AtomicWriteOptions {
-  signal?: AbortSignal
-  /** 仅供原子提交故障与取消测试注入；生产调用不传。 */
-  hooks?: {
-    beforeCommit?: () => void | Promise<void>
-    rename?: (source: string, destination: string) => Promise<void>
-  }
-}
-
-export async function atomicWriteText(
-  filePath: string,
-  content: string,
-  options: AtomicWriteOptions = {},
-): Promise<void> {
-  const temporaryPath = join(dirname(filePath), `.${basename(filePath)}.${randomUUID()}.tmp`)
-  let handle: Awaited<ReturnType<typeof open>> | undefined
-  try {
-    handle = await open(temporaryPath, 'wx', 0o600)
-    await handle.writeFile(content, { encoding: 'utf-8' })
-    await handle.sync()
-    await handle.close()
-    handle = undefined
-    await options.hooks?.beforeCommit?.()
-    if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    await (options.hooks?.rename ?? rename)(temporaryPath, filePath)
-  } catch (error: unknown) {
-    await handle?.close().catch(() => {})
-    await rm(temporaryPath, { force: true }).catch(() => {})
-    throw error
-  }
-}
 
 let currentLibraryPath = DEFAULT_LIBRARY_PATH
 
@@ -67,9 +42,17 @@ export function getLibraryPath(): string {
 }
 
 export async function setLibraryPath(next: string): Promise<void> {
-  const trimmed = (next || '').trim() || DEFAULT_LIBRARY_PATH
-  currentLibraryPath = trimmed
-  await ensureLibrary()
+  await withLibraryWrite(async () => {
+    const trimmed = (next || '').trim() || DEFAULT_LIBRARY_PATH
+    const previous = currentLibraryPath
+    currentLibraryPath = trimmed
+    try {
+      await ensureLibrary()
+    } catch (error) {
+      currentLibraryPath = previous
+      throw error
+    }
+  })
 }
 
 export function bookDir(bookId: string): string {
@@ -134,20 +117,22 @@ const bookLocks = new Map<string, Promise<unknown>>()
 
 /** Per-book serial lock; shared with the annotations store in the same dir. */
 export async function withBookLock<T>(bookId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = bookLocks.get(bookId) ?? Promise.resolve()
-  let release!: () => void
-  const mine = new Promise<void>((resolve) => {
-    release = resolve
+  return withLibraryWrite(async () => {
+    const prev = bookLocks.get(bookId) ?? Promise.resolve()
+    let release!: () => void
+    const mine = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const tail = prev.then(() => mine)
+    bookLocks.set(bookId, tail)
+    await prev.catch(() => {})
+    try {
+      return await fn()
+    } finally {
+      release()
+      if (bookLocks.get(bookId) === tail) bookLocks.delete(bookId)
+    }
   })
-  const tail = prev.then(() => mine)
-  bookLocks.set(bookId, tail)
-  await prev.catch(() => {})
-  try {
-    return await fn()
-  } finally {
-    release()
-    if (bookLocks.get(bookId) === tail) bookLocks.delete(bookId)
-  }
 }
 
 function chapterBodyText(file: Pick<ChapterFile, 'body'>): string {
@@ -202,12 +187,12 @@ async function loadBookUnlocked(bookId: string): Promise<Book> {
 async function saveBookUnlocked(book: Book): Promise<void> {
   book.updatedAt = now()
   await mkdir(bookDir(book.id), { recursive: true })
-  await writeFile(join(bookDir(book.id), 'book.json'), JSON.stringify(book, null, 2), 'utf-8')
+  await atomicWriteText(join(bookDir(book.id), 'book.json'), JSON.stringify(book, null, 2))
 }
 
 async function persistChapterJson(bookId: string, relFile: string, data: ChapterFile): Promise<void> {
   await mkdir(join(bookDir(bookId), 'chapters'), { recursive: true })
-  await writeFile(chapterPath(bookId, relFile), JSON.stringify(data, null, 2), 'utf-8')
+  await atomicWriteText(chapterPath(bookId, relFile), JSON.stringify(data, null, 2))
 }
 
 async function reconcilePendingChapters(bookId: string): Promise<void> {
@@ -318,7 +303,7 @@ interface IndexData {
 }
 
 async function writeIndex(data: IndexData): Promise<void> {
-  await writeFile(indexFile(), JSON.stringify(data, null, 2), 'utf-8')
+  await atomicWriteText(indexFile(), JSON.stringify(data, null, 2))
 }
 
 async function upsertIndexItem(book: Book): Promise<void> {
@@ -409,17 +394,19 @@ export async function getBook(bookId: string): Promise<Book> {
 }
 
 export async function deleteBook(bookId: string): Promise<void> {
-  const src = bookDir(bookId)
-  try {
-    await stat(join(src, 'book.json'))
-  } catch {
+  await withLibraryWrite(async () => {
+    const src = bookDir(bookId)
+    try {
+      await stat(join(src, 'book.json'))
+    } catch {
+      await rebuildIndex()
+      return
+    }
+    await mkdir(trashDir(), { recursive: true })
+    const dest = join(trashDir(), `${bookId}-${Date.now()}`)
+    await rename(src, dest)
     await rebuildIndex()
-    return
-  }
-  await mkdir(trashDir(), { recursive: true })
-  const dest = join(trashDir(), `${bookId}-${Date.now()}`)
-  await rename(src, dest)
-  await rebuildIndex()
+  })
 }
 
 export async function listTrash(): Promise<TrashItem[]> {
@@ -454,35 +441,39 @@ export async function listTrash(): Promise<TrashItem[]> {
 }
 
 export async function restoreFromTrash(name: string): Promise<void> {
-  const safe = safeTrashName(name)
-  if (!safe) throw new Error('回收站条目名不合法')
-  const parts = splitTrashName(safe)
-  if (!parts) throw new Error('回收站条目名不合法')
-  if (await bookExists(parts.bookId)) {
-    throw new Error('书库中已存在这本书，无法还原')
-  }
-  await rename(join(trashDir(), safe), bookDir(parts.bookId))
-  await rebuildIndex()
+  await withLibraryWrite(async () => {
+    const safe = safeTrashName(name)
+    if (!safe) throw new Error('回收站条目名不合法')
+    const parts = splitTrashName(safe)
+    if (!parts) throw new Error('回收站条目名不合法')
+    if (await bookExists(parts.bookId)) {
+      throw new Error('书库中已存在这本书，无法还原')
+    }
+    await rename(join(trashDir(), safe), bookDir(parts.bookId))
+    await rebuildIndex()
+  })
 }
 
 export async function purgeTrash(name?: string): Promise<number> {
-  if (name) {
-    const safe = safeTrashName(name)
-    if (!safe) throw new Error('回收站条目名不合法')
-    await rm(join(trashDir(), safe), { recursive: true, force: true })
-    return 1
-  }
-  let count = 0
-  try {
-    const entries = await readdir(trashDir(), { withFileTypes: true })
-    for (const ent of entries) {
-      if (ent.isDirectory() && safeTrashName(ent.name)) count++
+  return withLibraryWrite(async () => {
+    if (name) {
+      const safe = safeTrashName(name)
+      if (!safe) throw new Error('回收站条目名不合法')
+      await rm(join(trashDir(), safe), { recursive: true, force: true })
+      return 1
     }
-  } catch {
-    return 0
-  }
-  await rm(trashDir(), { recursive: true, force: true })
-  return count
+    let count = 0
+    try {
+      const entries = await readdir(trashDir(), { withFileTypes: true })
+      for (const ent of entries) {
+        if (ent.isDirectory() && safeTrashName(ent.name)) count++
+      }
+    } catch {
+      return 0
+    }
+    await rm(trashDir(), { recursive: true, force: true })
+    return count
+  })
 }
 
 export async function readChapter(bookId: string, chapterId: string): Promise<ChapterFile> {
@@ -517,17 +508,34 @@ export async function readChapter(bookId: string, chapterId: string): Promise<Ch
 }
 
 export async function updateChapterBody(bookId: string, chapterId: string, body: string, restoreRaw?: boolean): Promise<void> {
-  const book = await loadBook(bookId)
-  const meta = book.chapters.find((c) => c.id === chapterId)
-  if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
-  const file: ChapterFile = JSON.parse(await readFile(chapterPath(bookId, meta.file), 'utf-8'))
-  if (restoreRaw) {
-    if (file.bodyRaw) file.body = file.bodyRaw
-  } else {
-    if (file.bodyRaw === undefined) file.bodyRaw = file.body
-    file.body = body
-  }
-  await writeFile(chapterPath(bookId, meta.file), JSON.stringify(file, null, 2), 'utf-8')
+  await withBookLock(bookId, async () => {
+    const book = await loadBook(bookId)
+    const meta = book.chapters.find((c) => c.id === chapterId)
+    if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
+    const file: ChapterFile = JSON.parse(await readFile(chapterPath(bookId, meta.file), 'utf-8'))
+    if (restoreRaw) {
+      if (file.bodyRaw) file.body = file.bodyRaw
+    } else {
+      if (file.bodyRaw === undefined) file.bodyRaw = file.body
+      file.body = body
+    }
+    await atomicWriteText(chapterPath(bookId, meta.file), JSON.stringify(file, null, 2))
+  })
+}
+
+/** 人工修复正文：保留首次编辑前的文本，失败章可直接恢复为可读状态。 */
+export async function repairChapterBody(bookId: string, chapterId: string, body: string): Promise<void> {
+  const text = body.replace(/\r\n?/g, '\n').trim()
+  if (!text) throw new Error('正文不能为空')
+  const old = await readChapter(bookId, chapterId)
+  await writeChapterFile(bookId, chapterId, {
+    ...old,
+    body: text,
+    bodyRaw: old.bodyRaw ?? old.body,
+    status: 'ready',
+    failCode: undefined,
+  })
+  await refreshBookStatus(bookId)
 }
 
 export async function setProgress(bookId: string, progress: ReadingProgress): Promise<void> {
@@ -539,9 +547,11 @@ export async function setProgress(bookId: string, progress: ReadingProgress): Pr
 }
 
 export async function copyOriginFile(bookId: string, sourcePath: string): Promise<void> {
-  const destDir = join(bookDir(bookId), 'origin')
-  await mkdir(destDir, { recursive: true })
-  await cp(sourcePath, join(destDir, basename(sourcePath)))
+  await withLibraryWrite(async () => {
+    const destDir = join(bookDir(bookId), 'origin')
+    await mkdir(destDir, { recursive: true })
+    await cp(sourcePath, join(destDir, basename(sourcePath)))
+  })
 }
 
 function emptySummaries(): AiSummaries {
@@ -738,12 +748,13 @@ function isAiCitation(value: unknown): boolean {
     Array.from(value.excerpt).length >= 80 && Array.from(value.excerpt).length <= 160
 }
 
-function isAiMemoryBase(value: unknown): value is AiMemoryBase {
+function isAiMemoryBase(value: unknown): value is AiMemoryBase & Record<string, unknown> {
   return isRecord(value) &&
     typeof value.id === 'string' && value.id.length > 0 &&
     typeof value.summary === 'string' &&
     Array.isArray(value.sources) && value.sources.length > 0 && value.sources.every(isAiCitation) &&
     (value.accuracy === 'normal' || value.accuracy === 'review' || value.accuracy === 'uncertain') &&
+    (value.userEditedSummary === undefined || typeof value.userEditedSummary === 'boolean') &&
     typeof value.updatedAt === 'string'
 }
 
@@ -752,6 +763,7 @@ export function isAiMemoryFile(value: unknown): value is AiMemoryFile {
   if (value.uptoChapterId !== undefined && typeof value.uptoChapterId !== 'string') return false
   if (!Array.isArray(value.characters) || !value.characters.every((item) =>
     isAiMemoryBase(item) && typeof item.name === 'string' && Array.isArray(item.aliases) &&
+    (item.userEditedAliases === undefined || typeof item.userEditedAliases === 'boolean') &&
     item.aliases.every((alias) => typeof alias === 'string') && typeof item.role === 'string' &&
     typeof item.status === 'string')) return false
   if (!Array.isArray(value.relations) || !value.relations.every((item) =>
@@ -812,6 +824,86 @@ export async function writeAiMemory(
   )
 }
 
+function emptyBookUsage(updatedAt = now()): AiBookUsage {
+  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, updatedAt }
+}
+
+function finiteToken(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
+}
+
+export function isAiBookUsage(value: unknown): value is AiBookUsage {
+  return isRecord(value) &&
+    finiteToken(value.calls) === value.calls &&
+    finiteToken(value.inputTokens) === value.inputTokens &&
+    finiteToken(value.outputTokens) === value.outputTokens &&
+    finiteToken(value.cacheHitTokens) === value.cacheHitTokens &&
+    finiteToken(value.cacheMissTokens) === value.cacheMissTokens &&
+    typeof value.updatedAt === 'string'
+}
+
+export async function readAiUsage(bookId: string): Promise<AiBookUsage> {
+  try {
+    const value: unknown = JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'usage.json'), 'utf-8'))
+    return isAiBookUsage(value) ? value : emptyBookUsage()
+  } catch {
+    return emptyBookUsage()
+  }
+}
+
+export async function recordAiUsage(
+  bookId: string,
+  usage: AiUsage | undefined,
+  options: AtomicWriteOptions = {},
+): Promise<AiBookUsage> {
+  return withBookLock(bookId, async () => {
+    await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+    const current = await readAiUsage(bookId)
+    const updatedAt = now()
+    const next: AiBookUsage = {
+      calls: current.calls + 1,
+      inputTokens: current.inputTokens + finiteToken(usage?.inputTokens),
+      outputTokens: current.outputTokens + finiteToken(usage?.outputTokens),
+      cacheHitTokens: current.cacheHitTokens + finiteToken(usage?.cacheHitTokens),
+      cacheMissTokens: current.cacheMissTokens + finiteToken(usage?.cacheMissTokens),
+      updatedAt,
+    }
+    await atomicWriteText(join(bookDir(bookId), 'ai', 'usage.json'), JSON.stringify(next, null, 2), options)
+    return next
+  })
+}
+
+export async function correctAiCharacterAliases(
+  bookId: string,
+  itemId: string,
+  aliases: readonly string[],
+  options: AtomicWriteOptions = {},
+): Promise<{ character: AiMemoryCharacter; affectedChapterIds: string[] }> {
+  return withBookLock(bookId, async () => {
+    const memory = await readAiMemory(bookId)
+    if (!memory) throw new Error('尚未生成小说记忆')
+    const corrected = correctCharacterAliases(memory, itemId, aliases, now())
+    await writeAiMemory(bookId, corrected.memory, options)
+    return { character: corrected.character, affectedChapterIds: corrected.affectedChapterIds }
+  })
+}
+
+export async function correctAiMemorySummary(
+  bookId: string,
+  kind: MemoryItemKind,
+  itemId: string,
+  summary: string,
+  options: AtomicWriteOptions = {},
+): Promise<{ item: AiMemoryBase; affectedChapterIds: string[] }> {
+  return withBookLock(bookId, async () => {
+    const memory = await readAiMemory(bookId)
+    if (!memory) throw new Error('尚未生成小说记忆')
+    const corrected = correctMemorySummary(memory, kind, itemId, summary, now())
+    await writeAiMemory(bookId, corrected.memory, options)
+    return { item: corrected.item, affectedChapterIds: corrected.affectedChapterIds }
+  })
+}
+
 export async function markAiMemoryAccuracy(
   bookId: string,
   collection: AiMemoryCollection,
@@ -820,16 +912,18 @@ export async function markAiMemoryAccuracy(
   options: AtomicWriteOptions = {},
 ): Promise<AiMemoryBase> {
   if (accuracy !== 'review' && accuracy !== 'uncertain') throw new Error('记忆准确性状态无效')
-  const memory = await readAiMemory(bookId)
-  if (!memory) throw new Error('尚未生成小说记忆')
-  const item = memory[collection].find((candidate) => candidate.id === itemId)
-  if (!item) throw new Error('记忆条目不存在')
-  const updatedAt = now()
-  item.accuracy = accuracy
-  item.updatedAt = updatedAt
-  memory.updatedAt = updatedAt
-  await writeAiMemory(bookId, memory, options)
-  return item
+  return withBookLock(bookId, async () => {
+    const memory = await readAiMemory(bookId)
+    if (!memory) throw new Error('尚未生成小说记忆')
+    const item = memory[collection].find((candidate) => candidate.id === itemId)
+    if (!item) throw new Error('记忆条目不存在')
+    const updatedAt = now()
+    item.accuracy = accuracy
+    item.updatedAt = updatedAt
+    memory.updatedAt = updatedAt
+    await writeAiMemory(bookId, memory, options)
+    return item
+  })
 }
 
 export async function readCharacterCard(bookId: string): Promise<CharacterCard | null> {

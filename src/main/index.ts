@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiBudgetEstimate, AiPromptKind, AiRequestStage, AiUsage, BrowseState, Settings, SiteRule } from '../shared/types'
+import type { AiBookUsage, AiBudgetEstimate, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseState, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import {
@@ -15,6 +15,7 @@ import {
   updateMeta,
   setCover,
   updateChapterBody,
+  repairChapterBody,
   setLibraryPath,
   readSummaries,
   writeChapterSummary,
@@ -27,17 +28,26 @@ import {
   readAiMemoryCompat,
   writeAiMemory,
   markAiMemoryAccuracy,
+  readAiUsage,
+  recordAiUsage,
+  correctAiCharacterAliases,
+  correctAiMemorySummary,
   assertImportable,
   type AiMemoryCollection,
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
-import { startDownload, cancelDownload, retryFailed, checkUpdate, checkAllUpdates, cancelCheckAll, setOwnerWindow, setBrowseView } from './download'
-import { listSiteRules, upsertSiteRule, removeSiteRule } from './siteRules'
+import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView } from './download'
+import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
+import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
+import { browserAdCss } from './browserAds'
+import { BrowserAdRequestFilter } from './adRequestFilter'
 import { exportBook } from './exportBook'
 import { searchInBook } from './search'
-import { createBackup, restoreBackup } from './backup'
+import { auditBook } from './quality'
+import { createBackup, restoreBackup, runAutoBackupIfDue } from './backup'
+import { migrateLibrary } from './libraryMigration'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
 import {
   AiJobSlot,
@@ -64,13 +74,19 @@ import { executeMemoryOrchestration, planMemoryPromptRequests, selectMemoryChapt
 import { buildAiMemoryCandidates } from './aiMemory'
 import { finalizeMemoryUpdate } from './aiMemorySave'
 import { selectLocalEvidence, type EvidenceSearchChapter } from './aiEvidenceSearch'
+import { describeMaterialCoverage, preserveUserMemoryCorrections, seedMemoryBeforeChapter, selectRebuildBatches } from './aiMaterial'
 import { buildEvidenceAnswerMessages, buildEvidenceQueryRewriteMessages, executeEvidenceQaPipeline, planEvidenceChapterReads } from './aiEvidenceQa'
-import { countTextCharacters, estimateAiTokens } from './aiBudget'
+import { aiBudgetWarning, countTextCharacters, estimateAiTokens } from './aiBudget'
 import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
+import { BookOverviewService } from './bookOverview'
+import { cancelTts, readTtsPosition, synthesizeTts, writeTtsPosition } from './tts'
 import {
+  parseMemoryAliasPayload,
   parseMemoryBookPayload,
   parseMemoryMarkPayload,
+  parseMemoryRebuildFromPayload,
   parseMemoryRunPayload,
+  parseMemorySummaryPayload,
 } from './aiMemoryIpcValidation'
 
 const PARTITION = 'persist:novel'
@@ -78,10 +94,17 @@ const SIDEBAR_WIDTH = 200
 
 let mainWindow: BrowserWindow | null = null
 let browseView: WebContentsView | null = null
+let browserAdRequestFilter: BrowserAdRequestFilter | null = null
+let browseAdCssKey: string | null = null
+let browseAdApplySeq = 0
 let browseVisible = false
 let lastBounds = { x: SIDEBAR_WIDTH, y: 52, width: 900, height: 700 }
 const aiJobSlot = new AiJobSlot()
+const bookOverview = new BookOverviewService(aiJobSlot, () => {
+  mainWindow?.webContents.send('bookOverview.changed')
+})
 const aiPendingSaves = new AiPendingSaveStore()
+let activeImports = 0
 
 function trustedAiConfig(
   settings: Settings,
@@ -117,6 +140,20 @@ function sendAiStage(jobId: string, stage: AiRequestStage, detail?: string): voi
 
 function sendAiBudget(jobId: string, task: 'recap' | 'memory' | 'qa', budget: AiBudgetEstimate): void {
   mainWindow?.webContents.send('ai.budget', { jobId, task, budget })
+}
+
+async function persistAiUsage(bookId: string, usage: AiUsage | undefined): Promise<AiBookUsage | undefined> {
+  try {
+    return await recordAiUsage(bookId, usage)
+  } catch {
+    return undefined
+  }
+}
+
+async function materialCoverageFor(bookId: string): Promise<AiMaterialCoverage | null> {
+  const book = await getBook(bookId)
+  const summaries = await readSummaries(bookId)
+  return describeMaterialCoverage(book.chapters, book.progress?.chapterId, new Set(Object.keys(summaries.byChapter)))
 }
 
 function promptBudget(
@@ -179,6 +216,33 @@ function emitBrowseState(): void {
   mainWindow.webContents.send('browse.url', { url: state.url })
 }
 
+async function refreshBrowseAdCss(): Promise<void> {
+  const view = browseView
+  if (!view || view.webContents.isDestroyed()) return
+  const wc = view.webContents
+  const url = wc.getURL()
+  const seq = ++browseAdApplySeq
+  let rule: SiteRule | undefined
+  if (/^https?:\/\//i.test(url)) {
+    try { rule = await findSiteRuleForUrl(url) } catch { /* no site rule */ }
+  }
+  if (seq !== browseAdApplySeq || wc.isDestroyed() || wc.getURL() !== url) return
+  if (browseAdCssKey) {
+    try { await wc.removeInsertedCSS(browseAdCssKey) } catch { /* prior document navigated */ }
+    browseAdCssKey = null
+  }
+  const css = /^https?:\/\//i.test(url) ? browserAdCss(rule) : ''
+  if (!css || seq !== browseAdApplySeq || wc.isDestroyed()) return
+  try {
+    const key = await wc.insertCSS(css, { cssOrigin: 'user' })
+    if (seq === browseAdApplySeq && !wc.isDestroyed() && wc.getURL() === url) {
+      browseAdCssKey = key
+    } else {
+      await wc.removeInsertedCSS(key).catch(() => {})
+    }
+  } catch { /* browsing must continue if a site rejects injected CSS */ }
+}
+
 function attachBrowseListeners(view: WebContentsView): void {
   const wc = view.webContents
   const bump = () => emitBrowseState()
@@ -186,6 +250,9 @@ function attachBrowseListeners(view: WebContentsView): void {
   wc.on('did-stop-loading', bump)
   wc.on('did-navigate', bump)
   wc.on('did-navigate-in-page', bump)
+  wc.on('dom-ready', () => { void refreshBrowseAdCss() })
+  wc.on('did-finish-load', () => { void refreshBrowseAdCss() })
+  wc.on('did-navigate-in-page', () => { void refreshBrowseAdCss() })
   wc.on('page-title-updated', bump)
   wc.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') || url.startsWith('http://')) {
@@ -253,6 +320,8 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null
     browseView = null
+    browseAdCssKey = null
+    browseAdApplySeq++
   })
 
   setOwnerWindow(mainWindow)
@@ -333,7 +402,17 @@ function registerIpc(): void {
 
   ipcMain.handle('library.list', async () => {
     const books = await listBooks()
-    return { books }
+    return { books: await bookOverview.decorate(books, await getSettings()) }
+  })
+  ipcMain.handle('bookOverview.retry', async (_e, payload: { bookId?: string }) => {
+    try {
+      const bookId = payload?.bookId
+      if (typeof bookId !== 'string' || !/^[a-z0-9_]+$/i.test(bookId)) return { ok: false, message: '书籍编号无效' }
+      await bookOverview.retry(bookId)
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle('library.get', async (_e, { bookId }: { bookId: string }) => {
     try {
@@ -384,14 +463,21 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('library.import', async (_e, { filePath }: { filePath: string }) => {
+    let started = false
     try {
+      if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
+      activeImports++
+      started = true
       const guard = assertImportable(filePath)
       if (!guard.ok) return guard
       const ext = filePath.toLowerCase().split('.').pop()
       const result = ext === 'epub' ? await importEpub(filePath) : await importTxt(filePath)
+      bookOverview.wake()
       return { ok: true, bookId: result.bookId }
     } catch (e: unknown) {
       return { ok: false, message: String(e) }
+    } finally {
+      if (started) activeImports--
     }
   })
   ipcMain.handle('library.setProgress', async (_e, { bookId, progress }: { bookId: string; progress: unknown }) => {
@@ -431,10 +517,19 @@ function registerIpc(): void {
   ipcMain.handle('library.updateChapterBody', async (_e, args: { bookId: string; chapterId: string; body: string; restoreRaw?: boolean }) => {
     try {
       await updateChapterBody(args.bookId, args.chapterId, args.body, args.restoreRaw)
+      bookOverview.wake()
       return { ok: true }
     } catch (e: unknown) {
       return { ok: false, message: String(e) }
     }
+  })
+  ipcMain.handle('library.repairChapterBody', async (_e, args: { bookId: string; chapterId: string; body: string }) => {
+    try { await repairChapterBody(args.bookId, args.chapterId, args.body); bookOverview.wake(); return { ok: true } }
+    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('library.audit', async (_e, args: { bookId: string }) => {
+    try { return { ok: true, report: await auditBook(args.bookId) } }
+    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
   })
   ipcMain.handle(
     'library.export',
@@ -464,9 +559,41 @@ function registerIpc(): void {
   })
   ipcMain.handle('backup.restore', async (_e, args: { zipPath: string }) => {
     try {
-      return await restoreBackup(args.zipPath)
+      if (isDownloadBusy() || aiJobSlot.busy || activeImports > 0) {
+        return { ok: false, message: '书库正在下载、导入或保存 AI 内容，请等待完成后再恢复' }
+      }
+      const release = beginLibraryRestore()
+      try {
+        return await runAsLibraryRestore(() => restoreBackup(args.zipPath))
+      } finally {
+        release()
+      }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('backup.runAuto', async () => {
+    try {
+      if (isDownloadBusy() || aiJobSlot.busy || activeImports > 0) {
+        return { status: 'failed', message: '书库正忙，请稍后再备份' }
+      }
+      const release = beginLibraryRestore()
+      try { return await runAsLibraryRestore(() => runAutoBackupIfDue()) }
+      finally { release() }
+    } catch (error) {
+      return { status: 'failed', message: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle('library.migrate', async (_e, args: { targetPath: string }) => {
+    try {
+      if (isDownloadBusy() || aiJobSlot.busy || activeImports > 0) {
+        return { ok: false, message: '书库正在下载、导入或保存 AI 内容，请等待完成后再搬迁' }
+      }
+      const release = beginLibraryRestore()
+      try { return await runAsLibraryRestore(() => migrateLibrary(args.targetPath)) }
+      finally { release() }
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
     }
   })
 
@@ -512,7 +639,13 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('download.start', async () => startDownload())
+  ipcMain.handle('download.preview', async () => {
+    try { return await previewDownload() }
+    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('download.confirm', async (_e, args: { token: string }) => confirmDownload(args.token))
+  ipcMain.handle('download.redownloadChapter', async (_e, args: { bookId: string; chapterId: string; url: string }) =>
+    redownloadChapter(args.bookId, args.chapterId, args.url))
   ipcMain.handle('download.cancel', async (_e, { bookId }: { bookId?: string }) => {
     cancelDownload(bookId)
     return { ok: true }
@@ -529,9 +662,15 @@ function registerIpc(): void {
     const rules = await listSiteRules()
     return { rules }
   })
+  ipcMain.handle('siteRules.preview', async (_e, rule: SiteRule) => {
+    try { return await previewCurrentSiteRule(rule) }
+    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
   ipcMain.handle('siteRules.upsert', async (_e, rule: SiteRule) => {
     try {
       const saved = await upsertSiteRule(rule)
+      browserAdRequestFilter?.updateSiteRule(saved)
+      void refreshBrowseAdCss()
       return { ok: true, rule: saved }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
@@ -540,6 +679,8 @@ function registerIpc(): void {
   ipcMain.handle('siteRules.remove', async (_e, payload: { host: string }) => {
     try {
       await removeSiteRule(payload?.host ?? '')
+      browserAdRequestFilter?.removeSiteRule(normalizeHost(payload?.host ?? ''))
+      void refreshBrowseAdCss()
       return { ok: true }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
@@ -547,12 +688,21 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('settings.get', async () => getSettings())
+  ipcMain.handle('tts.getPosition', async (_e, { bookId }: { bookId: string }) => readTtsPosition(bookId))
+  ipcMain.handle('tts.setPosition', async (_e, args: { bookId: string; position: unknown }) => {
+    await writeTtsPosition(args.bookId, args.position)
+    return { ok: true }
+  })
+  ipcMain.handle('tts.synthesize', async (_e, args: { requestId: string; text: string }) => synthesizeTts(args.requestId, args.text))
+  ipcMain.handle('tts.cancel', (_e, { requestId }: { requestId: string }) => { cancelTts(requestId); return { ok: true } })
   ipcMain.handle('settings.set', async (_e, update: unknown) => {
+    if (isLibraryRestoring()) throw new Error('书库正在恢复，请稍后再试')
     const patch = normalizeSettingsUpdatePayload(update)
     const next = await updateSettings(patch)
     if (typeof patch.libraryPath === 'string') {
       await setLibraryPath(next.libraryPath)
     }
+    bookOverview.settingsChanged(next.ai?.autoBookOverview === true)
     return next
   })
 
@@ -583,20 +733,30 @@ function registerIpc(): void {
   })
 
   const startMemoryUpdate = async (
-    mode: 'update' | 'rebuild',
+    mode: 'update' | 'rebuild' | 'rebuildFrom',
     unsafePayload?: unknown,
   ) => {
     try {
-      const payload = parseMemoryRunPayload(unsafePayload)
+      const payload = mode === 'rebuildFrom'
+        ? parseMemoryRebuildFromPayload(unsafePayload)
+        : parseMemoryRunPayload(unsafePayload)
       const book = await getBook(payload.bookId)
-      const existing = mode === 'update' ? await readAiMemory(payload.bookId) : null
+      const previous = await readAiMemory(payload.bookId)
+      const existing = mode === 'update' ? previous
+        : mode === 'rebuildFrom'
+          ? seedMemoryBeforeChapter(previous, book.chapters, (payload as import('./aiMemoryIpcValidation').MemoryRebuildFromPayload).fromChapterId)
+          : null
       const selection = selectMemoryChapterBatches(
         book.chapters,
         payload.uptoChapterId,
         book.progress?.chapterId,
         existing?.uptoChapterId,
-        mode,
+        mode === 'update' ? 'update' : 'rebuild',
       )
+      if (mode === 'rebuildFrom') {
+        const fromId = (payload as import('./aiMemoryIpcValidation').MemoryRebuildFromPayload).fromChapterId
+        selection.batches = selectRebuildBatches(selection.batches.flat(), fromId, book.chapters)
+      }
       const eligibleChapterIds = new Set(selection.eligibleChapterIds)
       const hasReviewItems = mode === 'update' && Boolean(existing) && [
         ...(existing?.characters ?? []),
@@ -607,9 +767,7 @@ function registerIpc(): void {
         && item.sources.every((source) => eligibleChapterIds.has(source.chapterId)))
       if (!selection.batches.length && !hasReviewItems) return { ok: false, message: '已更新到当前阅读进度' }
       const settings = await getSettings()
-      const apiKey = await getApiKey()
-      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const batches = []
+      const batches: Array<Array<(typeof selection.batches)[number][number] & { body: string }>> = []
       for (const batch of selection.batches) {
         const loaded = []
         for (const chapter of batch) {
@@ -618,7 +776,6 @@ function registerIpc(): void {
         }
         batches.push(loaded)
       }
-      const config = trustedAiConfig(settings, apiKey)
       const instruction = aiTaskInstruction(settings, 'memory')
       const reviewRequests = mode === 'update'
         ? planMemoryPromptRequests(book.title, instruction, [], existing, true, eligibleChapterIds)
@@ -640,6 +797,16 @@ function registerIpc(): void {
         memoryRequests.reduce((total, request) => total + request.candidates.length, 0),
         memoryRequests.length ? undefined : '无模型请求',
       )
+      const confirmOverBudget = unsafePayload && typeof unsafePayload === 'object' &&
+        'confirmOverBudget' in unsafePayload &&
+        (unsafePayload as { confirmOverBudget?: unknown }).confirmOverBudget === true
+      const memoryWarning = aiBudgetWarning(memoryBudget, settings.ai?.budgetWarningTokens ?? DEFAULT_AI_PREFS.budgetWarningTokens)
+      if (memoryWarning && !confirmOverBudget) return {
+        ok: false, confirmationRequired: true, message: memoryWarning, budget: memoryBudget,
+      }
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const config = trustedAiConfig(settings, apiKey)
       return aiJobSlot.start(async (jobId, signal) => {
         sendAiBudget(jobId, 'memory', memoryBudget)
         sendAiStage(jobId, 'preparing')
@@ -658,6 +825,7 @@ function registerIpc(): void {
                 [{ role: 'user', content: request.prompt }],
                 { task: 'memory', signal: requestSignal },
               )
+              await persistAiUsage(payload.bookId, completion.usage)
               if (!completion.json) throw new Error('模型返回的记忆 JSON 无法识别，原有记忆未改变')
               if (completion.usage) {
                 usage = {
@@ -675,13 +843,16 @@ function registerIpc(): void {
               signal,
             },
           )
+          memoryUpdate.memory = preserveUserMemoryCorrections(memoryUpdate.memory, previous)
           const snapshot = structuredClone(memoryUpdate.memory)
           await finalizeMemoryUpdate(jobId, memoryUpdate, usage, signal, {
             save: (saveSignal) => writeAiMemory(payload.bookId!, snapshot, { signal: saveSignal }),
             retrySave: () => writeAiMemory(payload.bookId!, snapshot),
             registerRetry: (save) => aiPendingSaves.register(save),
             emitStage: () => sendAiStage(jobId, 'saving'),
-            emitDone: (event) => mainWindow?.webContents.send('ai.done', event),
+            emitDone: (event) => {
+              mainWindow?.webContents.send('ai.done', event)
+            },
           })
         } catch (e: unknown) {
           mainWindow?.webContents.send('ai.done', {
@@ -698,9 +869,11 @@ function registerIpc(): void {
 
   ipcMain.handle('ai.updateMemory', (_e, payload?: unknown) => startMemoryUpdate('update', payload))
   ipcMain.handle('ai.rebuildMemory', (_e, payload?: unknown) => startMemoryUpdate('rebuild', payload))
+  ipcMain.handle('ai.rebuildMemoryFrom', (_e, payload?: unknown) => startMemoryUpdate('rebuildFrom', payload))
 
   ipcMain.handle('ai.markMemoryInaccurate', async (_e, unsafePayload?: unknown) => {
     try {
+      if (aiJobSlot.busy) return { ok: false, message: '请先停止当前生成' }
       const payload = parseMemoryMarkPayload(unsafePayload)
       let collection: AiMemoryCollection
       switch (payload.kind) {
@@ -711,6 +884,46 @@ function registerIpc(): void {
       }
       const item = await markAiMemoryAccuracy(payload.bookId, collection, payload.itemId, 'review')
       return { ok: true, item }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.correctCharacterAliases', async (_e, unsafePayload?: unknown) => {
+    try {
+      if (aiJobSlot.busy) return { ok: false, message: '请先停止当前生成' }
+      const payload = parseMemoryAliasPayload(unsafePayload)
+      const corrected = await correctAiCharacterAliases(payload.bookId, payload.itemId, payload.aliases)
+      return { ok: true, ...corrected }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.correctMemorySummary', async (_e, unsafePayload?: unknown) => {
+    try {
+      if (aiJobSlot.busy) return { ok: false, message: '请先停止当前生成' }
+      const payload = parseMemorySummaryPayload(unsafePayload)
+      const corrected = await correctAiMemorySummary(payload.bookId, payload.kind, payload.itemId, payload.summary)
+      return { ok: true, ...corrected }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.getMaterialCoverage', async (_e, unsafePayload?: unknown) => {
+    try {
+      const { bookId } = parseMemoryBookPayload(unsafePayload)
+      return { ok: true, coverage: await materialCoverageFor(bookId) }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.getUsage', async (_e, unsafePayload?: unknown) => {
+    try {
+      const { bookId } = parseMemoryBookPayload(unsafePayload)
+      return { ok: true, usage: await readAiUsage(bookId) }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
@@ -755,11 +968,12 @@ function registerIpc(): void {
       const confirmOverBudget = unsafePayload && typeof unsafePayload === 'object' &&
         'confirmOverBudget' in unsafePayload &&
         (unsafePayload as { confirmOverBudget?: unknown }).confirmOverBudget === true
-      if (plan.requiresConfirmation && !confirmOverBudget) {
+      const budgetWarning = aiBudgetWarning(plan.budget, settings.ai?.budgetWarningTokens ?? DEFAULT_AI_PREFS.budgetWarningTokens)
+      if ((plan.requiresConfirmation || budgetWarning) && !confirmOverBudget) {
         return {
           ok: false,
           confirmationRequired: true,
-          message: '预计输入超过 30000 字。是否按上方缩减范围继续？',
+          message: plan.requiresConfirmation ? '预计输入超过 30000 字。是否按上方缩减范围继续？' : budgetWarning!,
           budget: plan.budget,
         }
       }
@@ -781,6 +995,7 @@ function registerIpc(): void {
             },
             { task: 'recap', recapLength },
           )
+          await persistAiUsage(payload.bookId, result.usage)
           if (result.truncated) throw new Error('模型输出被截断，原有前情未改变')
           const text = validateAiRecapOutput(result.text, recapLength)
           await saveAiDone(
@@ -817,8 +1032,6 @@ function registerIpc(): void {
   }) => {
     try {
       const settings = await getSettings()
-      const apiKey = await getApiKey()
-      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const book = await getBook(args.bookId)
       if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) {
         return { ok: false, message: '章节不存在' }
@@ -827,14 +1040,17 @@ function registerIpc(): void {
       if (!chapter.body.trim()) return { ok: false, message: '当前章节没有可摘要的正文' }
       const instruction = aiTaskInstruction(settings, 'chapterSummary')
       const plan = planChapterSummaryRequest(book.title, chapter.title, chapter.body, instruction)
-      if (plan.requiresConfirmation && args.confirmOverBudget !== true) {
+      const budgetWarning = aiBudgetWarning(plan.budget, settings.ai?.budgetWarningTokens ?? DEFAULT_AI_PREFS.budgetWarningTokens)
+      if ((plan.requiresConfirmation || budgetWarning) && args.confirmOverBudget !== true) {
         return {
           ok: false,
           confirmationRequired: true,
-          message: '预计输入超过 30000 字。是否按上方缩减范围继续？',
+          message: plan.requiresConfirmation ? '预计输入超过 30000 字。是否按上方缩减范围继续？' : budgetWarning!,
           budget: plan.budget,
         }
       }
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       return aiJobSlot.start(async (jobId, signal) => {
         let partial = ''
         sendAiBudget(jobId, 'recap', plan.budget)
@@ -854,6 +1070,7 @@ function registerIpc(): void {
             },
             { task: 'chapterSummary' },
           )
+          await persistAiUsage(args.bookId, result.usage)
           await saveAiDone(
             jobId,
             aiCompletionDoneEvent(jobId, result),
@@ -884,21 +1101,22 @@ function registerIpc(): void {
   }) => {
     try {
       const settings = await getSettings()
-      const apiKey = await getApiKey()
-      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const ch = await readChapter(args.bookId, args.chapterId)
       if (!ch.body) return { ok: false, message: '当前章节没有可清理的正文' }
       const instruction = aiTaskInstruction(settings, 'clean')
       const plan = planCleanChapterRequest(ch.title, ch.body, instruction)
       if (!plan.batches.length) return { ok: false, message: '当前章节没有可清理的正文' }
-      if (plan.requiresConfirmation && args.confirmOverBudget !== true) {
+      const budgetWarning = aiBudgetWarning(plan.budget, settings.ai?.budgetWarningTokens ?? DEFAULT_AI_PREFS.budgetWarningTokens)
+      if ((plan.requiresConfirmation || budgetWarning) && args.confirmOverBudget !== true) {
         return {
           ok: false,
           confirmationRequired: true,
-          message: '预计输入超过 30000 字。是否按上方缩减范围继续？',
+          message: plan.requiresConfirmation ? '预计输入超过 30000 字。是否按上方缩减范围继续？' : budgetWarning!,
           budget: plan.budget,
         }
       }
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const exclusive = await aiJobSlot.runExclusive(async (signal) => {
         try {
           return await cleanChapterBody(
@@ -908,6 +1126,7 @@ function registerIpc(): void {
             instruction,
             signal,
             plan,
+            async (usage) => { await persistAiUsage(args.bookId, usage) },
           )
         } catch (error) {
           if (signal.aborted) throw new DOMException('aborted', 'AbortError')
@@ -952,19 +1171,21 @@ function registerIpc(): void {
       ))
       if (!exclusive.ok) return exclusive
       const storyUptoChapterId = cutoff[cutoff.length - 1]?.id ?? uptoChapterId
+      await persistAiUsage(bookId, undefined)
       await writeStorySoFar(bookId, storyUptoChapterId, exclusive.value)
       return { ok: true, text: exclusive.value }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
-  ipcMain.handle('ai.translateStream', async (_e, { text }: { text: string }) => {
+  ipcMain.handle('ai.translateStream', async (_e, { text, bookId }: { text: string; bookId?: string }) => {
     try {
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       if (!text.trim()) return { ok: false, message: '请先在正文中选中要翻译的文字' }
       if (text.length > 2000) return { ok: false, message: '选中过长，请缩短后再问' }
+      if (bookId !== undefined) await getBook(bookId)
       return aiJobSlot.start(async (jobId, signal) => {
         let partial = ''
         sendAiStage(jobId, 'preparing')
@@ -980,6 +1201,7 @@ function registerIpc(): void {
             },
             { task: 'translate', inputTokenEstimate: Math.ceil(text.length / 2) },
           )
+          if (bookId) await persistAiUsage(bookId, result.usage)
           mainWindow?.webContents.send('ai.done', aiCompletionDoneEvent(jobId, result))
         } catch (e: unknown) {
           if (signal.aborted) {
@@ -1055,8 +1277,15 @@ function registerIpc(): void {
               [messages.map((message) => message.content)], [], 0,
               '仅发送查询改写；正在检索本地已读内容',
             )),
-            rewrite: (messages) => runAiTaskCompletion(config, messages, { task: 'queryRewrite', signal }),
+            rewrite: async (messages) => {
+              const completion = await runAiTaskCompletion(config, messages, { task: 'queryRewrite', signal })
+              await persistAiUsage(args.bookId, completion.usage)
+              return completion
+            },
             search: async (query) => {
+              const [memory, summaries] = await Promise.all([
+                readAiMemory(args.bookId), readSummaries(args.bookId),
+              ])
               const searchChapters: EvidenceSearchChapter[] = []
               for (let index = 0; index < readPlan.ordered.length; index += 1) {
                 const chapter = readPlan.ordered[index]!
@@ -1079,6 +1308,8 @@ function registerIpc(): void {
                 requestedUptoChapterId: progressChapterId,
                 progressChapterId,
                 currentChapterId: args.chapterId,
+                memory,
+                summaries,
               })
             },
             onEvidenceSelected: (citations) => {
@@ -1103,7 +1334,11 @@ function registerIpc(): void {
                   : '仅发送查询改写；0 条本地证据，未请求最终回答',
               ))
             },
-            answer: (messages) => runAiTaskCompletion(config, messages, { task: 'evidenceQa', signal }),
+            answer: async (messages) => {
+              const completion = await runAiTaskCompletion(config, messages, { task: 'evidenceQa', signal })
+              await persistAiUsage(args.bookId, completion.usage)
+              return completion
+            },
           })
           if (result.kind === 'stopped') {
             mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))
@@ -1236,6 +1471,7 @@ function registerIpc(): void {
       ))
       if (!exclusive.ok) return exclusive
       const raw = exclusive.value
+      await persistAiUsage(bookId, undefined)
       const parsed = parseCharacterCard(raw)
       const card = {
         version: 1 as const,
@@ -1266,8 +1502,29 @@ app.setName('spbf')
 app.whenReady().then(async () => {
   const settings = await getSettings()
   await setLibraryPath(settings.libraryPath)
+  browserAdRequestFilter = new BrowserAdRequestFilter(app.getPath('userData'), () => {
+    const wc = browseView?.webContents
+    return wc && !wc.isDestroyed() ? { id: wc.id, url: wc.getURL() } : null
+  })
+  browserAdRequestFilter.setSiteRules(await listSiteRules())
+  browserAdRequestFilter.install(novelSession())
   registerIpc()
   createWindow()
+  bookOverview.start()
+  // 启动后检查到期备份；维护锁使压缩期间的书库快照保持一致。
+  setTimeout(() => {
+    void (async () => {
+      let release: (() => void) | undefined
+      try {
+        if (isDownloadBusy() || aiJobSlot.busy || activeImports > 0) return
+        release = beginLibraryRestore()
+        await runAsLibraryRestore(() => runAutoBackupIfDue())
+      } catch (error) {
+        console.warn('自动备份暂未完成：', error)
+      } finally { release?.() }
+    })()
+  }, 2_000)
+  void browserAdRequestFilter.start()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

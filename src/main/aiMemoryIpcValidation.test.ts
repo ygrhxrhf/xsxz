@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   parseMemoryBookPayload,
   parseMemoryMarkPayload,
+  parseMemoryRebuildFromPayload,
   parseMemoryRunPayload,
+  parseMemorySummaryPayload,
 } from './aiMemoryIpcValidation'
 
 const bookId = 'd_0123456789abcdef'
@@ -45,5 +47,16 @@ describe('memory IPC payload boundary', () => {
   ('rejects an unsafe or kind-mismatched memory item id: %j', (itemId) => {
     expect(() => parseMemoryMarkPayload({ bookId, kind: 'character', itemId }))
       .toThrow('记忆条目不存在')
+  })
+
+  it('validates source rebuild and corrected summary payloads', () => {
+    expect(parseMemoryRebuildFromPayload({ bookId, fromChapterId: 'c0002', uptoChapterId: 'c0005' }))
+      .toEqual({ bookId, fromChapterId: 'c0002', uptoChapterId: 'c0005' })
+    expect(() => parseMemoryRebuildFromPayload({ bookId, fromChapterId: '../c0002', uptoChapterId: 'c0005' }))
+      .toThrow('来源章节不存在')
+    expect(parseMemorySummaryPayload({ bookId, kind: 'event', itemId: 'event-0123456789abcdef', summary: ' 修订说明 ' }).summary)
+      .toBe('修订说明')
+    expect(() => parseMemorySummaryPayload({ bookId, kind: 'event', itemId: 'event-0123456789abcdef', summary: 'x'.repeat(501) }))
+      .toThrow('1 至 500 字')
   })
 })
