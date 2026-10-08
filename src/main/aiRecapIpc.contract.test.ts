@@ -22,7 +22,7 @@ describe('storySoFar trusted recap contract', () => {
     const end = source.indexOf("ipcMain.handle('ai.summarizeChapter'", start)
     const block = source.slice(start, end)
     expect(block.indexOf('plan.requiresConfirmation')).toBeLessThan(block.indexOf('getApiKey()'))
-    expect(block.indexOf('getApiKey()')).toBeLessThan(block.indexOf('aiJobSlot.start'))
+    expect(block.indexOf('getApiKey()')).toBeLessThan(block.indexOf('aiStart('))
     expect(block).toContain("{ task: 'recap', recapLength }")
     expect(block.indexOf('result.truncated')).toBeLessThan(block.indexOf('validateAiRecapOutput'))
     expect(block.indexOf('validateAiRecapOutput')).toBeLessThan(block.indexOf('writeStorySoFar'))

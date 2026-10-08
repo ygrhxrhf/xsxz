@@ -10,6 +10,7 @@ export type FailCode =
   | 'NeedLogin'
   | 'Paywall'
   | 'Intercepted'
+  | 'RateLimited'
   | 'NavFailed'
   | 'UnknownPage'
 
@@ -19,6 +20,7 @@ export const FAIL_CODE_ZH: Record<FailCode, string> = {
   NeedLogin: '需要登录后才能看',
   Paywall: '本章需要付费或会员',
   Intercepted: '页面不像正文（拦截或残页）',
+  RateLimited: '站点限流，请求过于频繁',
   NavFailed: '章节地址加载失败',
   UnknownPage: '无法识别为书',
 }
@@ -131,6 +133,8 @@ export interface FailedChapterItem {
   title: string
   index: number
   reason: string
+  /** 缺省表示「正文为空或过短」等无码失败；界面按码分组展示。 */
+  failCode?: FailCode
 }
 
 export interface DownloadProgress {
@@ -140,11 +144,27 @@ export interface DownloadProgress {
   done: number
   failed: number
   currentTitle?: string
-  status: 'running' | 'done' | 'cancelled' | 'error'
+  /**
+   * `awaitingHuman` 是 running 的子态：撞见登录 / 付费 / 验证页后暂停在当章，
+   * 等用户在内置浏览页亲自处理后用 `download.resumeUnblock` 续跑。
+   * 它不是结束态，不携带 `failedChapters`。
+   */
+  status: 'running' | 'awaitingHuman' | 'done' | 'cancelled' | 'error'
   lastError?: string
   /** 仅结束事件（done / error / cancelled）携带；无失败或空章时为 []。running 省略。 */
   failedChapters?: FailedChapterItem[]
   qualityIssueCount?: number
+}
+
+/** 下载暂停等人工时推送的那一章（主进程只做导航，不代用户点击或登录）。 */
+export interface DownloadBlocked {
+  bookId: string
+  chapterId: string
+  chapterTitle: string
+  url: string
+  failCode: FailCode
+  /** 给人看的一句话：失败原因 + 该去浏览页做什么。 */
+  message: string
 }
 
 export interface DownloadPreview {
@@ -510,6 +530,10 @@ export interface AiStageEvent {
   jobId: string
   stage: AiRequestStage
   detail?: string
+  /** 证据问答的本地引用已先于回答算出，可提前展示；旧监听方可忽略。 */
+  citations?: AiCitation[]
+  /** 与 citations 同时推送的已读夹紧截止。 */
+  uptoChapterId?: string
 }
 
 export interface AiBudgetEvent {

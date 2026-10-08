@@ -223,7 +223,7 @@ function applyChapterStatus(
 ): void {
   meta.status = status
   if (extra?.url) meta.url = extra.url
-  if (status === 'ready') {
+  if (status === 'ready' || status === 'pending') {
     delete meta.failCode
     delete meta.failMessage
   } else if (extra?.failCode) {

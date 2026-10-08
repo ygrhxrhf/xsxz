@@ -2,7 +2,7 @@
 import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, NForm, NFormItem, NDynamicTags, useMessage } from 'naive-ui'
 import type { DropdownOption, InputInst } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { BookListItem, ChapterMeta, DownloadProgress, FailCode, QualityIssue, QualityReport, TrashItem } from '@shared/types'
+import type { BookListItem, ChapterMeta, DownloadBlocked, DownloadProgress, FailCode, QualityIssue, QualityReport, TrashItem } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
 import { aiSaveRecoveryActive } from '../aiSaveRecoveryLock'
 import {
@@ -16,6 +16,7 @@ import {
   formatChapterOrdinal,
   formatLibraryProgress,
   formatLibraryProgressTime,
+  groupFailedChaptersByCode,
   isLibraryFindShortcut,
   libraryCoverHues,
   libraryCoverSrc,
@@ -57,6 +58,10 @@ const failedOpen = ref(false)
 const failedTitle = ref('')
 const failedBookId = ref('')
 const failedRows = ref<ChapterMeta[]>([])
+/** 撞墙暂停的那一章：由用户本人在浏览页处理，软件只负责导航和续跑。 */
+const blockedByBook = ref<Record<string, DownloadBlocked>>({})
+const unblockingIds = ref<string[]>([])
+const failedGroups = computed(() => groupFailedChaptersByCode(failedRows.value))
 const recapOpen = ref(false)
 const recapBook = ref<BookListItem | null>(null)
 const recapText = ref('')
@@ -82,6 +87,7 @@ const repairUrl = ref('')
 const repairCanUndo = ref(false)
 const repairSaving = ref(false)
 let unsubProgress: (() => void) | null = null
+let unsubBlocked: (() => void) | null = null
 let unsubOverview: (() => void) | null = null
 let unsubCheckAll: (() => void) | null = null
 let unsubAiChunk: (() => void) | null = null
@@ -372,12 +378,45 @@ function hasTask(ids: string[], bookId: string): boolean {
   return ids.includes(bookId)
 }
 
-function startTask(ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds, bookId: string) {
+function startTask(
+  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds | typeof unblockingIds,
+  bookId: string,
+) {
   if (!ids.value.includes(bookId)) ids.value = [...ids.value, bookId]
 }
 
-function endTask(ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds, bookId: string) {
+function endTask(
+  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds | typeof unblockingIds,
+  bookId: string,
+) {
   ids.value = ids.value.filter((id) => id !== bookId)
+}
+
+function clearBlocked(bookId: string): void {
+  if (!blockedByBook.value[bookId]) return
+  const next = { ...blockedByBook.value }
+  delete next[bookId]
+  blockedByBook.value = next
+}
+
+/** 只把卡住的那一章打开给用户在浏览页里亲自处理：软件不代登录、不代付费、不代点验证。 */
+async function handleOpenUnblock(bookId: string) {
+  const blocked = blockedByBook.value[bookId]
+  if (!blocked) return
+  startTask(unblockingIds, bookId)
+  try {
+    const res = await window.api.download.openUnblock(bookId, blocked.chapterId)
+    if (res.ok) emit('go-browse', res.url)
+    else message.error(res.message)
+  } finally {
+    endTask(unblockingIds, bookId)
+  }
+}
+
+async function handleResumeUnblock(bookId: string) {
+  const res = await window.api.download.resumeUnblock(bookId)
+  if (res.ok) message.success('已继续下载')
+  else message.error(res.message || '无法继续下载')
 }
 
 async function handleRetry(bookId: string) {
@@ -694,7 +733,8 @@ onMounted(() => {
   })
   refresh()
   unsubProgress = window.api.download.onProgress((p: DownloadProgress) => {
-    if (p.status === 'running' && p.bookId) {
+    if (p.status === 'running' || p.status === 'awaitingHuman') {
+      if (p.status === 'running' && p.bookId) clearBlocked(p.bookId)
       startTask(activeDownloadIds, p.bookId)
       const i = books.value.findIndex((b) => b.id === p.bookId)
       if (i < 0) {
@@ -718,6 +758,7 @@ onMounted(() => {
     }
     if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
       if (p.bookId) {
+        clearBlocked(p.bookId)
         endTask(retryingIds, p.bookId)
         endTask(checkingIds, p.bookId)
         endTask(activeDownloadIds, p.bookId)
@@ -726,6 +767,10 @@ onMounted(() => {
       void refresh()
       if (p.bookId && p.status !== 'cancelled') void checkQuality(p.bookId, false)
     }
+  })
+  unsubBlocked = window.api.download.onBlocked((payload) => {
+    blockedByBook.value = { ...blockedByBook.value, [payload.bookId]: payload }
+    message.warning(payload.message)
   })
   unsubCheckAll = window.api.download.onCheckAllProgress((p) => {
     checkAllStatus.value = `正在检查 ${p.current}/${p.total}：《${p.title}》`
@@ -736,6 +781,7 @@ onUnmounted(() => {
   unsubOverview?.()
   window.removeEventListener('keydown', onLibraryKeydown)
   unsubProgress?.()
+  unsubBlocked?.()
   unsubCheckAll?.()
   unsubAiChunk?.()
   unsubAiDone?.()
@@ -848,6 +894,16 @@ onUnmounted(() => {
             {{ cardTaskLabel(b) }}
           </div>
         </button>
+        <div v-if="blockedByBook[b.id]" class="book-blocked" role="alert">
+          <p class="book-blocked-reason">{{ blockedByBook[b.id].message }}</p>
+          <p class="book-blocked-chapter">卡住的那一章：{{ blockedByBook[b.id].chapterTitle }}</p>
+          <n-space size="small">
+            <n-button size="tiny" :loading="hasTask(unblockingIds, b.id)" @click="handleOpenUnblock(b.id)">
+              去浏览这一章
+            </n-button>
+            <n-button size="tiny" type="primary" @click="handleResumeUnblock(b.id)">我已处理好，继续下载</n-button>
+          </n-space>
+        </div>
         <div class="book-overview">
           <div class="book-overview-heading">全书概览 <span>含剧透</span></div>
           <p
@@ -962,7 +1018,10 @@ onUnmounted(() => {
     </n-drawer>
     <n-modal v-model:show="failedOpen" preset="card" :title="`失败章 · ${failedTitle}`" style="width:480px">
       <n-empty v-if="!failedRows.length" description="没有失败章节" />
-      <div v-else class="fail-list">
+      <p v-if="failedGroups.length > 1" class="fail-summary">
+        <span v-for="group in failedGroups" :key="group.code || 'none'">{{ group.label }} {{ group.count }} 章</span>
+      </p>
+      <div v-if="failedRows.length" class="fail-list">
         <div v-for="ch in failedRows" :key="ch.id" class="fail-row">
           <div>
             <div class="fail-title">{{ formatChapterOrdinal(ch.id, ch.index) }} {{ ch.title }}</div>
@@ -1308,6 +1367,29 @@ onUnmounted(() => {
   background: var(--surface-1);
 }
 
+.book-blocked {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-control);
+  background: var(--warning-surface);
+}
+
+.book-blocked-reason {
+  margin: 0;
+  color: var(--warning);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.book-blocked-chapter {
+  margin: var(--space-1) 0 var(--space-3);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .library-empty {
   min-height: 280px;
   display: grid;
@@ -1426,6 +1508,16 @@ onUnmounted(() => {
   .book-card:hover {
     transform: none;
   }
+}
+
+.fail-summary {
+  margin: 0 0 var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .fail-list {

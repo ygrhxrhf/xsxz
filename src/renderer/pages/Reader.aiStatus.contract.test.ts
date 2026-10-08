@@ -4,13 +4,16 @@ import { describe, expect, it } from 'vitest'
 describe('Reader AI task status contract', () => {
   it('subscribes and unsubscribes stage events with fixed Chinese copy', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
-    expect(source).toContain('window.api.ai.onStage(({ jobId, stage }) =>')
+    expect(source).toContain('window.api.ai.onStage((event) =>')
     expect(source).toContain('unsubAiStage?.()')
     for (const text of [
       '正在准备已读材料…', '正在改写检索问题…', '正在检索本地已读内容…',
       '正在请求模型服务…', '正在保存到本地书库…',
     ]) expect(source).toContain(text)
-    expect(source).toContain("assistantStages.value = { ...assistantStages.value, [jobId]: stage }")
+    expect(source).toContain('assistantStages.value = { ...assistantStages.value, [event.jobId]: event.stage }')
+    // 依据由本地检索先算出，必须在正文流完之前就写进气泡。
+    expect(source).toContain('if (event.jobId === chatJobId.value && event.citations?.length && chatAssistantIndex.value >= 0)')
+    expect(source).toContain('assistant.citations = event.citations')
   })
 
   it('captures usage, truncation, and save tokens only for assistant jobs', async () => {

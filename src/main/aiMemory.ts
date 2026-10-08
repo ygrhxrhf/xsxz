@@ -7,6 +7,7 @@ import type {
   AiMemoryForeshadow,
   AiMemoryRelation,
 } from '../shared/types'
+import { renderedParagraphs } from '../shared/aiText'
 import { stableAiMemoryId } from './library'
 
 export interface AiMemoryCandidate extends AiCitation {
@@ -33,8 +34,14 @@ function textCharacters(text: string): string[] {
   return Array.from(text)
 }
 
-function normalizeParagraphs(body: string): string[] {
-  return body.replace(/\r\n?/g, '\n').split(/\n\s*\n+/).map((item) => item.trim()).filter(Boolean)
+/**
+ * 段号必须等于阅读器渲染出来的段号：分段只用共享的 renderedParagraphs，
+ * 空白段照样占号（只把文本裁干净），否则记忆引用会整体前移、点引用跳错段。
+ */
+function memoryParagraphs(body: string): Array<{ index: number; text: string }> {
+  return renderedParagraphs(body)
+    .map((paragraph, index) => ({ index, text: paragraph.replace(/\r\n?/g, '\n').trim() }))
+    .filter((paragraph) => paragraph.text.length > 0)
 }
 
 export function buildAiMemoryCandidates(
@@ -42,14 +49,11 @@ export function buildAiMemoryCandidates(
   chapterTitle: string,
   body: string,
 ): AiMemoryCandidate[] {
-  const paragraphs = normalizeParagraphs(body)
   const units: Array<{ char: string; paragraphIndex: number }> = []
-  paragraphs.forEach((paragraph, paragraphIndex) => {
-    if (paragraphIndex > 0) {
-      units.push({ char: '\n', paragraphIndex }, { char: '\n', paragraphIndex })
-    }
-    for (const char of textCharacters(paragraph)) units.push({ char, paragraphIndex })
-  })
+  for (const paragraph of memoryParagraphs(body)) {
+    if (units.length) units.push({ char: '\n', paragraphIndex: paragraph.index }, { char: '\n', paragraphIndex: paragraph.index })
+    for (const char of textCharacters(paragraph.text)) units.push({ char, paragraphIndex: paragraph.index })
+  }
   if (units.length < 80) return []
 
   const chunkCount = Math.ceil(units.length / 160)

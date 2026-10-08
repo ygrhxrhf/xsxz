@@ -64,6 +64,16 @@ describe('extractPage — chapter page', () => {
     expect(result.failMessage).toBe('需要登录后才能看')
   })
 
+  it('does not read a bare 登录 word in the site title as a login wall', () => {
+    const story =
+      '夜风吹过城墙，林舟看见远处的灯火，想起昨夜在山路上听到的脚步声。他没有回头，只把信收进袖中，沿着石阶继续前行。'
+    const html = `<html><head><title>第一章 起风 - 登录 - 某小说网</title></head><body><div id="content"><p>${story.repeat(
+      20,
+    )}</p></div></body></html>`
+    expect(extractBody(html, 'https://example.com/book/1.html').ok).toBe(true)
+    expect(extractPage(html, 'https://example.com/book/1.html').failCode).toBeUndefined()
+  })
+
   it('recovers catalog URL from a chapter page without treating it as a one-chapter book', () => {
     const html = fixture('chapter.html')
     const result = extractPage(html, 'https://example.com/book/1.html')
@@ -120,6 +130,29 @@ describe('paywall detection', () => {
     )}</p></div></body></html>`
     expect(extractBody(html, 'https://example.com/book/5.html').ok).toBe(true)
     expect(extractPage(html, 'https://example.com/book/5.html').failCode).toBeUndefined()
+  })
+
+  it('does not call an empty body a paywall because the header sells VIP', () => {
+    const html = fixture('vip-nav-empty.html')
+    const body = extractBody(html, 'https://example.com/book/31.html')
+    expect(body.ok).toBe(false)
+    expect(body.failCode).toBe('BodyEmpty')
+    const page = extractPage(html, 'https://example.com/book/31.html')
+    expect(page.failCode).toBe('BodyEmpty')
+  })
+
+  it('keeps a purchased chapter that carries the VIP badge in its own body', () => {
+    const html = fixture('vip-purchased-long.html')
+    const body = extractBody(html, 'https://example.com/book/31.html')
+    expect(body.ok).toBe(true)
+    expect(effectiveLength(body.body)).toBeGreaterThan(800)
+    expect(extractPage(html, 'https://example.com/book/31.html').ok).toBe(true)
+  })
+
+  it('still calls an empty page with an explicit unlock sentence a paywall', () => {
+    const html =
+      '<html><head><title>第四十章 断崖</title></head><body><div id="content"></div><p>本章需付费，购买本章后可解锁后续章节。</p></body></html>'
+    expect(extractBody(html, 'https://example.com/book/40.html').failCode).toBe('Paywall')
   })
 })
 

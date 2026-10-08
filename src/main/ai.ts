@@ -11,6 +11,8 @@ import type {
   ChapterStatus,
 } from '../shared/types'
 import { BUILTIN_AI_PROMPTS } from '../shared/aiPrompts'
+import type { AiExclusiveResult, AiLane } from './aiScheduler'
+import { AiQueue } from './aiScheduler'
 import {
   AI_INPUT_CHARACTER_BUDGET,
   CLEAN_PARAGRAPH_SEGMENT_LIMIT,
@@ -73,48 +75,33 @@ export interface AiCompletionResult {
 export const AI_CHAT_HISTORY_LIMIT = 8
 export const AI_BUSY_MESSAGE = '请先停止当前生成'
 
-let nextAiJobId = 0
-
-/** Main-process single slot shared by streaming and non-streaming AI requests. */
+/**
+ * 兼容壳：内部已换成车道队列，只保留旧构造签名供 bookOverview 与既有测试使用。
+ * S6 收敛时删除，调用方应直接使用 AiQueue 并给出车道与策略。
+ */
 export class AiJobSlot {
-  private current: { jobId: string; controller: AbortController; mode: 'stream' | 'exclusive' } | null = null
+  private readonly queue: AiQueue
+
+  constructor(queue: AiQueue = new AiQueue(), private readonly lane: AiLane = 'interactive') {
+    this.queue = queue
+  }
 
   get busy(): boolean {
-    return this.current !== null
+    return this.queue.hasInFlight()
   }
 
   start(run: (jobId: string, signal: AbortSignal) => Promise<void>): AiJobStart {
-    if (this.current) return { ok: false, message: AI_BUSY_MESSAGE }
-    const jobId = `ai-${Date.now()}-${++nextAiJobId}`
-    const controller = new AbortController()
-    this.current = { jobId, controller, mode: 'stream' }
-    void Promise.resolve().then(() => run(jobId, controller.signal)).catch(() => {}).finally(() => {
-      if (this.current?.jobId === jobId) this.current = null
-    })
-    return { ok: true, jobId }
+    return this.queue.start(run, { lane: this.lane })
   }
 
-  async runExclusive<T>(
+  runExclusive<T>(
     run: (signal: AbortSignal, jobId: string) => Promise<T>,
-  ): Promise<{ ok: true; value: T } | { ok: false; message: string }> {
-    if (this.current) return { ok: false, message: AI_BUSY_MESSAGE }
-    const jobId = `ai-${Date.now()}-${++nextAiJobId}`
-    const controller = new AbortController()
-    this.current = { jobId, controller, mode: 'exclusive' }
-    try {
-      return { ok: true, value: await run(controller.signal, jobId) }
-    } finally {
-      if (this.current?.jobId === jobId) this.current = null
-    }
+  ): Promise<AiExclusiveResult<T>> {
+    return this.queue.runExclusive(run, { lane: this.lane })
   }
 
   cancel(jobId?: string): void {
-    if (!this.current) return
-    if (jobId) {
-      if (this.current.jobId === jobId) this.current.controller.abort()
-      return
-    }
-    if (this.current.mode === 'exclusive') this.current.controller.abort()
+    this.queue.cancel(jobId)
   }
 }
 
@@ -321,6 +308,97 @@ export function parseAiJsonObject(text: string): Record<string, unknown> {
     }
   }
   throw new Error('模型返回的结构化内容无法识别，原有数据未改变')
+}
+
+const JSON_ESCAPES: Record<string, string> = {
+  '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t',
+}
+
+function isHighSurrogate(unit: string): boolean {
+  return unit >= '\uD800' && unit <= '\uDBFF'
+}
+
+function isLowSurrogate(unit: string): boolean {
+  return unit >= '\uDC00' && unit <= '\uDFFF'
+}
+
+/**
+ * 结构化任务请求的是 `response_format:{type:'json_object'}`，所以 SSE 增量是 JSON 片段而不是正文。
+ * 这里只抽取指定字符串字段已解码的部分用于流式展示：不完整的转义必须挂起等待后续帧，
+ * 任何无法转发的内容都只停止转发、不抛错，让调用方回退到结束时的一次性填充。
+ */
+export function createJsonStringFieldSink(
+  field: string,
+  onText: (chunk: string) => void,
+): (delta: string) => void {
+  const pattern = new RegExp(`"${field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\s*:\\s*"`)
+  let head = ''
+  let open = false
+  let closed = false
+  let hex: string | null = null
+  let escaped = false
+  let high = ''
+
+  const process = (input: string): void => {
+    let out = ''
+    for (let index = 0; index < input.length; index += 1) {
+      const unit = input[index]!
+      if (hex !== null) {
+        hex += unit
+        if (hex.length < 4) continue
+        const code = Number.parseInt(hex, 16)
+        hex = null
+        if (!Number.isFinite(code)) { closed = true; break }
+        if (isHighSurrogate(String.fromCharCode(code))) {
+          if (high) out += high
+          high = String.fromCharCode(code)
+          continue
+        }
+        if (isLowSurrogate(String.fromCharCode(code)) && high) {
+          out += high + String.fromCharCode(code)
+          high = ''
+          continue
+        }
+        if (high) { out += high; high = '' }
+        out += String.fromCharCode(code)
+        continue
+      }
+      if (escaped) {
+        escaped = false
+        if (unit === 'u') { hex = ''; continue }
+        const mapped = JSON_ESCAPES[unit]
+        if (mapped === undefined) { closed = true; break }
+        out += mapped
+        continue
+      }
+      if (high) {
+        if (isLowSurrogate(unit)) { out += high + unit; high = ''; continue }
+        out += high
+        high = ''
+      }
+      if (unit === '\\') { escaped = true; continue }
+      // An unescaped quote ends the field; a raw control character means this is not valid JSON.
+      if (unit === '"' || unit === '\n' || unit === '\r') { closed = true; break }
+      if (isHighSurrogate(unit)) { high = unit; continue }
+      out += unit
+    }
+    if (out) onText(out)
+  }
+
+  return (delta: string): void => {
+    if (closed || !delta) return
+    if (open) {
+      process(delta)
+      return
+    }
+    head += delta
+    const match = pattern.exec(head)
+    if (!match) return
+    open = true
+    const rest = head.slice(match.index + match[0].length)
+    head = ''
+    process(rest)
+  }
 }
 
 function buildRequestBody(

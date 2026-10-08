@@ -1,4 +1,4 @@
-import type { BookListItem, FailCode } from '@shared/types'
+import { FAIL_CODE_ZH, type BookListItem, type FailCode } from '@shared/types'
 
 export type LibraryStatusFilter = 'all' | 'downloading' | 'ready' | 'partial'
 export type LibrarySortKey = 'updated' | 'title' | 'author'
@@ -132,6 +132,29 @@ export function formatLibraryProgressTime(b: Pick<BookListItem, 'progress'>): st
 
 export function checkUpdateNeedsBrowse(code?: FailCode | string): boolean {
   return code === 'NeedLogin' || code === 'Paywall' || code === 'Intercepted'
+}
+
+export type FailedChapterGroup = { code: FailCode | ''; label: string; count: number }
+
+/**
+ * 失败章按失败码收敛成计数：一本站外页能刷出几十条同一面墙的明细，逐条列没人看。
+ * 顺序取码首次出现，缺 failCode 的老数据单独归一组。
+ */
+export function groupFailedChaptersByCode(
+  items: Array<{ failCode?: FailCode }>,
+): FailedChapterGroup[] {
+  const order: Array<FailCode | ''> = []
+  const counts = new Map<FailCode | '', number>()
+  for (const item of items) {
+    const code = item.failCode || ''
+    counts.set(code, (counts.get(code) || 0) + 1)
+    if (!order.includes(code)) order.push(code)
+  }
+  return order.map((code) => ({
+    code,
+    label: code ? FAIL_CODE_ZH[code] : '未记录原因',
+    count: counts.get(code) || 0,
+  }))
 }
 
 export function isLibraryFindShortcut(e: {

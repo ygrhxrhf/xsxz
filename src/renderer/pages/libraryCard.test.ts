@@ -10,6 +10,7 @@ import {
   formatChapterOrdinal,
   formatLibraryProgress,
   formatLibraryProgressTime,
+  groupFailedChaptersByCode,
   hasFailedChapters,
   libraryReadChapterOrdinal,
   isDownloadBook,
@@ -357,6 +358,26 @@ describe('library check-update card helpers', () => {
     expect(checkUpdateNeedsBrowse('Paywall')).toBe(true)
     expect(checkUpdateNeedsBrowse('Intercepted')).toBe(true)
     expect(checkUpdateNeedsBrowse('CatalogNotFound')).toBe(false)
+    expect(checkUpdateNeedsBrowse('RateLimited')).toBe(false)
+  })
+
+  it('groups failed chapters by wall code, first-seen first', () => {
+    expect(
+      groupFailedChaptersByCode([
+        { failCode: 'NeedLogin' },
+        { failCode: 'NeedLogin' },
+        { failCode: 'BodyEmpty' },
+        { failCode: 'RateLimited' },
+        { failCode: 'BodyEmpty' },
+        { failCode: undefined },
+      ]),
+    ).toEqual([
+      { code: 'NeedLogin', label: '需要登录后才能看', count: 2 },
+      { code: 'BodyEmpty', label: '正文为空或过短', count: 2 },
+      { code: 'RateLimited', label: '站点限流，请求过于频繁', count: 1 },
+      { code: '', label: '未记录原因', count: 1 },
+    ])
+    expect(groupFailedChaptersByCode([])).toEqual([])
   })
 })
 
@@ -385,5 +406,10 @@ describe('reader progress / catalog helpers', () => {
   it('tells the reader a paid chapter needs unlocking in the browse page', () => {
     expect(failAdvice('Paywall')).toMatch(/付费或会员/)
     expect(failAdvice('Paywall')).toMatch(/浏览页/)
+  })
+
+  it('asks a rate-limited chapter to wait instead of visiting the browse page', () => {
+    expect(failAdvice('RateLimited')).toMatch(/限流/)
+    expect(failAdvice('RateLimited')).not.toMatch(/浏览页/)
   })
 })

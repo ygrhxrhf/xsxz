@@ -15,7 +15,7 @@ afterEach(() => {
 })
 
 describe('AI exclusive slot cancellation', () => {
-  it('does not cancel a streaming job when the caller omits jobId', async () => {
+  it('cancels the running interactive job only for the matching job or a bare stop', async () => {
     const slot = new AiJobSlot()
     let streamSignal: AbortSignal | undefined
     const started = slot.start(async (_jobId, signal) => {
@@ -23,19 +23,22 @@ describe('AI exclusive slot cancellation', () => {
       await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
     })
     expect(started.ok).toBe(true)
-    await Promise.resolve()
-    slot.cancel()
+    await vi.waitFor(() => expect(streamSignal).toBeDefined())
+    slot.cancel('other')
     expect(streamSignal?.aborted).toBe(false)
-    if (started.ok) slot.cancel(started.jobId)
+    // 停止清正文这类调用拿不到 jobId，必须能收掉交互车道上正在跑的流。
+    slot.cancel()
     expect(streamSignal?.aborted).toBe(true)
-    await Promise.resolve()
   })
 
   it('passes the shared abort signal into non-stream work', async () => {
     const slot = new AiJobSlot()
+    let started = false
     const running = slot.runExclusive((signal) => new Promise<string>((_resolve, reject) => {
+      started = true
       signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
     }))
+    await vi.waitFor(() => expect(started).toBe(true))
     slot.cancel()
     await expect(running).rejects.toMatchObject({ name: 'AbortError' })
     expect(slot.busy).toBe(false)

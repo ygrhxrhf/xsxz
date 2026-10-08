@@ -362,14 +362,22 @@ function effectiveLength(text: string): number {
   return text.replace(/[\s\p{P}]/gu, '').length
 }
 
-function tryExtractBody(doc: Document): { body: string; ok: boolean; partialText: string } {
+/** 文本从哪来的：正文容器里的截断章文才能用弱档付费词。 */
+type BodySource = 'container' | 'fallback' | 'none'
+
+function tryExtractBody(doc: Document): {
+  body: string
+  ok: boolean
+  partialText: string
+  source: BodySource
+} {
   // 1. Common selectors
   for (const sel of BODY_SELECTORS) {
     const el = doc.querySelector(sel)
     if (!el) continue
     const text = cleanBodyText(bodyText(el))
-    if (effectiveLength(text) >= 80) return { body: text, ok: true, partialText: text }
-    if (text.length > 0) return { body: '', ok: false, partialText: text }
+    if (effectiveLength(text) >= 80) return { body: text, ok: true, partialText: text, source: 'container' }
+    if (text.length > 0) return { body: '', ok: false, partialText: text, source: 'container' }
   }
 
   // 2. Readability
@@ -379,8 +387,8 @@ function tryExtractBody(doc: Document): { body: string; ok: boolean; partialText
       const articleDoc = doc.createElement('div')
       articleDoc.innerHTML = article.content ?? ''
       const text = cleanBodyText(bodyText(articleDoc))
-      if (effectiveLength(text) >= 80) return { body: text, ok: true, partialText: text }
-      if (text.length > 0) return { body: '', ok: false, partialText: text }
+      if (effectiveLength(text) >= 80) return { body: text, ok: true, partialText: text, source: 'fallback' }
+      if (text.length > 0) return { body: '', ok: false, partialText: text, source: 'fallback' }
     }
   } catch { /* skip */ }
 
@@ -396,19 +404,19 @@ function tryExtractBody(doc: Document): { body: string; ok: boolean; partialText
   }
   if (best) {
     const text = cleanBodyText(bodyText(best.el))
-    return { body: text, ok: true, partialText: text }
+    return { body: text, ok: true, partialText: text, source: 'fallback' }
   }
 
-  return { body: '', ok: false, partialText: '' }
+  return { body: '', ok: false, partialText: '', source: 'none' }
 }
 
 function isLoginWall(doc: Document, bodyText: string): boolean {
   const indicators = ['请登录', '登录后阅读', '需要登录']
-  const title = (doc.title || '')
+  const title = doc.title || ''
   // Check body text
   if (bodyText.length < 200 && indicators.some((w) => bodyText.includes(w))) return true
-  // Check title
-  if (title.includes('login') || title.includes('登录')) return true
+  // Check title: 站点页头常把「登录」两个字挂进 title，只算登录页那几种写法
+  if (bodyText.length < 200 && /(请登录|用户登录|登录本站|login)/i.test(title)) return true
   // Check full page text for login indicators when body is empty
   if (bodyText.length === 0) {
     const pageText = visibleText(doc.body)
@@ -420,33 +428,36 @@ function isLoginWall(doc: Document, bodyText: string): boolean {
 // 付费墙的判据只有「话术」是不够的：站点页头页脚常带 VIP/会员入口。
 // 因此额外要求正文很短——真章不会只剩个开头。
 const PAYWALL_MAX_EFFECTIVE = 800
-const PAYWALL_TEXT = [
+/** 明确的解锁话术：出现即说明这一章没打算白给。 */
+const PAYWALL_STRONG = [
   '购买本章',
-  '付费阅读',
-  '付费章节',
   '本章需要付费',
   '本章需付费',
   '付费解锁',
   '订阅后可读',
   '订阅后阅读',
   '请输入订阅密码',
-  '会员后可读',
-  'VIP章节',
   '解锁本章',
   '解锁后续',
   '打赏解锁',
   '本章试读',
   '剩余章节需',
 ]
+/** 页头页脚常见入口文案：单独出现不足以证明这一章对你关闭。 */
+const PAYWALL_AMBIGUOUS = ['付费阅读', '付费章节', 'VIP章节', '会员后可读']
 
-function isPaywall(doc: Document, bodyText: string): boolean {
-  const effective = effectiveLength(bodyText)
-  if (bodyText.length > 0) {
-    if (effective > PAYWALL_MAX_EFFECTIVE) return false
-    return PAYWALL_TEXT.some((w) => `${doc.title || ''} ${bodyText}`.includes(w))
-  }
-  const pageText = doc.body ? visibleText(doc.body) : ''
-  return PAYWALL_TEXT.some((w) => `${doc.title || ''} ${pageText}`.includes(w))
+function hitsPaywall(text: string, words: string[]): boolean {
+  return words.some((w) => text.includes(w))
+}
+
+function isPaywall(doc: Document, bodyText: string, fromContainer: boolean): boolean {
+  if (effectiveLength(bodyText) > PAYWALL_MAX_EFFECTIVE) return false
+  const title = doc.title || ''
+  const pageText = bodyText.length > 0 ? '' : doc.body ? visibleText(doc.body) : ''
+  const haystack = `${title} ${bodyText}${pageText}`
+  if (hitsPaywall(haystack, PAYWALL_STRONG)) return true
+  // 弱档词站点到处都写：只有从正文容器截到一段被拦下的章文时，它才说明这一章对你关闭
+  return fromContainer && hitsPaywall(bodyText, PAYWALL_AMBIGUOUS)
 }
 
 const INTERCEPT_TITLE = ['安全验证', '人机验证', 'Access Denied', 'Just a moment', 'Attention Required']
@@ -463,9 +474,9 @@ function isInterceptedPage(doc: Document, bodyText: string): boolean {
 type WallKind = 'NeedLogin' | 'Paywall' | 'Intercepted'
 
 /** 一处判定，extractPage / extractBody 共用；顺序即优先级。 */
-function classifyWall(doc: Document, text: string): WallKind | null {
+function classifyWall(doc: Document, text: string, fromContainer: boolean): WallKind | null {
   if (isLoginWall(doc, text)) return 'NeedLogin'
-  if (isPaywall(doc, text)) return 'Paywall'
+  if (isPaywall(doc, text, fromContainer)) return 'Paywall'
   if (isInterceptedPage(doc, text)) return 'Intercepted'
   return null
 }
@@ -536,7 +547,7 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
 
   const ruledBody = tryBodyFromRule(doc, rule)
   if (ruledBody) {
-    const wall = classifyWall(doc, ruledBody)
+    const wall = classifyWall(doc, ruledBody, true)
     if (wall) return wallFail(wall, 'chapter')
     const catalogUrl = findCatalogLink(doc, pageUrl)
     return {
@@ -554,9 +565,10 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
   }
 
   // Try body extraction (likely a chapter page)
-  const { body, ok: bodyOk, partialText } = tryExtractBody(doc)
+  const { body, ok: bodyOk, partialText, source } = tryExtractBody(doc)
+  const fromContainer = source === 'container'
   if (bodyOk) {
-    const wall = classifyWall(doc, body)
+    const wall = classifyWall(doc, body, fromContainer)
     if (wall) return wallFail(wall, 'chapter')
     // This looks like a chapter page - try to find catalog link
     const catalogUrl = findCatalogLink(doc, pageUrl)
@@ -576,13 +588,13 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
 
   // Body too short / empty — a wall (login, paywall, captcha) explains why
   if (partialText.length > 0) {
-    const wall = classifyWall(doc, partialText)
+    const wall = classifyWall(doc, partialText, fromContainer)
     if (wall) return wallFail(wall, 'unknown')
     return { ok: false, pageKind: 'unknown', failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
 
   // No body found at all — the surrounding page text may say why
-  const wall = classifyWall(doc, '')
+  const wall = classifyWall(doc, '', false)
   if (wall) return wallFail(wall, 'unknown')
 
   return { ok: false, pageKind: 'unknown', failCode: 'UnknownPage', failMessage: '无法识别为书' }
@@ -612,17 +624,18 @@ export function extractBody(
   const doc = dom.window.document
   const ruledBody = tryBodyFromRule(doc, rule)
   if (ruledBody) {
-    const wall = classifyWall(doc, ruledBody)
+    const wall = classifyWall(doc, ruledBody, true)
     if (wall) return bodyWallFail(wall)
     return { body: cleanAdParagraphs(ruledBody), bodyRaw: ruledBody, ok: true }
   }
-  const { body, ok, partialText } = tryExtractBody(doc)
+  const { body, ok, partialText, source } = tryExtractBody(doc)
+  const fromContainer = source === 'container'
   if (!ok) {
-    const wall = classifyWall(doc, partialText)
+    const wall = classifyWall(doc, partialText, fromContainer)
     if (wall) return bodyWallFail(wall)
     return { body: '', ok: false, failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
-  const wall = classifyWall(doc, body)
+  const wall = classifyWall(doc, body, fromContainer)
   if (wall) return bodyWallFail(wall)
   return { body: cleanAdParagraphs(body), bodyRaw: body, ok: true }
 }

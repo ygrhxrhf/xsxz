@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeEvidenceSearchTerms, selectLocalEvidence } from './aiEvidenceSearch'
+import { renderedParagraphs, retrievalTerms } from '../shared/aiText'
+import { EVIDENCE_NO_PROGRESS_MESSAGE, evidenceReadHints, normalizeEvidenceSearchTerms, selectLocalEvidence } from './aiEvidenceSearch'
 
 function chapter(id: string, index: number, body: string, status = 'ready') {
   return { id, index, title: `第${index}章 顾清`, status, body }
@@ -191,5 +192,135 @@ describe('local read-range evidence selection', () => {
     expect(() => selectLocalEvidence(chapters, { originalQuestion: '顾清' }, {
       requestedUptoChapterId: 'c0002', progressChapterId: 'missing',
     })).toThrow('还没有阅读进度')
+  })
+
+  it('改述提问没有字面短语时仍按词面重叠召回', () => {
+    const paraphrased = [
+      chapter('c0001', 1, '夜色里的码头没有人。'),
+      chapter('c0002', 2, '她把玉印交给了码头的账房先生，转身离开。'),
+    ]
+    const query = { originalQuestion: '玉印交给谁了', corePhrase: '玉印交给谁' }
+    expect(paraphrased[1]!.body).not.toContain('玉印交给谁')
+    const result = selectLocalEvidence(paraphrased, query, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002',
+    })
+    expect(result.citations[0]?.chapterId).toBe('c0002')
+    expect(result.citations[0]?.excerpt).toContain('她把玉印交给了码头的账房先生')
+  })
+
+  it('改述候选分数封顶，压不过 corePhrase 字面命中', () => {
+    const mixed = [
+      chapter('c0001', 1, '账房先生问过玉印的下落，没有人答话。'),
+      chapter('c0002', 2, '她把玉印交给了码头的人。'),
+    ]
+    const result = selectLocalEvidence(mixed, { originalQuestion: '玉印的下落', corePhrase: '玉印的下落' }, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002', currentChapterId: 'c0002',
+    })
+    expect(result.citations.map((item) => item.chapterId)).toEqual(['c0001', 'c0002'])
+    expect(result.citations[1]?.excerpt).toContain('她把玉印交给了码头的人')
+  })
+
+  it('段号与渲染段号一致，空行里的空白也算一段', () => {
+    const body = '第一段\n\n　\n\n第二段里有玉印'
+    const rendered = renderedParagraphs(body)
+    expect(rendered).toHaveLength(3)
+    const result = selectLocalEvidence([chapter('c0001', 1, body)], { originalQuestion: '玉印', corePhrase: '玉印' }, {
+      requestedUptoChapterId: 'c0001', progressChapterId: 'c0001',
+    })
+    expect(result.citations[0]?.paragraphIndex).toBe(2)
+    expect(rendered[result.citations[0]!.paragraphIndex]).toContain('玉印')
+  })
+
+  it('命中段过短并邻段补进摘录，坐标仍指向命中段', () => {
+    const body = '她把玉印收进袖中。\n\n账房先生追问了很久。\n\n第二天码头开船。'
+    const result = selectLocalEvidence([chapter('c0001', 1, body)], {
+      originalQuestion: '账房先生追问', corePhrase: '账房先生追问',
+    }, { requestedUptoChapterId: 'c0001', progressChapterId: 'c0001', excerptCharacters: 80 })
+    expect(result.citations[0]?.paragraphIndex).toBe(1)
+    expect(result.citations[0]?.excerpt).toContain('她把玉印收进袖中')
+    expect(result.citations[0]?.excerpt).toContain('第二天码头开船')
+  })
+
+  it('读者的划线只提升排序，不改变可引用的正文范围', () => {
+    const noted = [
+      chapter('c0001', 1, '甲段提到码头。\n\n乙段也提到码头。'),
+      chapter('c0002', 2, '丙段提到码头。'),
+    ]
+    const base = selectLocalEvidence(noted, { originalQuestion: '码头', corePhrase: '码头' }, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002',
+    })
+    const lifted = selectLocalEvidence(noted, { originalQuestion: '码头', corePhrase: '码头' }, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002',
+      readerNotes: [{ chapterId: 'c0001', paragraphIndex: 1 }],
+    })
+    expect(lifted.citations[0]).toMatchObject({ chapterId: 'c0001', paragraphIndex: 1 })
+    expect(base.citations[0]?.paragraphIndex).not.toBe(1)
+  })
+})
+
+describe('读盘剪枝提示', () => {
+  const headers = chapters.map((item) => ({ id: item.id, index: item.index }))
+
+  it('必选集含当前章与截止章，正文词面是否重叠都在所不问', () => {
+    const hints = evidenceReadHints(headers, { originalQuestion: '王城', corePhrase: '王城' }, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002', currentChapterId: 'c0001',
+      summaries: { version: 1, byChapter: { c0001: '王城的账册来路' }, updatedAt: '2026-10-08T00:00:00.000Z' },
+    })
+    expect(hints.cutoffPosition).toBe(1)
+    expect(hints.currentIndex).toBe(1)
+    expect(hints.prunable, '两个字的短语有二元窗，可以剪枝').toBe(true)
+    expect([...hints.mandatory].sort()).toEqual(['c0001', 'c0002'])
+  })
+
+  it('记忆指向的章与当前章都进必选集，越界与否由读盘计划按截止章筛掉', () => {
+    const hints = evidenceReadHints(headers, { originalQuestion: '顾清', corePhrase: '顾清' }, {
+      requestedUptoChapterId: 'c0003', progressChapterId: 'c0002', currentChapterId: 'c0003',
+      memory: {
+        version: 1, characters: [{
+          id: 'ch1', name: '顾清', aliases: [], role: '', status: '', summary: '', accuracy: 'normal',
+          updatedAt: '2026-10-08T00:00:00.000Z',
+          sources: [{ id: 's1', chapterId: 'c0004', chapterTitle: '第4章', paragraphIndex: 0, excerpt: '王城' }],
+        }], relations: [], foreshadows: [], events: [], updatedAt: '2026-10-08T00:00:00.000Z',
+      },
+    })
+    expect(hints.uptoChapterId).toBe('c0002')
+    expect([...hints.mandatory].sort()).toEqual(['c0002', 'c0003', 'c0004'])
+  })
+
+  it('单字面短语测不出词形，直接取消剪枝资格', () => {
+    const hints = evidenceReadHints(headers, { originalQuestion: '玉', corePhrase: '玉' }, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002',
+    })
+    expect([...hints.terms]).toEqual([])
+    expect(hints.prunable).toBe(false)
+  })
+
+  it('「」引用被归一化压成单字时同样取消剪枝资格', () => {
+    const hints = evidenceReadHints(headers, { originalQuestion: '「玉 」是什么意思' }, {
+      requestedUptoChapterId: 'c0002', progressChapterId: 'c0002',
+    })
+    expect(hints.terms.size, '整句仍给出词形，挡不住的是单字引用').toBeGreaterThan(0)
+    expect(hints.prunable).toBe(false)
+  })
+
+  it('剪枝词形是打分词面的超集：字面短语、关键词、别名、引用锚都在内', () => {
+    const memory = {
+      version: 1, characters: [{
+        id: 'ch1', name: '顾清', aliases: ['账房小姐'], role: '', status: '', summary: '', accuracy: 'normal',
+        updatedAt: '2026-10-08T00:00:00.000Z', sources: [],
+      }], relations: [], foreshadows: [], events: [], updatedAt: '2026-10-08T00:00:00.000Z',
+    } as const
+    const hints = evidenceReadHints(headers, {
+      originalQuestion: '「旧账册」里顾清最先发现什么', corePhrase: '旧账册', keywords: ['码头'],
+    }, { requestedUptoChapterId: 'c0002', progressChapterId: 'c0002', memory: memory as never })
+    for (const phrase of ['旧账册', '码头', '账房小姐']) {
+      for (const term of retrievalTerms(phrase)) expect(hints.terms.has(term), `${phrase} 的词形 ${term} 缺失`).toBe(true)
+    }
+  })
+
+  it('阅读进度缺失时与打分同一处报错', () => {
+    expect(() => evidenceReadHints(headers, { originalQuestion: '顾清' }, {
+      requestedUptoChapterId: 'missing', progressChapterId: 'missing',
+    })).toThrow(EVIDENCE_NO_PROGRESS_MESSAGE)
   })
 })

@@ -20,6 +20,7 @@ import type {
   BrowseFindResult,
   BrowseReadingPage,
   ChapterFile,
+  DownloadBlocked,
   DownloadProgress,
   ReadingProgress,
   TtsPosition,
@@ -130,11 +131,18 @@ const api = {
       ipcRenderer.invoke('download.redownloadChapter', { bookId, chapterId, url }) as Promise<{ ok: boolean; message?: string }>,
     cancel: (bookId?: string) => ipcRenderer.invoke('download.cancel', { bookId }),
     retryFailed: (bookId: string) => ipcRenderer.invoke('download.retryFailed', { bookId }),
+    openUnblock: (bookId: string, chapterId: string) =>
+      ipcRenderer.invoke('download.openUnblock', { bookId, chapterId }) as Promise<
+        { ok: true; url: string } | { ok: false; message: string }
+      >,
+    resumeUnblock: (bookId: string) =>
+      ipcRenderer.invoke('download.resumeUnblock', { bookId }) as Promise<{ ok: boolean; message?: string }>,
     checkUpdate: (bookId: string) => ipcRenderer.invoke('download.checkUpdate', { bookId }),
     checkAll: () =>
       ipcRenderer.invoke('download.checkAll') as Promise<import('../shared/types').CheckAllResult>,
     cancelCheckAll: () => ipcRenderer.invoke('download.cancelCheckAll') as Promise<{ ok: true }>,
     onProgress: (handler: (payload: DownloadProgress) => void) => on('download.progress', handler),
+    onBlocked: (handler: (payload: DownloadBlocked) => void) => on('download.blocked', handler),
     onCheckAllProgress: (handler: (payload: import('../shared/types').CheckAllProgress) => void) =>
       on('download.checkAll.progress', handler),
   },

@@ -11,9 +11,20 @@ describe('退出与启动的状态收口', () => {
     expect(start, '主进程没有注册 before-quit').toBeGreaterThan(-1)
     const end = source.indexOf("app.on('window-all-closed'", start)
     const block = source.slice(start, end)
-    for (const call of ['cancelDownload()', 'cancelCheckAll()', 'aiJobSlot.cancel()', 'bookOverview.stop()']) {
+    for (const call of [
+      'cancelDownload()', 'cancelCheckAll()', 'aiQueue.cancelAll()', 'bookOverview.stop()', 'stopEvidenceIndex()',
+    ]) {
       expect(block).toContain(call)
     }
+  })
+
+  it('读章只唤醒索引补建，不等它建完才返回正文', async () => {
+    const source = await mainSource()
+    const start = source.indexOf("ipcMain.handle('library.readChapter'")
+    const block = source.slice(start, source.indexOf("ipcMain.handle('library.delete'", start))
+    expect(block).toContain('wakeEvidenceIndex(bookId)')
+    expect(block).not.toContain('await wakeEvidenceIndex')
+    expect(block.indexOf('wakeEvidenceIndex(bookId)')).toBeLessThan(block.indexOf('return { chapter }'))
   })
 
   it('启动时先修复上次退出留下的 downloading 状态，再开窗口', async () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AI_BUSY_MESSAGE, AiJobSlot, streamChatCompletion } from './ai'
+import { AiJobSlot, streamChatCompletion } from './ai'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -33,7 +33,7 @@ describe('streamChatCompletion', () => {
 })
 
 describe('AiJobSlot', () => {
-  it('rejects a second job, and cancel aborts only the matching job', async () => {
+  it('queues a second job, and cancel aborts only the matching job', async () => {
     const slot = new AiJobSlot()
     let release!: () => void
     let signal!: AbortSignal
@@ -43,7 +43,10 @@ describe('AiJobSlot', () => {
     })
     expect(first.ok).toBe(true)
     await Promise.resolve()
-    expect(slot.start(async () => {})).toEqual({ ok: false, message: AI_BUSY_MESSAGE })
+    let secondStarted = false
+    const second = slot.start(async () => { secondStarted = true })
+    expect(second.ok).toBe(true)
+    await vi.waitFor(() => expect(secondStarted, '同车道应一次只跑一个任务').toBe(false))
     slot.cancel('other')
     expect(signal.aborted).toBe(false)
     if (first.ok) slot.cancel(first.jobId)
@@ -52,18 +55,18 @@ describe('AiJobSlot', () => {
     await vi.waitFor(() => expect(slot.busy).toBe(false))
   })
 
-  it('shares the same slot with non-streaming AI work', async () => {
+  it('shares the same lane with non-streaming AI work', async () => {
     const slot = new AiJobSlot()
     let release!: () => void
-    const first = slot.runExclusive(async () => {
+    const first = slot.start(async () => {
       await new Promise<void>((resolve) => { release = resolve })
-      return '完成'
     })
+    expect(first.ok).toBe(true)
     await Promise.resolve()
-    expect(slot.start(async () => {})).toEqual({ ok: false, message: AI_BUSY_MESSAGE })
-    expect(await slot.runExclusive(async () => '第二个')).toEqual({ ok: false, message: AI_BUSY_MESSAGE })
+    const second = slot.runExclusive(async () => '第二个')
+    expect(slot.busy).toBe(true)
     release()
-    await expect(first).resolves.toEqual({ ok: true, value: '完成' })
-    expect(slot.busy).toBe(false)
+    await expect(second).resolves.toEqual({ ok: true, value: '第二个' })
+    await vi.waitFor(() => expect(slot.busy).toBe(false))
   })
 })

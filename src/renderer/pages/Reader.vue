@@ -2232,8 +2232,15 @@ onMounted(async () => {
       if (assistant) assistant.content += delta
     }
   })
-  unsubAiStage = window.api.ai.onStage(({ jobId, stage }) => {
-    assistantStages.value = { ...assistantStages.value, [jobId]: stage }
+  unsubAiStage = window.api.ai.onStage((event) => {
+    assistantStages.value = { ...assistantStages.value, [event.jobId]: event.stage }
+    if (event.jobId === chatJobId.value && event.citations?.length && chatAssistantIndex.value >= 0) {
+      const assistant = chatMessages.value[chatAssistantIndex.value]
+      if (assistant) {
+        assistant.citations = event.citations
+        if (event.uptoChapterId) assistant.uptoChapterId = event.uptoChapterId
+      }
+    }
   })
   unsubAiBudget = window.api.ai.onBudget(({ task, budget }) => {
     assistantBudgets.value = { ...assistantBudgets.value, [task]: budget }

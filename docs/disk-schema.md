@@ -22,6 +22,7 @@
       characters.json      # 旧 AI 人物卡 / 伏笔追踪；兼容保留
       memory.json          # 可核验小说记忆 v1（用户触发后生成）
       chat.json            # 聊天 v1 / 证据问答 v2
+      index\               # 问答检索剪枝用的按章布隆过滤器，见「ai/index/」
 ```
 
 `library/` 目录（默认路径）已在 `.gitignore`。书库备份 zip 不含 `__trash__` / `__tmp__`。
@@ -80,6 +81,7 @@
 | chapters[].file | 相对书目录，如 `chapters/0001.json` |
 | chapters[].url | 下载章的源 URL；导入可空 |
 | chapters[].status | `pending` \| `ready` \| `failed` \| `empty` |
+| chapters[].failCode | 可选，`status` 为 `failed` 时携带：`CatalogNotFound` \| `BodyEmpty` \| `NeedLogin` \| `Paywall` \| `Intercepted` \| `RateLimited` \| `NavFailed` \| `UnknownPage`；文案取 `FAIL_CODE_ZH`，配套 `failMessage` 为可读说明 |
 | progress | `{ chapterId, scrollRatio, paragraphIndex?, paragraphOffset?, updatedAt }` 或 `null`；段落锚点无效时回退到滚动比例 |
 
 ---
@@ -260,6 +262,31 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
 ```
 
 材料红线与摘要一致：只允许已读进度之前的章节进入提示词。缺省文件视为无人物卡。
+
+---
+
+## ai/index/
+
+问答检索的剪枝索引，可选、可整目录删除。`index-manifest.json` 对齐：
+
+```json
+{
+  "version": 1,
+  "chapters": { "c0012": { "sig": "48123:1728350000000.5", "bits": 16384, "terms": 1432 } }
+}
+```
+
+每章一个位图侧挂文件 `<chapterId>.json`（`chapterId` 必须匹配 `^[A-Za-z0-9_-]+$`，否则当没建过）：
+
+```json
+{ "version": 1, "sig": "48123:1728350000000.5", "bits": 16384, "k": 4, "filter": "base64 位图" }
+```
+
+- `sig` 是该章 `chapters/NNNN.json` 的 `size:mtimeMs`，与 `ai/bookOverview.json` 的 `source` 同一口径。正文变了只有那一章重算，其余不动；备份恢复后时间戳全变只会触发重建，不影响正确性。
+- 位图里只有该章的词形哈希（归一化视图的相邻二元窗 + 二元组与拉丁词），**不含任何连续正文**，因此不可能泄漏未读剧情；`bits: 0` 表示空章或解析不出正文，不写侧挂。
+- 只索引 `index ≤ book.progress.chapterId` 的章。构建点：读章成功后 `wakeEvidenceIndex(bookId)` 后台补建，不阻塞读章返回；提问时只读清单、不建索引。
+- 缺文件、坏 JSON、清单损坏、没建完、书库正在恢复 —— 一律按「不知道」处理，调用方照旧全量读盘。**索引坏掉的后果只能是问答变慢，绝不可能是漏引用**；剪枝只在布隆过滤器判「一定不含」时跳过读盘，判「可能含」仍要读原文复核。
+- 这些文件只在本机参与剪枝决策，永不进提示词、永不发往模型服务。
 
 ---
 

@@ -33,6 +33,17 @@ describe('memory evidence candidates', () => {
   it('counts surrogate pairs as one character and omits chapters too short for a valid citation', () => {
     expect(buildAiMemoryCandidates('c0003', '短章', '短'.repeat(79))).toEqual([])
   })
+
+  it('候选段号就是阅读器渲染出来的段号', () => {
+    // 渲染规则：body.split(/\n{2,}/).filter(Boolean)，见 useTts.splitIntoParagraphs。
+    const spaced = `\n\n   \n\n${'甲'.repeat(120)}第一段。`
+    expect(spaced.split(/\n{2,}/).filter(Boolean)).toEqual(['   ', `${'甲'.repeat(120)}第一段。`])
+    expect(buildAiMemoryCandidates('c0001', '第一章', spaced)[0]?.paragraphIndex).toBe(1)
+    // \r\n\r\n 在渲染层不构成空行，整块仍是第 0 段。
+    const crlf = `${'甲'.repeat(60)}\r\n\r\n${'乙'.repeat(60)}第二段。`
+    expect(crlf.split(/\n{2,}/).filter(Boolean)).toHaveLength(1)
+    expect(buildAiMemoryCandidates('c0002', '第二章', crlf).every((item) => item.paragraphIndex === 0)).toBe(true)
+  })
 })
 
 describe('strict memory extraction whitelist and merge', () => {

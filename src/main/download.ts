@@ -19,10 +19,12 @@ import {
 } from './library'
 import type {
   CatalogChapter,
+  ChapterMeta,
   ChapterStatus,
   CheckAllProgress,
   CheckAllResult,
   CheckOneResult,
+  DownloadBlocked,
   DownloadPace,
   DownloadProgress,
   DownloadPreview,
@@ -36,6 +38,7 @@ import { isPathLikeHash } from '../shared/urlHash'
 import {
   classifyHttpStatus,
   HttpStatusError,
+  mainFrameRetryAfter,
   mainFrameStatus,
   observeHttpStatus,
   resetHttpStatusObservationForTests,
@@ -58,11 +61,22 @@ const LOAD_TIMEOUT_MS = 25_000
 export const HYDRATE_POLL_MS = 300
 /** Cap for catalog/body ready wait (10–15s). Hash SPA hydration, not a extra sleep on HTML. */
 export const HYDRATE_TIMEOUT_MS = 12_000
-/** Extra attempts after the first try, only for NavFailed / BodyEmpty. */
+/** Extra attempts after the first try, only for NavFailed / BodyEmpty / RateLimited. */
 export const CHAPTER_RETRY_TIMES = 2
 const CHAPTER_RETRY_BASE_MS = 1_000
+/** 退避上限：指数增长到这里就停，不再往后章里越睡越久。 */
+const CHAPTER_RETRY_CAP_MS = 30_000
+/** 限流每次重试都要先等完退避，试两次就够，别把一章的额度全花在睡觉上。 */
+export const RATE_LIMIT_MAX_TRIES = 2
+/** 连续这么多章都被限流就收工：等站点缓过来，稍后用「重试失败章」继续。 */
+export const RATE_LIMIT_STOP_COUNT = 3
 /** 批量检查更新：两本书之间的间隔，降低对站点的请求压力。 */
 export const CHECK_ALL_GAP_MS = 1_000
+/**
+ * 同类墙连撞这么多章，判定为整站性质：停在这一章等用户本人处理。
+ * 单章付费的书里偶然一章撞墙不该把后面几百章免费内容卡住，所以仍按连撞计数。
+ */
+export const WALL_PAUSE_STREAK = 3
 
 interface ActiveDownload {
   bookId: string
@@ -75,8 +89,14 @@ interface ActiveDownload {
   cancelled: boolean
   wallKind?: FailCode
   wallStreak?: number
-  /** 连撞同类整站墙后提前收工：剩下的章保持 pending，等用户解锁再补。 */
+  /** 连续限流的章数；成功或非限流失败会清零。 */
+  rateStreak?: number
+  /** 连撞整站墙后提前收工：剩下的章保持 pending，等用户解锁再补。 */
   stopped?: boolean
+  /** 撞见登录 / 付费 / 验证墙时暂停在当章，等用户在浏览页亲自处理。 */
+  pausedForHuman?: DownloadBlocked
+  /** 用户处理完：本轮跑完后需要再来一轮把退回 pending 的墙章补上。 */
+  requeued?: boolean
 }
 
 type HtmlLoader = (url: string) => Promise<string>
@@ -88,6 +108,8 @@ const active = new Map<string, ActiveDownload>()
 let testHtmlLoader: HtmlLoader | null = null
 const runningJobs = new Set<Promise<void>>()
 const cancelWaiters = new Set<() => void>()
+/** bookId → 等待「我已处理好」的续跑回调；取消时一并撤掉。 */
+const humanWaiters = new Map<string, Set<() => void>>()
 let checkAllCancelled = false
 let checkAllRunning = false
 let pendingPreview: { token: string; pageUrl: string; createdAt: number; bootstrap: ExtractBootstrap } | null = null
@@ -97,25 +119,25 @@ export function chapterNeedsDownload(status: ChapterStatus): boolean {
 }
 
 export function shouldRetryChapterFail(code: FailCode | undefined): boolean {
-  return code === 'NavFailed' || code === 'BodyEmpty'
+  return code === 'NavFailed' || code === 'BodyEmpty' || code === 'RateLimited'
 }
-
-/** 登录墙 / 付费墙 / 验证页是整站性质，逐章重试只会重复撞同一面墙。 */
-export const CHAPTER_WALL_TRIP_COUNT = 3
 
 export function isSiteWallFail(code: FailCode | undefined): boolean {
   return code === 'NeedLogin' || code === 'Paywall' || code === 'Intercepted'
 }
 
-function wallTripMessage(code: FailCode): string {
+/** 撞墙时给人的话：说清卡在哪、要本人去做什么。软件不代做登录、付费或验证。 */
+function blockedMessage(code: FailCode): string {
   const why =
     code === 'Paywall'
-      ? '连续多章需要付费或会员'
+      ? '本章需要付费或会员'
       : code === 'NeedLogin'
-        ? '连续多章需要登录'
-        : '连续多章被拦截或要求验证'
-  return `${why}，已停止本次下载。请在浏览页登录或解锁后重试失败章。`
+        ? '本章需要登录'
+        : '页面被拦截或要求验证'
+  return `${why}，已暂停本次下载。请到浏览页用自己的账号登录或完成验证，再点「已处理好，继续下载」。`
 }
+
+const RATE_LIMIT_STOP_MESSAGE = '站点连续限流，已停止本次下载。稍后用「重试失败章」继续。'
 
 /** 章与章之间的固定间隔。未知档位按 standard。 */
 export function chapterGapMs(pace: DownloadPace): number {
@@ -132,11 +154,21 @@ async function currentChapterGapMs(): Promise<number> {
   }
 }
 
-export function chapterRetryDelayMs(attempt: number, opts?: { testing?: boolean }): number {
+/**
+ * 重试退避：指数增长到上限后加抖动。
+ * 抖动是为了避免「固定 1s / 2s」让同一站点的所有客户端在同一刻一起回来重试。
+ */
+export function chapterRetryDelayMs(
+  attempt: number,
+  opts?: { testing?: boolean; capMs?: number; random?: () => number },
+): number {
   const testing = opts?.testing ?? Boolean(testHtmlLoader)
   if (testing) return 0
   const n = Math.max(1, attempt)
-  return CHAPTER_RETRY_BASE_MS * 2 ** (n - 1)
+  const cap = opts?.capMs ?? CHAPTER_RETRY_CAP_MS
+  const grow = Math.min(cap, CHAPTER_RETRY_BASE_MS * 2 ** (n - 1))
+  const random = opts?.random ?? Math.random
+  return Math.round(grow * (0.5 + random() * 0.5))
 }
 
 export function checkUpdateFailHint(
@@ -150,6 +182,9 @@ export function checkUpdateFailHint(
   }
   if (code === 'Intercepted') {
     return { goBrowse: true, message: '目录页被拦截或验证，请先到浏览页打开该站后再试' }
+  }
+  if (code === 'RateLimited') {
+    return { goBrowse: false, message: '站点限流，请稍后再试' }
   }
   return null
 }
@@ -196,6 +231,7 @@ export function resetDownloadStateForTests(): void {
   active.clear()
   runningJobs.clear()
   cancelWaiters.clear()
+  humanWaiters.clear()
   resetHttpStatusObservationForTests()
   testHtmlLoader = null
   hiddenView = null
@@ -267,6 +303,7 @@ async function loadFailedChapters(bookId: string): Promise<DownloadProgress['fai
         title: ch.title,
         index: ch.index,
         reason: failedChapterReason(ch),
+        failCode: ch.failCode,
       }))
   } catch {
     return []
@@ -279,11 +316,13 @@ async function emitProgress(bookId: string): Promise<void> {
   const finished = dl.cancelled || dl.stopped || dl.done + dl.failed >= dl.total
   const status: DownloadProgress['status'] = dl.cancelled
     ? 'cancelled'
-    : !finished
-      ? 'running'
-      : dl.failed > 0
-        ? 'error'
-        : 'done'
+    : dl.pausedForHuman
+      ? 'awaitingHuman'
+      : !finished
+        ? 'running'
+        : dl.failed > 0
+          ? 'error'
+          : 'done'
   const progress: DownloadProgress = {
     bookId: dl.bookId,
     title: dl.title,
@@ -307,6 +346,78 @@ async function emitProgress(bookId: string): Promise<void> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
+}
+
+/** 把卡住的那一章推给渲染层：由用户本人去浏览页处理，软件不代登录、不代付费、不代验证。 */
+function emitBlocked(payload: DownloadBlocked): void {
+  try {
+    ownerWindow?.webContents.send('download.blocked', payload)
+  } catch {
+    /* 推送失败不打断下载：暂停状态仍在进度里 */
+  }
+}
+
+async function pauseForHuman(dl: ActiveDownload, ch: ChapterMeta, code: FailCode): Promise<void> {
+  dl.pausedForHuman = {
+    bookId: dl.bookId,
+    chapterId: ch.id,
+    chapterTitle: ch.title,
+    url: ch.url ?? '',
+    failCode: code,
+    message: blockedMessage(code),
+  }
+  dl.lastError = dl.pausedForHuman.message
+  emitBlocked(dl.pausedForHuman)
+  await emitProgress(dl.bookId)
+}
+
+/** 等用户处理：唤醒走 download.resumeUnblock，取消沿用同一套 waiter。 */
+function waitWhilePausedForHuman(dl: ActiveDownload): Promise<void> {
+  if (!dl.pausedForHuman) return Promise.resolve()
+  const bookId = dl.bookId
+  return new Promise<void>((resolve, reject) => {
+    const waiters = humanWaiters.get(bookId) ?? new Set<() => void>()
+    humanWaiters.set(bookId, waiters)
+    function cleanup(): void {
+      waiters.delete(onResume)
+      waiters.delete(onCancel)
+      if (waiters.size === 0) humanWaiters.delete(bookId)
+    }
+    const onResume = (): void => {
+      cleanup()
+      resolve()
+    }
+    const onCancel = (): void => {
+      cleanup()
+      cancelWaiters.delete(onCancel)
+      reject(new Error('已取消'))
+    }
+    waiters.add(onResume)
+    cancelWaiters.add(onCancel)
+  })
+}
+
+function notifyHumanResumed(bookId: string): void {
+  const waiters = humanWaiters.get(bookId)
+  if (!waiters) return
+  humanWaiters.delete(bookId)
+  for (const resume of [...waiters]) resume()
+}
+
+/**
+ * 解锁后续跑：把所有撞站点墙的章退回 pending，并安排再来一轮。
+ * 网络类失败（NavFailed / BodyEmpty）不动，仍归书库的「重试失败章」管。
+ */
+async function requeueWallFailedChapters(bookId: string, dl: ActiveDownload): Promise<void> {
+  const book = await loadBook(bookId)
+  let count = 0
+  for (const ch of book.chapters) {
+    if (ch.status !== 'failed' || !isSiteWallFail(ch.failCode)) continue
+    await markChapterStatus(bookId, ch.id, 'pending')
+    dl.failed = Math.max(0, dl.failed - 1)
+    count++
+  }
+  if (count > 0) dl.requeued = true
 }
 
 function interruptibleDelay(ms: number): Promise<void> {
@@ -469,10 +580,11 @@ async function waitForNavigationSettle(wc: Electron.WebContents, url: string): P
 async function guardHttpStatus(url: string): Promise<void> {
   const status = mainFrameStatus(url)
   if (status === undefined) return
-  const verdict = classifyHttpStatus(status, { testing: Boolean(testHtmlLoader) })
+  const retryAfterMs = mainFrameRetryAfter(url)
+  const verdict = classifyHttpStatus(status, { testing: Boolean(testHtmlLoader), retryAfterMs })
   if (verdict.action === 'ok') return
   if (verdict.action === 'throttle') await interruptibleDelay(verdict.backoffMs)
-  throw new HttpStatusError(verdict.code, status, `HTTP ${status}`)
+  throw new HttpStatusError(verdict.code, status, `HTTP ${status}`, retryAfterMs)
 }
 
 async function loadAndGetHtml(view: WebContentsView, url: string, forceView = false): Promise<string> {
@@ -827,101 +939,65 @@ export async function downloadChapters(bookId: string): Promise<void> {
 }
 
 async function runChapterDownloads(bookId: string, dl: ActiveDownload): Promise<void> {
-  const book = await loadBook(bookId)
-  dl.total = book.chapters.length
-  dl.done = book.chapters.filter((c) => c.status === 'ready').length
+  do {
+    dl.requeued = false
+    dl.done = 0
+    dl.failed = 0
+    dl.wallKind = undefined
+    dl.wallStreak = 0
+    dl.rateStreak = 0
+    const book = await loadBook(bookId)
+    dl.total = book.chapters.length
+    dl.done = book.chapters.filter((c) => c.status === 'ready').length
+    await downloadPass(bookId, book.chapters, dl)
+  } while (dl.requeued && !dl.cancelled && !dl.stopped)
+}
 
-  for (const ch of book.chapters) {
-    if (dl.cancelled) break
+async function downloadPass(bookId: string, chapters: ChapterMeta[], dl: ActiveDownload): Promise<void> {
+  for (const ch of chapters) {
+    if (dl.cancelled) return
     if (!chapterNeedsDownload(ch.status)) continue
 
     dl.currentTitle = ch.title
     await emitProgress(bookId)
 
-    const chapterUrl = ch.url
-    if (!chapterUrl) {
-      dl.failed++
-      dl.lastError = failMessage('CatalogNotFound', '章节没有地址')
-      await writeFailedPlaceholder(bookId, ch.id, ch.title, undefined, 'CatalogNotFound', dl.lastError)
-      await emitProgress(bookId)
-      continue
+    const finalFail = await attemptChapter(bookId, ch, dl)
+    const wallCode = finalFail && isSiteWallFail(finalFail) ? finalFail : undefined
+    if (wallCode) {
+      dl.wallStreak = dl.wallKind === wallCode ? (dl.wallStreak ?? 0) + 1 : 1
+      dl.wallKind = wallCode
+    } else {
+      dl.wallKind = undefined
+      dl.wallStreak = 0
     }
 
-    let lastCode: FailCode = 'NavFailed'
-    let lastMsg = ''
-    let saved = false
-    let finalFail: FailCode | undefined
-    const maxTries = 1 + CHAPTER_RETRY_TIMES
-
-    for (let attempt = 1; attempt <= maxTries; attempt++) {
-      if (dl.cancelled) break
-      try {
-        const html = await loadPageHtml(chapterUrl)
-        if (dl.cancelled) break
-        const bodyRule = await ruleForPage(chapterUrl)
-        const bodyResult = extractBody(html, chapterUrl, bodyRule)
-        if (bodyResult.ok) {
-          await writeChapterFile(bookId, ch.id, {
-            title: ch.title,
-            url: chapterUrl,
-            body: bodyResult.body,
-            bodyRaw: bodyResult.bodyRaw ?? bodyResult.body,
-            status: 'ready',
-          })
-          ch.status = 'ready'
-          await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl })
-          dl.done++
-          saved = true
-          break
-        }
-        lastCode = bodyResult.failCode || 'BodyEmpty'
-        lastMsg = failMessage(lastCode, bodyResult.failMessage)
-        if (!shouldRetryChapterFail(lastCode) || attempt >= maxTries) {
-          dl.failed++
-          dl.lastError = lastMsg
-          finalFail = lastCode
-          await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, lastMsg)
-          saved = true
-          break
-        }
-        await interruptibleDelay(chapterRetryDelayMs(attempt))
-      } catch (e: unknown) {
-        if (isCancelledError(e) || dl.cancelled) break
-        lastCode = e instanceof HttpStatusError ? e.code : 'NavFailed'
-        lastMsg = failMessage(lastCode, e instanceof Error ? e.message : String(e))
-        if (!shouldRetryChapterFail(lastCode) || attempt >= maxTries) {
-          dl.failed++
-          dl.lastError = lastMsg
-          finalFail = lastCode
-          await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, lastMsg)
-          saved = true
-          break
-        }
-        await interruptibleDelay(chapterRetryDelayMs(attempt))
-      }
-    }
-
-    if (!saved && !dl.cancelled) {
-      dl.failed++
-      dl.lastError = lastMsg || failMessage(lastCode)
-      finalFail = lastCode
-      await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, dl.lastError)
-    }
-
-    if (finalFail && isSiteWallFail(finalFail)) {
-      dl.wallStreak = dl.wallKind === finalFail ? (dl.wallStreak ?? 0) + 1 : 1
-      dl.wallKind = finalFail
-      if (dl.wallStreak >= CHAPTER_WALL_TRIP_COUNT) {
+    if (finalFail === 'RateLimited') {
+      dl.rateStreak = (dl.rateStreak ?? 0) + 1
+      if (dl.rateStreak >= RATE_LIMIT_STOP_COUNT) {
         dl.stopped = true
-        dl.lastError = wallTripMessage(finalFail)
-        break
+        dl.lastError = RATE_LIMIT_STOP_MESSAGE
+        return
       }
     } else {
-      dl.wallStreak = 0
-      dl.wallKind = undefined
+      dl.rateStreak = 0
     }
 
     await emitProgress(bookId)
+
+    // 同类墙连撞够多才判定整站性质：停在这一章等用户本人在浏览页处理，不再逐章硬撞。
+    if (wallCode && (dl.wallStreak ?? 0) >= WALL_PAUSE_STREAK && !dl.cancelled) {
+      await pauseForHuman(dl, ch, wallCode)
+      try {
+        await waitWhilePausedForHuman(dl)
+      } catch (e: unknown) {
+        if (!isCancelledError(e)) throw e
+        return
+      }
+      if (dl.cancelled) return
+      await requeueWallFailedChapters(bookId, dl)
+      return
+    }
+
     if (!dl.cancelled) {
       try {
         await chapterGapDelay()
@@ -930,6 +1006,90 @@ async function runChapterDownloads(bookId: string, dl: ActiveDownload): Promise<
       }
     }
   }
+}
+
+/**
+ * 下一张章：成功写正文，失败写占位并计数。
+ * 返回最终失败码；当章成功或中途被取消时返回 undefined。
+ */
+async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownload): Promise<FailCode | undefined> {
+  const chapterUrl = ch.url
+  if (!chapterUrl) {
+    const message = failMessage('CatalogNotFound', '章节没有地址')
+    dl.failed++
+    dl.lastError = message
+    await writeFailedPlaceholder(bookId, ch.id, ch.title, undefined, 'CatalogNotFound', message)
+    await emitProgress(bookId)
+    return 'CatalogNotFound'
+  }
+
+  let lastCode: FailCode = 'NavFailed'
+  let lastMsg = ''
+  const maxTries = 1 + CHAPTER_RETRY_TIMES
+
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    if (dl.cancelled) break
+    try {
+      const html = await loadPageHtml(chapterUrl)
+      if (dl.cancelled) break
+      const bodyRule = await ruleForPage(chapterUrl)
+      const bodyResult = extractBody(html, chapterUrl, bodyRule)
+      if (bodyResult.ok) {
+        await writeChapterFile(bookId, ch.id, {
+          title: ch.title,
+          url: chapterUrl,
+          body: bodyResult.body,
+          bodyRaw: bodyResult.bodyRaw ?? bodyResult.body,
+          status: 'ready',
+        })
+        ch.status = 'ready'
+        await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl })
+        dl.done++
+        return undefined
+      }
+      lastCode = bodyResult.failCode || 'BodyEmpty'
+      lastMsg = failMessage(lastCode, bodyResult.failMessage)
+      if (!chapterWillRetry(lastCode, attempt, maxTries)) {
+        await failChapter(bookId, ch, chapterUrl, lastCode, lastMsg, dl)
+        return lastCode
+      }
+      await interruptibleDelay(chapterRetryDelayMs(attempt))
+    } catch (e: unknown) {
+      if (isCancelledError(e) || dl.cancelled) break
+      lastCode = e instanceof HttpStatusError ? e.code : 'NavFailed'
+      lastMsg = failMessage(lastCode, e instanceof Error ? e.message : String(e))
+      if (!chapterWillRetry(lastCode, attempt, maxTries)) {
+        await failChapter(bookId, ch, chapterUrl, lastCode, lastMsg, dl)
+        return lastCode
+      }
+      await interruptibleDelay(chapterRetryDelayMs(attempt))
+    }
+  }
+
+  if (dl.cancelled) return undefined
+  await failChapter(bookId, ch, chapterUrl, lastCode, lastMsg || failMessage(lastCode), dl)
+  return lastCode
+}
+
+/** 可重试性：限流只给一次重试，因为每轮重试前都要先等完整退避。 */
+function chapterWillRetry(code: FailCode, attempt: number, maxTries: number): boolean {
+  if (attempt >= maxTries) return false
+  if (!shouldRetryChapterFail(code)) return false
+  if (code === 'RateLimited') return attempt < RATE_LIMIT_MAX_TRIES
+  return true
+}
+
+async function failChapter(
+  bookId: string,
+  ch: ChapterMeta,
+  url: string,
+  failCode: FailCode,
+  failMessageText: string,
+  dl: ActiveDownload,
+): Promise<void> {
+  dl.failed++
+  dl.lastError = failMessageText
+  await writeFailedPlaceholder(bookId, ch.id, ch.title, url, failCode, failMessageText)
 }
 
 async function writeFailedPlaceholder(
@@ -958,6 +1118,48 @@ export function cancelDownload(bookId?: string): void {
     for (const dl of active.values()) dl.cancelled = true
   }
   notifyLoadCancelled()
+}
+
+/**
+ * 把卡住的那一章交给用户：只在内置浏览页导航过去，登录、付费、验证都由用户本人完成。
+ * 不注入脚本、不代点击、不代填表单。
+ */
+export async function openUnblock(
+  bookId: string,
+  chapterId: string,
+): Promise<{ ok: true; url: string } | { ok: false; message: string }> {
+  try {
+    const book = await loadBook(bookId)
+    const chapter = book.chapters.find((item) => item.id === chapterId)
+    if (!chapter) return { ok: false, message: '章节不存在' }
+    const url = (chapter.url || '').trim()
+    if (!url) return { ok: false, message: '该章没有源地址，请到浏览页手动打开目录页' }
+    if (!['http:', 'https:'].includes(new URL(url).protocol)) return { ok: false, message: '章节地址只支持 http(s)' }
+    if (!browseView || browseView.webContents.isDestroyed()) return { ok: false, message: '浏览页不可用' }
+    try {
+      await browseView.webContents.loadURL(url)
+    } catch (e: unknown) {
+      // ERR_ABORTED 是站内重定向打断导航，页面已经落在目标地址上，不算失败。
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!msg.includes('ERR_ABORTED')) return { ok: false, message: msg }
+    }
+    return { ok: true, url }
+  } catch (e: unknown) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** 用户在浏览页处理完了：解除暂停标志并唤醒等待中的下载轮次，墙章由下载循环退回 pending 后再来一轮。 */
+export async function resumeUnblock(bookId: string): Promise<{ ok: boolean; message?: string }> {
+  const dl = active.get(bookId)
+  if (!dl) return { ok: false, message: '没有正在进行的下载，请在书库用「重试失败章」继续' }
+  if (dl.cancelled) return { ok: false, message: '本次下载已取消，请在书库用「重试失败章」继续' }
+  if (!dl.pausedForHuman) return { ok: false, message: '当前下载没有在等待处理' }
+  dl.pausedForHuman = undefined
+  dl.lastError = undefined
+  await emitProgress(bookId)
+  notifyHumanResumed(bookId)
+  return { ok: true }
 }
 
 export async function checkUpdate(

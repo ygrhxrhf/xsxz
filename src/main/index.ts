@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiBookUsage, AiBudgetEstimate, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseState, BrowseChapterLink, Settings, SiteRule } from '../shared/types'
+import type { AiBookUsage, AiBudgetEstimate, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseState, BrowseChapterLink, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import {
@@ -39,7 +39,7 @@ import {
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
-import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView } from './download'
+import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView } from './download'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
 import { browserAdCss } from './browserAds'
@@ -54,13 +54,17 @@ import { createBackup, restoreBackup, runAutoBackupIfDue } from './backup'
 import { migrateLibrary } from './libraryMigration'
 import { browseUserAgent } from './userAgent'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
+import type { AiExclusiveResult, AiJobPolicy } from './aiScheduler'
+import { AiQueue } from './aiScheduler'
 import {
   AiJobSlot,
   AiPendingSaveStore,
+  AI_BUSY_MESSAGE,
   aiCompletionDoneEvent,
   aiStoppedDoneEvent,
   buildTranslatePrompt,
   cleanChapterBody,
+  createJsonStringFieldSink,
   planChapterSummaryRequest,
   planCleanChapterRequest,
   summarizeUpTo,
@@ -78,7 +82,8 @@ import {
 import { executeMemoryOrchestration, planMemoryPromptRequests, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
 import { buildAiMemoryCandidates } from './aiMemory'
 import { finalizeMemoryUpdate } from './aiMemorySave'
-import { selectLocalEvidence, type EvidenceSearchChapter } from './aiEvidenceSearch'
+import { retrieveLocalEvidence } from './aiEvidenceRetrieval'
+import { stopEvidenceIndex, wakeEvidenceIndex } from './aiEvidenceIndex'
 import { describeMaterialCoverage, preserveUserMemoryCorrections, seedMemoryBeforeChapter, selectRebuildBatches } from './aiMaterial'
 import { buildEvidenceAnswerMessages, buildEvidenceQueryRewriteMessages, executeEvidenceQaPipeline, planEvidenceChapterReads } from './aiEvidenceQa'
 import { aiBudgetWarning, countTextCharacters, estimateAiTokens } from './aiBudget'
@@ -113,8 +118,14 @@ let browseLastUrl = ''
 let browseLastSavedUrl = ''
 let browseLastSavedRatio = -1
 let lastBounds = { x: SIDEBAR_WIDTH, y: 52, width: 900, height: 700 }
-const aiJobSlot = new AiJobSlot()
-const bookOverview = new BookOverviewService(aiJobSlot, () => {
+/**
+ * AI 车道队列：用户点开的任务走 interactive，概览等自动任务走 background 且取活前必须让交互车道空闲。
+ * 队列只排队不拒绝，所以「请先停止当前生成」只剩同一本书的写入冲突这一种触发场景。
+ */
+const aiQueue = new AiQueue()
+/** 整文件替换写入的记忆族任务，同书必须串行，否则后写覆盖前写。 */
+const MEMORY_WRITE_CLASSES = ['memory', 'follow']
+const bookOverview = new BookOverviewService(new AiJobSlot(aiQueue, 'background'), () => {
   mainWindow?.webContents.send('bookOverview.changed')
 })
 const aiPendingSaves = new AiPendingSaveStore()
@@ -150,6 +161,35 @@ function aiTaskInstruction(settings: Settings, kind: AiPromptKind): string {
 
 function sendAiStage(jobId: string, stage: AiRequestStage, detail?: string): void {
   mainWindow?.webContents.send('ai.stage', { jobId, stage, ...(detail ? { detail } : {}) })
+}
+
+/** 排队中的任务被取消时不会有模型结果，必须补发 ai.done，否则界面永远显示生成中。 */
+function sendAiQueueCancel(jobId: string): void {
+  mainWindow?.webContents.send('ai.done', { jobId, ok: false, message: '已从队列取消' })
+}
+
+/**
+ * 提交流式任务：队列只排队不拒绝，所以对渲染层仍只有 `{ ok:true, jobId }` 这一种开始结果。
+ * 排队位置不进 IPC，避免在契约未定前先造字段。
+ */
+function aiStart(policy: AiJobPolicy, run: (jobId: string, signal: AbortSignal) => Promise<void>): AiJobStart {
+  const started = aiQueue.start(run, { ...policy, onCancelled: sendAiQueueCancel })
+  return { ok: true, jobId: started.jobId }
+}
+
+/** 独占任务同样排队等待，模型错误仍原样抛给各频道自己的中文文案。 */
+function aiExclusive<T>(
+  policy: AiJobPolicy,
+  run: (signal: AbortSignal, jobId: string) => Promise<T>,
+): Promise<AiExclusiveResult<T>> {
+  return aiQueue.runExclusive(run, policy)
+}
+
+/** 引用由本地检索算出、早于回答生成数十秒；搭既有 ai.stage 事件先推，避免新增通道。 */
+function sendAiEvidence(jobId: string, citations: AiCitation[], uptoChapterId: string): void {
+  mainWindow?.webContents.send('ai.stage', {
+    jobId, stage: 'requesting' as AiRequestStage, citations, uptoChapterId,
+  })
 }
 
 function sendAiBudget(jobId: string, task: 'recap' | 'memory' | 'qa', budget: AiBudgetEstimate): void {
@@ -592,6 +632,8 @@ function registerIpc(): void {
   ipcMain.handle('library.readChapter', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {
     try {
       const chapter = await readChapter(bookId, chapterId)
+      // 正文刚落盘就补索引：不 await，读章返回不该为检索加速件等待。
+      wakeEvidenceIndex(bookId)
       return { chapter }
     } catch (e: unknown) {
       return { ok: false, message: String(e) }
@@ -726,7 +768,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('backup.restore', async (_e, args: { zipPath: string }) => {
     try {
-      if (isDownloadBusy() || aiJobSlot.busy || activeImports > 0) {
+      if (isDownloadBusy() || aiQueue.hasInFlight() || activeImports > 0) {
         return { ok: false, message: '书库正在下载、导入或保存 AI 内容，请等待完成后再恢复' }
       }
       const release = beginLibraryRestore()
@@ -741,7 +783,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('backup.runAuto', async () => {
     try {
-      if (isDownloadBusy() || aiJobSlot.busy || activeImports > 0) {
+      if (isDownloadBusy() || aiQueue.hasInFlight() || activeImports > 0) {
         return { status: 'failed', message: '书库正忙，请稍后再备份' }
       }
       const release = beginLibraryRestore()
@@ -753,7 +795,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('library.migrate', async (_e, args: { targetPath: string }) => {
     try {
-      if (isDownloadBusy() || aiJobSlot.busy || activeImports > 0) {
+      if (isDownloadBusy() || aiQueue.hasInFlight() || activeImports > 0) {
         return { ok: false, message: '书库正在下载、导入或保存 AI 内容，请等待完成后再搬迁' }
       }
       const release = beginLibraryRestore()
@@ -818,6 +860,9 @@ function registerIpc(): void {
     return { ok: true }
   })
   ipcMain.handle('download.retryFailed', async (_e, { bookId }: { bookId: string }) => retryFailed(bookId))
+  ipcMain.handle('download.openUnblock', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) =>
+    openUnblock(bookId, chapterId))
+  ipcMain.handle('download.resumeUnblock', async (_e, { bookId }: { bookId: string }) => resumeUnblock(bookId))
   ipcMain.handle('download.checkUpdate', (_e, { bookId }: { bookId: string }) => checkUpdate(bookId))
   ipcMain.handle('download.checkAll', () => checkAllUpdates())
   ipcMain.handle('download.cancelCheckAll', () => {
@@ -984,7 +1029,10 @@ function registerIpc(): void {
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const config = trustedAiConfig(settings, apiKey)
-      return aiJobSlot.start(async (jobId, signal) => {
+      return aiStart({
+        lane: 'interactive', cls: 'memory', bookId: payload.bookId,
+        resource: `${payload.bookId}:write`, dedupeKey: `memory:${payload.bookId}`,
+      }, async (jobId, signal) => {
         sendAiBudget(jobId, 'memory', memoryBudget)
         sendAiStage(jobId, 'preparing')
         let usage: AiUsage | undefined
@@ -1050,8 +1098,9 @@ function registerIpc(): void {
 
   ipcMain.handle('ai.markMemoryInaccurate', async (_e, unsafePayload?: unknown) => {
     try {
-      if (aiJobSlot.busy) return { ok: false, message: '请先停止当前生成' }
       const payload = parseMemoryMarkPayload(unsafePayload)
+      // 只有同一本书的记忆族任务在跑才挡住手工修正；别书在生成不该让按钮变灰。
+      if (aiQueue.busyFor(payload.bookId, MEMORY_WRITE_CLASSES)) return { ok: false, message: AI_BUSY_MESSAGE }
       let collection: AiMemoryCollection
       switch (payload.kind) {
         case 'character': collection = 'characters'; break
@@ -1068,8 +1117,8 @@ function registerIpc(): void {
 
   ipcMain.handle('ai.correctCharacterAliases', async (_e, unsafePayload?: unknown) => {
     try {
-      if (aiJobSlot.busy) return { ok: false, message: '请先停止当前生成' }
       const payload = parseMemoryAliasPayload(unsafePayload)
+      if (aiQueue.busyFor(payload.bookId, MEMORY_WRITE_CLASSES)) return { ok: false, message: AI_BUSY_MESSAGE }
       const corrected = await correctAiCharacterAliases(payload.bookId, payload.itemId, payload.aliases)
       return { ok: true, ...corrected }
     } catch (e: unknown) {
@@ -1079,8 +1128,8 @@ function registerIpc(): void {
 
   ipcMain.handle('ai.correctMemorySummary', async (_e, unsafePayload?: unknown) => {
     try {
-      if (aiJobSlot.busy) return { ok: false, message: '请先停止当前生成' }
       const payload = parseMemorySummaryPayload(unsafePayload)
+      if (aiQueue.busyFor(payload.bookId, MEMORY_WRITE_CLASSES)) return { ok: false, message: AI_BUSY_MESSAGE }
       const corrected = await correctAiMemorySummary(payload.bookId, payload.kind, payload.itemId, payload.summary)
       return { ok: true, ...corrected }
     } catch (e: unknown) {
@@ -1117,7 +1166,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('ai.cancel', (_e, payload?: { jobId?: string }) => {
-    aiJobSlot.cancel(payload?.jobId)
+    aiQueue.cancel(payload?.jobId)
     return { ok: true }
   })
 
@@ -1156,7 +1205,7 @@ function registerIpc(): void {
       }
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      return aiJobSlot.start(async (jobId, signal) => {
+      return aiStart({ lane: 'interactive', cls: 'recap', bookId: payload.bookId, dedupeKey: `recap:${payload.bookId}` }, async (jobId, signal) => {
         let partial = ''
         sendAiBudget(jobId, 'recap', plan.budget)
         sendAiStage(jobId, 'preparing')
@@ -1228,7 +1277,10 @@ function registerIpc(): void {
       }
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      return aiJobSlot.start(async (jobId, signal) => {
+      return aiStart({
+        lane: 'interactive', cls: 'chapterSummary', bookId: args.bookId,
+        resource: `${args.bookId}:write`, dedupeKey: `summary:${args.bookId}:${args.chapterId}`,
+      }, async (jobId, signal) => {
         let partial = ''
         sendAiBudget(jobId, 'recap', plan.budget)
         sendAiStage(jobId, 'preparing')
@@ -1294,7 +1346,10 @@ function registerIpc(): void {
       }
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const exclusive = await aiJobSlot.runExclusive(async (signal) => {
+      const exclusive = await aiExclusive({
+        lane: 'interactive', cls: 'clean', bookId: args.bookId,
+        dedupeKey: `clean:${args.bookId}:${args.chapterId}`,
+      }, async (signal) => {
         try {
           return await cleanChapterBody(
             trustedAiConfig(settings, apiKey),
@@ -1339,13 +1394,16 @@ function registerIpc(): void {
           /* skip */
         }
       }
-      const exclusive = await aiJobSlot.runExclusive(() => summarizeUpTo(
-        trustedAiConfig(settings, apiKey),
-        book.title,
-        summaries,
-        { uptoChapterId, progressChapterId },
-        aiTaskInstruction(settings, 'recap'),
-      ))
+      const exclusive = await aiExclusive(
+        { lane: 'interactive', cls: 'recapLegacy', bookId },
+        () => summarizeUpTo(
+          trustedAiConfig(settings, apiKey),
+          book.title,
+          summaries,
+          { uptoChapterId, progressChapterId },
+          aiTaskInstruction(settings, 'recap'),
+        ),
+      )
       if (!exclusive.ok) return exclusive
       const storyUptoChapterId = cutoff[cutoff.length - 1]?.id ?? uptoChapterId
       await persistAiUsage(bookId, undefined)
@@ -1363,7 +1421,7 @@ function registerIpc(): void {
       if (!text.trim()) return { ok: false, message: '请先在正文中选中要翻译的文字' }
       if (text.length > 2000) return { ok: false, message: '选中过长，请缩短后再问' }
       if (bookId !== undefined) await getBook(bookId)
-      return aiJobSlot.start(async (jobId, signal) => {
+      return aiStart({ lane: 'interactive', cls: 'translate', bookId }, async (jobId, signal) => {
         let partial = ''
         sendAiStage(jobId, 'preparing')
         try {
@@ -1402,11 +1460,14 @@ function registerIpc(): void {
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const exclusive = await aiJobSlot.runExclusive(() => translateText(
-        trustedAiConfig(settings, apiKey),
-        text,
-        aiTaskInstruction(settings, 'translate'),
-      ))
+      const exclusive = await aiExclusive(
+        { lane: 'interactive', cls: 'translateLegacy' },
+        () => translateText(
+          trustedAiConfig(settings, apiKey),
+          text,
+          aiTaskInstruction(settings, 'translate'),
+        ),
+      )
       if (!exclusive.ok) return exclusive
       return { ok: true, text: exclusive.value }
     } catch (e: unknown) {
@@ -1431,7 +1492,37 @@ function registerIpc(): void {
       if (latest?.role !== 'user' || latest.content !== question) {
         persistedMessages.push({ role: 'user', content: question })
       }
-      return aiJobSlot.start(async (jobId, signal) => {
+      return aiStart({
+        lane: 'interactive', cls: 'qa', bookId: args.bookId,
+        dedupeKey: `qa:${args.bookId}:${args.chapterId}:${question}`,
+      }, async (jobId, signal) => {
+        // 回答是 JSON 流，抽取出的正文与本地候选引用必须在闭包作用域可见，停止时才不会整段丢弃。
+        let partial = ''
+        let candidateCitations: AiCitation[] = []
+        let upto = progressChapterId
+        // 阶段间停止与流中途 abort 都必须保住已流出的正文，不能整段丢回空串。
+        const finishStopped = async (): Promise<void> => {
+          if (!partial.trim()) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))
+            return
+          }
+          const partialMessages: import('../shared/types').AiEvidenceChatMessage[] = [
+            ...persistedMessages,
+            {
+              role: 'assistant', content: partial, citations: candidateCitations,
+              uptoChapterId: upto, stopped: true,
+            },
+          ]
+          await saveAiDone(
+            jobId,
+            {
+              jobId, ok: true, text: partial, stopped: true, truncated: false,
+              citations: candidateCitations, uptoChapterId: upto,
+            },
+            () => writeChat(args.bookId, partialMessages),
+            { retrySave: () => writeChat(args.bookId, partialMessages) },
+          )
+        }
         sendAiStage(jobId, 'preparing')
         try {
           await writeChat(args.bookId, persistedMessages, { version: existingChat.version })
@@ -1463,33 +1554,30 @@ function registerIpc(): void {
               const [memory, summaries] = await Promise.all([
                 readAiMemory(args.bookId), readSummaries(args.bookId),
               ])
-              const searchChapters: EvidenceSearchChapter[] = []
-              for (let index = 0; index < readPlan.ordered.length; index += 1) {
-                const chapter = readPlan.ordered[index]!
-                if (signal.aborted) break
-                if (index > readPlan.progressPosition) {
-                  searchChapters.push({ ...chapter, body: '' })
-                  continue
-                }
-                const local = await readChapter(args.bookId, chapter.id)
-                searchChapters.push({
-                  id: chapter.id,
-                  index: chapter.index,
-                  title: chapter.title,
-                  status: local.status,
-                  body: local.body,
-                })
-              }
-              if (signal.aborted) return { citations: [], uptoChapterId: progressChapterId }
-              return selectLocalEvidence(searchChapters, query, {
-                requestedUptoChapterId: progressChapterId,
-                progressChapterId,
-                currentChapterId: args.chapterId,
-                memory,
-                summaries,
+              const { citations, uptoChapterId } = await retrieveLocalEvidence({
+                bookId: args.bookId,
+                chapters: readPlan.ordered,
+                query,
+                options: {
+                  requestedUptoChapterId: progressChapterId,
+                  progressChapterId,
+                  currentChapterId: args.chapterId,
+                  memory,
+                  summaries,
+                },
+                readBody: async (chapterId) => {
+                  const local = await readChapter(args.bookId, chapterId)
+                  return { body: local.body, status: local.status }
+                },
+                stopped: () => signal.aborted,
               })
+              if (signal.aborted) return { citations: [], uptoChapterId: progressChapterId }
+              return { citations, uptoChapterId }
             },
-            onEvidenceSelected: (citations) => {
+            onEvidenceSelected: (citations, uptoChapterId) => {
+              candidateCitations = citations
+              upto = uptoChapterId
+              sendAiEvidence(jobId, citations, uptoChapterId)
               const rewriteMessages = buildEvidenceQueryRewriteMessages(question)
               const answerMessages = citations.length
                 ? buildEvidenceAnswerMessages(question, citations, taskInstruction)
@@ -1512,13 +1600,19 @@ function registerIpc(): void {
               ))
             },
             answer: async (messages) => {
-              const completion = await runAiTaskCompletion(config, messages, { task: 'evidenceQa', signal })
+              const sink = createJsonStringFieldSink('answer', (chunk) => {
+                partial += chunk
+                mainWindow?.webContents.send('ai.chunk', { jobId, delta: chunk })
+              })
+              const completion = await runAiTaskCompletion(config, messages, {
+                task: 'evidenceQa', stream: true, signal, onDelta: sink,
+              })
               await persistAiUsage(args.bookId, completion.usage)
               return completion
             },
           })
           if (result.kind === 'stopped') {
-            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))
+            await finishStopped()
             return
           }
           const completedMessages: import('../shared/types').AiEvidenceChatMessage[] = [
@@ -1553,7 +1647,7 @@ function registerIpc(): void {
           })
         } catch (e: unknown) {
           if (signal.aborted) {
-            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, ''))
+            await finishStopped()
             return
           }
           mainWindow?.webContents.send('ai.done', {
@@ -1589,14 +1683,17 @@ function registerIpc(): void {
         const providedModel = typeof payload?.model === 'string' ? payload.model.trim() : ''
         const baseUrl = providedBaseUrl || settings.baseUrl
         const model = providedModel || settings.model
-        const exclusive = await aiJobSlot.runExclusive(() => testConnection(
-          trustedAiConfig(settings, apiKey, {
-            baseUrl,
-            model,
-            provider: payload?.provider,
-            thinkingEnabled: payload?.thinkingEnabled,
-          }),
-        ))
+        const exclusive = await aiExclusive(
+          { lane: 'interactive', cls: 'test' },
+          () => testConnection(
+            trustedAiConfig(settings, apiKey, {
+              baseUrl,
+              model,
+              provider: payload?.provider,
+              thinkingEnabled: payload?.thinkingEnabled,
+            }),
+          ),
+        )
         if (!exclusive.ok) return exclusive
         return { ok: true, text: exclusive.value }
       } catch (e: unknown) {
@@ -1636,16 +1733,19 @@ function registerIpc(): void {
           /* skip */
         }
       }
-      const exclusive = await aiJobSlot.runExclusive(() => generateCharacterCard(
-        trustedAiConfig(settings, apiKey),
-        {
-          bookTitle: book.title,
-          uptoChapterTitle: book.chapters[cutIdx]?.title || '',
-          catalogTitles,
-          chapterSummaries,
-          recentBodies,
-        },
-      ))
+      const exclusive = await aiExclusive(
+        { lane: 'interactive', cls: 'characterCard', bookId, dedupeKey: `characterCard:${bookId}` },
+        () => generateCharacterCard(
+          trustedAiConfig(settings, apiKey),
+          {
+            bookTitle: book.title,
+            uptoChapterTitle: book.chapters[cutIdx]?.title || '',
+            catalogTitles,
+            chapterSummaries,
+            recentBodies,
+          },
+        ),
+      )
       if (!exclusive.ok) return exclusive
       const raw = exclusive.value
       await persistAiUsage(bookId, undefined)
@@ -1696,7 +1796,7 @@ app.whenReady().then(async () => {
     void (async () => {
       let release: (() => void) | undefined
       try {
-        if (isDownloadBusy() || aiJobSlot.busy || activeImports > 0) return
+        if (isDownloadBusy() || aiQueue.hasInFlight() || activeImports > 0) return
         release = beginLibraryRestore()
         await runAsLibraryRestore(() => runAutoBackupIfDue())
       } catch (error) {
@@ -1715,8 +1815,9 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   cancelDownload()
   cancelCheckAll()
-  aiJobSlot.cancel()
+  aiQueue.cancelAll()
   bookOverview.stop()
+  stopEvidenceIndex()
 })
 
 app.on('window-all-closed', () => {

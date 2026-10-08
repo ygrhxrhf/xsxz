@@ -29,4 +29,15 @@ describe('memory IPC main-process contract', () => {
     expect(block).toContain("signal.aborted ? '已停止生成'")
     expect(block).not.toMatch(/ok:\s*false[^}]*memoryUpdate/s)
   })
+
+  it('按书而不是全局判断记忆写入，且不再持有单个全局任务槽', async () => {
+    const source = await readFile(new URL('./index.ts', import.meta.url), 'utf-8')
+    expect(source).toContain("const MEMORY_WRITE_CLASSES = ['memory', 'follow']")
+    expect(source.match(/aiQueue\.busyFor\(payload\.bookId, MEMORY_WRITE_CLASSES\)/g)?.length).toBe(3)
+    expect(source).not.toContain('const aiJobSlot')
+    expect(source).not.toContain('aiJobSlot.')
+    expect(source).toContain('const aiQueue = new AiQueue()')
+    expect(source).toContain("new AiJobSlot(aiQueue, 'background')")
+    expect(source).toContain('onCancelled: sendAiQueueCancel')
+  })
 })

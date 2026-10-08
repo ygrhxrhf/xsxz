@@ -58,8 +58,12 @@ import {
   chapterGapMs,
   chapterNeedsDownload,
   chapterRetryDelayMs,
-  CHAPTER_WALL_TRIP_COUNT,
   isSiteWallFail,
+  openUnblock,
+  resumeUnblock,
+  RATE_LIMIT_MAX_TRIES,
+  RATE_LIMIT_STOP_COUNT,
+  WALL_PAUSE_STREAK,
   checkAllUpdates,
   checkUpdate,
   checkUpdateFailHint,
@@ -132,7 +136,7 @@ import {
 } from './library'
 import { extractPage } from './extract'
 import { setSiteRulesDir, upsertSiteRule } from './siteRules'
-import { FAIL_CODE_ZH, type DownloadProgress } from '../shared/types'
+import { FAIL_CODE_ZH, type DownloadBlocked, type DownloadProgress } from '../shared/types'
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, '../../fixtures', name), 'utf-8')
 
@@ -373,9 +377,10 @@ describe('chapterNeedsDownload', () => {
     expect(chapterNeedsDownload('ready')).toBe(false)
   })
 
-  it('retries only NavFailed / BodyEmpty and uses 1s/2s backoff outside tests', () => {
+  it('retries NavFailed / BodyEmpty / RateLimited and backs off with jitter outside tests', () => {
     expect(shouldRetryChapterFail('NavFailed')).toBe(true)
     expect(shouldRetryChapterFail('BodyEmpty')).toBe(true)
+    expect(shouldRetryChapterFail('RateLimited')).toBe(true)
     expect(shouldRetryChapterFail('Intercepted')).toBe(false)
     expect(shouldRetryChapterFail('NeedLogin')).toBe(false)
     expect(shouldRetryChapterFail('Paywall')).toBe(false)
@@ -389,10 +394,21 @@ describe('chapterNeedsDownload', () => {
       false,
       false,
     ])
+    expect([isSiteWallFail('RateLimited')]).toEqual([false])
     expect(CHAPTER_RETRY_TIMES).toBe(2)
     resetDownloadStateForTests()
-    expect(chapterRetryDelayMs(1, { testing: false })).toBe(1000)
-    expect(chapterRetryDelayMs(2, { testing: false })).toBe(2000)
+    const atRandom = (value: number, attempt: number) =>
+      chapterRetryDelayMs(attempt, { testing: false, random: () => value })
+    expect(atRandom(1, 1)).toBe(1000)
+    expect(atRandom(1, 2)).toBe(2000)
+    expect(atRandom(1, 3)).toBe(4000)
+    expect(atRandom(0, 1)).toBe(500)
+    expect(atRandom(0, 2)).toBe(1000)
+    expect(atRandom(1, 12)).toBe(30_000)
+    expect(atRandom(0, 12)).toBe(15_000)
+    expect(RATE_LIMIT_MAX_TRIES).toBe(2)
+    expect(RATE_LIMIT_STOP_COUNT).toBe(3)
+    expect(WALL_PAUSE_STREAK).toBe(3)
   })
 
   it('uses zero retry delay when a test html loader is injected', () => {
@@ -945,7 +961,7 @@ function interceptedHtml(): string {
 </html>`
 }
 
-function progressWindow(events: unknown[]): {
+function progressWindow(events: unknown[], blocked: unknown[] = []): {
   contentView: { addChildView: () => void; removeChildView: () => void }
   webContents: { send: (channel: string, payload: unknown) => void }
 } {
@@ -957,9 +973,20 @@ function progressWindow(events: unknown[]): {
     webContents: {
       send(channel: string, payload: unknown): void {
         if (channel === 'download.progress') events.push(payload)
+        if (channel === 'download.blocked') blocked.push(payload)
       },
     },
   }
+}
+
+/** 等下载循环停在「等你本人处理」上：撞墙暂停不会自己结束，用例必须显式续跑或取消。 */
+async function waitForBlocked(blocked: unknown[], minCount = 1, timeoutMs = 15_000): Promise<DownloadBlocked> {
+  const started = Date.now()
+  while (blocked.length < minCount) {
+    if (Date.now() - started > timeoutMs) throw new Error('download never paused for the user')
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  return blocked[blocked.length - 1] as DownloadBlocked
 }
 
 describe('checkUpdate', () => {
@@ -1658,10 +1685,11 @@ describe('checkUpdate', () => {
     expect(book.chapters.filter((c) => c.status === 'ready').length).toBe(5)
   })
 
-  it('stops after same-kind wall failures instead of hitting every remaining chapter', async () => {
+  it('pauses on the third same-kind wall chapter and waits for the user', async () => {
     const chapterHits: string[] = []
     const events: Array<{ status?: string; lastError?: string }> = []
-    setOwnerWindow(progressWindow(events) as never)
+    const blocked: unknown[] = []
+    setOwnerWindow(progressWindow(events, blocked) as never)
     setTestHtmlLoader(async (url) => {
       if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
       chapterHits.push(url)
@@ -1670,17 +1698,31 @@ describe('checkUpdate', () => {
     const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(started.ok).toBe(true)
     if (!started.ok) return
-    await waitForIdle()
-    expect(chapterHits.length).toBe(CHAPTER_WALL_TRIP_COUNT)
+    const payload = await waitForBlocked(blocked)
+    expect(chapterHits.length).toBe(WALL_PAUSE_STREAK)
+    expect(payload).toMatchObject({
+      bookId: started.bookId,
+      chapterTitle: '第三章 入门',
+      url: 'https://example.com/book/3.html',
+      failCode: 'NeedLogin',
+    })
+    expect(payload.message).toMatch(/需要登录[\s\S]*已暂停本次下载/)
+    expect(events.at(-1)?.status).toBe('awaitingHuman')
     const book = await loadBook(started.bookId!)
-    expect(book.status).toBe('partial')
-    expect(book.chapters.filter((c) => c.status === 'pending').length).toBe(6 - CHAPTER_WALL_TRIP_COUNT)
-    expect(events.at(-1)?.status).toBe('error')
-    expect(events.at(-1)?.lastError).toMatch(/需要登录[\s\S]*已停止本次下载/)
+    expect(book.chapters.filter((c) => c.status === 'failed').length).toBe(WALL_PAUSE_STREAK)
+    expect(book.chapters.filter((c) => c.status === 'pending').length).toBe(6 - WALL_PAUSE_STREAK)
+    // 撞墙暂停不是结束态：进度里不该带失败章明细
+    expect(events.at(-1)).not.toHaveProperty('failedChapters')
+    expect(isDownloadBusy()).toBe(true)
+    cancelDownload(started.bookId!)
+    await waitForIdle()
   })
 
-  it('fills the skipped chapters with retryFailed once the site is reachable again', async () => {
+  it('fills every chapter after the user handles the wall and resumes', async () => {
     const chapterHits: string[] = []
+    const events: Array<{ status?: string }> = []
+    const blocked: unknown[] = []
+    setOwnerWindow(progressWindow(events, blocked) as never)
     setTestHtmlLoader(async (url) => {
       if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
       chapterHits.push(url)
@@ -1689,15 +1731,49 @@ describe('checkUpdate', () => {
     const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(started.ok).toBe(true)
     if (!started.ok) return
+    await waitForBlocked(blocked)
+    expect(await resumeUnblock('no-such-book')).toMatchObject({ ok: false })
+
+    // 用户在浏览页用自己的账号登录好了：换成能拿到正文的页面
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      chapterHits.push(url)
+      return fixture('chapter.html')
+    })
+    expect(await resumeUnblock(started.bookId!)).toEqual({ ok: true })
+    expect(await resumeUnblock(started.bookId!)).toMatchObject({ ok: false, message: '当前下载没有在等待处理' })
     await waitForIdle()
-    expect(chapterHits.length).toBe(CHAPTER_WALL_TRIP_COUNT)
+    expect(chapterHits.length).toBe(6 + WALL_PAUSE_STREAK)
+    const book = await loadBook(started.bookId!)
+    expect(book.chapters.filter((c) => c.status === 'ready').length).toBe(6)
+    expect(events.at(-1)?.status).toBe('done')
+    expect(isDownloadBusy()).toBe(false)
+  })
+
+  it('keeps the wall chapters for retryFailed when the user cancels instead of resuming', async () => {
+    const blocked: unknown[] = []
+    const events: Array<{ status?: string }> = []
+    setOwnerWindow(progressWindow(events, blocked) as never)
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('login-wall.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForBlocked(blocked)
+    cancelDownload(started.bookId!)
+    await waitForIdle()
+    expect(events.at(-1)?.status).toBe('cancelled')
+    const stopped = await loadBook(started.bookId!)
+    expect(stopped.status).toBe('partial')
+    expect(stopped.chapters.filter((c) => c.status === 'failed').length).toBe(WALL_PAUSE_STREAK)
 
     setTestHtmlLoader(async (url) => {
       if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
       return fixture('chapter.html')
     })
-    const retried = await retryFailed(started.bookId!)
-    expect(retried.ok).toBe(true)
+    expect((await retryFailed(started.bookId!)).ok).toBe(true)
     await waitForIdle()
     const book = await loadBook(started.bookId!)
     expect(book.chapters.filter((c) => c.status === 'ready').length).toBe(6)
@@ -1708,7 +1784,8 @@ describe('checkUpdate', () => {
     setMainFrameStatusForTests('https://example.com/book/1.html', 402)
     setTestHtmlLoader(async (url) => {
       if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
-      return fixture('paywall-vip.html')
+      if (url.includes('1.html')) return fixture('paywall-vip.html')
+      return fixture('chapter.html')
     })
     const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(started.ok).toBe(true)
@@ -1721,8 +1798,11 @@ describe('checkUpdate', () => {
     expect(paid?.failMessage).toMatch(/HTTP 402/)
   })
 
-  it('never fetches a rate-limited chapter body and settles it as a retryable nav failure', async () => {
+  it('never fetches a rate-limited chapter body and settles it as a retryable rate limit', async () => {
     const chapterHits: string[] = []
+    const events: Array<{ status?: string }> = []
+    const blocked: unknown[] = []
+    setOwnerWindow(progressWindow(events, blocked) as never)
     setMainFrameStatusForTests('https://example.com/book/1.html', 429)
     setTestHtmlLoader(async (url) => {
       if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
@@ -1738,12 +1818,43 @@ describe('checkUpdate', () => {
     const book = await loadBook(started.bookId!)
     const throttled = book.chapters.find((c) => c.url?.endsWith('/1.html'))
     expect(throttled?.status).toBe('failed')
-    expect(throttled?.failCode).toBe('NavFailed')
+    expect(throttled?.failCode).toBe('RateLimited')
     expect(throttled?.failMessage).toMatch(/HTTP 429/)
+    // 限流是站点负载信号，不是访问控制：不该拦下来等用户本人处理
+    expect(blocked).toEqual([])
+    expect(events.at(-1)?.status).toBe('error')
   })
 
-  it('trips the same breaker when the whole site answers HTTP 403', async () => {
+  it('stops politely after consecutive rate-limited chapters instead of hammering the site', async () => {
     const chapterHits: string[] = []
+    const events: Array<{ status?: string; lastError?: string }> = []
+    const blocked: unknown[] = []
+    setOwnerWindow(progressWindow(events, blocked) as never)
+    for (const n of [1, 2, 3]) setMainFrameStatusForTests(`https://example.com/book/${n}.html`, 429)
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      chapterHits.push(url)
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(chapterHits).toEqual([])
+    expect(blocked).toEqual([])
+    const book = await loadBook(started.bookId!)
+    expect(book.chapters.filter((c) => c.failCode === 'RateLimited').length).toBe(RATE_LIMIT_STOP_COUNT)
+    expect(book.chapters.filter((c) => c.status === 'pending').length).toBe(6 - RATE_LIMIT_STOP_COUNT)
+    expect(book.status).toBe('partial')
+    expect(events.at(-1)?.status).toBe('error')
+    expect(events.at(-1)?.lastError).toMatch(/站点连续限流/)
+  })
+
+  it('hands the user the blocked chapter when the whole site answers HTTP 403', async () => {
+    const chapterHits: string[] = []
+    const events: Array<{ status?: string }> = []
+    const blocked: unknown[] = []
+    setOwnerWindow(progressWindow(events, blocked) as never)
     setTestHtmlLoader(async (url) => {
       if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
       chapterHits.push(url)
@@ -1753,11 +1864,16 @@ describe('checkUpdate', () => {
     const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
     expect(started.ok).toBe(true)
     if (!started.ok) return
-    await waitForIdle()
-    expect(chapterHits.length).toBe(CHAPTER_WALL_TRIP_COUNT)
+    const payload = await waitForBlocked(blocked)
+    expect(chapterHits.length).toBe(WALL_PAUSE_STREAK)
+    expect(payload.failCode).toBe('Intercepted')
+    expect(payload.url).toBe('https://example.com/book/3.html')
     const book = await loadBook(started.bookId!)
-    expect(book.status).toBe('partial')
     expect(book.chapters.find((c) => c.url?.endsWith('/1.html'))?.failCode).toBe('Intercepted')
+    cancelDownload(started.bookId!)
+    await waitForIdle()
+    expect((await loadBook(started.bookId!)).status).toBe('partial')
+    expect(events.at(-1)?.status).toBe('cancelled')
   })
 
   it('returns NeedLogin / Intercepted codes so the library can send the user to browse', async () => {
@@ -1768,6 +1884,10 @@ describe('checkUpdate', () => {
     expect(checkUpdateFailHint('Intercepted')).toEqual({
       goBrowse: true,
       message: '目录页被拦截或验证，请先到浏览页打开该站后再试',
+    })
+    expect(checkUpdateFailHint('RateLimited')).toEqual({
+      goBrowse: false,
+      message: '站点限流，请稍后再试',
     })
     expect(checkUpdateFailHint('CatalogNotFound')).toBeNull()
 
@@ -1794,6 +1914,41 @@ describe('checkUpdate', () => {
     if (blocked.ok) return
     expect(blocked.code).toBe('Intercepted')
     expect(blocked.message).toMatch(/拦截|验证/)
+  })
+
+  it('opens just the blocked chapter in the browse view for the user to unlock', async () => {
+    const navigated: string[] = []
+    setBrowseView(
+      {
+        webContents: {
+          isDestroyed: () => false,
+          getURL: () => 'https://example.com/book/index.html',
+          executeJavaScript: async () => fixture('catalog.html'),
+          loadURL: async (url: string) => {
+            navigated.push(url)
+          },
+        },
+      } as never,
+    )
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      if (url.includes('1.html')) return fixture('paywall-vip.html')
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    const paid = (await loadBook(started.bookId!)).chapters.find((c) => c.failCode === 'Paywall')
+    expect(paid?.url).toBeDefined()
+    expect(await openUnblock(started.bookId!, paid!.id)).toEqual({ ok: true, url: paid!.url })
+    expect(navigated).toEqual([paid!.url])
+    expect(await openUnblock(started.bookId!, 'no-such-chapter')).toMatchObject({
+      ok: false,
+      message: '章节不存在',
+    })
+    setBrowseView({ webContents: { isDestroyed: () => true } } as never)
+    expect(await openUnblock(started.bookId!, paid!.id)).toMatchObject({ ok: false, message: '浏览页不可用' })
   })
 })
 
@@ -1983,6 +2138,7 @@ describe('failedChapters on terminal progress', () => {
         chapterId: ch.id,
         title: ch.title,
         index: ch.index,
+        failCode: ch.failCode,
         reason: ch.failMessage || (ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '正文为空或过短'),
       }))
     expect(last.failedChapters).toEqual(expected)

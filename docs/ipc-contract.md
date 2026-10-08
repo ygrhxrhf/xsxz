@@ -119,13 +119,20 @@
 | `download.redownloadChapter` | invoke | `{ bookId: string; chapterId: string; url: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `download.cancel` | invoke | `{ bookId?: string }` | `{ ok: true }` |
 | `download.retryFailed` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
+| `download.openUnblock` | invoke | `{ bookId: string; chapterId: string }` | `{ ok: true; url: string } \| { ok: false; message: string }` |
+| `download.resumeUnblock` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
+| `download.blocked` | 主→渲染 | — | `DownloadBlocked` |
 | `download.checkUpdate` | invoke | `{ bookId: string }` | `{ ok: true; bookId: string; added: number } \| { ok: false; code?: FailCode; message: string }` |
 | `download.checkAll` | invoke | 无 | `CheckAllResult`（含 total / checked / booksWithUpdates / results） |
 | `download.cancelCheckAll` | invoke | 无 | `{ ok: true }` |
 | `download.progress` | 主→渲染 | — | `DownloadProgress` |
 | `download.checkAll.progress` | 主→渲染 | — | `CheckAllProgress` |
 
-`DownloadProgress.failedChapters` 可选，结束事件（`done` / `error` / `cancelled`）必带，没有失败或空章时为 `[]`；`running` 省略。元素字段：`chapterId`、`title`、`index`（磁盘 `ChapterMeta.index`，界面不再加减）、`reason`（优先 `failMessage`，否则 `FAIL_CODE_ZH[failCode]`，再否则「正文为空或过短」）。来源是该书 `status` 为 `failed` 或 `empty` 的章。结束事件可带 `qualityIssueCount`。
+`DownloadProgress.failedChapters` 可选，结束事件（`done` / `error` / `cancelled`）必带，没有失败或空章时为 `[]`；`running` 省略。元素字段：`chapterId`、`title`、`index`（磁盘 `ChapterMeta.index`，界面不再加减）、`reason`（优先 `failMessage`，否则 `FAIL_CODE_ZH[failCode]`，再否则「正文为空或过短」）、`failCode`（可选，无码失败时省略；界面按码分组）。来源是该书 `status` 为 `failed` 或 `empty` 的章。结束事件可带 `qualityIssueCount`。
+
+**撞墙暂停（人在环）**：同一类墙（`NeedLogin` / `Paywall` / `Intercepted` 中同一个码）连撞 `WALL_PAUSE_STREAK`（当前 3）章后不再逐章硬撞：当章仍记为 `failed`，`DownloadProgress.status` 置 `awaitingHuman`（非结束态，不带 `failedChapters`），并推送一次 `download.blocked`（`DownloadBlocked`：`bookId` / `chapterId` / `chapterTitle` / `url` / `failCode` / `message`）。`download.openUnblock` **只把内置浏览页导航到该章 URL**；登录、付费、人机验证一律由用户本人完成。红线：任何频道都不得代替用户登录、绕过付费流程、自动解答验证码或伪造/复用他人凭据——本契约只到「识别墙 + 交给本人」为止。`download.resumeUnblock` 唤醒停在当章的循环：把所有因墙码 `failed` 的章退回 `pending`（清 `failCode` / `failMessage`），再从头跑一趟新的串行通道，同类连击计数也随之重置；处理未生效时会再次暂停。等待期间该任务仍占单任务锁，`download.cancel` 可随时打断并保留已下章节。
+
+`RateLimited`（HTTP 429 / 503）不计入撞墙暂停：按站点 `Retry-After` 提示退避（缺失时用默认 30s，上限截到 120s），单章最多重试一次；连续 `RATE_LIMIT_STOP_COUNT` 章被限流则整本停止并提示稍后「重试失败章」，避免对已被限流的站零间隔硬撞。
 
 `download.preview` 不写书库；样本章也用 `persist:novel` 隐藏 webContents 加载。确认令牌一次性、十分钟内有效，当前浏览页 URL 改变后拒绝确认。`download.redownloadChapter` 只提取指定章节，失败时保留原正文与原 URL。
 
@@ -276,6 +283,8 @@
 
 未配置 Key 或网络失败：返回 `{ ok: false; message }`，不得影响浏览/下载/阅读。
 
+主进程 AI 队列分 `interactive`（用户点开）与 `background`（全书概览等自动任务）两条车道，各车道一次只跑一个任务，因此最多两个任务在飞；后台车道取活前要求交互车道完全空闲，排队中的用户任务同样算占用。`start` 与独占频道一律只排队不拒绝，不再因为「已有任务」返回忙；`{ ok:false, message:'请先停止当前生成' }` 只剩「同一本书的记忆族任务（`memory` / `follow`）已在跑或已排队」这一种触发场景，共用 `bookId:write` 资源的章节摘要改为排队串行。同一 `dedupeKey`（书 + 类别 + 章，证据问答再含问题原文）重复提交时复用已在跑或已排队的任务并返回同一 `jobId`，连点不再重复花额度。
+
 `ai.test` 发一条最小 chat completions 探活。401/403、429、超时、5xx 返回中文分级文案。
 
 `AiBudgetEstimate` 统计 Unicode 字符；token 估算按中日韩字符数 ÷ 1.5、其他字符数 ÷ 4，合计乘 1.1 后向上取整，不计算金额。`ai.clean` 的完整未分批请求超过 30000 字且 `confirmOverBudget` 不为 true 时，必须在任何模型请求前返回 `confirmationRequired` 与缩减后的实际发送范围。确认后按规范化段落分批，每批仅携带目标前后各一段只读上下文；只合并模型返回的目标段。任一批失败、取消或截断时不返回可应用的 `AiCleanResult`。`ai.storySoFar` 使用同一确认门禁：只缩减已存摘要和正常记忆材料，不读取正文；确认前不得读取 Key、创建任务或联网。
@@ -284,13 +293,15 @@
 
 `ai.characterCard`（人物卡 / 伏笔追踪）沿用同一夹紧规则：目录、已读摘要、最近 3 章已读正文节选进入提示词；未读内容绝不进模型。生成结果解析为 JSON 存 `<bookDir>/ai/characters.json` 并返回；解析失败保留 `raw` 兜底展示。`ai.getCharacterCard` 只读取上次保存的卡。
 
-本战役新增的流式频道统一先返回 `AiJobStart`。成功的 `jobId` 对应后续零或多个 `ai.chunk`（SSE `delta`）、阶段变化时的 `ai.stage`，以及恰好一个 `ai.done`；失败也只由 `ai.done` 给出 `{ ok:false, message }`。`AiDoneEvent` 成功分支在旧 `{ jobId, ok, text }` 上只追加可选 `usage`、`truncated`、`stopped`、`citations`、`uptoChapterId`、`memoryUpdate`、`saveToken`，旧监听方保持兼容。`ai.cancel` 提供 `jobId` 时只中断当前同 ID 的任务；省略 `jobId` 时用于中断当前非流式独占任务；过期或不匹配 ID 仍返回 `{ ok:true }`。
+本战役新增的流式频道统一先返回 `AiJobStart`。成功的 `jobId` 对应后续零或多个 `ai.chunk`（SSE `delta`）、阶段变化时的 `ai.stage`，以及恰好一个 `ai.done`；失败也只由 `ai.done` 给出 `{ ok:false, message }`。`ai.stage` 除 `detail` 外还可携带可选 `citations` 与 `uptoChapterId`：证据问答的引用由本地检索算出、早于回答数十秒，随 `requesting` 阶段一并推送，供界面先渲染「依据」；旧监听方可忽略。`AiDoneEvent` 成功分支在旧 `{ jobId, ok, text }` 上只追加可选 `usage`、`truncated`、`stopped`、`citations`、`uptoChapterId`、`memoryUpdate`、`saveToken`，旧监听方保持兼容。`ai.cancel` 提供 `jobId` 时：在跑的同 ID 任务被中断，仍在排队的同 ID 任务出队并补发恰好一个 `{ ok:false, message:'已从队列取消' }`，不能只留界面永久「生成中」；省略 `jobId` 时收掉交互车道的在跑与排队任务（渲染层「停止」拿不到 jobId 的入口即此，如停止清正文），后台自动任务不受该调用误杀，仍由各自的按 ID 停止收口；过期或不匹配 ID 仍返回 `{ ok:true }`。退出前用 `cancelAll()` 收两条车道，备份与导入守卫用 `hasInFlight()` 判断，不再依赖单个全局任务槽。
 
 `AiRequestStage` 固定为 `preparing`、`rewriting`、`searching`、`requesting`、`saving`。`ai.getMemory` 在 `memory.json` 存在时只返回新记忆；不存在时可返回旧 `characters.json` 兼容视图。`ai.updateMemory` / `rebuildMemory` 成功时通过 `ai.done.memoryUpdate` 传递 `AiMemoryUpdateResult`；生成成功但保存失败时仍返回 `ok:true`、完整 `memoryUpdate` 和 `saveToken`，旧正式文件不变；取消或模型/解析失败返回 `ok:false`，不得携带可误认为正式结果的 `memoryUpdate`。`ai.retrySave` 只能使用当前主进程内存中的一次性令牌，不得重新请求模型。
 
 `ai.chatStream`（已读证据问答）成功时通过 `ai.done` 同时返回 `text`、候选白名单内的 `citations`、`uptoChapterId` 与 `stopped`。保存失败仍保留这些字段并追加 `saveToken`；重开后 `ai.getChat` 返回 `AiGetChatResult`，v1 消息按无来源兼容读取，v2 消息保留引用、已读截止和停止状态。
 
-`ai.getMaterialCoverage` 只统计已读截止内 `ready` 章：返回截止章节、已有本章摘要数，以及缺摘要的章节标题。无阅读进度时 `coverage` 为 `null`。`ai.correctCharacterAliases` 只改该人物的 `aliases`，不改姓名、摘要或来源；`affectedChapterIds` 是该条目来源章节，供界面从这些章节重新生成。`ai.getUsage` 读取 `<bookDir>/ai/usage.json` 的累计模型调用次数和服务报告的 token；文件缺失或损坏时返回全 0。清正文每批、前情、章节摘要、翻译、证据问答的改写和回答、记忆每批分别计次。模型服务未报告 token 时仍计次，token 记 0；不计算金额，保存重试不重复计次。
+`ai.chatStream` 的回答按 `ai.chunk` 流式推送：任务要求 `response_format` 为 JSON，因此只转发 `answer` 字段中已完成解码的部分（不完整的 `\`、`\uXXXX` 或代理对必须挂起等后续帧），改写与检索阶段不发 `ai.chunk`；服务不守 JSON 约定时不转发任何字符，改由 `ai.done.text` 一次性给出，两种路径下终态文本必须一致。用户在任意时刻停止（阶段之间或流中途 abort）时，`ai.done` 仍必须恰好一个：已流出非空正文时走 `ok:true` 分支，携带 `stopped:true`、停止前的 `text`、当次候选 `citations` 与 `uptoChapterId`，并把这条部分回答写进 `chat.json`；只有正文为空才允许 `text:''` 且不留空消息。
+
+`ai.getMaterialCoverage` 只统计已读截止内 `ready` 章：返回截止章节、已有本章摘要数，以及缺摘要的章节标题。无阅读进度时 `coverage` 为 `null`。`ai.correctCharacterAliases` 只改该人物的 `aliases`，不改姓名、摘要或来源；`affectedChapterIds` 是该条目来源章节，供界面从这些章节重新生成。`ai.getUsage` 读取 `<bookDir>/ai/usage.json` 的累计模型调用次数和服务报告的 token；文件缺失或损坏时返回全 0。清正文每批、前情、章节摘要、翻译、证据问答的改写和回答、记忆每批分别计次。模型服务未报告 token 时仍计次，token 记 0；不计算金额，保存重试不重复计次。`stream_options.include_usage` 与 `response_format` 一样只在官方 DeepSeek 端点注入，自建或第三方端点的流式回答常常不带 usage，此时界面显示「服务未返回 token 用量」属正常，不代表统计丢失。
 
 A1.1 只冻结以上类型、频道与白名单形状；handler 与 preload 方法由后续 A1.4/B1/C1 切片实现。未实现前 UI 不得调用。
 
@@ -305,7 +316,7 @@ window.api = {
   browse: { load, back, forward, reload, stop, setBounds, setVisible, resume, zoom, readingPage, setReadingMode, chapter, find, stopFind, hide, onFindResult, onShortcut, onUrl, onState },
   library: { list, get, readChapter, delete, import, setProgress, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, listTrash, restoreTrash, purgeTrash },
   bookOverview: { retry, onChanged },
-  download: { preview, confirm, redownloadChapter, cancel, retryFailed, checkUpdate, checkAll, cancelCheckAll, onProgress, onCheckAllProgress },
+  download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   settings: { get, set },
   backup: { create, restore, runAuto },
   annotations: { list, add, update, remove },
