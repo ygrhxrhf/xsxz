@@ -31,6 +31,16 @@ describe('章节质量报告与人工修复', () => {
     expect((await readChapter('d_quality', 'c0003')).status).toBe('ready')
   })
 
+  it('flags a stored paid teaser as suspectedWall without changing its status', async () => {
+    const teaser = `${'夜风吹过城墙，林舟把信收进袖中，沿着石阶继续前行。'.repeat(4)}本章剩余内容需要付费阅读，购买本章后可解锁后续章节。`
+    await writeChapterFile('d_quality', 'c0001', { title: '一', body: teaser, status: 'ready' })
+    const report = await auditBook('d_quality')
+    const wall = report.issues.filter((issue) => issue.kind === 'suspectedWall')
+    expect(wall.map((issue) => issue.chapterId)).toEqual(['c0001'])
+    expect(wall[0]!.reason).toMatch(/付费/)
+    expect((await readChapter('d_quality', 'c0001')).status).toBe('ready')
+  })
+
   it('saves manual text and preserves the first original for undo', async () => {
     await writeChapterFile('d_quality', 'c0001', { title: '一', body: '旧正文', status: 'ready' })
     await repairChapterBody('d_quality', 'c0001', '修好后的正文')

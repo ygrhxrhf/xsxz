@@ -90,6 +90,39 @@ describe('extractPage — chapter page', () => {
   })
 })
 
+describe('paywall detection', () => {
+  const shortStory =
+    '夜风吹过城墙，林舟看见远处的灯火，想起昨夜在山路上听到的脚步声。他没有回头，只把信收进袖中，沿着石阶继续前行。'
+
+  it('classifies a short VIP teaser as Paywall instead of a ready chapter', () => {
+    const html = fixture('paywall-vip.html')
+    const page = extractPage(html, 'https://example.com/book/3.html')
+    expect(page.ok).toBe(false)
+    expect(page.failCode).toBe('Paywall')
+    expect(page.failMessage).toBe('本章需要付费或会员')
+    const body = extractBody(html, 'https://example.com/book/3.html')
+    expect(body.ok).toBe(false)
+    expect(body.failCode).toBe('Paywall')
+  })
+
+  it('keeps a full chapter even when the tail sells membership', () => {
+    const html = `<html><head><title>第三十一章 出关</title></head><body><div id="content"><p>${shortStory.repeat(
+      20,
+    )}</p><p>开通会员可解锁后续章节。</p></div></body></html>`
+    const result = extractBody(html, 'https://example.com/book/4.html')
+    expect(effectiveLength(result.body)).toBeGreaterThan(800)
+    expect(result.ok).toBe(true)
+  })
+
+  it('is not triggered by a VIP link in the site header', () => {
+    const html = `<html><head><title>第三十二章 旧桥</title></head><body><div class="top"><a href="/vip/">开通会员</a></div><div id="content"><p>${shortStory.repeat(
+      3,
+    )}</p></div></body></html>`
+    expect(extractBody(html, 'https://example.com/book/5.html').ok).toBe(true)
+    expect(extractPage(html, 'https://example.com/book/5.html').failCode).toBeUndefined()
+  })
+})
+
 describe('chapter ad paragraph cleanup', () => {
   const story = '夜风吹过城墙，林舟看见远处的灯火，想起昨夜在山路上听到的脚步声。他没有回头，只把信收进袖中，沿着石阶继续前行。'
   const storyTwo = '第二天清晨，船终于靠岸。众人商量好入城的路线，又把行李分给同行的伙伴，约定天黑前在旧桥旁会合。'

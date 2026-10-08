@@ -27,7 +27,7 @@ import type {
   TrashItem,
   CharacterCard,
 } from '../shared/types'
-import { DEFAULT_LIBRARY_PATH } from '../shared/types'
+import { defaultLibraryPath } from './libraryPath'
 import { canonicalizeUrl } from '../shared/urlHash'
 import { correctCharacterAliases, correctMemorySummary, type MemoryItemKind } from './aiMaterial'
 
@@ -35,7 +35,7 @@ import { correctCharacterAliases, correctMemorySummary, type MemoryItemKind } fr
 // helpers
 // ---------------------------------------------------------------------------
 
-let currentLibraryPath = DEFAULT_LIBRARY_PATH
+let currentLibraryPath = defaultLibraryPath()
 
 export function getLibraryPath(): string {
   return currentLibraryPath
@@ -43,7 +43,7 @@ export function getLibraryPath(): string {
 
 export async function setLibraryPath(next: string): Promise<void> {
   await withLibraryWrite(async () => {
-    const trimmed = (next || '').trim() || DEFAULT_LIBRARY_PATH
+    const trimmed = (next || '').trim() || defaultLibraryPath()
     const previous = currentLibraryPath
     currentLibraryPath = trimmed
     try {
@@ -71,6 +71,77 @@ export function bookIdFromUrl(host: string, catalogUrl: string): string {
   const href = canonicalizeUrl(catalogUrl)
   const clean = `${host}\n${href}`.toLowerCase()
   return 'd_' + createHash('sha256').update(clean).digest('hex').slice(0, 16)
+}
+
+/** www.example.com 与 example.com 是同一本书。 */
+export function normalizeBookHost(host: string): string {
+  return (host ?? '').trim().toLowerCase().replace(/^www\./, '')
+}
+
+function withWwwHost(host: string): string {
+  return host.startsWith('www.') ? host : `www.${host}`
+}
+
+/** 只改主机大小写和 www，路径原样保留。 */
+function setBookUrlHost(url: string, host: string): string | null {
+  try {
+    const u = new URL(url)
+    u.hostname = host
+    return u.toString()
+  } catch {
+    return null
+  }
+}
+
+/** 目录地址里的主机同样参与身份，所以也要跟着归一。 */
+export function normalizeBookUrl(url: string): string {
+  return setBookUrlHost(url, normalizeBookHost(urlHost(url))) ?? url
+}
+
+function hostVariants(host: string): string[] {
+  const bare = normalizeBookHost(host)
+  return [...new Set([bare, withWwwHost(bare)])]
+}
+
+function urlVariants(url: string): string[] {
+  const bare = setBookUrlHost(url, normalizeBookHost(urlHost(url))) ?? url
+  const withWww = setBookUrlHost(bare, withWwwHost(urlHost(bare)))
+  return [...new Set(withWww ? [bare, withWww] : [bare])]
+}
+
+function urlHost(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 同一本书的候选 id：去 www 的规范键在前，其余写法在后。
+ * www 要双向补：当年按 www 建的书，这次从裸主机进来也得找得到。
+ */
+export function bookIdCandidates(host: string, catalogUrl: string): string[] {
+  const out: string[] = []
+  for (const h of hostVariants(host)) {
+    for (const u of urlVariants(catalogUrl)) {
+      const id = bookIdFromUrl(h, u)
+      if (!out.includes(id)) out.push(id)
+    }
+  }
+  return out
+}
+
+/** 新书一律用规范键；候选顺序保证它与 bookIdCandidates[0] 一致。 */
+export function canonicalBookId(host: string, catalogUrl: string): string {
+  return bookIdCandidates(host, catalogUrl)[0]
+}
+
+export async function findExistingBookId(host: string, catalogUrl: string): Promise<string | null> {
+  for (const candidate of bookIdCandidates(host, catalogUrl)) {
+    if (await bookExists(candidate)) return candidate
+  }
+  return null
 }
 
 export function assertImportable(
@@ -1127,4 +1198,20 @@ export async function refreshBookStatus(bookId: string, status?: Book['status'])
     else applyOverallStatus(book)
     await saveBookUnlocked(book)
   })
+}
+
+/**
+ * 退出或被杀掉时 book.json 可能永远停在 downloading：没有任务在跑却显示下载中。
+ * 启动时按实际章节重算一次，返回修复的本数。
+ */
+export async function recoverInterruptedStatus(
+  items?: readonly Pick<BookListItem, 'id' | 'status'>[],
+): Promise<number> {
+  let fixed = 0
+  for (const item of items ?? (await listBooks())) {
+    if (item.status !== 'downloading') continue
+    await refreshBookStatus(item.id)
+    fixed += 1
+  }
+  return fixed
 }

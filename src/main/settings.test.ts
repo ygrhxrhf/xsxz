@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 
+const ss = vi.hoisted(() => ({ available: true, decryptFails: false }))
+
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp/spbf-settings-test' },
   safeStorage: {
+    isEncryptionAvailable: () => ss.available,
     encryptString: (value: string) => Buffer.from(value),
-    decryptString: (value: Buffer) => value.toString(),
+    decryptString: (value: Buffer) => {
+      if (ss.decryptFails) throw new Error('Safe storage unable to decrypt')
+      return value.toString()
+    },
   },
 }))
 
@@ -17,6 +23,7 @@ import {
 import {
   AI_CUSTOM_SERVICE_NOTICE,
   assertTrustedAiEndpoint,
+  getApiKey,
   getSettings,
   isLegacyDeepSeekModel,
   normalizeAiPrefs,
@@ -29,12 +36,15 @@ import {
   resolveEffectiveAiProvider,
   updateSettings,
 } from './settings'
+import { defaultLibraryPath } from './libraryPath'
 import { setAtomicWriteBeforeCommitForTests } from './atomicFile'
 
 const TEST_DIR = '/tmp/spbf-settings-test'
 const SETTINGS_FILE = `${TEST_DIR}/settings.json`
 
 beforeEach(async () => {
+  ss.available = true
+  ss.decryptFails = false
   resetSettingsCacheForTests()
   await rm(TEST_DIR, { recursive: true, force: true })
 })
@@ -49,6 +59,34 @@ describe('settings atomic persistence', () => {
     expect(await readFile(SETTINGS_FILE, 'utf8')).not.toContain('tts-secret')
     await updateSettings({ ttsApiKey: '' })
     expect((await getSettings()).tts.onlineKeyConfigured).toBe(false)
+  })
+
+  it('refuses to save any setting when the keyring cannot hold an API Key', async () => {
+    ss.available = false
+    await expect(updateSettings({ libraryPath: 'D:\\books', apiKey: 'sk-1' })).rejects.toThrow(/密钥库不可用/)
+    resetSettingsCacheForTests()
+    const settings = await getSettings()
+    expect(settings.apiKeyConfigured).toBe(false)
+    expect(settings.libraryPath).not.toBe('D:\\books')
+  })
+
+  it('reports an undecryptable stored key as unconfigured instead of silently empty', async () => {
+    await updateSettings({ apiKey: 'sk-on-another-machine' })
+    expect((await getSettings()).apiKeyConfigured).toBe(true)
+    ss.decryptFails = true
+    resetSettingsCacheForTests()
+    expect((await getSettings()).apiKeyConfigured).toBe(false)
+    expect(await getApiKey()).toBe('')
+  })
+
+  it('re-resolves the library default instead of baking one into settings.json', async () => {
+    await updateSettings({ libraryPath: 'D:\\books' })
+    expect((await getSettings()).libraryPath).toBe('D:\\books')
+
+    await updateSettings({ libraryPath: '   ' })
+    resetSettingsCacheForTests()
+    expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf8'))).not.toHaveProperty('libraryPath')
+    expect((await getSettings()).libraryPath).toBe(defaultLibraryPath())
   })
   it('keeps automatic book overview disabled until explicitly enabled', async () => {
     expect((await getSettings()).ai?.autoBookOverview).toBe(false)
@@ -180,12 +218,12 @@ describe('normalizeSkin', () => {
     expect(normalizeSkin('minimal')).toBe('paper')
   })
 
-  it('falls back to paper for unknown strings, missing values, and non-strings', () => {
-    expect(normalizeSkin('neon')).toBe('paper')
-    expect(normalizeSkin('')).toBe('paper')
-    expect(normalizeSkin(undefined)).toBe('paper')
-    expect(normalizeSkin(null)).toBe('paper')
-    expect(normalizeSkin(1)).toBe('paper')
+  it('uses the new-user white default for unknown strings, missing values, and non-strings', () => {
+    expect(normalizeSkin('neon')).toBe('white')
+    expect(normalizeSkin('')).toBe('white')
+    expect(normalizeSkin(undefined)).toBe('white')
+    expect(normalizeSkin(null)).toBe('white')
+    expect(normalizeSkin(1)).toBe('white')
   })
 
   it('reads stored legacy skins as paper and writes paper instead of sakura or minimal', async () => {
@@ -219,12 +257,12 @@ describe('normalizeSkin', () => {
     await writeFile(SETTINGS_FILE, JSON.stringify({ model: 'untouched', appearance: { skin: 'mystery' } }), 'utf-8')
     resetSettingsCacheForTests()
     const unknownRead = await getSettings()
-    expect(unknownRead.appearance.skin).toBe('paper')
+    expect(unknownRead.appearance.skin).toBe('white')
     expect(unknownRead.model).toBe('untouched')
 
     resetSettingsCacheForTests()
     await rm(TEST_DIR, { recursive: true, force: true })
-    expect((await getSettings()).appearance.skin).toBe('paper')
+    expect((await getSettings()).appearance.skin).toBe('white')
 
     const saved = await updateSettings({ appearance: { skin: 'sakura' as 'paper' } })
     expect(saved.appearance.skin).toBe('paper')

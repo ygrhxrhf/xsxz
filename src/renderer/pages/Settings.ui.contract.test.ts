@@ -30,7 +30,7 @@ describe('Settings section framework contract', () => {
 
   it('keeps the responsive shell and semantic first-load feedback', async () => {
     const source = await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')
-    expect(source).toContain('max-width: 1040px')
+    expect(source).toContain('max-width: 1120px')
     expect(source).toContain('grid-template-columns: 180px minmax(0, 1fr);\n  gap: var(--space-6)')
     expect(source).toContain('grid-template-columns: 160px minmax(0, 1fr);\n    gap: var(--space-4)')
     expect(source).toContain('overflow-x: hidden')

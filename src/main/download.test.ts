@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { beginLibraryRestore } from './libraryMaintenance'
+import { setMainFrameStatusForTests } from './httpStatus'
 
 vi.mock('electron', () => {
   class FakeWebContents {
@@ -57,6 +58,8 @@ import {
   chapterGapMs,
   chapterNeedsDownload,
   chapterRetryDelayMs,
+  CHAPTER_WALL_TRIP_COUNT,
+  isSiteWallFail,
   checkAllUpdates,
   checkUpdate,
   checkUpdateFailHint,
@@ -67,6 +70,7 @@ import {
   getHiddenView,
   HIDDEN_VIEW_BOUNDS,
   identityFromPage,
+  isDownloadBusy,
   resetDownloadStateForTests,
   setBrowseView,
   setOwnerWindow,
@@ -114,7 +118,9 @@ function trackingWindow(): {
   }
 }
 import {
+  bookExists,
   bookIdFromUrl,
+  canonicalBookId,
   createBookFromBootstrap,
   listBooks,
   loadBook,
@@ -161,7 +167,7 @@ describe('identityFromPage + followCatalogIfNeeded', () => {
 
     const id = identityFromPage(pageUrl, followed.bootstrap)
     expect(id.catalogUrl).not.toContain('1.html')
-    expect(id.bookId).toBe(bookIdFromUrl(id.host, id.catalogUrl))
+    expect(id.bookId).toBe(canonicalBookId(id.host, id.catalogUrl))
     expect(id.bookId).toMatch(/^d_[0-9a-f]{16}$/)
   })
 
@@ -188,8 +194,8 @@ ${filler}
     const id = identityFromPage(pageUrl, extracted.bootstrap!)
     expect(id.catalogUrl).toContain('#/book/65')
     expect(id.catalogUrl).not.toBe(pageUrl)
-    expect(id.bookId).toBe(bookIdFromUrl('www.bqg858.cc', 'https://www.bqg858.cc/#/book/65/'))
-    expect(id.bookId).not.toBe(bookIdFromUrl('www.bqg858.cc', 'https://www.bqg858.cc/'))
+    expect(id.bookId).toBe(canonicalBookId('www.bqg858.cc', 'https://www.bqg858.cc/#/book/65/'))
+    expect(id.bookId).not.toBe(canonicalBookId('www.bqg858.cc', 'https://www.bqg858.cc/'))
   })
 
   it('hash chapter identityFromPage equals catalog bookId; bare path does not (VAL-IDENT-018)', async () => {
@@ -198,7 +204,7 @@ ${filler}
     const hashChapter = 'https://www.bqg858.cc/#/book/65/1.html'
     const bareCatalog = 'https://www.bqg858.cc/book/65/'
     const bareChapter = 'https://www.bqg858.cc/book/65/1.html'
-    const catalogId = bookIdFromUrl(host, hashCatalog)
+    const catalogId = canonicalBookId(host, hashCatalog)
 
     const catalogHtml = `<!DOCTYPE html>
 <html>
@@ -257,14 +263,14 @@ ${filler}
     expect(bareCatalogPage.ok).toBe(true)
     expect(bareCatalogPage.pageKind).toBe('catalog')
     const fromBareCatalog = identityFromPage(bareCatalog, bareCatalogPage.bootstrap!)
-    expect(fromBareCatalog.bookId).toBe(bookIdFromUrl(host, bareCatalog))
+    expect(fromBareCatalog.bookId).toBe(canonicalBookId(host, bareCatalog))
     expect(fromBareCatalog.bookId).not.toBe(catalogId)
 
     const bareChapterPage = extractPage(chapterHtml, bareChapter)
     expect(bareChapterPage.pageKind).toBe('chapter')
     const fromBareChapter = identityFromPage(bareChapter, bareChapterPage.bootstrap!)
     expect(fromBareChapter.bookId).not.toBe(catalogId)
-    expect(fromBareChapter.bookId).not.toBe(bookIdFromUrl(host, hashChapter))
+    expect(fromBareChapter.bookId).not.toBe(canonicalBookId(host, hashChapter))
   })
 
   it('Alice chapter recovers chapters catalog as one bookId; novel without recovery is documented (VAL-IDENT-021)', async () => {
@@ -272,7 +278,7 @@ ${filler}
     const chaptersCatalog = 'https://www.alicesw.com/other/chapters/id/44828.html'
     const novelUrl = 'https://www.alicesw.com/novel/44828.html'
     const chapterUrl = 'https://www.alicesw.com/book/46268/9c5ec36414c68.html'
-    const catalogId = bookIdFromUrl(host, chaptersCatalog)
+    const catalogId = canonicalBookId(host, chaptersCatalog)
 
     const aliceCatalogHtml = `<!DOCTYPE html>
 <html>
@@ -332,8 +338,8 @@ ${filler}
     expect(chapterPage.bootstrap!.catalogUrl).toContain('/other/chapters/id/44828.html')
     const fromChapter = identityFromPage(chapterUrl, chapterPage.bootstrap!)
     expect(fromChapter.bookId).toBe(catalogId)
-    expect(fromChapter.bookId).not.toBe(bookIdFromUrl(host, chapterUrl))
-    expect(fromChapter.bookId).not.toBe(bookIdFromUrl(host, 'https://www.alicesw.com/book/46268/'))
+    expect(fromChapter.bookId).not.toBe(canonicalBookId(host, chapterUrl))
+    expect(fromChapter.bookId).not.toBe(canonicalBookId(host, 'https://www.alicesw.com/book/46268/'))
 
     const followed = await followCatalogIfNeeded(chapterPage.bootstrap!, async (url) => {
       expect(url).toContain('/other/chapters/id/44828.html')
@@ -347,14 +353,14 @@ ${filler}
     const novelPage = extractPage(aliceNovelHtml, novelUrl)
     const novelId = novelPage.ok && novelPage.bootstrap
       ? identityFromPage(novelUrl, novelPage.bootstrap).bookId
-      : bookIdFromUrl(host, novelUrl)
+      : canonicalBookId(host, novelUrl)
     if (novelPage.ok && novelPage.bootstrap?.catalogUrl?.includes('/other/chapters/id/44828.html')) {
       expect(novelId).toBe(catalogId)
     } else {
       // Live tests must paste only the chapters URL (VAL-DL-001). Do not start from
       // /novel/44828.html — that would be a second Alice card for the same title.
       expect(novelId).not.toBe(catalogId)
-      expect(bookIdFromUrl(host, novelUrl)).not.toBe(catalogId)
+      expect(canonicalBookId(host, novelUrl)).not.toBe(catalogId)
     }
   })
 })
@@ -372,6 +378,17 @@ describe('chapterNeedsDownload', () => {
     expect(shouldRetryChapterFail('BodyEmpty')).toBe(true)
     expect(shouldRetryChapterFail('Intercepted')).toBe(false)
     expect(shouldRetryChapterFail('NeedLogin')).toBe(false)
+    expect(shouldRetryChapterFail('Paywall')).toBe(false)
+    expect([isSiteWallFail('NeedLogin'), isSiteWallFail('Paywall'), isSiteWallFail('Intercepted')]).toEqual([
+      true,
+      true,
+      true,
+    ])
+    expect([isSiteWallFail('NavFailed'), isSiteWallFail('BodyEmpty'), isSiteWallFail('CatalogNotFound')]).toEqual([
+      false,
+      false,
+      false,
+    ])
     expect(CHAPTER_RETRY_TIMES).toBe(2)
     resetDownloadStateForTests()
     expect(chapterRetryDelayMs(1, { testing: false })).toBe(1000)
@@ -466,7 +483,7 @@ describe('startDownloadFromPage', () => {
     expect(result.code).toBe('NeedLogin')
     expect(result.message).toMatch(/需要登录/)
     expect(result.message).not.toBe('无法识别为书')
-    await expect(loadBook(bookIdFromUrl('example.com', 'https://example.com/book/login-wall.html'))).rejects.toThrow()
+    await expect(loadBook(canonicalBookId('example.com', 'https://example.com/book/login-wall.html'))).rejects.toThrow()
   })
 
   it('starts from a chapter page, follows the catalog, and stores one six-chapter book', async () => {
@@ -481,8 +498,47 @@ describe('startDownloadFromPage', () => {
     expect(book.chapters.some((c) => c.url === 'https://example.com/book/1.html' && book.chapters.length === 1)).toBe(
       false,
     )
-    expect(result.bookId).toBe(bookIdFromUrl('example.com', book.sourceUrl || ''))
+    expect(result.bookId).toBe(canonicalBookId('example.com', book.sourceUrl || ''))
     expect(loadedUrls.some((u) => u.includes('/book/') && !u.includes('.html'))).toBe(true)
+  })
+
+  it('同一本书的 www 与裸主机地址只建一本', async () => {
+    // 章节目录链接改成站内相对路径，章节主机才跟着页面主机走，两种地址都能认成同一本书
+    const relativeCatalog = fixture('catalog.html').replace(/https:\/\/example\.com/g, '')
+    const first = await startDownloadFromPage(relativeCatalog, 'https://www.example.com/book/')
+    expect(first.ok).toBe(true)
+    await waitForIdle()
+
+    const second = await startDownloadFromPage(relativeCatalog, 'https://example.com/book/')
+    expect(second.ok).toBe(true)
+    await waitForIdle()
+
+    expect(second.bookId).toBe(first.bookId)
+    expect(await listBooks()).toHaveLength(1)
+    expect(await bookExists(canonicalBookId('example.com', 'https://example.com/book/'))).toBe(true)
+    expect(loadedUrls.some((u) => u.startsWith('https://www.example.com/book/1.html'))).toBe(true)
+  })
+
+  it('老库按带 www 的旧键建好的书，重新下载时复用而不是新开一本', async () => {
+    const legacyId = bookIdFromUrl('www.example.com', 'https://www.example.com/book/')
+    await createBookFromBootstrap({
+      bookId: legacyId,
+      title: '万古神帝',
+      author: '飞天鱼',
+      sourceUrl: 'https://www.example.com/book/',
+      sourceHost: 'www.example.com',
+      importType: 'download',
+      chapterTitles: ['第一章 前世记忆'],
+      chapterUrls: ['https://example.com/book/1.html'],
+    })
+
+    const result = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/')
+    expect(result.ok).toBe(true)
+    await waitForIdle()
+
+    expect(result.bookId).toBe(legacyId)
+    expect(await listBooks()).toHaveLength(1)
+    expect(await bookExists(canonicalBookId('example.com', 'https://example.com/book/'))).toBe(false)
   })
 
   it('uses the displayed guest HTML/URL, not an uncommitted draft', async () => {
@@ -493,8 +549,8 @@ describe('startDownloadFromPage', () => {
     )
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.bookId).toBe(bookIdFromUrl('example.com', 'https://example.com/book/index.html'))
-    expect(result.bookId).not.toBe(bookIdFromUrl('evil.example', draftUrl))
+    expect(result.bookId).toBe(canonicalBookId('example.com', 'https://example.com/book/index.html'))
+    expect(result.bookId).not.toBe(canonicalBookId('evil.example', draftUrl))
     await waitForIdle()
     expect(loadedUrls.every((u) => !u.includes('uncommitted-draft'))).toBe(true)
   })
@@ -1306,6 +1362,39 @@ describe('checkUpdate', () => {
     await waitForIdle()
   })
 
+  it('releases the download lock when the retry backoff is cancelled (VAL-DL-015b)', async () => {
+    const { bookId } = await seedSixChapterBook({ failSixth: true })
+    const events: Array<{ status?: string }> = []
+    let chapterFailures = 0
+    setOwnerWindow(progressWindow(events) as never)
+    // 交回真实退避时长：测试加载器存在时 chapterRetryDelayMs 返回 0，取消就落不进退避窗口
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      setTestHtmlLoader(null)
+      chapterFailures++
+      throw new Error('导航失败')
+    })
+    const started = await retryFailed(bookId)
+    expect(started.ok).toBe(true)
+    // 必须等到退避已经开始再取消：循环顶部的 cancelled 检查会干净退出，走不到抛出的那一步
+    await vi.waitFor(() => expect(chapterFailures).toBeGreaterThan(0), { timeout: 2_000, interval: 1 })
+
+    cancelDownload(bookId)
+
+    await vi.waitFor(() => expect(isDownloadBusy()).toBe(false), { timeout: 4_000 })
+    expect((await loadBook(bookId)).status).not.toBe('downloading')
+    expect(events.some((p) =>
+      p.status === 'cancelled' || p.status === 'error' || p.status === 'done')).toBe(true)
+
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const retryAfter = await retryFailed(bookId)
+    expect(retryAfter.ok).toBe(true)
+    await waitForIdle()
+  })
+
   it('counts only the new row when an old failed chapter is retried at the same time (VAL-DL-016)', async () => {
     const { bookId, readySnapshots } = await seedSixChapterBook({ failSixth: true })
     expect(readySnapshots).toHaveLength(5)
@@ -1543,6 +1632,132 @@ describe('checkUpdate', () => {
     expect(hits).toBe(1)
     const book = await loadBook(started.bookId!)
     expect(book.chapters.find((c) => c.url?.includes('1.html'))?.failCode).toBe('Intercepted')
+  })
+
+  it('stores a VIP teaser as a failed Paywall chapter, never as ready', async () => {
+    let hits = 0
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      if (url.includes('1.html')) {
+        hits++
+        return fixture('paywall-vip.html')
+      }
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(hits).toBe(1)
+    const book = await loadBook(started.bookId!)
+    const paid = book.chapters.find((c) => c.url?.includes('1.html'))
+    expect(paid?.status).toBe('failed')
+    expect(paid?.failCode).toBe('Paywall')
+    expect(paid?.failMessage).toBe('本章需要付费或会员')
+    expect(book.chapters.filter((c) => c.status === 'ready').length).toBe(5)
+  })
+
+  it('stops after same-kind wall failures instead of hitting every remaining chapter', async () => {
+    const chapterHits: string[] = []
+    const events: Array<{ status?: string; lastError?: string }> = []
+    setOwnerWindow(progressWindow(events) as never)
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      chapterHits.push(url)
+      return fixture('login-wall.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(chapterHits.length).toBe(CHAPTER_WALL_TRIP_COUNT)
+    const book = await loadBook(started.bookId!)
+    expect(book.status).toBe('partial')
+    expect(book.chapters.filter((c) => c.status === 'pending').length).toBe(6 - CHAPTER_WALL_TRIP_COUNT)
+    expect(events.at(-1)?.status).toBe('error')
+    expect(events.at(-1)?.lastError).toMatch(/需要登录[\s\S]*已停止本次下载/)
+  })
+
+  it('fills the skipped chapters with retryFailed once the site is reachable again', async () => {
+    const chapterHits: string[] = []
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      chapterHits.push(url)
+      return fixture('login-wall.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(chapterHits.length).toBe(CHAPTER_WALL_TRIP_COUNT)
+
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+    const retried = await retryFailed(started.bookId!)
+    expect(retried.ok).toBe(true)
+    await waitForIdle()
+    const book = await loadBook(started.bookId!)
+    expect(book.chapters.filter((c) => c.status === 'ready').length).toBe(6)
+    expect(isDownloadBusy()).toBe(false)
+  })
+
+  it('maps HTTP 402 to Paywall without storing the teaser as a chapter', async () => {
+    setMainFrameStatusForTests('https://example.com/book/1.html', 402)
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('paywall-vip.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    const book = await loadBook(started.bookId!)
+    const paid = book.chapters.find((c) => c.url?.endsWith('/1.html'))
+    expect(paid?.status).toBe('failed')
+    expect(paid?.failCode).toBe('Paywall')
+    expect(paid?.failMessage).toMatch(/HTTP 402/)
+  })
+
+  it('never fetches a rate-limited chapter body and settles it as a retryable nav failure', async () => {
+    const chapterHits: string[] = []
+    setMainFrameStatusForTests('https://example.com/book/1.html', 429)
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      chapterHits.push(url)
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(chapterHits.filter((u) => u.endsWith('/1.html')).length).toBe(0)
+    expect(chapterHits.filter((u) => u.endsWith('/2.html')).length).toBe(1)
+    const book = await loadBook(started.bookId!)
+    const throttled = book.chapters.find((c) => c.url?.endsWith('/1.html'))
+    expect(throttled?.status).toBe('failed')
+    expect(throttled?.failCode).toBe('NavFailed')
+    expect(throttled?.failMessage).toMatch(/HTTP 429/)
+  })
+
+  it('trips the same breaker when the whole site answers HTTP 403', async () => {
+    const chapterHits: string[] = []
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      chapterHits.push(url)
+      setMainFrameStatusForTests(url, 403)
+      return '<html><body><div id="content">Access Denied</div></body></html>'
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(chapterHits.length).toBe(CHAPTER_WALL_TRIP_COUNT)
+    const book = await loadBook(started.bookId!)
+    expect(book.status).toBe('partial')
+    expect(book.chapters.find((c) => c.url?.endsWith('/1.html'))?.failCode).toBe('Intercepted')
   })
 
   it('returns NeedLogin / Intercepted codes so the library can send the user to browse', async () => {

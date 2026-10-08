@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiBookUsage, AiBudgetEstimate, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseState, Settings, SiteRule } from '../shared/types'
+import type { AiBookUsage, AiBudgetEstimate, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseState, BrowseChapterLink, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import {
@@ -33,6 +33,7 @@ import {
   correctAiCharacterAliases,
   correctAiMemorySummary,
   assertImportable,
+  recoverInterruptedStatus,
   type AiMemoryCollection,
 } from './library'
 import { importTxt } from './importTxt'
@@ -42,12 +43,16 @@ import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadCha
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
 import { browserAdCss } from './browserAds'
+import { discoverChapterLinks, extractBrowseReadingPage } from './browseReading'
+import { getBrowseZoom, getLastBrowsePosition, setBrowsePosition, setBrowseZoom, clampZoom } from './browseState'
+import { READ_SCROLL, restoreScrollScript, START_HIDE, STOP_HIDE, UNDO_HIDE, CLEAR_HIDE, COUNT_HIDE } from './browsePageScripts'
 import { BrowserAdRequestFilter } from './adRequestFilter'
 import { exportBook } from './exportBook'
 import { searchInBook } from './search'
 import { auditBook } from './quality'
 import { createBackup, restoreBackup, runAutoBackupIfDue } from './backup'
 import { migrateLibrary } from './libraryMigration'
+import { browseUserAgent } from './userAgent'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
 import {
   AiJobSlot,
@@ -98,6 +103,15 @@ let browserAdRequestFilter: BrowserAdRequestFilter | null = null
 let browseAdCssKey: string | null = null
 let browseAdApplySeq = 0
 let browseVisible = false
+let browseReadingMode = false
+let browsePreviousChapter: BrowseChapterLink | undefined
+let browseNextChapter: BrowseChapterLink | undefined
+let browsePageSeq = 0
+let browseScrollTimer: ReturnType<typeof setInterval> | null = null
+let browseRestore: { url: string; ratio: number } | null = null
+let browseLastUrl = ''
+let browseLastSavedUrl = ''
+let browseLastSavedRatio = -1
 let lastBounds = { x: SIDEBAR_WIDTH, y: 52, width: 900, height: 700 }
 const aiJobSlot = new AiJobSlot()
 const bookOverview = new BookOverviewService(aiJobSlot, () => {
@@ -199,7 +213,10 @@ async function saveAiDone(
 }
 
 function novelSession() {
-  return session.fromPartition(PARTITION)
+  const ses = session.fromPartition(PARTITION)
+  // 浏览 View 和下载 View 共用这个分区，一处覆盖两处
+  ses.setUserAgent(browseUserAgent())
+  return ses
 }
 
 function emitBrowseState(): void {
@@ -211,9 +228,60 @@ function emitBrowseState(): void {
     canGoBack: wc.navigationHistory.canGoBack(),
     canGoForward: wc.navigationHistory.canGoForward(),
     loading: wc.isLoading(),
+    zoom: wc.getZoomFactor(),
+    previousChapter: browsePreviousChapter,
+    nextChapter: browseNextChapter,
   }
   mainWindow.webContents.send('browse.state', state)
   mainWindow.webContents.send('browse.url', { url: state.url })
+}
+
+async function captureBrowsePosition(): Promise<void> {
+  const wc = browseView?.webContents
+  if (!wc || wc.isDestroyed()) return
+  const url = wc.getURL()
+  if (!/^https?:\/\//i.test(url) || wc.isLoading() || browseRestore?.url === url) return
+  try {
+    const ratio = await wc.executeJavaScript(READ_SCROLL)
+    if (wc.getURL() === url && typeof ratio === 'number' && (browseLastSavedUrl !== url || Math.abs(browseLastSavedRatio - ratio) >= 0.002)) {
+      browseLastSavedUrl = url
+      browseLastSavedRatio = ratio
+      await setBrowsePosition(url, ratio)
+    }
+  } catch { /* page may navigate while sampled */ }
+}
+
+async function inspectBrowsePage(): Promise<void> {
+  const wc = browseView?.webContents
+  if (!wc || wc.isDestroyed()) return
+  const url = wc.getURL()
+  const seq = ++browsePageSeq
+  browsePreviousChapter = undefined
+  browseNextChapter = undefined
+  emitBrowseState()
+  if (!/^https?:\/\//i.test(url)) return
+  try {
+    wc.setZoomFactor(await getBrowseZoom(url))
+    const [html, rule] = await Promise.all([
+      wc.executeJavaScript('document.documentElement.outerHTML'),
+      findSiteRuleForUrl(url),
+    ])
+    if (seq !== browsePageSeq || wc.isDestroyed() || wc.getURL() !== url) return
+    const links = discoverChapterLinks(html, url, rule)
+    browsePreviousChapter = links.previous
+    browseNextChapter = links.next
+    emitBrowseState()
+    if (browseRestore?.url === url) {
+      const ratio = browseRestore.ratio
+      browseRestore = null
+      browseLastSavedUrl = url
+      browseLastSavedRatio = ratio
+      await wc.executeJavaScript(restoreScrollScript(ratio))
+      setTimeout(() => {
+        if (!wc.isDestroyed() && wc.getURL() === url) void wc.executeJavaScript(restoreScrollScript(ratio)).catch(() => {})
+      }, 350)
+    }
+  } catch { /* page remains browsable */ }
 }
 
 async function refreshBrowseAdCss(): Promise<void> {
@@ -250,10 +318,39 @@ function attachBrowseListeners(view: WebContentsView): void {
   wc.on('did-stop-loading', bump)
   wc.on('did-navigate', bump)
   wc.on('did-navigate-in-page', bump)
+  wc.on('will-navigate', () => { void captureBrowsePosition() })
+  wc.on('did-navigate', () => {
+    const url = wc.getURL()
+    if (url !== browseLastUrl && /^https?:\/\//i.test(url) && browseRestore?.url !== url) void setBrowsePosition(url, 0)
+    browseLastUrl = url
+    void inspectBrowsePage()
+  })
+  wc.on('did-navigate-in-page', () => {
+    const url = wc.getURL()
+    if (url !== browseLastUrl && /^https?:\/\//i.test(url)) {
+      if (browseRestore?.url !== url) void setBrowsePosition(url, 0)
+      void wc.executeJavaScript(CLEAR_HIDE).catch(() => {})
+    }
+    browseLastUrl = url
+    void inspectBrowsePage()
+  })
   wc.on('dom-ready', () => { void refreshBrowseAdCss() })
-  wc.on('did-finish-load', () => { void refreshBrowseAdCss() })
+  wc.on('did-finish-load', () => { void refreshBrowseAdCss(); void inspectBrowsePage() })
   wc.on('did-navigate-in-page', () => { void refreshBrowseAdCss() })
   wc.on('page-title-updated', bump)
+  wc.on('found-in-page', (_event, result) => {
+    mainWindow?.webContents.send('browse.findResult', { matches: result.matches, activeMatch: result.activeMatchOrdinal })
+  })
+  wc.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    const direction = input.alt && input.key === 'ArrowUp' ? 'previous' : input.alt && input.key === 'ArrowDown' ? 'next' : null
+    const find = input.control && input.key.toLowerCase() === 'f'
+    if (!direction && !find) return
+    event.preventDefault()
+    void wc.executeJavaScript(`(() => { const el = document.activeElement; return !!el?.closest('input, textarea, select, [contenteditable="true"]'); })()`)
+      .then((editing) => { if (!editing) mainWindow?.webContents.send('browse.shortcut', direction ? { direction } : { find: true }) })
+      .catch(() => {})
+  })
   wc.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') || url.startsWith('http://')) {
       void wc.loadURL(url)
@@ -277,7 +374,7 @@ function normalizeUrl(raw: string): string | null {
 
 function applyBrowseBounds(): void {
   if (!browseView || !mainWindow) return
-  if (!browseVisible) {
+  if (!browseVisible || browseReadingMode) {
     browseView.setVisible(false)
     return
   }
@@ -313,6 +410,7 @@ function createWindow(): void {
   mainWindow.contentView.addChildView(browseView)
   browseView.setVisible(false)
   attachBrowseListeners(browseView)
+  browseScrollTimer = setInterval(() => { if (browseVisible && !browseReadingMode) void captureBrowsePosition() }, 1500)
   setBrowseView(browseView)
   void browseView.webContents.loadURL('about:blank')
 
@@ -322,6 +420,8 @@ function createWindow(): void {
     browseView = null
     browseAdCssKey = null
     browseAdApplySeq++
+    if (browseScrollTimer) clearInterval(browseScrollTimer)
+    browseScrollTimer = null
   })
 
   setOwnerWindow(mainWindow)
@@ -337,9 +437,13 @@ function registerIpc(): void {
   ipcMain.handle('browse.load', async (_e, payload: { url: string }) => {
     const url = normalizeUrl(payload?.url ?? '')
     if (!url || !browseView) return { ok: false, message: '无效地址' }
-    await browseView.webContents.loadURL(url)
-    emitBrowseState()
-    return { ok: true }
+    browseRestore = null
+    try {
+      await browseView.webContents.loadURL(url)
+      await setBrowsePosition(url, 0).catch(() => {})
+      emitBrowseState()
+      return { ok: true }
+    } catch { return { ok: false, message: '网页打开失败，请检查网络或网址' } }
   })
   ipcMain.handle('browse.back', async () => {
     if (!browseView?.webContents.navigationHistory.canGoBack()) return { ok: false }
@@ -368,9 +472,72 @@ function registerIpc(): void {
     },
   )
   ipcMain.handle('browse.setVisible', (_e, payload: { visible: boolean }) => {
+    if (!payload?.visible) void captureBrowsePosition()
     browseVisible = Boolean(payload?.visible)
     applyBrowseBounds()
     return { ok: true }
+  })
+  ipcMain.handle('browse.resume', async () => {
+    const wc = browseView?.webContents
+    if (!wc || wc.getURL() !== 'about:blank') return { ok: true, restored: false }
+    const last = await getLastBrowsePosition()
+    if (!last) return { ok: true, restored: false }
+    browseRestore = { url: last.url, ratio: last.ratio }
+    try {
+      await wc.loadURL(last.url)
+      return { ok: true, restored: true }
+    } catch {
+      browseRestore = null
+      return { ok: false, message: '上次网页无法打开，请检查网络或网址' }
+    }
+  })
+  ipcMain.handle('browse.zoom', async (_e, payload: { factor: number }) => {
+    const wc = browseView?.webContents
+    if (!wc || !/^https?:\/\//i.test(wc.getURL()) || typeof payload?.factor !== 'number' || !Number.isFinite(payload.factor)) return { ok: false, message: '请先打开网页' }
+    const factor = await setBrowseZoom(wc.getURL(), clampZoom(payload.factor))
+    wc.setZoomFactor(factor)
+    emitBrowseState()
+    return { ok: true, factor }
+  })
+  ipcMain.handle('browse.readingPage', async () => {
+    const wc = browseView?.webContents
+    const url = wc?.getURL() ?? ''
+    if (!wc || !/^https?:\/\//i.test(url)) return { ok: false, message: '请先打开章节网页' }
+    try {
+      const html = await wc.executeJavaScript('document.documentElement.outerHTML') as string
+      if (wc.getURL() !== url) return { ok: false, message: '网页已跳转，请重新开启阅读模式' }
+      if (html.length > 8_000_000) return { ok: false, message: '当前网页过大，无法开启阅读模式' }
+      return extractBrowseReadingPage(html, url, await findSiteRuleForUrl(url))
+    } catch { return { ok: false, message: '读取当前网页失败' } }
+  })
+  ipcMain.handle('browse.setReadingMode', (_e, payload: { enabled: boolean }) => {
+    browseReadingMode = Boolean(payload?.enabled)
+    applyBrowseBounds()
+    return { ok: true }
+  })
+  ipcMain.handle('browse.chapter', async (_e, payload: { direction: 'previous' | 'next' }) => {
+    const wc = browseView?.webContents
+    const target = payload?.direction === 'previous' ? browsePreviousChapter : browseNextChapter
+    if (!wc || !target || new URL(target.url).origin !== new URL(wc.getURL()).origin) return { ok: false, message: '未识别到可靠的章节链接' }
+    try { await wc.loadURL(target.url); return { ok: true } }
+    catch { return { ok: false, message: '章节打开失败' } }
+  })
+  ipcMain.handle('browse.find', (_e, payload: { query: string; forward: boolean; findNext: boolean }) => {
+    const wc = browseView?.webContents
+    const query = typeof payload?.query === 'string' ? payload.query.slice(0, 200).trim() : ''
+    if (!wc || !query) return { ok: false }
+    wc.findInPage(query, { forward: payload.forward !== false, findNext: Boolean(payload.findNext) })
+    return { ok: true }
+  })
+  ipcMain.handle('browse.stopFind', () => { browseView?.webContents.stopFindInPage('clearSelection'); return { ok: true } })
+  ipcMain.handle('browse.hide', async (_e, payload: { action: 'start' | 'stop' | 'undo' | 'count' }) => {
+    const wc = browseView?.webContents
+    if (!wc || !/^https?:\/\//i.test(wc.getURL())) return { ok: false, message: '请先打开网页' }
+    try {
+      const script = payload?.action === 'start' ? START_HIDE : payload?.action === 'stop' ? STOP_HIDE : payload?.action === 'undo' ? UNDO_HIDE : payload?.action === 'count' ? COUNT_HIDE : null
+      if (!script) return { ok: false, message: '无效操作' }
+      return { ok: true, remaining: await wc.executeJavaScript(script) as number }
+    } catch { return { ok: false, message: '网页已跳转，请重试' } }
   })
 
   ipcMain.handle('dialog.openFile', async () => {
@@ -671,6 +838,7 @@ function registerIpc(): void {
       const saved = await upsertSiteRule(rule)
       browserAdRequestFilter?.updateSiteRule(saved)
       void refreshBrowseAdCss()
+      if (browseView?.webContents.getURL().startsWith('http')) void inspectBrowsePage()
       return { ok: true, rule: saved }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
@@ -681,6 +849,7 @@ function registerIpc(): void {
       await removeSiteRule(payload?.host ?? '')
       browserAdRequestFilter?.removeSiteRule(normalizeHost(payload?.host ?? ''))
       void refreshBrowseAdCss()
+      if (browseView?.webContents.getURL().startsWith('http')) void inspectBrowsePage()
       return { ok: true }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
@@ -712,6 +881,14 @@ function registerIpc(): void {
       return { ok: true, version: chat.version, messages: chat.messages }
     }
     catch (e: unknown) { return { ok: false, message: e instanceof Error ? e.message : String(e) } }
+  })
+
+  ipcMain.handle('ai.getSummaries', async (_e, { bookId }: { bookId: string }) => {
+    try {
+      return { ok: true, summaries: await readSummaries(bookId) }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   ipcMain.handle('ai.clearChat', async (_e, { bookId }: { bookId: string }) => {
@@ -1502,6 +1679,9 @@ app.setName('spbf')
 app.whenReady().then(async () => {
   const settings = await getSettings()
   await setLibraryPath(settings.libraryPath)
+  // 上次退出或崩溃会把在跑的书留在「下载中」：先按实际章节状态修正，再开窗口
+  const repaired = await recoverInterruptedStatus()
+  if (repaired > 0) console.info(`已修正 ${repaired} 本中断下载的书状态`)
   browserAdRequestFilter = new BrowserAdRequestFilter(app.getPath('userData'), () => {
     const wc = browseView?.webContents
     return wc && !wc.isDestroyed() ? { id: wc.id, url: wc.getURL() } : null
@@ -1528,6 +1708,15 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// 退出前停掉后台任务：取消下载与批量检查、中断当前 AI 生成、关掉全书概览队列。
+// 取消后的状态落盘不保证赶得上进程退出，所以启动时还有一次 recoverInterruptedStatus 兜底。
+app.on('before-quit', () => {
+  cancelDownload()
+  cancelCheckAll()
+  aiJobSlot.cancel()
+  bookOverview.stop()
 })
 
 app.on('window-all-closed', () => {

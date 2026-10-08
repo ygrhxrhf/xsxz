@@ -42,10 +42,21 @@
 | `browse.stop` | invoke | 无 | `{ ok: true }` |
 | `browse.setBounds` | invoke | `{ x: number; y: number; width: number; height: number }` | `{ ok: true }` |
 | `browse.setVisible` | invoke | `{ visible: boolean }` | `{ ok: true }` |
+| `browse.resume` | invoke | 无 | `{ ok: true; restored: boolean } \| { ok: false; message: string }` |
+| `browse.zoom` | invoke | `{ factor: number }` | `{ ok: true; factor: number } \| { ok: false; message: string }` |
+| `browse.readingPage` | invoke | 无 | `{ ok: true; page: BrowseReadingPage } \| { ok: false; message: string }` |
+| `browse.setReadingMode` | invoke | `{ enabled: boolean }` | `{ ok: true }` |
+| `browse.chapter` | invoke | `{ direction: 'previous' \| 'next' }` | `{ ok: boolean; message?: string }` |
+| `browse.find` | invoke | `{ query: string; forward: boolean; findNext: boolean }` | `{ ok: boolean }` |
+| `browse.stopFind` | invoke | 无 | `{ ok: true }` |
+| `browse.hide` | invoke | `{ action: 'start' \| 'stop' \| 'undo' \| 'count' }` | `{ ok: true; remaining: number } \| { ok: false; message: string }` |
 | `browse.url` | 主→渲染 | — | `{ url: string }` |
 | `browse.state` | 主→渲染 | — | `BrowseState` |
+| `browse.findResult` | 主→渲染 | — | `BrowseFindResult` |
+| `browse.shortcut` | 主→渲染 | — | `{ direction?: 'previous' \| 'next'; find?: boolean }` |
 
 `browse.load` 的 url 若无协议，主进程补 `https://`。非 http(s) 拒绝。
+`BrowseState` 增加 `zoom`、可选的 `previousChapter` / `nextChapter`（`{ title, url }`）。阅读模式仅返回当前网页快照提取的纯文本；临时隐藏在导航/重载后清空。缩放与最后网页位置保存在应用数据目录 `browse-state.json`，不进入书库。
 
 ---
 
@@ -114,7 +125,7 @@
 | `download.progress` | 主→渲染 | — | `DownloadProgress` |
 | `download.checkAll.progress` | 主→渲染 | — | `CheckAllProgress` |
 
-`DownloadProgress.failedChapters` 可选，结束事件（`done` / `error` / `cancelled`）必带，没有失败或空章时为 `[]`；`running`（及 `paused`）省略。元素字段：`chapterId`、`title`、`index`（磁盘 `ChapterMeta.index`，界面不再加减）、`reason`（优先 `failMessage`，否则 `FAIL_CODE_ZH[failCode]`，再否则「正文为空或过短」）。来源是该书 `status` 为 `failed` 或 `empty` 的章。结束事件可带 `qualityIssueCount`。
+`DownloadProgress.failedChapters` 可选，结束事件（`done` / `error` / `cancelled`）必带，没有失败或空章时为 `[]`；`running` 省略。元素字段：`chapterId`、`title`、`index`（磁盘 `ChapterMeta.index`，界面不再加减）、`reason`（优先 `failMessage`，否则 `FAIL_CODE_ZH[failCode]`，再否则「正文为空或过短」）。来源是该书 `status` 为 `failed` 或 `empty` 的章。结束事件可带 `qualityIssueCount`。
 
 `download.preview` 不写书库；样本章也用 `persist:novel` 隐藏 webContents 加载。确认令牌一次性、十分钟内有效，当前浏览页 URL 改变后拒绝确认。`download.redownloadChapter` 只提取指定章节，失败时保留原正文与原 URL。
 
@@ -209,6 +220,7 @@
 - 同一规范化 host 只留一条；`upsert` 整条替换。
 - 选择器字段均可空。空选择器 = 该字段走通用提取。非法 CSS 保存不拒，提取时当未命中。
 - `SiteRule.adFilterEnabled` 可选，缺省为 `true`；`adHideSelectors` 可选，每行一条浏览页额外隐藏选择器。关闭时同时停用该站的 CSS 隐藏和 AdGuard 网络规则。CSS 只注入浏览 View；网络请求只在 `webContentsId` 属于浏览 View 时匹配，下载 View 不受影响。
+- `SiteRule.previousChapter`、`SiteRule.nextChapter` 为可选 CSS 选择器。设置后优先用于当前页翻章链接识别；无效或未命中时该方向显示不可用。
 - `siteRules.upsert` 仍整条替换；浏览页切换去广告时先读取当前规则并保留书名、作者、目录、正文等字段。保存规则后当前浏览页立即刷新隐藏 CSS，并重载页面以应用网络规则变化。
 - 落盘 `%APPDATA%/spbf/site-rules.json`（与 `settings.json` 同目录），不是 `settings.json`。
 - `siteRules.*` 不返回 API Key；文件内不得存 Key。
@@ -242,7 +254,7 @@
 | `ai.summarizeChapter` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.getSummaries` | invoke | `{ bookId: string }` | `{ ok: true; summaries: AiSummaries } \| { ok: false; message: string }` |
-| `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart` |
+| `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart`（已读证据问答，最后一条 user 消息即问题） |
 | `ai.getChat` | invoke | `{ bookId: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省） |
 | `ai.clearChat` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.translateStream` | invoke | `{ text: string; bookId?: string }` | `AiJobStart`；传入书籍 ID 时计入每书用量 |
@@ -255,7 +267,6 @@
 | `ai.correctCharacterAliases` | invoke | `{ bookId: string; itemId: string; aliases: string[] }` | `{ ok: true; character: AiMemoryCharacter; affectedChapterIds: string[] } \| { ok: false; message: string }` |
 | `ai.getMaterialCoverage` | invoke | `{ bookId: string }` | `{ ok: true; coverage: AiMaterialCoverage \| null } \| { ok: false; message: string }` |
 | `ai.getUsage` | invoke | `{ bookId: string }` | `{ ok: true; usage: AiBookUsage } \| { ok: false; message: string }` |
-| `ai.askEvidenceStream` | invoke | `{ bookId: string; chapterId: string; question: string }` | `AiJobStart` |
 | `ai.retrySave` | invoke | `{ saveToken: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.cancel` | invoke | `{ jobId?: string }` | `{ ok: true }` |
 | `ai.chunk` | 主→渲染 | — | `AiChunkEvent` |
@@ -277,7 +288,7 @@
 
 `AiRequestStage` 固定为 `preparing`、`rewriting`、`searching`、`requesting`、`saving`。`ai.getMemory` 在 `memory.json` 存在时只返回新记忆；不存在时可返回旧 `characters.json` 兼容视图。`ai.updateMemory` / `rebuildMemory` 成功时通过 `ai.done.memoryUpdate` 传递 `AiMemoryUpdateResult`；生成成功但保存失败时仍返回 `ok:true`、完整 `memoryUpdate` 和 `saveToken`，旧正式文件不变；取消或模型/解析失败返回 `ok:false`，不得携带可误认为正式结果的 `memoryUpdate`。`ai.retrySave` 只能使用当前主进程内存中的一次性令牌，不得重新请求模型。
 
-`ai.askEvidenceStream` 成功时通过 `ai.done` 同时返回 `text`、候选白名单内的 `citations`、`uptoChapterId` 与 `stopped`。保存失败仍保留这些字段并追加 `saveToken`；重开后 `ai.getChat` 返回 `AiGetChatResult`，v1 消息按无来源兼容读取，v2 消息保留引用、已读截止和停止状态。
+`ai.chatStream`（已读证据问答）成功时通过 `ai.done` 同时返回 `text`、候选白名单内的 `citations`、`uptoChapterId` 与 `stopped`。保存失败仍保留这些字段并追加 `saveToken`；重开后 `ai.getChat` 返回 `AiGetChatResult`，v1 消息按无来源兼容读取，v2 消息保留引用、已读截止和停止状态。
 
 `ai.getMaterialCoverage` 只统计已读截止内 `ready` 章：返回截止章节、已有本章摘要数，以及缺摘要的章节标题。无阅读进度时 `coverage` 为 `null`。`ai.correctCharacterAliases` 只改该人物的 `aliases`，不改姓名、摘要或来源；`affectedChapterIds` 是该条目来源章节，供界面从这些章节重新生成。`ai.getUsage` 读取 `<bookDir>/ai/usage.json` 的累计模型调用次数和服务报告的 token；文件缺失或损坏时返回全 0。清正文每批、前情、章节摘要、翻译、证据问答的改写和回答、记忆每批分别计次。模型服务未报告 token 时仍计次，token 记 0；不计算金额，保存重试不重复计次。
 
@@ -285,20 +296,24 @@ A1.1 只冻结以上类型、频道与白名单形状；handler 与 preload 方�
 
 ---
 
-## preload 白名单形状（实现时对齐）
+## preload 白名单形状（与 `src/preload/index.ts` 一致）
 
 ```ts
 window.api = {
   dialog: { openFile, openDirectory, openZip },
-  browse: { load, back, forward, reload, stop, setBounds, setVisible, onUrl, onState },
-  library: { list, get, readChapter, delete, import, setProgress, updateMeta, setCover, pickCoverFile, updateChapterBody, export, searchInBook, listTrash, restoreTrash, purgeTrash },
-  download: { start, cancel, retryFailed, checkUpdate, checkAll, cancelCheckAll, onProgress, onCheckAllProgress },
+  tts: { getPosition, setPosition, synthesize, cancel },
+  browse: { load, back, forward, reload, stop, setBounds, setVisible, resume, zoom, readingPage, setReadingMode, chapter, find, stopFind, hide, onFindResult, onShortcut, onUrl, onState },
+  library: { list, get, readChapter, delete, import, setProgress, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, listTrash, restoreTrash, purgeTrash },
+  bookOverview: { retry, onChanged },
+  download: { preview, confirm, redownloadChapter, cancel, retryFailed, checkUpdate, checkAll, cancelCheckAll, onProgress, onCheckAllProgress },
   settings: { get, set },
-  backup: { create, restore },
-  siteRules: { list, upsert, remove },
-  ai: { clean, summarize, translate, chat, getChat, clearChat, test, characterCard, getCharacterCard, summarizeChapter, storySoFar, getSummaries, chatStream, translateStream, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, correctCharacterAliases, correctMemorySummary, markMemoryInaccurate, getMaterialCoverage, getUsage, askEvidenceStream, retrySave, cancel, onChunk, onStage, onDone },
+  backup: { create, restore, runAuto },
   annotations: { list, add, update, remove },
+  siteRules: { list, preview, upsert, remove },
+  ai: { clean, summarize, translate, chat, getChat, clearChat, test, characterCard, getCharacterCard, summarizeChapter, storySoFar, getSummaries, chatStream, translateStream, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, getUsage, retrySave, cancel, onChunk, onStage, onBudget, onDone },
 }
 ```
+
+`src/preload/ipcContract.test.ts` 逐组比对这份形状与真实 preload，并检查每条频道在渲染侧、主进程 handler 和本文档表格三处都对得上；加频道时三处一起改。
 
 `on*` 返回取消订阅函数。计划 preload 中 `getChat` 的 Promise 返回 `AiGetChatResult`，`onDone` 监听 `AiDoneEvent`，因此 v2 引用/截止/停止状态和 `AiMemoryUpdateResult` 都有明确的 renderer 通道。

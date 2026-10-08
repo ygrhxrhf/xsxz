@@ -1,7 +1,4 @@
-/* 双皮肤变量层：
-   默认（body 无标记）= 暖纸；
-   body[data-skin='minimal'] 覆盖为简约浅色。
-   组件样式一律消费这些变量，不写死颜色。 */
+/* 全应用外观变量。HTML 首帧使用简约，App 随后恢复已保存的 data-skin。 */
 body {
   /* 固定设计 token：页面只消费变量，不各自发明间距、圆角与动画。 */
   --space-1: 4px;
@@ -32,6 +29,9 @@ body {
   --error: #B4232C;
   --info: #3E6B8A;
   --on-accent: #F7F3E8;
+  --app-bg: #F7F3E8;
+  --shadow-card: 0 8px 24px rgba(47, 42, 36, 0.08);
+  --shadow-overlay: 0 16px 40px rgba(47, 42, 36, 0.16);
   --success-surface: rgba(47, 125, 90, 0.12);
   --warning-surface: rgba(165, 106, 27, 0.12);
   --error-surface: rgba(180, 35, 44, 0.1);
@@ -97,9 +97,7 @@ body {
   background-attachment: fixed;
 }
 
-body[data-skin='paper'],
 body[data-skin='white'],
-body[data-skin='night'],
 body[data-skin='minimal'] {
   /* 简约皮肤只替换语义色，不改变布局、间距和状态结构。 */
   --text-primary: #26262e;
@@ -116,6 +114,10 @@ body[data-skin='minimal'] {
   --warning: #b07508;
   --error: #d64550;
   --info: #4c7dd4;
+  --on-accent: #ffffff;
+  --app-bg: #f5f6f9;
+  --shadow-card: 0 8px 24px rgba(31, 42, 70, 0.08);
+  --shadow-overlay: 0 16px 40px rgba(31, 42, 70, 0.16);
   --success-surface: rgba(47, 158, 110, 0.1);
   --warning-surface: rgba(176, 117, 8, 0.1);
   --error-surface: rgba(214, 69, 80, 0.1);
@@ -177,6 +179,79 @@ body[data-skin='minimal'] {
 
   background: linear-gradient(180deg, #fafbfc, #f2f3f6);
   background-attachment: fixed;
+}
+
+body[data-skin='night'] {
+  --text-primary: #e9ecf3;
+  --text-secondary: #c3c9d6;
+  --text-muted: #9aa4b6;
+  --surface-1: #262c38;
+  --surface-2: #202631;
+  --surface-3: #303746;
+  --border: #3a4150;
+  --hover: rgba(233, 236, 243, 0.08);
+  --focus: #9aabd9;
+  --disabled: #858e9d;
+  --success: #76c8a0;
+  --warning: #e2b66a;
+  --error: #f18d93;
+  --info: #9cbcf1;
+  --on-accent: #19202c;
+  --app-bg: #1b202a;
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.18);
+  --shadow-overlay: 0 16px 40px rgba(0, 0, 0, 0.38);
+  --success-surface: rgba(118, 200, 160, 0.13);
+  --warning-surface: rgba(226, 182, 106, 0.13);
+  --error-surface: rgba(241, 141, 147, 0.13);
+  --info-surface: rgba(156, 188, 241, 0.13);
+  --text: var(--text-primary);
+  --muted: var(--text-muted);
+  --line: var(--border);
+  --accent: var(--focus);
+  --panel: var(--surface-1);
+  --panel-soft: var(--surface-2);
+  --selection-bg: rgba(154, 171, 217, 0.32);
+  --scrollbar-thumb: rgba(233, 236, 243, 0.23);
+  --scrollbar-thumb-hover: rgba(233, 236, 243, 0.4);
+  --sidebar-bg: #202631;
+  --nav-hover-bg: rgba(233, 236, 243, 0.08);
+  --nav-active-bg: #9aabd9;
+  --nav-active-shadow: none;
+  --brand-mark-bg: #303746;
+  --brand-mark-color: #b0bde4;
+  --brand-mark-shadow: none;
+  --brand-title-fill: #e9ecf3;
+  --chrome-bg: #262c38;
+  --input-bg: #303746;
+  --input-ring: 0 0 0 3px rgba(154, 171, 217, 0.23);
+  --chip-bg: #303746;
+  --chip-hover-bg: #3a4354;
+  --card-hover-border: #7587ad;
+  --card-hover-shadow: var(--shadow-card);
+  --hover-line: #7587ad;
+  --cover-background: linear-gradient(135deg, #424b5d, #303746);
+  --cover-ring: inset 0 0 0 1px rgba(233, 236, 243, 0.12);
+  --popover-bg: #262c38;
+  --popover-ring: 0 0 0 1px #3a4150;
+  --danger: #f18d93;
+  --warning-text: #e2b66a;
+  --note-accent: #b0bde4;
+  --active-chapter: #b0bde4;
+  --bar-bg: #202631;
+  --reader-paper: #262c38;
+  --reader-paper-text: #e9ecf3;
+  --speaking-bg: rgba(154, 171, 217, 0.2);
+  --hit-bg: #caa650;
+  --hit-text: #211b0e;
+  --hl-bg: rgba(202, 166, 80, 0.36);
+  --bubble-user-bg: #9aabd9;
+  --bubble-user-text: #19202c;
+  --bubble-ai-bg: #303746;
+  --bubble-ai-text: #e9ecf3;
+  --bubble-ai-border: #3a4150;
+  --title-ornament: none;
+  color: var(--text-primary);
+  background: var(--app-bg);
 }
 
 html,
@@ -258,6 +333,12 @@ body,
   background: var(--surface-1);
 }
 
+.n-card,
+.n-modal,
+.n-drawer-content {
+  box-shadow: var(--shadow-card);
+}
+
 .empty-state {
   display: grid;
   justify-items: center;
@@ -320,20 +401,20 @@ body,
 
 .app-shell-reader,
 .app-shell-reader .main {
-  background: #F7F3E8;
-  color: #2F2A24;
+  background: var(--app-bg);
+  color: var(--text-primary);
 }
 
 .app-bar {
   display: flex;
   align-items: center;
-  height: 44px;
+  min-height: 52px;
   flex-shrink: 0;
   gap: var(--space-3);
   padding: 0 var(--space-4);
-  background: #f7f3e8;
-  color: #2F2A24;
-  border-bottom: 1px solid #E4DCCB;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
 }
 
 .app-nav {
@@ -351,8 +432,8 @@ body,
   display: grid;
   place-items: center;
   border-radius: var(--radius-control);
-  color: #2F2A24;
-  background: transparent;
+  color: var(--brand-mark-color);
+  background: var(--brand-mark-bg);
   box-shadow: none;
 }
 
@@ -376,8 +457,8 @@ body,
   text-align: center;
   border: 1px solid transparent;
   background: transparent;
-  color: #6B6258;
-  padding: var(--space-1) var(--space-2);
+  color: var(--text-secondary);
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-control);
   cursor: pointer;
   font-size: 13px;
@@ -386,15 +467,15 @@ body,
 }
 
 .nav-btn:hover {
-  background: rgba(47, 42, 36, 0.06);
-  color: #2F2A24;
+  background: var(--nav-hover-bg);
+  color: var(--text-primary);
 }
 
 .nav-btn.active {
   border-color: transparent;
-  background: #2F2A24;
-  color: #F7F3E8;
-  box-shadow: none;
+  background: var(--nav-active-bg);
+  color: var(--on-accent);
+  box-shadow: var(--nav-active-shadow);
 }
 
 .nav-btn:focus-visible {
@@ -469,7 +550,7 @@ body,
   margin-left: auto;
   min-width: 0;
   max-width: 280px;
-  color: #2F2A24;
+  color: var(--text-primary);
   font-size: 12px;
   line-height: 16px;
   text-align: right;
@@ -488,15 +569,15 @@ body,
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
-  color: #6B6258;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
 .sidebar-dl-cancel {
   flex: 0 0 auto;
-  border: 1px solid #D9CFC0;
+  border: 1px solid var(--border);
   background: transparent;
-  color: #2F2A24;
+  color: var(--text-primary);
   border-radius: var(--radius-control);
   padding: 0 var(--space-2);
   font-size: 11px;
@@ -505,9 +586,31 @@ body,
 }
 
 .sidebar-dl-cancel:hover {
-  border-color: #2F2A24;
-  color: #2F2A24;
-  background: rgba(47, 42, 36, 0.06);
+  border-color: var(--hover-line);
+  color: var(--text-primary);
+  background: var(--hover);
+}
+
+@media (max-width: 700px) {
+  .app-bar {
+    flex-wrap: wrap;
+    padding: var(--space-2);
+  }
+
+  .app-nav {
+    flex: 1 1 auto;
+  }
+
+  .sidebar-dl {
+    flex: 1 0 100%;
+    max-width: none;
+    padding: var(--space-1) var(--space-2);
+    text-align: left;
+  }
+
+  .sidebar-dl-row {
+    justify-content: flex-start;
+  }
 }
 
 .main {
@@ -523,6 +626,7 @@ body,
   flex: 1;
   min-height: 0;
   padding: var(--space-6);
+  background: var(--app-bg);
 }
 
 .browse-page {

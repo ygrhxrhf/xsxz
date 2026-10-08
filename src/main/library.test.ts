@@ -5,10 +5,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   assertImportable,
   atomicWriteText,
+  bookIdCandidates,
   bookIdFromUrl,
+  canonicalBookId,
   deleteBook,
+  findExistingBookId,
   listTrash,
   mergeIncomingChapters,
+  normalizeBookHost,
+  normalizeBookUrl,
   normalizeChapterUrl,
   purgeTrash,
   restoreFromTrash,
@@ -28,6 +33,7 @@ import {
   readAiMemoryCompat,
   readChat,
   readSummaries,
+  recoverInterruptedStatus,
   refreshBookStatus,
   rebuildIndex,
   saveBook,
@@ -180,6 +186,79 @@ describe('bookIdFromUrl', () => {
     expect(withSlash).toBe(noSlash)
     expect(withSlash).not.toBe(bookIdFromUrl(host, 'https://www.bqg858.cc/#/book/472/'))
     expect(withSlash).not.toBe(bookIdFromUrl(host, 'https://www.bqg858.cc/book/65/'))
+  })
+})
+
+describe('book 身份归一（www / 裸主机）', () => {
+  const ID_RE = /^d_[0-9a-f]{16}$/
+  const WWW = 'https://www.bqg858.cc/#/book/65/'
+  const BARE = 'https://bqg858.cc/#/book/65/'
+
+  it('normalizeBookHost 只去一层 www，其余主机不动', () => {
+    expect(normalizeBookHost('  WWW.Example.COM ')).toBe('example.com')
+    expect(normalizeBookHost('www.www.example.com')).toBe('www.example.com')
+    expect(normalizeBookHost('m.example.com')).toBe('m.example.com')
+    expect(normalizeBookHost('')).toBe('')
+  })
+
+  it('normalizeBookUrl 只改主机，路径大小写和路由照原样保留', () => {
+    expect(normalizeBookUrl('https://WWW.bqg858.cc/Book/65/')).toBe('https://bqg858.cc/Book/65/')
+    expect(normalizeBookUrl('不是地址')).toBe('不是地址')
+  })
+
+  it('canonicalBookId 把 www 与裸主机折叠成同一本书', () => {
+    expect(canonicalBookId('www.bqg858.cc', WWW)).toMatch(ID_RE)
+    expect(canonicalBookId('www.bqg858.cc', WWW)).toBe(canonicalBookId('bqg858.cc', BARE))
+    expect(canonicalBookId('www.bqg858.cc', BARE)).toBe(canonicalBookId('bqg858.cc', WWW))
+    expect(canonicalBookId('bqg858.cc', 'https://bqg858.cc/#/book/472/')).not.toBe(
+      canonicalBookId('bqg858.cc', BARE),
+    )
+  })
+
+  it('无 www 的地址规范键就是原键，bookIdFromUrl 本身不改', () => {
+    const plain = 'https://example.com/book/'
+    expect(canonicalBookId('example.com', plain)).toBe(bookIdFromUrl('example.com', plain))
+    expect(bookIdFromUrl('www.example.com', 'https://www.example.com/book/')).not.toBe(
+      bookIdFromUrl('example.com', plain),
+    )
+  })
+
+  it('bookIdCandidates 双向补 www，四种写法共用一组候选且顺序稳定', () => {
+    const candidates = bookIdCandidates('www.bqg858.cc', WWW)
+    expect(candidates[0]).toBe(canonicalBookId('www.bqg858.cc', WWW))
+    expect(new Set(candidates).size).toBe(candidates.length)
+    for (const [host, url] of [
+      ['bqg858.cc', BARE],
+      ['bqg858.cc', WWW],
+      ['www.bqg858.cc', BARE],
+      ['www.bqg858.cc', WWW],
+    ]) {
+      expect(candidates).toContain(bookIdFromUrl(host, url))
+    }
+    expect(bookIdCandidates('bqg858.cc', BARE)).toEqual(candidates)
+  })
+
+  it('findExistingBookId 复用按带 www 旧键建好的书，不再开第二本', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spbf-identity-'))
+    try {
+      await setLibraryPath(dir)
+      const legacy = bookIdFromUrl('www.bqg858.cc', WWW)
+      await mkdir(join(dir, legacy), { recursive: true })
+      await writeFile(join(dir, legacy, 'book.json'), '{}')
+
+      expect(await findExistingBookId('www.bqg858.cc', WWW)).toBe(legacy)
+      expect(await findExistingBookId('bqg858.cc', BARE)).toBe(legacy)
+      expect(await bookExists(canonicalBookId('www.bqg858.cc', WWW))).toBe(false)
+
+      const canonical = canonicalBookId('bqg858.cc', BARE)
+      await mkdir(join(dir, canonical), { recursive: true })
+      await writeFile(join(dir, canonical, 'book.json'), '{}')
+      expect(await findExistingBookId('www.bqg858.cc', WWW)).toBe(canonical)
+
+      expect(await findExistingBookId('other.com', 'https://other.com/book/')).toBeNull()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -1084,5 +1163,48 @@ describe('updateMeta + setCover (U1.2)', () => {
     const chapter = JSON.parse(await readFile(join(dir, 'd_meta', 'chapters', '0001.json'), 'utf-8')) as { body: string }
     expect(chapter.body).toBe('正文不得被改')
     await rm(srcDir, { recursive: true, force: true })
+  })
+})
+
+describe('recoverInterruptedStatus', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-recover-'))
+    await setLibraryPath(dir)
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  function chapter(id: string, index: number, status: 'ready' | 'pending' | 'failed') {
+    return {
+      id,
+      index,
+      title: `第${index}章`,
+      url: `https://example.com/book/${index}.html`,
+      file: `chapters/${String(index).padStart(4, '0')}.json`,
+      status,
+    }
+  }
+
+  it('把上次退出留在「下载中」的书按实际章节重算，其余书不动', async () => {
+    await saveBook(book({ id: 'd_run', status: 'downloading', chapters: [chapter('c0001', 1, 'ready'), chapter('c0002', 2, 'pending')] }))
+    await saveBook(book({ id: 'd_done', status: 'downloading', chapters: [chapter('c0001', 1, 'ready'), chapter('c0002', 2, 'ready')] }))
+    await saveBook(book({ id: 'd_ok', status: 'partial', chapters: [chapter('c0001', 1, 'ready'), chapter('c0002', 2, 'failed')] }))
+
+    expect(await recoverInterruptedStatus()).toBe(2)
+    expect((await loadBook('d_run')).status).toBe('partial')
+    expect((await loadBook('d_done')).status).toBe('ready')
+    expect((await loadBook('d_ok')).status).toBe('partial')
+    expect((await listBooks()).find((item) => item.id === 'd_run')?.status).toBe('partial')
+    expect(await recoverInterruptedStatus()).toBe(0)
+  })
+
+  it('复用已扫描的列表，不再读一遍书库', async () => {
+    await saveBook(book({ id: 'd_run', status: 'downloading', chapters: [chapter('c0001', 1, 'ready'), chapter('c0002', 2, 'pending')] }))
+    expect(await recoverInterruptedStatus([{ id: 'd_run', status: 'downloading' }])).toBe(1)
+    expect((await loadBook('d_run')).status).toBe('partial')
   })
 })

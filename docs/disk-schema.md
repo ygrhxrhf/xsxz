@@ -2,7 +2,7 @@
 
 ## 书库根目录
 
-默认：`D:\spbf\library`（`Settings.libraryPath`，可改）。
+默认：Windows `D:\spbf\library`，其他系统 `~/spbf/library`（`Settings.libraryPath`，可改）。清空该项不会写入路径，由当前系统重新解析默认值。
 
 ```
 <libraryPath>\
@@ -344,6 +344,7 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
 - 旧设置缺 `ai` 或其中字段损坏时逐字段补默认：`thinkingEnabled=true`、`recapLength=standard`、`budgetWarningTokens=8000`、trusted 空、六类 `promptMode=builtin`、`customPrompts={}`。预算提醒阈值限制在 1000–50000 tokens。非法 provider/origin/prompt kind 单项忽略，不丢弃其他合法字段。
 - `trustedCustomOrigins` 只保存协议 + hostname + 有效端口组成的规范化 origin；路径变化不产生新信任项，协议或端口变化需要重新确认。
 - `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
+- 同级 `browse-state.json` 保存最近网页 `{ url, ratio, updatedAt }` 与按规范化域名映射的缩放比例；不属于书库备份。缺失或损坏时按无恢复位置、默认 100% 缩放读取。
 - `autoBackup.destDir` 为空表示关闭；主进程启动时距上次成功满七天则创建 `spbf-auto-*.zip`，仅保留最近五份自动备份。旧设置缺失时按关闭读取。备份包不含设置与 API Key。
 - `appearance.skin` 取值 `paper`（暖纸，默认）/ `white`（白纸）/ `night`（夜间）；旧 `sakura`、`minimal` 读入为 `paper`；非法值回退 `paper`。
 - `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。
@@ -360,12 +361,13 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
 {
   "version": 1,
   "rules": [
-    { "host": "example.com", "title": "h1", "author": ".author", "catalog": "#list", "body": "#content", "adFilterEnabled": true, "adHideSelectors": ".floating-ad\n#banner" }
+    { "host": "example.com", "title": "h1", "author": ".author", "catalog": "#list", "body": "#content", "previousChapter": ".prev a", "nextChapter": ".next a", "adFilterEnabled": true, "adHideSelectors": ".floating-ad\n#banner" }
   ]
 }
 ```
 
 - 缺省文件视为 `{ version: 1, rules: [] }`。
 - 旧规则缺少 `adFilterEnabled` 时浏览页去广告默认开启；`adHideSelectors` 缺省为空。每行一条额外隐藏选择器，无效选择器不影响内置隐藏规则。
+- `previousChapter` 与 `nextChapter` 可选，分别指向本页上一章、下一章的链接元素；旧规则缺少时自动识别。
 - 文件内不得存 API Key。
 - `%APPDATA%/spbf/adguard-network.bin` 是从 [AdGuard Base filter](https://filters.adtidy.org/extension/chromium/filters/2.txt) 编译出的本地网络规则缓存；只解析网络规则，不加载浏览器扩展或脚本注入规则。`adguard-network.json` 记录来源和更新时间。应用启动后后台加载缓存，并在缓存超过 8 天时从官方 HTTPS 地址更新。下载或解析失败时保留上次有效缓存；首次离线时只有本地 CSS 隐藏生效。缓存不含浏览历史或 API Key。

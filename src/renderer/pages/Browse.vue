@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NProgress, NTag, useMessage } from 'naive-ui'
-import type { BrowseState, DownloadPreview, DownloadProgress } from '@shared/types'
+import { DEFAULT_READER_PREFS } from '@shared/types'
+import type { BrowseState, BrowseReadingPage, BrowseFindResult, DownloadPreview, DownloadProgress, ReaderPrefs } from '@shared/types'
 
 const props = defineProps<{
   active?: boolean
@@ -22,7 +23,44 @@ const state = ref<BrowseState>({
   canGoBack: false,
   canGoForward: false,
   loading: false,
+  zoom: 1,
 })
+const toolbarCollapsed = ref(false)
+const readingPage = ref<BrowseReadingPage | null>(null)
+const readingBusy = ref(false)
+const readerPrefs = ref<ReaderPrefs>(DEFAULT_READER_PREFS)
+const findOpen = ref(false)
+const findQuery = ref('')
+const findInput = ref<HTMLInputElement | null>(null)
+const findResult = ref<BrowseFindResult>({ matches: 0, activeMatch: 0 })
+const hidePicking = ref(false)
+const hiddenCount = ref(0)
+let resumeAttempted = false
+let browseUrlForHide = ''
+let hideCountTimer: ReturnType<typeof setInterval> | null = null
+const themeColors = {
+  paper: { bg: '#F7F3E8', text: '#2F2A24', outer: '#E9E3D7' },
+  sepia: { bg: '#F3E2B8', text: '#3A2F22', outer: '#E6D2A4' },
+  gray: { bg: '#E5E7E6', text: '#252A2D', outer: '#D6D9D8' },
+  night: { bg: '#1B1D20', text: '#D8D2C7', outer: '#111316' },
+}
+const readingStyle = computed(() => {
+  const p = readerPrefs.value
+  const colors = themeColors[p.theme]
+  return {
+    '--web-paper': colors.bg,
+    '--web-ink': colors.text,
+    '--web-outer': colors.outer,
+    '--web-font': p.fontFamily === 'serif' ? '"STSong", "Songti SC", "SimSun", serif' : p.fontFamily === 'mono' ? '"Cascadia Mono", "Consolas", monospace' : '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
+    '--web-width': p.contentWidth === 'narrow' ? '32em' : p.contentWidth === 'wide' ? '46em' : '38em',
+    '--web-size': `${p.fontSize}px`,
+    '--web-line': String(p.lineHeight),
+    '--web-spacing': p.paragraphSpacing === 'compact' ? '0.2em' : p.paragraphSpacing === 'relaxed' ? '0.8em' : '0.45em',
+    '--web-indent': p.paragraphIndent ? '2em' : '0',
+  }
+})
+const readingParagraphs = computed(() => readingPage.value?.body.split(/\n\s*\n/).filter(Boolean) ?? [])
+watch(findOpen, (open) => { if (open) void nextTick(() => findInput.value?.focus()) })
 const slot = ref<HTMLElement | null>(null)
 let ro: ResizeObserver | null = null
 const unsubs: Array<() => void> = []
@@ -149,7 +187,10 @@ function reportBounds() {
 watch(showProgress, reportBounds)
 watch(showPreview, reportBounds)
 watch(() => props.active, (active) => {
-  if (active) void refreshAdSetting(currentHost())
+  if (active) {
+    void refreshAdSetting(currentHost())
+    void resumeBrowse()
+  }
 })
 
 watch(
@@ -162,21 +203,99 @@ watch(
 )
 
 async function go() {
+  if (readingPage.value) await exitReadingMode()
   const res = await window.api.browse.load(address.value)
   if (!res.ok) {
     message.error(res.message)
   }
 }
 
-function back() {
+async function resumeBrowse() {
+  if (resumeAttempted || !props.active || props.prefillUrl) return
+  resumeAttempted = true
+  const res = await window.api.browse.resume()
+  if (!res.ok) message.warning(res.message || '上次网页恢复失败')
+}
+
+async function setZoom(delta: number | 'reset') {
+  const factor = delta === 'reset' ? 1 : state.value.zoom + delta
+  const res = await window.api.browse.zoom(factor)
+  if (!res.ok) message.warning(res.message || '缩放失败')
+}
+
+async function enterReadingMode() {
+  if (readingBusy.value || readingPage.value) return
+  readingBusy.value = true
+  try {
+    const res = await window.api.browse.readingPage()
+    if (!res.ok) { message.warning(res.message); return }
+    readerPrefs.value = (await window.api.settings.get()).reader
+    readingPage.value = res.page
+    await window.api.browse.setReadingMode(true)
+  } catch { message.error('无法开启网页阅读模式') }
+  finally { readingBusy.value = false }
+}
+
+async function exitReadingMode() {
+  readingPage.value = null
+  await window.api.browse.setReadingMode(false)
+  await nextTick()
+  reportBounds()
+}
+
+async function changeChapter(direction: 'previous' | 'next') {
+  if (readingPage.value) await exitReadingMode()
+  const res = await window.api.browse.chapter(direction)
+  if (!res.ok) message.warning(res.message || '章节打开失败')
+}
+
+function runFind(forward = true, findNext = false) {
+  const query = findQuery.value.trim()
+  if (query && !readingPage.value) void window.api.browse.find(query, forward, findNext)
+}
+
+function closeFind() {
+  findOpen.value = false
+  findQuery.value = ''
+  findResult.value = { matches: 0, activeMatch: 0 }
+  void window.api.browse.stopFind()
+}
+
+async function hideAction(action: 'start' | 'stop' | 'undo') {
+  const result = await window.api.browse.hide(action)
+  if (!result.ok) { message.warning(result.message || '操作失败'); return }
+  hiddenCount.value = result.remaining ?? 0
+  hidePicking.value = action === 'start' ? true : action === 'stop' ? false : hidePicking.value
+}
+
+function onKeydown(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+  if (event.ctrlKey && event.key.toLowerCase() === 'f') {
+    event.preventDefault()
+    if (!readingPage.value) findOpen.value = true
+  } else if (event.altKey && event.key === 'ArrowUp') {
+    event.preventDefault(); void changeChapter('previous')
+  } else if (event.altKey && event.key === 'ArrowDown') {
+    event.preventDefault(); void changeChapter('next')
+  } else if (event.key === 'Escape') {
+    if (findOpen.value) closeFind()
+    else if (hidePicking.value) void hideAction('stop')
+  }
+}
+
+async function back() {
+  if (readingPage.value) await exitReadingMode()
   void window.api.browse.back()
 }
 
-function forward() {
+async function forward() {
+  if (readingPage.value) await exitReadingMode()
   void window.api.browse.forward()
 }
 
-function reload() {
+async function reload() {
+  if (readingPage.value) await exitReadingMode()
   void window.api.browse.reload()
 }
 
@@ -249,8 +368,18 @@ onMounted(async () => {
   ro = new ResizeObserver(() => reportBounds())
   if (slot.value) ro.observe(slot.value)
   window.addEventListener('resize', reportBounds)
+  window.addEventListener('keydown', onKeydown)
+  void resumeBrowse()
   unsubs.push(window.api.browse.onState((s) => {
     state.value = s
+    if (s.loading) { hidePicking.value = false; hiddenCount.value = 0 }
+    if (readingPage.value && s.url !== readingPage.value.url) void exitReadingMode()
+    if (s.url !== browseUrlForHide) {
+      browseUrlForHide = s.url
+      hidePicking.value = false
+      hiddenCount.value = 0
+      if (findOpen.value) closeFind()
+    }
     if (s.url && s.url !== 'about:blank') address.value = s.url
     const host = currentHost()
     if (host !== lastAdHost) {
@@ -261,6 +390,15 @@ onMounted(async () => {
   unsubs.push(window.api.browse.onUrl(({ url }) => {
     if (url && url !== 'about:blank') address.value = url
   }))
+  unsubs.push(window.api.browse.onFindResult((result) => { findResult.value = result }))
+  unsubs.push(window.api.browse.onShortcut((shortcut) => {
+    if (shortcut.find && !readingPage.value) findOpen.value = true
+    if (shortcut.direction) void changeChapter(shortcut.direction)
+  }))
+  hideCountTimer = setInterval(() => {
+    if (!hidePicking.value) return
+    void window.api.browse.hide('count').then((result) => { if (result.ok) hiddenCount.value = result.remaining ?? 0 })
+  }, 500)
   unsubs.push(window.api.download.onProgress((p) => {
     downloadProgress.value = p
     if (p.status === 'done' || p.status === 'cancelled' || p.status === 'error') {
@@ -275,13 +413,16 @@ onMounted(async () => {
 onUnmounted(() => {
   ro?.disconnect()
   window.removeEventListener('resize', reportBounds)
+  window.removeEventListener('keydown', onKeydown)
+  if (hideCountTimer) clearInterval(hideCountTimer)
+  if (readingPage.value) void window.api.browse.setReadingMode(false)
   unsubs.forEach((u) => u())
 })
 </script>
 
 <template>
   <div class="page browse-page">
-    <form class="browse-toolbar" @submit="onSubmit">
+    <form v-show="!toolbarCollapsed" class="browse-toolbar" @submit="onSubmit">
       <div class="browser-nav-row">
         <button class="browser-icon-button" type="button" title="后退" aria-label="后退" :disabled="!state.canGoBack" @click="back">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
@@ -334,7 +475,41 @@ onUnmounted(() => {
         </div>
       </div>
     </form>
-    <div ref="slot" class="browse-slot" />
+    <div class="web-reading-controls">
+      <button type="button" @click="toolbarCollapsed = !toolbarCollapsed">{{ toolbarCollapsed ? '展开工具栏' : '收起工具栏' }}</button>
+      <template v-if="toolbarCollapsed">
+        <button type="button" :disabled="!state.canGoBack" @click="back">后退</button>
+        <button type="button" :disabled="!state.canGoForward" @click="forward">前进</button>
+        <button type="button" @click="state.loading ? stop() : reload()">{{ state.loading ? '停止' : '刷新' }}</button>
+        <span class="web-current-site" :title="state.url">{{ currentHost() || '尚未打开网页' }}</span>
+      </template>
+      <button type="button" :disabled="!state.previousChapter" :title="state.previousChapter?.title || '未识别到上一章'" @click="changeChapter('previous')">上一章</button>
+      <button type="button" :disabled="!state.nextChapter" :title="state.nextChapter?.title || '未识别到下一章'" @click="changeChapter('next')">下一章</button>
+      <button type="button" :disabled="!state.url || readingBusy" @click="readingPage ? exitReadingMode() : enterReadingMode()">{{ readingPage ? '返回原网页' : '阅读模式' }}</button>
+      <template v-if="!readingPage">
+        <button type="button" aria-label="缩小网页" @click="setZoom(-0.1)">−</button>
+        <button type="button" title="恢复默认缩放" @click="setZoom('reset')">{{ Math.round(state.zoom * 100) }}%</button>
+        <button type="button" aria-label="放大网页" @click="setZoom(0.1)">＋</button>
+        <button type="button" @click="findOpen ? closeFind() : findOpen = true">{{ findOpen ? '关闭查找' : '网页查找' }}</button>
+        <button type="button" @click="hideAction(hidePicking ? 'stop' : 'start')">{{ hidePicking ? '退出点选' : '点选隐藏' }}</button>
+        <button type="button" :disabled="hiddenCount === 0" @click="hideAction('undo')">撤销隐藏{{ hiddenCount ? `（${hiddenCount}）` : '' }}</button>
+      </template>
+      <span class="web-shortcut-hint">Alt＋↑ / Alt＋↓ 翻章</span>
+    </div>
+    <div v-if="findOpen && !readingPage" class="web-find-row">
+      <input ref="findInput" v-model="findQuery" aria-label="查找网页文字" placeholder="查找当前网页" @input="runFind()" @keydown.enter.prevent="runFind(true, true)" />
+      <span>{{ findResult.matches ? `${findResult.activeMatch} / ${findResult.matches}` : '无匹配' }}</span>
+      <button type="button" @click="runFind(false, true)">上一处</button>
+      <button type="button" @click="runFind(true, true)">下一处</button>
+      <button type="button" @click="closeFind">关闭</button>
+    </div>
+    <div ref="slot" v-show="!readingPage" class="browse-slot" />
+    <div v-if="readingPage" class="web-reading-stage" :style="readingStyle">
+      <article class="web-reading-article">
+        <h1>{{ readingPage.title }}</h1>
+        <p v-for="(paragraph, i) in readingParagraphs" :key="i">{{ paragraph }}</p>
+      </article>
+    </div>
 
     <n-drawer v-model:show="showPreview" placement="bottom" :height="430">
       <n-drawer-content title="下载前预览" closable>
@@ -428,15 +603,38 @@ onUnmounted(() => {
 
 <style scoped>
 .browse-page {
-  --browse-paper: #f7f3e8;
-  --browse-ink: #2f2a24;
-  --browse-ink-soft: #6d6458;
-  --browse-line: rgba(47, 42, 36, 0.14);
-  --browse-focus: #8a5a32;
-  color: var(--browse-ink);
-  background: var(--browse-paper);
-  font-family: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", "Microsoft YaHei UI", serif;
+  color: var(--text-primary);
+  background: var(--app-bg);
 }
+
+.web-reading-controls, .web-find-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+  z-index: 2;
+}
+
+.web-reading-controls button, .web-find-row button {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--chip-bg);
+  color: var(--text-primary);
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.web-reading-controls button:disabled { opacity: 0.45; cursor: default; }
+.web-shortcut-hint { margin-left: auto; color: var(--text-muted); font-size: 12px; }
+.web-find-row input { min-width: 160px; flex: 1; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--input-bg); color: var(--text-primary); }
+.web-find-row span { min-width: 70px; text-align: center; }
+.web-reading-stage { flex: 1; min-height: 0; overflow: auto; background: var(--web-outer); color: var(--web-ink); }
+.web-reading-article { box-sizing: border-box; width: min(100%, var(--web-width)); margin: 0 auto; min-height: 100%; padding: 40px 30px 80px; background: var(--web-paper); color: var(--web-ink); font: var(--web-size)/var(--web-line) var(--web-font); white-space: pre-wrap; overflow-wrap: anywhere; }
+.web-reading-article h1 { font-size: 1.25em; line-height: 1.5; text-align: center; margin: 0 0 2em; }
+.web-reading-article p { margin: 0 0 var(--web-spacing); text-indent: var(--web-indent); }
 
 .browse-toolbar {
   position: relative;
@@ -444,8 +642,8 @@ onUnmounted(() => {
   height: auto;
   display: block;
   padding: 0;
-  border-bottom: 1px solid rgba(47, 42, 36, 0.14);
-  background: #f7f3e8;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
 }
 
 .browser-nav-row,
@@ -463,37 +661,37 @@ onUnmounted(() => {
 .browser-action-row {
   min-height: 44px;
   justify-content: space-between;
-  border-top: 1px solid rgba(47, 42, 36, 0.14);
-  background: #fffdf8;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
 }
 
 .browser-nav-row input {
   min-width: 120px;
   height: 36px;
   flex: 1;
-  border: 1px solid #e3d9c6;
+  border: 1px solid var(--border);
   border-radius: var(--radius-control);
   padding: 0 var(--space-3);
-  color: var(--browse-ink);
-  background: #fffdf8;
+  color: var(--text-primary);
+  background: var(--input-bg);
   font: inherit;
   font-size: 14px;
   transition: border-color var(--motion-duration) var(--motion-easing), background var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing);
 }
 
 .browser-nav-row input::placeholder {
-  color: var(--browse-ink-soft);
+  color: var(--text-muted);
 }
 
 .browser-nav-row input:hover {
-  border-color: #c9b89a;
-  background: #fffdf8;
+  border-color: var(--hover-line);
+  background: var(--input-bg);
 }
 
 .browser-nav-row input:focus {
-  border-color: var(--browse-focus);
-  background: #fffdf8;
-  box-shadow: 0 0 0 3px rgba(138, 90, 50, 0.16);
+  border-color: var(--focus);
+  background: var(--input-bg);
+  box-shadow: var(--input-ring);
 }
 
 .browser-nav-row input:focus:not(:focus-visible) {
@@ -507,34 +705,34 @@ onUnmounted(() => {
   display: grid;
   place-items: center;
   padding: 0;
-  border: 1px solid #e3d9c6;
+  border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  color: var(--browse-ink);
-  background: #fffdf8;
+  color: var(--text-primary);
+  background: var(--chip-bg);
   cursor: pointer;
   transition: border-color var(--motion-duration) var(--motion-easing), background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
 }
 
 .browser-icon-button:hover:not(:disabled) {
-  border-color: #c9b89a;
-  background: #f3ecdf;
+  border-color: var(--hover-line);
+  background: var(--chip-hover-bg);
 }
 
 .browser-icon-button:active:not(:disabled) {
-  border-color: var(--browse-focus);
-  background: #efe6d4;
+  border-color: var(--focus);
+  background: var(--surface-3);
 }
 
 .browser-icon-button:focus-visible,
 .browser-open-button:focus-visible {
-  outline: 2px solid var(--browse-focus);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
 .browser-icon-button:disabled {
-  color: #a89884;
-  border-color: #eadfce;
-  background: #fffdf8;
+  color: var(--disabled);
+  border-color: var(--border);
+  background: var(--chip-bg);
   opacity: 1;
   cursor: default;
 }
@@ -556,8 +754,8 @@ onUnmounted(() => {
   border: 1px solid transparent;
   border-radius: var(--radius-control);
   padding: 0 var(--space-3);
-  color: #fffaf3;
-  background: var(--browse-focus);
+  color: var(--on-accent);
+  background: var(--focus);
   font: inherit;
   font-size: 14px;
   cursor: pointer;
@@ -565,16 +763,16 @@ onUnmounted(() => {
 }
 
 .browser-open-button:hover:not(:disabled) {
-  background: #744b29;
+  filter: brightness(1.08);
 }
 
 .browser-open-button:active:not(:disabled) {
-  background: #633f22;
+  filter: brightness(0.94);
 }
 
 .browser-open-button:disabled {
-  color: rgba(255, 250, 243, 0.72);
-  background: #c9b89a;
+  color: var(--on-accent);
+  background: var(--disabled);
   cursor: default;
 }
 
@@ -583,83 +781,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: var(--browse-ink-soft);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
 .site-status.inactive {
-  color: #a89884;
-}
-
-.browse-page :deep(.n-button) {
-  --n-color: #fffdf8;
-  --n-color-hover: #f3ecdf;
-  --n-color-pressed: #efe6d4;
-  --n-color-focus: #fffdf8;
-  --n-text-color: var(--browse-ink);
-  --n-text-color-hover: var(--browse-ink);
-  --n-text-color-pressed: var(--browse-ink);
-  --n-text-color-focus: var(--browse-ink);
-  --n-text-color-disabled: #a89884;
-  --n-border: 1px solid #e3d9c6;
-  --n-border-hover: 1px solid #c9b89a;
-  --n-border-pressed: 1px solid var(--browse-focus);
-  --n-border-focus: 1px solid var(--browse-focus);
-  --n-border-disabled: 1px solid #eadfce;
-  --n-ripple-color: var(--browse-focus);
-  min-height: 32px;
-  border-radius: var(--radius-control);
-}
-
-.browse-page :deep(.n-button.n-button--primary-type) {
-  --n-color: var(--browse-focus);
-  --n-color-hover: #744b29;
-  --n-color-pressed: #633f22;
-  --n-color-focus: var(--browse-focus);
-  --n-text-color: #fffaf3;
-  --n-text-color-hover: #fffaf3;
-  --n-text-color-pressed: #fffaf3;
-  --n-text-color-focus: #fffaf3;
-  --n-text-color-disabled: rgba(255, 250, 243, 0.72);
-  --n-border: 1px solid transparent;
-  --n-border-hover: 1px solid transparent;
-  --n-border-pressed: 1px solid transparent;
-  --n-border-focus: 1px solid transparent;
-  --n-border-disabled: 1px solid transparent;
-}
-
-.browse-page :deep(.n-button.n-button--error-type) {
-  --n-color: transparent;
-  --n-color-hover: rgba(156, 59, 50, 0.08);
-  --n-color-pressed: rgba(156, 59, 50, 0.14);
-  --n-text-color: #9c3b32;
-  --n-text-color-hover: #9c3b32;
-  --n-text-color-pressed: #9c3b32;
-  --n-border: 1px solid transparent;
-}
-
-.browse-page :deep(.n-button:not(.n-button--disabled):focus-visible) {
-  outline: 2px solid var(--browse-focus);
-  outline-offset: 2px;
-}
-
-.browse-page :deep(.n-drawer-content),
-.browse-page :deep(.n-drawer-body-content-wrapper) {
-  color: var(--browse-ink);
-  background: var(--browse-paper);
-}
-
-.browse-page :deep(.n-drawer-header) {
-  border-bottom: 1px solid var(--browse-line);
-}
-
-.browse-page :deep(.n-drawer-header__main) {
-  color: var(--browse-ink);
-  font-weight: 600;
-}
-
-.browse-page :deep(.n-progress-graph-line-fill) {
-  background: var(--browse-focus) !important;
+  color: var(--text-muted);
 }
 
 .site-status span {
@@ -673,15 +800,17 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .dl-progress {
   padding: var(--space-2) 0;
-  color: var(--browse-ink);
+  color: var(--text-primary);
 }
 
 .dl-waiting {
-  color: var(--browse-ink-soft);
+  color: var(--text-secondary);
   text-align: center;
   padding: var(--space-6);
 }
@@ -694,7 +823,7 @@ onUnmounted(() => {
 
 .dl-stats {
   font-size: 13px;
-  color: var(--browse-ink-soft);
+  color: var(--text-secondary);
   margin-top: var(--space-2);
   display: flex;
   align-items: center;
@@ -703,13 +832,13 @@ onUnmounted(() => {
 
 .dl-current {
   font-size: 12px;
-  color: var(--browse-ink-soft);
+  color: var(--text-secondary);
   margin-top: var(--space-1);
 }
 
 .dl-error {
   font-size: 12px;
-  color: #9c3b32;
+  color: var(--error);
   margin-top: var(--space-1);
 }
 
@@ -722,7 +851,7 @@ onUnmounted(() => {
 
 .dl-failed {
   margin-top: var(--space-2);
-  color: var(--browse-ink);
+  color: var(--text-primary);
   font-size: 12px;
 }
 
@@ -749,7 +878,7 @@ onUnmounted(() => {
 
 .dl-failed-index {
   flex: 0 0 auto;
-  color: #a89884;
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -763,14 +892,14 @@ onUnmounted(() => {
 .dl-failed-reason {
   flex: 0 1 auto;
   margin-left: auto;
-  color: var(--browse-ink-soft);
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .dl-failed-empty {
-  color: #a89884;
+  color: var(--text-muted);
 }
 .download-preview-sample {
   white-space: pre-wrap;
@@ -785,7 +914,38 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-2);
   margin-top: var(--space-2);
-  color: #a89884;
+  color: var(--text-muted);
+}
+
+@media (max-width: 900px) {
+  .browser-action-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .browser-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+  .browser-nav-row,
+  .browser-action-row {
+    padding: var(--space-2);
+  }
+
+  .browser-nav-row {
+    flex-wrap: wrap;
+  }
+
+  .browser-nav-row input {
+    order: 1;
+    flex-basis: calc(100% - 72px);
+  }
+
+  .browser-open-button {
+    order: 2;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

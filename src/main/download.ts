@@ -5,12 +5,14 @@ import { extractPage, extractCatalog, extractBody } from './extract'
 import { findSiteRuleForUrl, normalizeHost } from './siteRules'
 import {
   bookExists,
-  bookIdFromUrl,
+  canonicalBookId,
   createBookFromBootstrap,
+  findExistingBookId,
   listBooks,
   loadBook,
   markChapterStatus,
   mergeIncomingChapters,
+  normalizeBookHost,
   refreshBookStatus,
   saveBook,
   writeChapterFile,
@@ -31,6 +33,13 @@ import type {
 } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 import { isPathLikeHash } from '../shared/urlHash'
+import {
+  classifyHttpStatus,
+  HttpStatusError,
+  mainFrameStatus,
+  observeHttpStatus,
+  resetHttpStatusObservationForTests,
+} from './httpStatus'
 import { getSettings } from './settings'
 import { isLibraryRestoring } from './libraryMaintenance'
 import { auditBook } from './quality'
@@ -64,6 +73,10 @@ interface ActiveDownload {
   currentTitle?: string
   lastError?: string
   cancelled: boolean
+  wallKind?: FailCode
+  wallStreak?: number
+  /** 连撞同类整站墙后提前收工：剩下的章保持 pending，等用户解锁再补。 */
+  stopped?: boolean
 }
 
 type HtmlLoader = (url: string) => Promise<string>
@@ -85,6 +98,23 @@ export function chapterNeedsDownload(status: ChapterStatus): boolean {
 
 export function shouldRetryChapterFail(code: FailCode | undefined): boolean {
   return code === 'NavFailed' || code === 'BodyEmpty'
+}
+
+/** 登录墙 / 付费墙 / 验证页是整站性质，逐章重试只会重复撞同一面墙。 */
+export const CHAPTER_WALL_TRIP_COUNT = 3
+
+export function isSiteWallFail(code: FailCode | undefined): boolean {
+  return code === 'NeedLogin' || code === 'Paywall' || code === 'Intercepted'
+}
+
+function wallTripMessage(code: FailCode): string {
+  const why =
+    code === 'Paywall'
+      ? '连续多章需要付费或会员'
+      : code === 'NeedLogin'
+        ? '连续多章需要登录'
+        : '连续多章被拦截或要求验证'
+  return `${why}，已停止本次下载。请在浏览页登录或解锁后重试失败章。`
 }
 
 /** 章与章之间的固定间隔。未知档位按 standard。 */
@@ -114,6 +144,9 @@ export function checkUpdateFailHint(
 ): { goBrowse: boolean; message: string } | null {
   if (code === 'NeedLogin') {
     return { goBrowse: true, message: '需要登录后才能看，请先到浏览页登录再检查更新' }
+  }
+  if (code === 'Paywall') {
+    return { goBrowse: true, message: '本章需要付费或会员，请在浏览页解锁后再检查更新' }
   }
   if (code === 'Intercepted') {
     return { goBrowse: true, message: '目录页被拦截或验证，请先到浏览页打开该站后再试' }
@@ -163,6 +196,7 @@ export function resetDownloadStateForTests(): void {
   active.clear()
   runningJobs.clear()
   cancelWaiters.clear()
+  resetHttpStatusObservationForTests()
   testHtmlLoader = null
   hiddenView = null
   browseView = null
@@ -196,6 +230,7 @@ export function getHiddenView(): WebContentsView {
         nodeIntegration: false,
       },
     })
+    observeHttpStatus(hiddenView.webContents.session)
   }
   // Detached on purpose: attaching to the window makes CDP list this as t1
   // and the crawler can steal focus from the visible browse guest.
@@ -241,7 +276,7 @@ async function loadFailedChapters(bookId: string): Promise<DownloadProgress['fai
 async function emitProgress(bookId: string): Promise<void> {
   const dl = active.get(bookId)
   if (!dl || !ownerWindow) return
-  const finished = dl.cancelled || dl.done + dl.failed >= dl.total
+  const finished = dl.cancelled || dl.stopped || dl.done + dl.failed >= dl.total
   const status: DownloadProgress['status'] = dl.cancelled
     ? 'cancelled'
     : !finished
@@ -430,14 +465,26 @@ async function waitForNavigationSettle(wc: Electron.WebContents, url: string): P
   })
 }
 
+/** 状态码未知时放行：观察失败不该拖住下载，正文启发式仍会兜住明显不是书的页面。 */
+async function guardHttpStatus(url: string): Promise<void> {
+  const status = mainFrameStatus(url)
+  if (status === undefined) return
+  const verdict = classifyHttpStatus(status, { testing: Boolean(testHtmlLoader) })
+  if (verdict.action === 'ok') return
+  if (verdict.action === 'throttle') await interruptibleDelay(verdict.backoffMs)
+  throw new HttpStatusError(verdict.code, status, `HTTP ${status}`)
+}
+
 async function loadAndGetHtml(view: WebContentsView, url: string, forceView = false): Promise<string> {
   if (testHtmlLoader && !forceView) {
     if (anyActiveCancelled()) throw new Error('已取消')
+    await guardHttpStatus(url)
     return testHtmlLoader(url)
   }
 
   const wc = view.webContents
   await waitForNavigationSettle(wc, url)
+  await guardHttpStatus(wc.getURL() || url)
   if (anyActiveCancelled()) throw new Error('已取消')
   const rule = await ruleForPage(url)
   return waitUntilHydrated(() => wc.executeJavaScript('document.documentElement.outerHTML') as Promise<string>, url, {
@@ -453,6 +500,7 @@ export function loadAndGetHtmlForTests(view: WebContentsView, url: string): Prom
 async function loadPageHtml(url: string): Promise<string> {
   if (testHtmlLoader) {
     if (anyActiveCancelled()) throw new Error('已取消')
+    await guardHttpStatus(url)
     return testHtmlLoader(url)
   }
   return loadAndGetHtml(getHiddenView(), url)
@@ -474,13 +522,14 @@ function failMessage(code?: FailCode, extra?: string): string {
 export function identityFromPage(
   pageUrl: string,
   bs: ExtractBootstrap,
-): { host: string; catalogUrl: string; bookId: string } {
-  const host = new URL(pageUrl).hostname
+): { host: string; rawHost: string; catalogUrl: string; bookId: string } {
+  const rawHost = new URL(pageUrl).hostname
+  const host = normalizeBookHost(rawHost)
   // Prefer recovered catalog (hash `#/book/65/` or Alice `/other/chapters/…`).
   // Catalog pages omit catalogUrl, so identity is the opened URL.
   // Do not hash the chapter URL when bootstrap already recovered the catalog.
   const catalogUrl = bs.catalogUrl || pageUrl
-  return { host, catalogUrl, bookId: bookIdFromUrl(host, catalogUrl) }
+  return { host, rawHost, catalogUrl, bookId: canonicalBookId(host, catalogUrl) }
 }
 
 export async function followCatalogIfNeeded(
@@ -708,7 +757,10 @@ async function beginDownloadFromBootstrap(
     return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
   }
 
-  const { host, catalogUrl, bookId } = identityFromPage(pageUrl, bs)
+  const identity = identityFromPage(pageUrl, bs)
+  // 老库里的书可能按带 www 的旧键建过：复用已存在的那本，避免同一书变成两本
+  const bookId = (await findExistingBookId(identity.rawHost, identity.catalogUrl)) ?? identity.bookId
+  const { host, catalogUrl } = identity
 
   let book
   if (await bookExists(bookId)) {
@@ -755,6 +807,26 @@ export async function downloadChapters(bookId: string): Promise<void> {
   const dl = active.get(bookId)
   if (!dl) return
 
+  try {
+    await runChapterDownloads(bookId, dl)
+  } finally {
+    // 循环里的任何抛出（重试退避期间点「取消」就是其中一条）都必须走完收尾：
+    // 否则 active 永不清空，后续所有下载都会被 active.size > 0 的闸门挡到重启。
+    dl.currentTitle = undefined
+    try {
+      if (dl.cancelled || dl.stopped) {
+        await refreshBookStatus(bookId, 'partial')
+      } else {
+        await refreshBookStatus(bookId)
+      }
+      await emitProgress(bookId)
+    } finally {
+      active.delete(bookId)
+    }
+  }
+}
+
+async function runChapterDownloads(bookId: string, dl: ActiveDownload): Promise<void> {
   const book = await loadBook(bookId)
   dl.total = book.chapters.length
   dl.done = book.chapters.filter((c) => c.status === 'ready').length
@@ -778,6 +850,7 @@ export async function downloadChapters(bookId: string): Promise<void> {
     let lastCode: FailCode = 'NavFailed'
     let lastMsg = ''
     let saved = false
+    let finalFail: FailCode | undefined
     const maxTries = 1 + CHAPTER_RETRY_TIMES
 
     for (let attempt = 1; attempt <= maxTries; attempt++) {
@@ -806,6 +879,7 @@ export async function downloadChapters(bookId: string): Promise<void> {
         if (!shouldRetryChapterFail(lastCode) || attempt >= maxTries) {
           dl.failed++
           dl.lastError = lastMsg
+          finalFail = lastCode
           await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, lastMsg)
           saved = true
           break
@@ -813,11 +887,12 @@ export async function downloadChapters(bookId: string): Promise<void> {
         await interruptibleDelay(chapterRetryDelayMs(attempt))
       } catch (e: unknown) {
         if (isCancelledError(e) || dl.cancelled) break
-        lastCode = 'NavFailed'
-        lastMsg = failMessage('NavFailed', e instanceof Error ? e.message : String(e))
+        lastCode = e instanceof HttpStatusError ? e.code : 'NavFailed'
+        lastMsg = failMessage(lastCode, e instanceof Error ? e.message : String(e))
         if (!shouldRetryChapterFail(lastCode) || attempt >= maxTries) {
           dl.failed++
           dl.lastError = lastMsg
+          finalFail = lastCode
           await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, lastMsg)
           saved = true
           break
@@ -829,7 +904,21 @@ export async function downloadChapters(bookId: string): Promise<void> {
     if (!saved && !dl.cancelled) {
       dl.failed++
       dl.lastError = lastMsg || failMessage(lastCode)
+      finalFail = lastCode
       await writeFailedPlaceholder(bookId, ch.id, ch.title, chapterUrl, lastCode, dl.lastError)
+    }
+
+    if (finalFail && isSiteWallFail(finalFail)) {
+      dl.wallStreak = dl.wallKind === finalFail ? (dl.wallStreak ?? 0) + 1 : 1
+      dl.wallKind = finalFail
+      if (dl.wallStreak >= CHAPTER_WALL_TRIP_COUNT) {
+        dl.stopped = true
+        dl.lastError = wallTripMessage(finalFail)
+        break
+      }
+    } else {
+      dl.wallStreak = 0
+      dl.wallKind = undefined
     }
 
     await emitProgress(bookId)
@@ -841,15 +930,6 @@ export async function downloadChapters(bookId: string): Promise<void> {
       }
     }
   }
-
-  dl.currentTitle = undefined
-  if (dl.cancelled) {
-    await refreshBookStatus(bookId, 'partial')
-  } else {
-    await refreshBookStatus(bookId)
-  }
-  await emitProgress(bookId)
-  active.delete(bookId)
 }
 
 async function writeFailedPlaceholder(
@@ -898,13 +978,9 @@ export async function checkUpdate(
     const catHtml = await loadPageHtml(sourceUrl)
     const catRule = await ruleForPage(sourceUrl)
     const page = extractPage(catHtml, sourceUrl, undefined, catRule)
-    if (page.failCode === 'NeedLogin' || page.failCode === 'Intercepted') {
-      const hint = checkUpdateFailHint(page.failCode)
-      return {
-        ok: false,
-        code: page.failCode,
-        message: hint?.message || page.failMessage || FAIL_CODE_ZH[page.failCode],
-      }
+    const hint = checkUpdateFailHint(page.failCode)
+    if (hint) {
+      return { ok: false, code: page.failCode, message: hint.message }
     }
     const chapters: CatalogChapter[] =
       page.ok && page.bootstrap && page.bootstrap.chapters.length > 0

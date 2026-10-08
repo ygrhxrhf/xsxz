@@ -1041,18 +1041,10 @@ onUnmounted(() => {
 
 <style scoped>
 .library-page {
-  --shelf-paper: #f7f3e8;
-  --shelf-ink: #2f2a24;
-  --shelf-ink-soft: #6d6458;
-  --shelf-line: rgba(47, 42, 36, 0.14);
-  --shelf-focus: #8a5a32;
   overflow: auto;
   padding: var(--space-6) var(--space-6) var(--space-8);
-  color: var(--shelf-ink);
-  background:
-    linear-gradient(180deg, rgba(255, 252, 245, 0.55), transparent 180px),
-    var(--shelf-paper);
-  font-family: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", "Microsoft YaHei UI", serif;
+  color: var(--text-primary);
+  background: var(--app-bg);
 }
 
 .library-header {
@@ -1062,13 +1054,13 @@ onUnmounted(() => {
   gap: var(--space-4);
   margin-bottom: var(--space-6);
   padding-bottom: var(--space-4);
-  border-bottom: 1px solid var(--shelf-line);
+  border-bottom: 1px solid var(--border);
 }
 
 .library-page :deep(.page-title) {
   margin: 0;
-  color: var(--shelf-ink);
-  font-size: 28px;
+  color: var(--text-primary);
+  font-size: 24px;
   font-weight: 700;
   line-height: 1.25;
   letter-spacing: 0.01em;
@@ -1076,7 +1068,7 @@ onUnmounted(() => {
 
 .library-subtitle {
   margin: var(--space-2) 0 0;
-  color: var(--shelf-ink-soft);
+  color: var(--text-secondary);
   font-size: 14px;
   line-height: 1.5;
 }
@@ -1094,68 +1086,9 @@ onUnmounted(() => {
 }
 
 .library-refresh-status {
-  color: var(--shelf-ink-soft);
+  color: var(--text-secondary);
   font-size: 12px;
   white-space: nowrap;
-}
-
-.library-page :deep(.n-button) {
-  --n-color: #fffdf8;
-  --n-color-hover: #f3ecdf;
-  --n-color-pressed: #efe6d4;
-  --n-color-focus: #fffdf8;
-  --n-text-color: var(--shelf-ink);
-  --n-text-color-hover: var(--shelf-ink);
-  --n-text-color-pressed: var(--shelf-ink);
-  --n-text-color-focus: var(--shelf-ink);
-  --n-text-color-disabled: #a89884;
-  --n-border: 1px solid #e3d9c6;
-  --n-border-hover: 1px solid #c9b89a;
-  --n-border-pressed: 1px solid var(--shelf-focus);
-  --n-border-focus: 1px solid var(--shelf-focus);
-  --n-border-disabled: 1px solid #eadfce;
-  --n-ripple-color: var(--shelf-focus);
-  min-height: 32px;
-  border-radius: var(--radius-control);
-}
-
-.library-page :deep(.n-button.n-button--primary-type) {
-  --n-color: var(--shelf-focus);
-  --n-color-hover: #744b29;
-  --n-color-pressed: #633f22;
-  --n-color-focus: var(--shelf-focus);
-  --n-text-color: #fffaf3;
-  --n-text-color-hover: #fffaf3;
-  --n-text-color-pressed: #fffaf3;
-  --n-text-color-focus: #fffaf3;
-  --n-text-color-disabled: rgba(255, 250, 243, 0.72);
-  --n-border: 1px solid transparent;
-  --n-border-hover: 1px solid transparent;
-  --n-border-pressed: 1px solid transparent;
-  --n-border-focus: 1px solid transparent;
-  --n-border-disabled: 1px solid transparent;
-}
-
-.library-page :deep(.n-button.n-button--error-type) {
-  --n-color: transparent;
-  --n-color-hover: rgba(156, 59, 50, 0.08);
-  --n-color-pressed: rgba(156, 59, 50, 0.14);
-  --n-text-color: #9c3b32;
-  --n-text-color-hover: #9c3b32;
-  --n-text-color-pressed: #9c3b32;
-  --n-border: 1px solid transparent;
-}
-
-.library-page :deep(.n-button.n-button--warning-type) {
-  --n-text-color: #8a5a12;
-  --n-text-color-hover: #8a5a12;
-  --n-text-color-pressed: #8a5a12;
-  --n-border: 1px solid #e3d0a4;
-}
-
-.library-page :deep(.n-button:not(.n-button--disabled):focus-visible) {
-  outline: 2px solid var(--shelf-focus);
-  outline-offset: 2px;
 }
 
 .lib-toolbar {
@@ -1176,7 +1109,7 @@ onUnmounted(() => {
 .checkall-status {
   max-width: 280px;
   overflow: hidden;
-  color: var(--shelf-ink-soft);
+  color: var(--text-secondary);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1191,14 +1124,14 @@ onUnmounted(() => {
 .book-card {
   min-width: 0;
   border-radius: var(--radius-card);
-  background: #fffdf8;
+  background: var(--surface-1);
   transition: transform var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing), border-color var(--motion-duration) var(--motion-easing);
 }
 
 .book-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(138, 90, 50, 0.45);
-  box-shadow: 0 10px 22px rgba(74, 52, 28, 0.12);
+  border-color: var(--card-hover-border);
+  box-shadow: var(--card-hover-shadow);
 }
 
 :deep(.book-card > .n-card__content) {
@@ -1227,7 +1160,7 @@ onUnmounted(() => {
 }
 
 .book-open-area:focus-visible {
-  outline: 2px solid var(--shelf-focus);
+  outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
 
@@ -1248,8 +1181,8 @@ onUnmounted(() => {
     hsl(calc(var(--cover-hue) * 1deg) 28% 32%),
     hsl(calc(var(--cover-hue-secondary) * 1deg) 34% 24%)
   );
-  box-shadow: 2px 6px 14px rgba(74, 52, 28, 0.16);
-  font-size: 28px;
+  box-shadow: var(--shadow-card);
+  font-size: 24px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-shadow: 0 1px 2px rgba(47, 42, 36, 0.35);
@@ -1302,7 +1235,7 @@ onUnmounted(() => {
   min-height: 48px;
   display: -webkit-box;
   overflow: hidden;
-  color: var(--shelf-ink);
+  color: var(--text-primary);
   font-size: 17px;
   font-weight: 700;
   line-height: 1.4;
@@ -1322,7 +1255,7 @@ onUnmounted(() => {
 
 .book-author {
   margin-top: var(--space-1);
-  color: var(--shelf-ink-soft);
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -1337,7 +1270,7 @@ onUnmounted(() => {
 .book-progress,
 .book-progress-time {
   margin-top: var(--space-2);
-  color: var(--shelf-ink-soft);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
@@ -1347,13 +1280,13 @@ onUnmounted(() => {
 
 .check-msg {
   margin-top: var(--space-2);
-  color: #2f6b45;
+  color: var(--success);
   font-size: 12px;
   line-height: 1.4;
 }
 
 .check-msg.error {
-  color: #9c3b32;
+  color: var(--error);
 }
 
 .card-edit,
@@ -1372,7 +1305,7 @@ onUnmounted(() => {
   z-index: 2;
   top: var(--space-2);
   right: var(--space-2);
-  background: rgba(247, 243, 232, 0.92);
+  background: var(--surface-1);
 }
 
 .library-empty {
@@ -1382,9 +1315,9 @@ onUnmounted(() => {
   align-content: center;
   gap: var(--space-3);
   padding: var(--space-8) var(--space-4);
-  border: 1px solid var(--shelf-line);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  background: rgba(255, 253, 248, 0.72);
+  background: var(--surface-1);
   text-align: center;
 }
 
@@ -1394,7 +1327,7 @@ onUnmounted(() => {
 }
 
 .library-empty h3 {
-  color: var(--shelf-ink);
+  color: var(--text-primary);
   font-size: 22px;
   font-weight: 700;
   line-height: 1.3;
@@ -1402,18 +1335,18 @@ onUnmounted(() => {
 
 .library-empty p {
   max-width: 36ch;
-  color: var(--shelf-ink-soft);
+  color: var(--text-secondary);
   font-size: 14px;
   line-height: 1.6;
 }
 
 .library-error {
-  border-color: rgba(156, 59, 50, 0.35);
+  border-color: var(--error);
 }
 
 .library-inline-error {
   margin: 0 0 var(--space-3);
-  color: #9c3b32;
+  color: var(--error);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -1432,13 +1365,13 @@ onUnmounted(() => {
 .skeleton-card {
   min-height: 330px;
   padding: var(--space-4);
-  border: 1px solid var(--shelf-line);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  background: rgba(255, 253, 248, 0.72);
+  background: var(--surface-1);
 }
 
 .library-page :deep(.skeleton-block) {
-  background: rgba(138, 90, 50, 0.12);
+  background: var(--surface-3);
 }
 
 .skeleton-cover {
@@ -1505,7 +1438,7 @@ onUnmounted(() => {
 
 .fail-row {
   padding: 8px 0;
-  border-bottom: 1px solid var(--shelf-line);
+  border-bottom: 1px solid var(--border);
 }
 
 .fail-title {
@@ -1514,7 +1447,7 @@ onUnmounted(() => {
 
 .fail-reason {
   font-size: 12px;
-  color: #9c3b32;
+  color: var(--error);
   margin-top: 4px;
 }
 

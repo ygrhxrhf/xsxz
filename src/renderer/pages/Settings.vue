@@ -58,7 +58,7 @@ const sectionOptions: { id: SettingsSection; label: string }[] = [
 
 const skinOptions: { id: Skin; name: string; desc: string }[] = [
   { id: 'paper', name: '暖纸', desc: '米白纸面 · 长时间阅读' },
-  { id: 'white', name: '白纸', desc: '浅色 · 中性克制' },
+  { id: 'white', name: '简约', desc: '现代浅色 · 清晰克制' },
   { id: 'night', name: '夜间', desc: '深色 · 弱光阅读' },
 ]
 
@@ -112,6 +112,8 @@ const ruleTitle = ref('')
 const ruleAuthor = ref('')
 const ruleCatalog = ref('')
 const ruleBody = ref('')
+const rulePreviousChapter = ref('')
+const ruleNextChapter = ref('')
 const ruleAdFilterEnabled = ref(true)
 const ruleAdHideSelectors = ref('')
 const ruleSaving = ref(false)
@@ -129,6 +131,8 @@ function previewRule(rule: SiteRule): string {
     previewField('作者', rule.author),
     previewField('目录', rule.catalog),
     previewField('正文', rule.body),
+    previewField('上一章', rule.previousChapter),
+    previewField('下一章', rule.nextChapter),
     `浏览去广告 ${rule.adFilterEnabled === false ? '关闭' : '开启'}`,
   ].join(' · ')
 }
@@ -139,6 +143,8 @@ function fillRuleForm(rule: SiteRule) {
   ruleAuthor.value = rule.author ?? ''
   ruleCatalog.value = rule.catalog ?? ''
   ruleBody.value = rule.body ?? ''
+  rulePreviousChapter.value = rule.previousChapter ?? ''
+  ruleNextChapter.value = rule.nextChapter ?? ''
   ruleAdFilterEnabled.value = rule.adFilterEnabled !== false
   ruleAdHideSelectors.value = rule.adHideSelectors ?? ''
 }
@@ -489,6 +495,8 @@ async function saveRule() {
       author: ruleAuthor.value,
       catalog: ruleCatalog.value,
       body: ruleBody.value,
+      previousChapter: rulePreviousChapter.value,
+      nextChapter: ruleNextChapter.value,
       adFilterEnabled: ruleAdFilterEnabled.value,
       adHideSelectors: ruleAdHideSelectors.value,
     })
@@ -707,7 +715,7 @@ onMounted(load)
       <n-space vertical :size="12">
         <n-input-group>
           <n-input-group-label style="width:80px">书库路径</n-input-group-label>
-          <n-input v-model:value="libraryPath" placeholder="D:\spbf\library" />
+          <n-input v-model:value="libraryPath" placeholder="留空则用本机默认目录（Windows 为 D:\spbf\library）" />
           <n-button @click="pickLibrary">选择目录</n-button>
         </n-input-group>
         <p style="color:var(--text-muted);font-size:13px;margin:0">
@@ -888,6 +896,14 @@ onMounted(load)
           <n-input-group-label style="width:110px">正文选择器</n-input-group-label>
           <n-input v-model:value="ruleBody" placeholder="可选，空则走通用提取" />
         </n-input-group>
+        <n-input-group>
+          <n-input-group-label style="width:110px">上一章选择器</n-input-group-label>
+          <n-input v-model:value="rulePreviousChapter" placeholder="可选，空则自动识别" />
+        </n-input-group>
+        <n-input-group>
+          <n-input-group-label style="width:110px">下一章选择器</n-input-group-label>
+          <n-input v-model:value="ruleNextChapter" placeholder="可选，空则自动识别" />
+        </n-input-group>
         <n-space align="center">
           <span>浏览页去广告</span>
           <n-switch v-model:value="ruleAdFilterEnabled" aria-label="浏览页去广告" />
@@ -991,13 +1007,15 @@ onMounted(load)
 
 <style scoped>
 .settings-page {
-  max-width: 1040px;
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
   overflow-x: hidden;
   overflow-y: auto;
 }
 
 .settings-header {
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-6);
 }
 
 .settings-header p {
@@ -1017,6 +1035,10 @@ onMounted(load)
   flex-direction: column;
   gap: var(--space-1);
   align-self: start;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
 }
 
 .settings-nav-item {
@@ -1065,6 +1087,16 @@ onMounted(load)
   margin-top: var(--space-4);
 }
 
+.settings-card :deep(.n-card__content) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.settings-card :deep(.n-input-group) {
+  max-width: 100%;
+}
+
 .settings-loading {
   min-height: 280px;
   display: flex;
@@ -1100,15 +1132,19 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
+  min-height: 40px;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .pace-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding-top: 4px;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .skin-grid {
@@ -1126,11 +1162,11 @@ onMounted(load)
   text-align: left;
   border: 1px solid var(--line);
   background: var(--panel);
-  border-radius: 12px;
-  padding: 12px;
+  border-radius: var(--radius-card);
+  padding: var(--space-3);
   cursor: pointer;
   color: inherit;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color var(--motion-duration), box-shadow var(--motion-duration);
 }
 
 .skin-card:hover {
@@ -1144,7 +1180,7 @@ onMounted(load)
 
 .skin-card.active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: var(--input-ring);
 }
 
 .skin-swatch {
@@ -1168,8 +1204,8 @@ onMounted(load)
 }
 
 .skin-swatch.night {
-  background: #1b1d20;
-  border: 1px solid #34373c;
+  background: #202631;
+  border: 1px solid #3a4150;
 }
 
 .sw-dot {
@@ -1203,15 +1239,15 @@ onMounted(load)
 }
 
 .night .d1 {
-  background: #d8d2c7;
+  background: #9aabd9;
 }
 
 .night .d2 {
-  background: #3a3d42;
+  background: #303746;
 }
 
 .night .d3 {
-  background: #8a8478;
+  background: #e9ecf3;
 }
 
 .skin-name {
@@ -1299,6 +1335,10 @@ onMounted(load)
 }
 
 @media (max-width: 720px) {
+  .settings-page {
+    padding: var(--space-4);
+  }
+
   .settings-layout {
     grid-template-columns: 1fr;
   }

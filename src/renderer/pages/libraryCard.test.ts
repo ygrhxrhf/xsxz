@@ -352,8 +352,9 @@ describe('library check-update card helpers', () => {
     expect(isLibraryFindShortcut({ key: 'g', ctrlKey: true, metaKey: false })).toBe(false)
   })
 
-  it('sends NeedLogin / Intercepted back to the browse page', () => {
+  it('sends NeedLogin / Paywall / Intercepted back to the browse page', () => {
     expect(checkUpdateNeedsBrowse('NeedLogin')).toBe(true)
+    expect(checkUpdateNeedsBrowse('Paywall')).toBe(true)
     expect(checkUpdateNeedsBrowse('Intercepted')).toBe(true)
     expect(checkUpdateNeedsBrowse('CatalogNotFound')).toBe(false)
   })
@@ -379,5 +380,10 @@ describe('reader progress / catalog helpers', () => {
   it('gives NeedLogin a browse hint', () => {
     expect(failAdvice('NeedLogin')).toMatch(/浏览页登录/)
     expect(failAdvice('BodyEmpty')).toMatch(/重试/)
+  })
+
+  it('tells the reader a paid chapter needs unlocking in the browse page', () => {
+    expect(failAdvice('Paywall')).toMatch(/付费或会员/)
+    expect(failAdvice('Paywall')).toMatch(/浏览页/)
   })
 })

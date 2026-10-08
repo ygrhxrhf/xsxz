@@ -131,7 +131,7 @@ export function formatLibraryProgressTime(b: Pick<BookListItem, 'progress'>): st
 }
 
 export function checkUpdateNeedsBrowse(code?: FailCode | string): boolean {
-  return code === 'NeedLogin' || code === 'Intercepted'
+  return code === 'NeedLogin' || code === 'Paywall' || code === 'Intercepted'
 }
 
 export function isLibraryFindShortcut(e: {

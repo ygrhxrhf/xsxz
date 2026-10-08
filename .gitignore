@@ -11,4 +11,7 @@ release/
 .multi-agent/
 .dsh/
 .zcode/
+bundles/
+*.traineddata
+electron.vite.config.*.mjs
 

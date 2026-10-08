@@ -73,6 +73,8 @@ import {
   updateAssistantSaveToken,
 } from './aiAssistantStatus'
 import { createChapterPrefetch } from './readerPrefetch'
+import { createReaderProgressWriter } from './readerProgressWriter'
+import type { CapturedProgressWrite } from './readerProgressWriter'
 
 const props = defineProps<{ bookId?: string }>()
 const emit = defineEmits<{
@@ -106,11 +108,6 @@ const paragraphIndent = ref(DEFAULT_READER_PREFS.paragraphIndent)
 const focusMode = ref<ReaderFocusMode>(DEFAULT_READER_PREFS.focusMode)
 const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
 const viewportCenterPara = ref(-1)
-const nightMode = computed({
-  get: () => theme.value === 'night',
-  set: (enabled: boolean) => { theme.value = enabled ? 'night' : 'paper' },
-})
-
 // AI state
 const aiLoading = ref(false)
 const cleanRunning = ref(false)
@@ -1018,8 +1015,8 @@ function onReaderKeydown(e: KeyboardEvent) {
   }
 }
 
-// Debounced scroll save
-let scrollTimer: ReturnType<typeof setTimeout> | null = null
+// Debounced scroll save：只经读者进度状态机排期和落盘
+const readerProgress = createReaderProgressWriter(captureProgressWrite)
 let unsubDownload: (() => void) | null = null
 
 function cancelReaderDownload() {
@@ -1030,7 +1027,6 @@ let unsubAiStage: (() => void) | null = null
 let unsubAiBudget: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
 
-const nightClass = computed(() => (nightMode.value ? 'night' : ''))
 const themeTokens: Record<ReaderTheme, { paper: string; text: string; outer: string }> = {
   paper: { paper: '#F7F3E8', text: '#2F2A24', outer: '#E9E3D7' },
   sepia: { paper: '#F3E2B8', text: '#3A2F22', outer: '#E6D2A4' },
@@ -1114,7 +1110,7 @@ async function loadBook(bookId: string) {
   }
   chapterPrefetch.onBookChange(bookId)
   const previousChapterId = currentChapter.value?.id
-  saveProgress()
+  void readerProgress.writeNow()
   const res = await window.api.library.get(bookId)
   if (res.book) {
     book.value = res.book
@@ -1165,7 +1161,8 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
   closeSelectionTools()
   ttsStop(continueListening)
   const progressSave = currentChapter.value && currentChapter.value.id !== ch.id
-    ? saveProgress().then(() => true, () => {
+    ? readerProgress.writeNow().then((outcome) => {
+      if (outcome !== 'failed') return true
       message.warning('阅读进度保存失败，已跳过本章自动整理')
       return false
     })
@@ -1318,19 +1315,25 @@ function scrollToRatio(ratio: number) {
   })
 }
 
-async function saveProgress(): Promise<void> {
-  if (!book.value || !currentChapter.value || !contentRef.value) return
+/** 排期那一刻就把书、章、位置锁死，写盘排队到什么时候都不会串到别的章。 */
+function captureProgressWrite(): CapturedProgressWrite | null {
+  const target = book.value
+  const chapter = currentChapter.value
   const el = contentRef.value
+  if (!target || !chapter || !el) return null
   const scrollRatio = currentChapterRatio(el)
   const anchor = paragraphAnchor()
   const progress: ReadingProgress = {
-    chapterId: currentChapter.value.id,
+    chapterId: chapter.id,
     scrollRatio,
     ...(anchor && scrollRatio < 0.999 ? anchor : {}),
     updatedAt: new Date().toISOString(),
   }
-  book.value.progress = progress
-  await window.api.library.setProgress(book.value.id, progress)
+  return async () => {
+    target.progress = progress
+    const res = await window.api.library.setProgress(target.id, progress)
+    if (res && res.ok === false) throw new Error(res.message || '阅读进度写入失败')
+  }
 }
 
 function currentChapterRatio(el: HTMLElement): number {
@@ -1363,8 +1366,7 @@ function onScroll() {
   if (selectionOpen()) closeSelectionTools()
   const el = contentRef.value
   if (el) scrollRatioView.value = currentChapterRatio(el)
-  if (scrollTimer) clearTimeout(scrollTimer)
-  scrollTimer = setTimeout(saveProgress, 1000)
+  readerProgress.schedule()
   updateViewportFocusAnchor()
   if (showSearch.value && paras.value.length > 2000 &&
       Math.abs(viewportCenterPara.value - searchHighlightCenter.value) > 100) {
@@ -1463,6 +1465,12 @@ function scheduleReaderPrefsSave() {
   pendingReaderPrefs = currentReaderPrefs()
   if (prefsSaveTimer) clearTimeout(prefsSaveTimer)
   prefsSaveTimer = setTimeout(() => { void flushReaderPrefsSave() }, 300)
+}
+
+/** 关窗口不会走 Vue 卸载：退出前把还在节流里的进度和阅读偏好立刻写出去。 */
+function flushPendingReaderWrites() {
+  void flushReaderPrefsSave()
+  void readerProgress.writeNow()
 }
 
 function restoreDefaultReaderPrefs() {
@@ -2215,6 +2223,7 @@ onMounted(async () => {
   if ('speechSynthesis' in window) window.speechSynthesis.addEventListener?.('voiceschanged', refreshTtsVoices)
   window.addEventListener('keydown', onReaderKeydown)
   window.addEventListener('resize', onReaderResize)
+  window.addEventListener('beforeunload', flushPendingReaderWrites)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => {
     if (jobId === recapJobId.value) recapText.value += delta
     if (jobId === translateJobId.value) aiResult.value += delta
@@ -2350,9 +2359,9 @@ onUnmounted(() => {
   if ('speechSynthesis' in window) window.speechSynthesis.removeEventListener?.('voiceschanged', refreshTtsVoices)
   window.removeEventListener('keydown', onReaderKeydown)
   window.removeEventListener('resize', onReaderResize)
+  window.removeEventListener('beforeunload', flushPendingReaderWrites)
   chapterPrefetch.dispose()
   ttsStop()
-  if (scrollTimer) clearTimeout(scrollTimer)
   if (renderTimer) clearTimeout(renderTimer)
   renderGeneration++
   clearToolHideTimer()
@@ -2362,12 +2371,12 @@ onUnmounted(() => {
   unsubAiStage?.()
   unsubAiBudget?.()
   unsubAiDone?.()
-  saveProgress()
+  void readerProgress.writeNow()
 })
 </script>
 
 <template>
-  <div :class="['reader-wrap', nightClass, { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove" @focusin="onReaderFocusIn">
+  <div :class="['reader-wrap', { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove" @focusin="onReaderFocusIn">
     <!-- No book selected -->
     <div v-if="!book" class="page placeholder">
       <h2>阅读</h2>
@@ -2901,13 +2910,14 @@ onUnmounted(() => {
 
 <style scoped>
 .reader-wrap {
-  /* 局部变量：夜间模式只覆盖这三项，其余跟随全局皮肤 */
+  /* 工具区跟随应用外观，正文纸色由阅读偏好独立控制。 */
   --r-bar-bg: var(--bar-bg);
   --r-line: var(--line);
   --r-muted: var(--muted);
   --r-surface: var(--surface-2);
-  --r-hover: color-mix(in srgb, var(--reader-paper-text) 12%, transparent);
+  --r-hover: var(--hover);
   --r-focus: var(--focus);
+  --r-panel-bg: var(--surface-2);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -2916,12 +2926,6 @@ onUnmounted(() => {
   background: transparent;
   color: var(--text);
   transition: background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
-}
-
-.reader-wrap.night {
-  --r-bar-bg: #100d08;
-  --r-line: rgba(230, 213, 162, 0.13);
-  --r-muted: #a8946b;
 }
 
 .reader-bar {
@@ -2999,11 +3003,6 @@ onUnmounted(() => {
   color: var(--reader-paper-text);
 }
 
-.reader-wrap.night .reader-content {
-  background: #000000;
-  color: #e6d5a2;
-}
-
 .ch-title {
   font-size: 1.3em;
   font-weight: 600;
@@ -3053,10 +3052,10 @@ onUnmounted(() => {
   width: min(360px, calc(100vw - 16px));
   gap: 6px;
   background: var(--popover-bg);
-  border: 1px solid var(--r-line, #372c52);
-  border-radius: 10px;
+  border: 1px solid var(--r-line);
+  border-radius: var(--radius-overlay);
   padding: 6px 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5), var(--popover-ring);
+  box-shadow: var(--shadow-overlay), var(--popover-ring);
 }
 
 .direct-note-editor {
@@ -3068,16 +3067,16 @@ onUnmounted(() => {
   gap: 10px;
   padding: 14px;
   border: 1px solid var(--r-line);
-  border-radius: 10px;
+  border-radius: var(--radius-overlay);
   background: var(--popover-bg);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, .28);
+  box-shadow: var(--shadow-overlay);
 }
 .direct-note-excerpt {
   max-height: 72px;
   overflow: auto;
   padding: 8px;
   border-radius: 6px;
-  background: rgba(127, 127, 127, .1);
+  background: var(--surface-2);
   color: var(--r-muted);
   font-size: 12px;
   line-height: 1.5;
@@ -3090,8 +3089,8 @@ onUnmounted(() => {
 }
 
 .mark-row {
-  border: 1px solid var(--r-line, #372c52);
-  border-radius: 10px;
+  border: 1px solid var(--r-line);
+  border-radius: var(--radius-control);
   padding: 8px 10px;
 }
 
@@ -3269,8 +3268,8 @@ onUnmounted(() => {
   margin-left: 6px;
   padding: 1px 7px;
   border-radius: 999px;
-  background: rgba(240, 160, 32, .16);
-  color: #b66a00;
+  background: var(--warning-surface);
+  color: var(--warning);
   font-size: 12px;
   font-weight: 500;
 }
@@ -3287,7 +3286,7 @@ onUnmounted(() => {
   padding: 6px 8px;
   border: 0;
   border-radius: 6px;
-  background: rgba(127, 127, 127, .08);
+  background: var(--surface-2);
   color: var(--r-muted);
   font: inherit;
   font-size: 12px;
@@ -3296,7 +3295,7 @@ onUnmounted(() => {
   white-space: pre-wrap;
   cursor: pointer;
 }
-.memory-source:hover { background: rgba(127, 127, 127, .14); }
+.memory-source:hover { background: var(--surface-3); }
 .memory-source:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
 
 .chat-messages {
@@ -3443,7 +3442,7 @@ onUnmounted(() => {
   border: 1px solid var(--r-line);
   border-radius: var(--radius-overlay);
   background: var(--popover-bg);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, .24);
+  box-shadow: var(--shadow-overlay);
 }
 
 .reader-stage { flex: 1 1 auto; min-height: 0; display: flex; background: var(--reader-outer); }
@@ -3481,7 +3480,7 @@ onUnmounted(() => {
   position: absolute; left: 50%; bottom: calc(100% + 8px); width: min(420px, calc(100% - 24px));
   max-height: min(420px, 60vh); transform: translateX(-50%); overflow-y: auto; display: flex;
   flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--r-line);
-  border-radius: var(--radius-overlay); background: var(--popover-bg); box-shadow: 0 12px 32px rgba(0, 0, 0, .24);
+  border-radius: var(--radius-overlay); background: var(--popover-bg); box-shadow: var(--shadow-overlay);
 }
 .reader-progress-row.panel { height: 6px; overflow: hidden; background: var(--r-surface); }
 
@@ -3525,8 +3524,6 @@ onUnmounted(() => {
 .reader-progress-fill.chapter { opacity: .55; }
 
 .reader-wrap.immersive-locked .reader-progress-track { opacity: 1; }
-.reader-wrap.night .reader-content { background: var(--reader-paper); color: var(--reader-paper-text); }
-
 .chapter-hotzone {
   position: absolute;
   z-index: 18;

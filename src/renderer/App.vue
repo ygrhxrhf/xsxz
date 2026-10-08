@@ -148,6 +148,50 @@ const minimalOverrides: GlobalThemeOverrides = {
   },
 }
 
+const nightOverrides: GlobalThemeOverrides = {
+  common: {
+    primaryColor: '#9aabd9',
+    primaryColorHover: '#b0bde4',
+    primaryColorPressed: '#8396ca',
+    primaryColorSuppl: '#9aabd9',
+    infoColor: '#9cbcf1',
+    infoColorHover: '#b4caf2',
+    infoColorPressed: '#85aae8',
+    infoColorSuppl: '#9cbcf1',
+    successColor: '#76c8a0',
+    successColorHover: '#92d4b3',
+    successColorPressed: '#5ab88c',
+    successColorSuppl: '#76c8a0',
+    warningColor: '#e2b66a',
+    warningColorHover: '#ecc789',
+    warningColorPressed: '#d4a44f',
+    warningColorSuppl: '#e2b66a',
+    errorColor: '#f18d93',
+    errorColorHover: '#f5a8ad',
+    errorColorPressed: '#e97981',
+    errorColorSuppl: '#f18d93',
+    textColorBase: '#e9ecf3',
+    textColor1: '#e9ecf3',
+    textColor2: '#c3c9d6',
+    textColor3: '#9aa4b6',
+    placeholderColor: '#929bad',
+    borderColor: '#3a4150',
+    dividerColor: '#343b49',
+    cardColor: '#262c38',
+    modalColor: '#262c38',
+    popoverColor: '#262c38',
+    drawerColor: '#262c38',
+    inputColor: '#303746',
+    actionColor: '#303746',
+    hoverColor: 'rgba(233, 236, 243, 0.08)',
+    borderRadius: '8px',
+    borderRadiusSmall: '8px',
+  },
+  Card: { borderRadius: '14px', borderColor: '#3a4150' },
+  Dialog: { borderRadius: '16px' },
+  Tag: { borderRadius: '8px' },
+}
+
 // 换肤：localStorage 快照让首帧即正确，settings.json 为权威值
 const SKIN_STORAGE_KEY = 'spbf.skin'
 
@@ -155,11 +199,11 @@ function isSkin(v: unknown): v is Skin {
   return v === 'paper' || v === 'white' || v === 'night'
 }
 
-const skin = ref<Skin>(isSkin(localStorage.getItem(SKIN_STORAGE_KEY)) ? localStorage.getItem(SKIN_STORAGE_KEY) as Skin : 'paper')
+const skin = ref<Skin>(isSkin(localStorage.getItem(SKIN_STORAGE_KEY)) ? localStorage.getItem(SKIN_STORAGE_KEY) as Skin : 'white')
 document.body.dataset.skin = skin.value
 
 const naiveTheme = computed(() => (skin.value === 'night' ? darkTheme : lightTheme))
-const themeOverrides = computed(() => (skin.value === 'white' ? minimalOverrides : paperOverrides))
+const themeOverrides = computed(() => (skin.value === 'night' ? nightOverrides : skin.value === 'white' ? minimalOverrides : paperOverrides))
 
 function onChangeSkin(s: Skin) {
   skin.value = s

@@ -417,6 +417,38 @@ function isLoginWall(doc: Document, bodyText: string): boolean {
   return false
 }
 
+// 付费墙的判据只有「话术」是不够的：站点页头页脚常带 VIP/会员入口。
+// 因此额外要求正文很短——真章不会只剩个开头。
+const PAYWALL_MAX_EFFECTIVE = 800
+const PAYWALL_TEXT = [
+  '购买本章',
+  '付费阅读',
+  '付费章节',
+  '本章需要付费',
+  '本章需付费',
+  '付费解锁',
+  '订阅后可读',
+  '订阅后阅读',
+  '请输入订阅密码',
+  '会员后可读',
+  'VIP章节',
+  '解锁本章',
+  '解锁后续',
+  '打赏解锁',
+  '本章试读',
+  '剩余章节需',
+]
+
+function isPaywall(doc: Document, bodyText: string): boolean {
+  const effective = effectiveLength(bodyText)
+  if (bodyText.length > 0) {
+    if (effective > PAYWALL_MAX_EFFECTIVE) return false
+    return PAYWALL_TEXT.some((w) => `${doc.title || ''} ${bodyText}`.includes(w))
+  }
+  const pageText = doc.body ? visibleText(doc.body) : ''
+  return PAYWALL_TEXT.some((w) => `${doc.title || ''} ${pageText}`.includes(w))
+}
+
 const INTERCEPT_TITLE = ['安全验证', '人机验证', 'Access Denied', 'Just a moment', 'Attention Required']
 const INTERCEPT_TEXT = ['请完成人机验证', '检测到异常访问', '点击按钮继续', 'Cloudflare', 'Access Denied']
 
@@ -428,8 +460,22 @@ function isInterceptedPage(doc: Document, bodyText: string): boolean {
   return INTERCEPT_TEXT.some((w) => pageText.includes(w))
 }
 
-function interceptedFail(): { ok: false; pageKind: 'chapter'; failCode: 'Intercepted'; failMessage: string } {
-  return { ok: false, pageKind: 'chapter', failCode: 'Intercepted', failMessage: FAIL_CODE_ZH.Intercepted }
+type WallKind = 'NeedLogin' | 'Paywall' | 'Intercepted'
+
+/** 一处判定，extractPage / extractBody 共用；顺序即优先级。 */
+function classifyWall(doc: Document, text: string): WallKind | null {
+  if (isLoginWall(doc, text)) return 'NeedLogin'
+  if (isPaywall(doc, text)) return 'Paywall'
+  if (isInterceptedPage(doc, text)) return 'Intercepted'
+  return null
+}
+
+function wallFail(kind: WallKind, pageKind: PageKind): ExtractResult {
+  return { ok: false, pageKind, failCode: kind, failMessage: FAIL_CODE_ZH[kind] }
+}
+
+function bodyWallFail(kind: WallKind): { body: string; ok: boolean; failCode: FailCode; failMessage: string } {
+  return { body: '', ok: false, failCode: kind, failMessage: FAIL_CODE_ZH[kind] }
 }
 
 // ---------------------------------------------------------------------------
@@ -490,10 +536,8 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
 
   const ruledBody = tryBodyFromRule(doc, rule)
   if (ruledBody) {
-    if (isLoginWall(doc, ruledBody)) {
-      return { ok: false, pageKind: 'chapter', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
-    }
-    if (isInterceptedPage(doc, ruledBody)) return interceptedFail()
+    const wall = classifyWall(doc, ruledBody)
+    if (wall) return wallFail(wall, 'chapter')
     const catalogUrl = findCatalogLink(doc, pageUrl)
     return {
       ok: true,
@@ -512,10 +556,8 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
   // Try body extraction (likely a chapter page)
   const { body, ok: bodyOk, partialText } = tryExtractBody(doc)
   if (bodyOk) {
-    if (isLoginWall(doc, body)) {
-      return { ok: false, pageKind: 'chapter', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
-    }
-    if (isInterceptedPage(doc, body)) return interceptedFail()
+    const wall = classifyWall(doc, body)
+    if (wall) return wallFail(wall, 'chapter')
     // This looks like a chapter page - try to find catalog link
     const catalogUrl = findCatalogLink(doc, pageUrl)
     return {
@@ -532,18 +574,16 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
     }
   }
 
-  // Body too short / empty — check login wall on partial text
+  // Body too short / empty — a wall (login, paywall, captcha) explains why
   if (partialText.length > 0) {
-    if (isLoginWall(doc, partialText)) {
-      return { ok: false, pageKind: 'unknown', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
-    }
+    const wall = classifyWall(doc, partialText)
+    if (wall) return wallFail(wall, 'unknown')
     return { ok: false, pageKind: 'unknown', failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
 
-  // No body found at all — check login wall on full page text
-  if (isLoginWall(doc, '')) {
-    return { ok: false, pageKind: 'unknown', failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
-  }
+  // No body found at all — the surrounding page text may say why
+  const wall = classifyWall(doc, '')
+  if (wall) return wallFail(wall, 'unknown')
 
   return { ok: false, pageKind: 'unknown', failCode: 'UnknownPage', failMessage: '无法识别为书' }
 }
@@ -572,26 +612,17 @@ export function extractBody(
   const doc = dom.window.document
   const ruledBody = tryBodyFromRule(doc, rule)
   if (ruledBody) {
-    if (isLoginWall(doc, ruledBody)) {
-      return { body: '', ok: false, failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
-    }
-    if (isInterceptedPage(doc, ruledBody)) {
-      return { body: '', ok: false, failCode: 'Intercepted', failMessage: FAIL_CODE_ZH.Intercepted }
-    }
+    const wall = classifyWall(doc, ruledBody)
+    if (wall) return bodyWallFail(wall)
     return { body: cleanAdParagraphs(ruledBody), bodyRaw: ruledBody, ok: true }
   }
   const { body, ok, partialText } = tryExtractBody(doc)
   if (!ok) {
-    if (isLoginWall(doc, partialText)) {
-      return { body: '', ok: false, failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
-    }
+    const wall = classifyWall(doc, partialText)
+    if (wall) return bodyWallFail(wall)
     return { body: '', ok: false, failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
-  if (isLoginWall(doc, body)) {
-    return { body: '', ok: false, failCode: 'NeedLogin', failMessage: FAIL_CODE_ZH.NeedLogin }
-  }
-  if (isInterceptedPage(doc, body)) {
-    return { body: '', ok: false, failCode: 'Intercepted', failMessage: FAIL_CODE_ZH.Intercepted }
-  }
+  const wall = classifyWall(doc, body)
+  if (wall) return bodyWallFail(wall)
   return { body: cleanAdParagraphs(body), bodyRaw: body, ok: true }
 }

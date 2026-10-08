@@ -8,18 +8,18 @@ export type FailCode =
   | 'CatalogNotFound'
   | 'BodyEmpty'
   | 'NeedLogin'
+  | 'Paywall'
   | 'Intercepted'
   | 'NavFailed'
-  | 'Cancelled'
   | 'UnknownPage'
 
 export const FAIL_CODE_ZH: Record<FailCode, string> = {
   CatalogNotFound: '找不到目录',
   BodyEmpty: '正文为空或过短',
   NeedLogin: '需要登录后才能看',
+  Paywall: '本章需要付费或会员',
   Intercepted: '页面不像正文（拦截或残页）',
   NavFailed: '章节地址加载失败',
-  Cancelled: '已取消',
   UnknownPage: '无法识别为书',
 }
 
@@ -140,7 +140,7 @@ export interface DownloadProgress {
   done: number
   failed: number
   currentTitle?: string
-  status: 'running' | 'paused' | 'done' | 'cancelled' | 'error'
+  status: 'running' | 'done' | 'cancelled' | 'error'
   lastError?: string
   /** 仅结束事件（done / error / cancelled）携带；无失败或空章时为 []。running 省略。 */
   failedChapters?: FailedChapterItem[]
@@ -272,7 +272,14 @@ export interface BrowseState {
   canGoBack: boolean
   canGoForward: boolean
   loading: boolean
+  zoom: number
+  previousChapter?: BrowseChapterLink
+  nextChapter?: BrowseChapterLink
 }
+
+export interface BrowseChapterLink { title: string; url: string }
+export interface BrowseReadingPage { url: string; title: string; body: string }
+export interface BrowseFindResult { matches: number; activeMatch: number }
 
 export type ReaderTheme = 'paper' | 'sepia' | 'gray' | 'night'
 export type ReaderFontFamily = 'serif' | 'system' | 'mono'
@@ -379,6 +386,8 @@ export interface SiteRule {
   author?: string
   catalog?: string
   body?: string
+  previousChapter?: string
+  nextChapter?: string
   /** 缺省开启；仅影响内置浏览页的广告元素显示。 */
   adFilterEnabled?: boolean
   /** 每行一个额外的广告元素 CSS 选择器。 */
@@ -608,7 +617,7 @@ export const DEFAULT_TTS_PREFS: TtsPrefs = {
 }
 
 export const DEFAULT_APPEARANCE_PREFS: AppearancePrefs = {
-  skin: 'paper',
+  skin: 'white',
 }
 
 export const AI_PROMPT_KINDS: readonly AiPromptKind[] = [

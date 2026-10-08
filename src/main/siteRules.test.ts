@@ -89,11 +89,13 @@ describe('findSiteRuleForUrl / persist', () => {
   })
 
   it('persists ad display preferences alongside extraction selectors', async () => {
-    await upsertSiteRule({ host: 'example.com', body: '#chapter', adFilterEnabled: false, adHideSelectors: '.floating-ad\n#banner' })
+    await upsertSiteRule({ host: 'example.com', body: '#chapter', previousChapter: '.prev a', nextChapter: '.next a', adFilterEnabled: false, adHideSelectors: '.floating-ad\n#banner' })
     const found = await findSiteRuleForUrl('https://www.example.com/chapter/1')
     expect(found).toMatchObject({
       host: 'example.com',
       body: '#chapter',
+      previousChapter: '.prev a',
+      nextChapter: '.next a',
       adFilterEnabled: false,
       adHideSelectors: '.floating-ad\n#banner',
     })

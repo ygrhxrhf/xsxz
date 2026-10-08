@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 describe('Reader visual surface contract', () => {
   it('uses semantic reader surfaces for the toolbar, panels, progress, and interaction states', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
-    for (const token of ['--r-surface: var(--surface-2)', '--r-hover: color-mix(in srgb, var(--reader-paper-text) 12%, transparent)', '--r-focus: var(--focus)']) {
+    for (const token of ['--r-surface: var(--surface-2)', '--r-hover: var(--hover)', '--r-focus: var(--focus)']) {
       expect(source).toContain(token)
     }
     expect(source).toContain('background: color-mix(in srgb, var(--r-bar-bg) 94%, var(--r-surface))')

@@ -24,11 +24,11 @@ import {
   AI_PROMPT_KINDS,
   DEFAULT_AI_PREFS,
   DEFAULT_APPEARANCE_PREFS,
-  DEFAULT_LIBRARY_PATH,
   DEFAULT_READER_PREFS,
   DEFAULT_TTS_PREFS,
   DEFAULT_AI_PLACEHOLDER,
 } from '../shared/types'
+import { defaultLibraryPath } from './libraryPath'
 
 const SKINS: readonly Skin[] = ['paper', 'white', 'night']
 const DOWNLOAD_PACES: readonly DownloadPace[] = ['slow', 'standard', 'fast']
@@ -43,7 +43,7 @@ const AI_RECAP_LENGTHS: readonly AiPrefs['recapLength'][] = ['short', 'standard'
 const AI_PROMPT_MODES: readonly AiPrefs['promptMode'][AiPromptKind][] = ['builtin', 'custom']
 const LEGACY_DEEPSEEK_MODELS = new Set(['deepseek-chat', 'deepseek-reasoner'])
 
-/** paper/white/night 原样保留；旧 sakura、minimal 与缺省、非字符串、未知值一律回退 paper。 */
+/** 已保存的三种外观原样保留；旧 sakura、minimal 回退暖纸，其余无效值使用新用户默认外观。 */
 export function normalizeSkin(value: unknown): Skin {
   if (value === 'sakura' || value === 'minimal') return 'paper'
   return SKINS.includes(value as Skin) ? (value as Skin) : DEFAULT_APPEARANCE_PREFS.skin
@@ -214,6 +214,29 @@ async function saveRaw(raw: Record<string, unknown>): Promise<void> {
   cache = raw
 }
 
+/** 密钥库不可用时 Electron 只给一句英文内部错误，这里换成能照做的提示。 */
+function requireEncryptionAvailable(): void {
+  let available = false
+  try {
+    available = safeStorage.isEncryptionAvailable()
+  } catch {
+    available = false
+  }
+  if (!available) {
+    throw new Error('无法加密保存 API Key：系统密钥库不可用。Windows 请确认已登录当前账户且凭据管理器可用；Linux 请先安装并解锁 libsecret 钥匙串。')
+  }
+}
+
+/** 「有密文」不等于「能用」：换机或密钥库重置后解密会失败，此时应显示为未配置。 */
+function hasUsableEncryptedKey(ciphertext: unknown): boolean {
+  if (typeof ciphertext !== 'string' || !ciphertext) return false
+  try {
+    return safeStorage.decryptString(Buffer.from(ciphertext, 'base64')).length > 0
+  } catch {
+    return false
+  }
+}
+
 export async function getApiKey(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.apiKeyEnc !== 'string' || !raw.apiKeyEnc) return ''
@@ -233,10 +256,10 @@ export async function getSettings(): Promise<Settings> {
     libraryPath:
       typeof raw.libraryPath === 'string' && raw.libraryPath.trim()
         ? raw.libraryPath.trim()
-        : DEFAULT_LIBRARY_PATH,
+        : defaultLibraryPath(),
     baseUrl: typeof raw.baseUrl === 'string' ? raw.baseUrl : DEFAULT_AI_PLACEHOLDER.baseUrl,
     model: typeof raw.model === 'string' ? raw.model : DEFAULT_AI_PLACEHOLDER.model,
-    apiKeyConfigured: typeof raw.apiKeyEnc === 'string' && raw.apiKeyEnc.length > 0,
+    apiKeyConfigured: hasUsableEncryptedKey(raw.apiKeyEnc),
     reader: normalizeReaderPrefs(raw.reader),
     tts: {
       rate: readFiniteClamped(tts.rate, 0.5, 2, DEFAULT_TTS_PREFS.rate),
@@ -247,7 +270,7 @@ export async function getSettings(): Promise<Settings> {
       onlineEndpoint: typeof tts.onlineEndpoint === 'string' ? tts.onlineEndpoint : '',
       onlineModel: typeof tts.onlineModel === 'string' ? tts.onlineModel : '',
       onlineVoice: typeof tts.onlineVoice === 'string' ? tts.onlineVoice : '',
-      onlineKeyConfigured: typeof raw.ttsApiKeyEnc === 'string' && raw.ttsApiKeyEnc.length > 0,
+      onlineKeyConfigured: hasUsableEncryptedKey(raw.ttsApiKeyEnc),
     },
     appearance: {
       skin: normalizeSkin(appearance.skin),
@@ -280,12 +303,16 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
   const raw = { ...await loadRaw() }
   const patch = normalizeSettingsUpdatePayload(update) as Record<string, unknown>
   if (typeof patch.libraryPath === 'string') {
-    raw.libraryPath = patch.libraryPath.trim() || DEFAULT_LIBRARY_PATH
+    const trimmed = patch.libraryPath.trim()
+    // 清空时不写死某个系统的默认目录，交给 getSettings 按当前系统解析
+    if (trimmed) raw.libraryPath = trimmed
+    else delete raw.libraryPath
   }
   if (typeof patch.baseUrl === 'string') raw.baseUrl = patch.baseUrl
   if (typeof patch.model === 'string') raw.model = patch.model
   if (typeof patch.apiKey === 'string') {
     if (patch.apiKey) {
+      requireEncryptionAvailable()
       raw.apiKeyEnc = safeStorage.encryptString(patch.apiKey).toString('base64')
     } else {
       delete raw.apiKeyEnc
@@ -306,8 +333,10 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
     raw.tts = next
   }
   if (typeof patch.ttsApiKey === 'string') {
-    if (patch.ttsApiKey) raw.ttsApiKeyEnc = safeStorage.encryptString(patch.ttsApiKey).toString('base64')
-    else delete raw.ttsApiKeyEnc
+    if (patch.ttsApiKey) {
+      requireEncryptionAvailable()
+      raw.ttsApiKeyEnc = safeStorage.encryptString(patch.ttsApiKey).toString('base64')
+    } else delete raw.ttsApiKeyEnc
   }
   if (patch.appearance) {
     const next = { ...readRecord(raw.appearance), ...readRecord(patch.appearance) }

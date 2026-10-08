@@ -154,7 +154,7 @@ describe('Reader adjacent prefetch contract', () => {
     const openBlock = source.slice(openStart, openEnd)
     expect(openBlock).toContain('closeSelectionTools()')
     expect(openBlock).toContain('ttsStop(continueListening)')
-    expect(openBlock).toContain('saveProgress()')
+    expect(openBlock).toContain('readerProgress.writeNow()')
     expect(openBlock.indexOf('closeSelectionTools()')).toBeLessThan(openBlock.indexOf('const cached'))
     expect(openBlock).toContain('cached')
     expect(openBlock).toContain('window.api.library.readChapter(book.value.id, ch.id)')

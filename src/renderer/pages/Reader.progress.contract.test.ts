@@ -49,4 +49,34 @@ describe('Reader dual progress bars', () => {
     expect(track).not.toContain('window.api')
     expect(track).not.toContain('ipcRenderer')
   })
+
+  it('阅读进度只有一个写入口，排期不再各写一遍', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    // 手搓的滚动定时器不能再出现
+    expect(source).not.toContain('scrollTimer')
+    expect(source).not.toMatch(/setTimeout\(\s*saveProgress/)
+    // 落盘只有 captureProgressWrite 里的一处
+    expect(source.match(/window\.api\.library\.setProgress/g)).toHaveLength(1)
+    const captureStart = source.indexOf('function captureProgressWrite')
+    const captureEnd = source.indexOf('function currentChapterRatio', captureStart)
+    const capture = source.slice(captureStart, captureEnd)
+    expect(capture).toContain('window.api.library.setProgress')
+    expect(capture).toContain('res.ok === false')
+    expect(source).toContain('createReaderProgressWriter(captureProgressWrite)')
+
+    const scrollStart = source.indexOf('function onScroll')
+    const scrollBody = source.slice(scrollStart, source.indexOf('function goBrowseForChapter', scrollStart))
+    expect(scrollBody).toContain('readerProgress.schedule()')
+    expect(scrollBody).not.toContain('setTimeout')
+
+    // 换章：先把要走的那一章抓走并落盘，再切 currentChapter
+    const openStart = source.indexOf('async function openChapter')
+    const openEnd = source.indexOf('function paragraphTextNodes', openStart)
+    const openBlock = source.slice(openStart, openEnd)
+    expect(openBlock.indexOf('readerProgress.writeNow()')).toBeGreaterThan(-1)
+    expect(openBlock.indexOf('readerProgress.writeNow()')).toBeLessThan(openBlock.indexOf('currentChapter.value = { ...ch'))
+    for (const site of ['void readerProgress.writeNow()', 'readerProgress.writeNow().then(']) {
+      expect(source).toContain(site)
+    }
+  })
 })

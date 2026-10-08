@@ -54,10 +54,14 @@ function toStoredRule(rule: SiteRule, host: string): SiteRule {
   const author = asSelector(rule.author)
   const catalog = asSelector(rule.catalog)
   const body = asSelector(rule.body)
+  const previousChapter = asSelector(rule.previousChapter)
+  const nextChapter = asSelector(rule.nextChapter)
   if (title !== undefined) stored.title = title
   if (author !== undefined) stored.author = author
   if (catalog !== undefined) stored.catalog = catalog
   if (body !== undefined) stored.body = body
+  if (previousChapter !== undefined) stored.previousChapter = previousChapter
+  if (nextChapter !== undefined) stored.nextChapter = nextChapter
   if (typeof rule.adFilterEnabled === 'boolean') stored.adFilterEnabled = rule.adFilterEnabled
   if (typeof rule.adHideSelectors === 'string') stored.adHideSelectors = rule.adHideSelectors
   return stored
@@ -84,6 +88,8 @@ function parseFile(raw: unknown): SiteRulesFile {
       author: asSelector((item as SiteRule).author),
       catalog: asSelector((item as SiteRule).catalog),
       body: asSelector((item as SiteRule).body),
+      previousChapter: asSelector((item as SiteRule).previousChapter),
+      nextChapter: asSelector((item as SiteRule).nextChapter),
       adFilterEnabled: typeof (item as SiteRule).adFilterEnabled === 'boolean'
         ? (item as SiteRule).adFilterEnabled : undefined,
       adHideSelectors: asSelector((item as SiteRule).adHideSelectors),

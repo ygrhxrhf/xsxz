@@ -96,6 +96,7 @@ export function filterCatalogChapters<T extends Pick<ChapterMeta, 'title'>>(chap
 
 export function failAdvice(code?: FailCode): string {
   if (code === 'NeedLogin') return '请先到浏览页登录该站，再重试失败章'
+  if (code === 'Paywall') return '本章要付费或会员，请到浏览页解锁后重试该章'
   if (code === 'Intercepted') return '页面被拦截，请先到浏览页打开该站后再重试'
   if (code === 'NavFailed') return '地址加载失败，可稍后重试这一章'
   if (code === 'BodyEmpty') return '正文过短，可重试或为该站填写正文选择器'
