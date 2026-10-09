@@ -8,6 +8,8 @@ import type { AiQueue } from './aiScheduler'
 import { atomicWriteText, bookDir, getBook, listBooks, readChapter, recordAiUsage } from './library'
 import { getApiKey, getSettings, assertTrustedAiEndpoint, resolveEffectiveAiProvider } from './settings'
 import { isLibraryRestoring } from './libraryMaintenance'
+import { estimateAiTokens } from './aiBudget'
+import { monthlyBudgetStatus, reserveAutomaticTokens } from './aiMonthlyBudget'
 
 interface OverviewFile {
   version: 1
@@ -161,6 +163,7 @@ export class BookOverviewService {
       return { status: 'failed', text: file.text || undefined, message: file.error }
     }
     if (!settings.ai?.autoBookOverview) return { status: file.text ? 'stale' : 'off', text: file.text || undefined, message: file.text ? '章节已变化；开启自动生成后更新' : '自动概览未开启' }
+    if ((await monthlyBudgetStatus(item.id, settings.ai.autoMonthlyTokenLimit)).remainingTokens < 1_000) return { status: 'waiting', text: file.text || undefined, message: '本书本月自动 AI 额度已到上限' }
     if (!settings.apiKeyConfigured) return { status: 'waiting', text: file.text || undefined, message: '等待配置 API Key' }
     try { assertTrustedAiEndpoint(settings.baseUrl, settings.ai ?? DEFAULT_AI_PREFS) }
     catch { return { status: 'waiting', text: file.text || undefined, message: '等待信任 AI 服务地址' } }
@@ -213,12 +216,20 @@ export class BookOverviewService {
       // 全书概览是自动任务：只能在后台车道取活，交互车道必须完全空闲。
       const result = await this.queue.runExclusive(async (signal, jobId) => {
         this.aiJobId = jobId
+        let reservation: Awaited<ReturnType<typeof reserveAutomaticTokens>> | null = null
+        let settled = false
         try {
+          reservation = await reserveAutomaticTokens(bookId, estimateAiTokens(prompt) + 900, settings.ai!.autoMonthlyTokenLimit)
           const response = await runAiTaskCompletion(config, [{ role: 'user', content: prompt }], { task: 'recap', recapLength: 'standard', signal })
+          await reservation.settle(response.usage)
+          settled = true
           await recordAiUsage(bookId, response.usage).catch(() => {})
           if (response.truncated || !response.text.trim()) throw new Error('模型输出不完整')
           return response.text.trim()
-        } finally { this.aiJobId = '' }
+        } finally {
+          if (reservation && !settled) await reservation.settle().catch(() => {})
+          this.aiJobId = ''
+        }
       }, { lane: 'background', cls: 'overview', bookId })
       if (result.ok) return result.value
       await new Promise((resolve) => setTimeout(resolve, 1_000))
@@ -261,7 +272,7 @@ export class BookOverviewService {
       await saveOverview(bookId, file)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (message === '自动生成已关闭' || message === '自动生成已停止' || message === '书库正在恢复' || message === '章节已变化，等待重新生成' || !(await getSettings()).ai?.autoBookOverview) return
+      if (message === '自动生成已关闭' || message === '自动生成已停止' || message === '书库正在恢复' || message === '章节已变化，等待重新生成' || message.includes('本月自动 AI 额度') || !(await getSettings()).ai?.autoBookOverview) return
       file.error = message
       if (source) file.failedSignature = signatureKey(source)
       await saveOverview(bookId, file).catch(() => {})

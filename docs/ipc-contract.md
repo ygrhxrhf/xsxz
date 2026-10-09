@@ -72,6 +72,9 @@
 | `library.delete` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.import` | invoke | `{ filePath: string }` | `{ ok: true; bookId: string } \| { ok: false; message: string }` |
 | `library.setProgress` | invoke | `{ bookId: string; progress: ReadingProgress }` | `{ ok: true }` |
+| `library.getReadFrontier` | invoke | `{ bookId: string }` | `{ ok: true; frontier: ReadFrontier } \| { ok: false; message: string }` |
+| `library.markReadFrontier` | invoke | `{ bookId: string; chapterId: string; paragraphIndex: number; characterOffset: number }` | `{ ok: true; position: ReadFrontierPosition } \| { ok: false; message: string }` |
+| `library.confirmLegacyReadRange` | invoke | `{ bookId: string }` | `{ ok: true; frontier: ReadFrontier } \| { ok: false; message: string }` |
 | `library.updateMeta` | invoke | `{ bookId: string; title: string; author: string; tags: string[] }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.setCover` | invoke | `{ bookId: string; sourcePath: string }` | `{ ok: true; coverPath: string } \| { ok: false; message: string }` |
 | `library.pickCoverFile` | invoke | 无 | `string \| null` |
@@ -84,7 +87,9 @@
 
 `library.searchInBook` 只扫本书 `ready` 章节正文，大小写不敏感，按章节顺序返回命中（每章一条：次数、首个命中的摘录与段落下标）。纯本机操作。
 
-`library.audit` 只报告疑似短章、重复正文/链接及广告或拦截残页，不自动改章状态。`library.repairChapterBody` 保存非空纯文本，首次编辑前的正文留在 `bodyRaw`，并把该章设为 ready。`library.migrate` 仅接受空目标目录，在目标同级临时目录复制并逐文件校验；切换失败仍使用原书库，成功后原目录保留。搬迁与恢复共用书库维护锁。
+`library.audit` 只报告疑似短章、截断、重复正文/链接及广告或拦截残页，不自动改章状态。广告杂质且正文足够长时可预览 AI 清理；逐章确认才应用，原文保留在 `bodyRaw`。截断、登录墙、付费页和重复正文只引导核对、重下或手修。`library.repairChapterBody` 保存非空纯文本，首次编辑前的正文留在 `bodyRaw`，并把该章设为 ready。`library.migrate` 仅接受空目标目录，在目标同级临时目录复制并逐文件校验；切换失败仍使用原书库，成功后原目录保留。搬迁与恢复共用书库维护锁。
+
+`library.markReadFrontier` 由阅读器按视窗底部段落及字符上报，主进程验证位置并单调保存；跳章不补记跳过的章节。旧进度只作为提案，调用 `library.confirmLegacyReadRange` 后才用于 AI 取材。正文变化时旧位置失效。
 
 `Book.tags` / `BookListItem.tags` 始终是 `string[]`，缺省 `[]`。磁盘上旧书没有 `tags` 时按空数组读取，不得因此失败。`BookListItem.coverPath` 可选，有封面时给出相对书目录的路径。`library.updateMeta` 只改书名、作者和标签；`library.setCover` 用本机图片写入封面并返回 `coverPath`。`library.pickCoverFile` 打开本机选图对话框，取消时返回 `null`。
 
@@ -281,6 +286,12 @@
 | `ai.followSet` | invoke | `{ bookId: string; mode: 'manual' \| 'ask' \| 'auto'; confirmOverBudget?: boolean }` | `AiFollowStart \| { ok: false; message: string }` |
 | `ai.followRetry` | invoke | `{ bookId: string }` | `{ ok: true; coverage: AiFollowCoverage } \| { ok: false; message: string }` |
 | `ai.getUsage` | invoke | `{ bookId: string }` | `{ ok: true; usage: AiBookUsage } \| { ok: false; message: string }` |
+| `ai.semanticIndexStatus` | invoke | `{ bookId: string }` | `{ ok: true; status: { enabled: boolean; indexed: number; total: number; message: string } } \| { ok: false; message: string }` |
+| `ai.semanticIndexSet` | invoke | `{ bookId: string; enabled: boolean }` | 同上 |
+| `ai.findScenes` | invoke | `{ bookId: string; question: string }` | `{ ok: true; hits: AiCitation[]; mode: 'semantic' \| 'local'; message: string } \| { ok: false; message: string }` |
+| `ai.resumeCard` | invoke | `{ bookId: string }` | `{ ok: true; view: AiResumeCardView } \| { ok: false; message: string }` |
+| `ai.generateResumeCard` | invoke | `{ bookId: string; confirmOverBudget?: boolean }` | `{ ok: true; card: AiResumeCard; budget: AiBudgetEstimate } \| { ok: false; message: string }` |
+| `ai.timeline` | invoke | `{ bookId: string }` | `{ ok: true; timeline: AiTimelineView } \| { ok: false; message: string }` |
 | `ai.retrySave` | invoke | `{ saveToken: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.cancel` | invoke | `{ jobId?: string }` | `{ ok: true }` |
 | `ai.chunk` | 主→渲染 | — | `AiChunkEvent` |
@@ -293,6 +304,10 @@
 主进程 AI 队列分 `interactive`（用户点开）与 `background`（全书概览等自动任务）两条车道，各车道一次只跑一个任务，因此最多两个任务在飞；后台车道取活前要求交互车道完全空闲，排队中的用户任务同样算占用。`start` 与独占频道一律只排队不拒绝，不再因为「已有任务」返回忙；`{ ok:false, message:'请先停止当前生成' }` 只剩「同一本书的记忆族任务（`memory` / `follow`）已在跑或已排队」这一种触发场景，共用 `bookId:write` 资源的章节摘要改为排队串行。同一 `dedupeKey`（书 + 类别 + 章，证据问答再含问题原文）重复提交时复用已在跑或已排队的任务并返回同一 `jobId`，连点不再重复花额度。
 
 `ai.test` 发一条最小 chat completions 探活。401/403、429、超时、5xx 返回中文分级文案。
+
+`ai.findScenes` 在本书明确开启语义索引后，将已读原文向量与本地字面结果合并，服务失败时返回本地结果。索引按本书增量建立，缺 Key、损坏或暂停原因由状态频道显示。`ai.resumeCard` 只在上次阅读间隔至少 24 小时且附近有读完章节时提供缓存或生成入口；`ai.generateResumeCard` 由读者手动触发，来源变化时缓存过期。`ai.timeline` 读取现有记忆更新顺带记录的人物与伏笔状态，来源变化的条目隐藏并提示重建。问答 `AiDoneEvent.claims` 与聊天 v2 的 `claims` 逐条列结论和引用 ID；引用坐标经主进程校验，语义支持关系仍需读者核查。
+
+自动概览、自动整理、自动语义索引共享每书每自然月估算 tokens 上限，默认 100000。请求前预留、按服务用量结算；未报告用量或结果不明时计入预留估算。手动任务显示估算后可确认继续。token 上限不等于服务商账单金额。
 
 `AiBudgetEstimate` 统计 Unicode 字符；token 估算按中日韩字符数 ÷ 1.5、其他字符数 ÷ 4，合计乘 1.1 后向上取整，不计算金额。`ai.clean` 的完整未分批请求超过 30000 字且 `confirmOverBudget` 不为 true 时，必须在任何模型请求前返回 `confirmationRequired` 与缩减后的实际发送范围。确认后按规范化段落分批，每批仅携带目标前后各一段只读上下文；只合并模型返回的目标段。任一批失败、取消或截断时不返回可应用的 `AiCleanResult`。`ai.storySoFar` 使用同一确认门禁：只缩减已存摘要和正常记忆材料，不读取正文；确认前不得读取 Key、创建任务或联网。
 
@@ -331,14 +346,14 @@ window.api = {
   dialog: { openFile, openDirectory, openZip },
   tts: { getPosition, setPosition, synthesize, cancel },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, resume, zoom, readingPage, setReadingMode, chapter, find, stopFind, hide, onFindResult, onShortcut, onUrl, onState },
-  library: { list, get, readChapter, delete, import, setProgress, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, listTrash, restoreTrash, purgeTrash },
+  library: { list, get, readChapter, delete, import, setProgress, getReadFrontier, markReadFrontier, confirmLegacyReadRange, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, listTrash, restoreTrash, purgeTrash },
   bookOverview: { retry, onChanged },
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   settings: { get, set },
   backup: { create, restore, runAuto },
   annotations: { list, add, update, remove },
   siteRules: { list, preview, upsert, remove },
-  ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, translateStream, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, retrySave, cancel, onChunk, onStage, onBudget, onDone },
+  ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, translateStream, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
 }
 ```
 

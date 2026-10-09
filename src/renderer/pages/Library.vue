@@ -86,6 +86,9 @@ const repairBody = ref('')
 const repairUrl = ref('')
 const repairCanUndo = ref(false)
 const repairSaving = ref(false)
+const qualityCleanPreview = ref('')
+const qualityCleanLoading = ref(false)
+const qualityCleanConfirmation = ref('')
 let unsubProgress: (() => void) | null = null
 let unsubBlocked: (() => void) | null = null
 let unsubOverview: (() => void) | null = null
@@ -209,9 +212,45 @@ async function openRepair(issue: QualityIssue) {
   ])
   repairIssue.value = issue
   repairBody.value = chapter.chapter?.body || ''
+  qualityCleanPreview.value = ''
+  qualityCleanConfirmation.value = ''
   repairCanUndo.value = Boolean(chapter.chapter?.bodyRaw && chapter.chapter.bodyRaw !== chapter.chapter.body)
   repairUrl.value = book.book?.chapters.find((item) => item.id === issue.chapterId)?.url || ''
   repairOpen.value = true
+}
+
+async function previewQualityClean(confirm = false) {
+  const bookId = qualityReport.value?.bookId
+  const issue = repairIssue.value
+  if (!bookId || !issue || issue.kind !== 'suspectedAd' || repairBody.value.replace(/\s+/g, '').length < 500) return
+  qualityCleanLoading.value = true
+  try {
+    const result = await window.api.ai.clean(bookId, issue.chapterId, confirm)
+    if (result.ok) {
+      qualityCleanPreview.value = result.result.cleaned
+      qualityCleanConfirmation.value = ''
+    } else if ('confirmationRequired' in result && result.confirmationRequired) {
+      qualityCleanConfirmation.value = `${result.message} 约 ${result.budget.estimatedTokens} tokens（估算）。`
+    } else {
+      message.error(result.message)
+    }
+  } finally { qualityCleanLoading.value = false }
+}
+
+async function applyQualityClean() {
+  const bookId = qualityReport.value?.bookId
+  const issue = repairIssue.value
+  if (!bookId || !issue || !qualityCleanPreview.value.trim()) return
+  repairSaving.value = true
+  try {
+    const result = await window.api.library.updateChapterBody(bookId, issue.chapterId, qualityCleanPreview.value)
+    if (result?.ok === false) { message.error(result.message || '应用失败'); return }
+    repairBody.value = qualityCleanPreview.value
+    qualityCleanPreview.value = ''
+    repairCanUndo.value = true
+    await checkQuality(bookId, false)
+    message.success('已应用清理结果；可恢复原始正文')
+  } finally { repairSaving.value = false }
 }
 
 async function saveRepairBody() {
@@ -986,6 +1025,16 @@ onUnmounted(() => {
         <n-button :disabled="repairSaving || !repairUrl" :loading="repairSaving" @click="redownloadRepairChapter">按此链接重新提取</n-button>
         <label>纯文本正文</label>
         <n-input v-model:value="repairBody" type="textarea" :rows="12" />
+        <template v-if="repairIssue?.kind === 'suspectedAd' && repairBody.replace(/\s+/g, '').length >= 500">
+          <n-button :loading="qualityCleanLoading" @click="previewQualityClean(false)">AI 清正文预览</n-button>
+          <p v-if="qualityCleanConfirmation">{{ qualityCleanConfirmation }} <n-button size="tiny" @click="previewQualityClean(true)">确认生成</n-button></p>
+          <template v-if="qualityCleanPreview">
+            <label>清理结果预览 · 请逐段对比原文，确认没有删掉剧情</label>
+            <n-input :value="qualityCleanPreview" type="textarea" :rows="12" readonly />
+            <n-button type="primary" :disabled="repairSaving" @click="applyQualityClean">应用预览结果</n-button>
+          </template>
+        </template>
+        <p v-else-if="repairIssue && ['suspectedWall', 'duplicateBody', 'duplicateUrl', 'truncated', 'short'].includes(repairIssue.kind)">此类问题请核对、重新提取或手动修复；AI 不补写缺失剧情。</p>
         <n-space justify="end">
           <n-button v-if="repairCanUndo" :disabled="repairSaving" @click="undoRepairBody">恢复原始正文</n-button>
           <n-button type="primary" :disabled="!repairBody.trim()" :loading="repairSaving" @click="saveRepairBody">保存正文</n-button>

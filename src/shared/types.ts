@@ -37,6 +37,21 @@ export interface ReadingProgress {
   updatedAt: string
 }
 
+/** 已显示到视窗底部的正文位置；正文变化后旧记录不能用于 AI 取材。 */
+export interface ReadFrontierPosition {
+  paragraphIndex: number
+  characterOffset: number
+  bodyHash: string
+  updatedAt: string
+}
+
+export interface ReadFrontier {
+  chapters: Record<string, ReadFrontierPosition>
+  legacyConfirmed: boolean
+  legacyProposal: ReadingProgress | null
+  sessions: Array<{ startedAt: string; lastActivityAt: string; fromChapterId: string; toChapterId: string }>
+}
+
 /** 每本书独立的听书续播位置。 */
 export interface TtsPosition {
   chapterId: string
@@ -183,7 +198,7 @@ export interface QualityIssue {
   chapterId: string
   chapterIndex: number
   chapterTitle: string
-  kind: 'short' | 'duplicateBody' | 'duplicateUrl' | 'suspectedAd' | 'suspectedWall'
+  kind: 'short' | 'truncated' | 'duplicateBody' | 'duplicateUrl' | 'suspectedAd' | 'suspectedWall'
   reason: string
 }
 
@@ -392,6 +407,8 @@ export interface AiPrefs {
   autoReadingFollow: boolean
   /** 单次追剧/记忆更新最多处理的章节数；记忆仍按每 5 章一批送模型。 */
   followMaxChaptersPerRun: number
+  /** 每书每自然月的自动任务估算 token 门禁；不代表服务商账单金额。 */
+  autoMonthlyTokenLimit: number
   promptMode: Record<AiPromptKind, AiPromptMode>
   customPrompts: Partial<Record<AiPromptKind, string>>
   tierSense: TierSensePrefs
@@ -403,6 +420,8 @@ export interface Settings {
   model: string
   /** 渲染进程只拿是否已配置，不回传明文 */
   apiKeyConfigured: boolean
+  /** 主进程始终补齐；可选仅为旧调用方与测试兼容。 */
+  embedding?: { baseUrl: string; model: string; keyConfigured: boolean }
   /** TierSense API Key 是否已配置；渲染进程只拿布尔值。 */
   tierSenseKeyConfigured: boolean
   reader: ReaderPrefs
@@ -422,6 +441,9 @@ export interface SettingsUpdate {
   model?: string
   /** 空字符串表示清除 */
   apiKey?: string
+  embedding?: { baseUrl?: string; model?: string }
+  /** 空字符串清除独立的向量服务密钥。 */
+  embeddingApiKey?: string
   reader?: Partial<ReaderPrefs>
   tts?: Partial<TtsPrefs>
   /** 空字符串清除在线语音密钥。 */
@@ -526,6 +548,40 @@ export interface AiMemoryUpdateResult {
   remainingChapters: number
 }
 
+export interface AiResumeCard {
+  generatedAt: string
+  sessionEndedAt: string
+  sourceHash: string
+  chapters: Array<{ id: string; title: string }>
+  changes: Array<{ text: string; sources: AiCitation[] }>
+  conflicts: Array<{ text: string; sources: AiCitation[] }>
+  questions: Array<{ text: string; sources: AiCitation[] }>
+}
+
+export interface AiResumeCardView {
+  available: boolean
+  reason: string
+  stale: boolean
+  card: AiResumeCard | null
+}
+
+export interface AiTimelineEntry {
+  id: string
+  kind: 'character' | 'foreshadow'
+  name: string
+  phase: '出现' | '变化' | '当前状态'
+  text: string
+  uncertain: boolean
+  userEdited: boolean
+  source: AiCitation
+}
+
+export interface AiTimelineView {
+  entries: AiTimelineEntry[]
+  stale: boolean
+  message: string
+}
+
 export interface AiUsage {
   inputTokens?: number
   outputTokens?: number
@@ -627,6 +683,7 @@ export interface AiEvidenceChatMessage {
   role: 'user' | 'assistant'
   content: string
   citations?: AiCitation[]
+  claims?: Array<{ text: string; citationIds: string[] }>
   uptoChapterId?: string
   stopped?: boolean
 }
@@ -701,6 +758,7 @@ export type AiDoneEvent =
       stopped?: boolean
       /** 证据问答终态的白名单引用；保存失败时也必须保留。 */
       citations?: AiCitation[]
+      claims?: Array<{ text: string; citationIds: string[] }>
       /** 本次回答严格夹紧的已读截止。 */
       uptoChapterId?: string
       /** 记忆更新/重建的结构化结果与处理统计。 */
@@ -782,6 +840,7 @@ export const DEFAULT_AI_PREFS: AiPrefs = {
   autoBookOverview: false,
   autoReadingFollow: false,
   followMaxChaptersPerRun: 12,
+  autoMonthlyTokenLimit: 100_000,
   promptMode: {
     clean: 'builtin',
     translate: 'builtin',

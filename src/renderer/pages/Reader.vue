@@ -15,6 +15,8 @@ import type {
   AiMemoryBase,
   AiMemoryCharacter,
   AiMemoryFile,
+  AiResumeCardView,
+  AiTimelineView,
   AiUsage,
   Book,
   ChapterMeta,
@@ -100,6 +102,10 @@ const chapterError = ref('')
 const hasBodyRaw = ref(false)
 const chapterLoading = ref(false)
 const contentRef = ref<HTMLElement | null>(null)
+const legacyReadProposal = ref<ReadingProgress | null>(null)
+const resumeCardView = ref<AiResumeCardView | null>(null)
+const resumeCardLoading = ref(false)
+const resumeCardWarning = ref('')
 const showDrawer = ref(false)
 const catalogItemRefs = new Map<string, HTMLElement>()
 
@@ -153,6 +159,7 @@ const recapStopping = ref(false)
 const recapStarting = ref(false)
 const recapLength = ref<'short' | 'standard' | 'detailed'>('standard')
 const memoryData = ref<AiMemoryFile | null>(null)
+const timelineData = ref<AiTimelineView | null>(null)
 const memorySourceJumping = ref(false)
 const memoryJobId = ref('')
 const memoryJobKind = ref<'update' | 'rebuild' | 'fromSource' | ''>('')
@@ -214,8 +221,15 @@ const follow = ref<AiFollowCoverage | null>(null)
 const readingAiMode = computed<AiFollowMode>(() => follow.value?.mode ?? 'manual')
 const materialCoverage = ref<AiMaterialCoverage | null>(null)
 const bookUsage = ref<AiBookUsage | null>(null)
+const autoBudget = ref<{ month: string; usedTokens: number; reservedTokens: number; limitTokens: number; remainingTokens: number } | null>(null)
+const semanticState = ref<{ enabled: boolean; indexed: number; total: number; message: string } | null>(null)
+const sceneQuestion = ref('')
+const sceneHits = ref<AiCitation[]>([])
+const sceneMessage = ref('')
+const sceneSearching = ref(false)
 const aliasDrafts = ref<Record<string, string>>({})
 const summaryDrafts = ref<Record<string, string>>({})
+const memoryQuery = ref('')
 const correctingAliasId = ref('')
 const correctingSummaryId = ref('')
 /** 首次切到 auto 前的预算确认：确认后才把用户点的那个模式写给主进程。 */
@@ -770,6 +784,32 @@ const wordbookTrimmed = computed(() => wordbookHighlights.value.length > wordboo
 const wordbookPeople = computed(() => (memoryData.value?.characters ?? [])
   .filter((item) => item.accuracy === 'normal'))
 
+/**
+ * 记忆搜索完全在本地完成：已有 AI 记忆可能很长，先让读者能按名字、别名、关系和事件找到东西，
+ * 不为一次筛选再调用模型，也不会接触未读正文。
+ */
+const normalizedMemoryQuery = computed(() => memoryQuery.value.trim().toLocaleLowerCase())
+function memoryMatches(parts: Array<string | undefined>): boolean {
+  const query = normalizedMemoryQuery.value
+  return !query || parts.some((part) => part?.toLocaleLowerCase().includes(query))
+}
+const visibleMemoryCharacters = computed(() => (memoryData.value?.characters ?? []).filter((item) => memoryMatches([
+  item.name, item.aliases.join(' '), item.role, item.status, item.summary,
+])))
+const visibleMemoryRelations = computed(() => (memoryData.value?.relations ?? []).filter((item) => memoryMatches([
+  item.from, item.to, item.relation, item.status, item.summary,
+])))
+const visibleMemoryForeshadows = computed(() => (memoryData.value?.foreshadows ?? []).filter((item) => memoryMatches([
+  item.desc, item.status, item.summary,
+])))
+const visibleMemoryEvents = computed(() => (memoryData.value?.events ?? []).filter((item) => memoryMatches([
+  item.title, item.participants.join(' '), item.result, item.summary,
+])))
+const visibleMemoryCount = computed(() => visibleMemoryCharacters.value.length
+  + visibleMemoryRelations.value.length
+  + visibleMemoryForeshadows.value.length
+  + visibleMemoryEvents.value.length)
+
 async function jumpToAnnotation(a: Annotation) {
   if (!book.value) return
   const ch = chapters.value.find((c) => c.id === a.chapterId)
@@ -1231,6 +1271,9 @@ async function loadBook(bookId: string) {
   const res = await window.api.library.get(bookId)
   if (res.book) {
     book.value = res.book
+    const frontierResult = await window.api.library.getReadFrontier?.(bookId)
+    legacyReadProposal.value = frontierResult?.ok ? frontierResult.frontier.legacyProposal : null
+    void loadResumeCard()
     ttsSavedPosition.value = await (window.api.tts?.getPosition?.(bookId) ?? Promise.resolve(null)).catch(() => null)
     // 追剧状态是主进程的真源：开书就拉一次，界面才知道该显示哪种模式、排了几章。
     void loadAssistantMaterial()
@@ -1265,7 +1308,7 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
     currentChapter.value.status === 'ready' && contentRef.value
     ? currentChapterRatio(contentRef.value)
     : 0
-  const finishedChapter = currentChapter.value && finishedRatio >= 0.9
+  const finishedChapter = currentChapter.value && finishedRatio >= 0.999
     ? { bookId: openingBookId, chapterId: currentChapter.value.id, ratio: finishedRatio }
     : null
   chapterPrefetch.beginNavigation()
@@ -1379,6 +1422,44 @@ function paragraphAnchor(): Pick<ReadingProgress, 'paragraphIndex' | 'paragraphO
   return { paragraphIndex: index, paragraphOffset: low }
 }
 
+/** 已读上界取视窗底部；排期时固定坐标，不能在换章后重读 DOM。 */
+function visibleReadEnd(): { paragraphIndex: number; characterOffset: number } | null {
+  const pane = contentRef.value
+  if (!pane || !chapterReady.value) return null
+  const paragraphs = pane.querySelectorAll<HTMLElement>('[data-p]')
+  if (!paragraphs.length) return null
+  if (renderedCount.value === paras.value.length && pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2) {
+    const finalIndex = paras.value.length - 1
+    if (finalIndex >= 0) return { paragraphIndex: finalIndex, characterOffset: paras.value[finalIndex]!.length }
+  }
+  const bottom = pane.getBoundingClientRect().bottom - 4
+  let visible: HTMLElement | null = null
+  for (const paragraph of paragraphs) {
+    if (paragraph.getBoundingClientRect().top < bottom) visible = paragraph
+    else break
+  }
+  if (!visible) return null
+  const index = Number(visible.dataset.p)
+  if (!Number.isSafeInteger(index) || index < 0 || index >= paras.value.length) return null
+  const nodes = paragraphTextNodes(visible)
+  const total = nodes.reduce((sum, node) => sum + node.length, 0)
+  if (!total) return null
+  if (visible.getBoundingClientRect().bottom <= bottom) return { paragraphIndex: index, characterOffset: Math.min(total, paras.value[index]!.length) }
+  let low = 0
+  let high = total
+  const range = document.createRange()
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    const point = textPoint(nodes, middle - 1)
+    if (!point) break
+    range.setStart(point.node, point.offset)
+    range.setEnd(point.node, Math.min(point.offset + 1, point.node.length))
+    if (range.getBoundingClientRect().bottom <= bottom) low = middle
+    else high = middle - 1
+  }
+  return { paragraphIndex: index, characterOffset: Math.min(low, paras.value[index]!.length) }
+}
+
 function scrollToParagraphAnchor(progress: ReadingProgress): boolean {
   const pane = contentRef.value
   const index = progress.paragraphIndex
@@ -1434,6 +1515,7 @@ function captureProgressWrite(): CapturedProgressWrite | null {
   if (!target || !chapter || !el) return null
   const scrollRatio = currentChapterRatio(el)
   const anchor = paragraphAnchor()
+  const readEnd = visibleReadEnd()
   const progress: ReadingProgress = {
     chapterId: chapter.id,
     scrollRatio,
@@ -1444,7 +1526,18 @@ function captureProgressWrite(): CapturedProgressWrite | null {
     target.progress = progress
     const res = await window.api.library.setProgress(target.id, progress)
     if (res && res.ok === false) throw new Error(res.message || '阅读进度写入失败')
+    if (readEnd) {
+      const marked = await window.api.library.markReadFrontier?.(target.id, chapter.id, readEnd.paragraphIndex, readEnd.characterOffset)
+      if (marked && !marked.ok) throw new Error(marked.message)
+    }
   }
+}
+
+async function confirmLegacyFrontier() {
+  if (!book.value) return
+  const result = await window.api.library.confirmLegacyReadRange(book.value.id)
+  if (result.ok) { legacyReadProposal.value = null; message.success('旧进度已纳入已读范围') }
+  else message.error(result.message)
 }
 
 function currentChapterRatio(el: HTMLElement): number {
@@ -1731,6 +1824,12 @@ async function loadStoredMemory() {
   }
 }
 
+async function loadTimeline() {
+  if (!book.value) return
+  const result = await window.api.ai.timeline?.(book.value.id)
+  if (result?.ok) timelineData.value = result.timeline
+}
+
 async function loadAssistantMaterial() {
   if (!book.value) return
   const [coverage, usage] = await Promise.all([
@@ -1741,7 +1840,57 @@ async function loadAssistantMaterial() {
     materialCoverage.value = coverage.coverage
     applyFollow(coverage.coverage.follow)
   }
-  if (usage.ok) bookUsage.value = usage.usage
+  if (usage.ok) { bookUsage.value = usage.usage; autoBudget.value = usage.autoBudget }
+}
+
+async function loadResumeCard() {
+  if (!book.value) return
+  const bookId = book.value.id
+  const result = await window.api.ai.resumeCard?.(bookId)
+  if (book.value?.id === bookId) resumeCardView.value = result?.ok ? result.view : null
+}
+
+async function generateResumeCard(confirm = false) {
+  if (!book.value || resumeCardLoading.value) return
+  resumeCardLoading.value = true
+  resumeCardWarning.value = ''
+  try {
+    const result = await window.api.ai.generateResumeCard(book.value.id, confirm)
+    if (result.ok) {
+      resumeCardView.value = { available: true, reason: '', stale: false, card: result.card }
+      message.success('续读卡已生成')
+    } else if (result.confirmationRequired) {
+      resumeCardWarning.value = `${result.message} 估算上限不等于服务商账单金额。`
+    } else message.error(result.message)
+  } finally { resumeCardLoading.value = false }
+}
+
+async function refreshSemanticStatus() {
+  if (!book.value) return
+  const result = await window.api.ai.semanticIndexStatus(book.value.id)
+  if (result.ok) semanticState.value = result.status
+}
+
+async function toggleSemanticIndex() {
+  if (!book.value) return
+  const result = await window.api.ai.semanticIndexSet(book.value.id, !semanticState.value?.enabled)
+  if (result.ok) semanticState.value = result.status
+  else message.error(result.message)
+}
+
+async function searchScenes() {
+  if (!book.value || !sceneQuestion.value.trim()) return
+  sceneSearching.value = true
+  try {
+    const result = await window.api.ai.findScenes(book.value.id, sceneQuestion.value)
+    if (result.ok) { sceneHits.value = result.hits; sceneMessage.value = result.message }
+    else { sceneHits.value = []; sceneMessage.value = result.message }
+    await refreshSemanticStatus()
+  } finally { sceneSearching.value = false }
+}
+
+function askFromScene() {
+  chatInput.value = sceneQuestion.value
 }
 
 /**
@@ -1858,6 +2007,7 @@ async function openAiAssistant(tab: AssistantPanelTab = 'recap') {
     recapLoading.value ? Promise.resolve() : loadStoredRecap(),
     loadStoredMemory(),
     loadAssistantMaterial(),
+    refreshSemanticStatus(),
     chatLoading.value || restoringChat.value
       ? Promise.resolve()
       : window.api.ai.getChat(book.value.id).then((res) => { if (res.ok) chatMessages.value = normalizeEvidenceChatHistory(res.messages) }),
@@ -2283,6 +2433,19 @@ function stopTranslate() {
   if (translateJobId.value) void window.api.ai.cancel(translateJobId.value)
 }
 
+const QUICK_READING_QUESTIONS = [
+  '用三点概括我读到这里的主线进展，并说明当前最重要的冲突。',
+  '列出目前最重要的人物关系，以及最近发生了什么变化。',
+  '有哪些已经出现但尚未回收的伏笔？请按重要程度排列。',
+  '当前主要人物各自想要什么？他们的目标在哪里发生冲突？',
+] as const
+
+/** 快捷问题只填入草稿，仍由读者确认发送，避免误触产生模型调用和费用。 */
+function prepareQuickQuestion(question: string) {
+  aiAssistantTab.value = 'qa'
+  chatInput.value = question
+}
+
 async function sendChat() {
   if (!book.value || !currentChapter.value || !chatInput.value.trim()) return
   if (assistantBusyByKind.value.qa || assistantSaveRetrying.value) {
@@ -2351,6 +2514,7 @@ watch(() => props.bookId, (id) => { if (id) void loadBook(id) })
 watch(() => currentChapter.value?.id, () => { selectionNoteTarget.value = null })
 watch([aiAssistantTab, currentChapter], ([tab]) => {
   if (tab === 'notes') void loadChapterNotes()
+  if (tab === 'memory') void loadTimeline()
 })
 watch([renderedParas, chapterBody], () => {
   void nextTick(() => updateViewportFocusAnchor())
@@ -2361,6 +2525,7 @@ watch(renderedCount, (count) => {
   }
 })
 watch(showDrawer, (open) => { if (open) void scrollCatalogToCurrent() })
+watch(showAiAssistant, (open) => { if (open) void loadResumeCard() })
 watch(
   [showDrawer, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel, activeBottomPanel],
   () => {
@@ -2444,6 +2609,7 @@ onMounted(async () => {
         if (assistant) {
           assistant.content = event.text
           assistant.citations = event.citations
+          assistant.claims = event.claims
           assistant.uptoChapterId = event.uptoChapterId
           assistant.stopped = event.stopped === true
         }
@@ -2466,6 +2632,7 @@ onMounted(async () => {
         message.info('更新已停止，原有记忆未改变。')
       } else if (event.ok && event.memoryUpdate) {
         memoryData.value = event.memoryUpdate.memory
+        void loadTimeline()
         for (const character of memoryData.value.characters) aliasDrafts.value[character.id] = character.aliases.join('、')
         for (const item of [
           ...memoryData.value.characters, ...memoryData.value.relations,
@@ -2641,6 +2808,10 @@ onUnmounted(() => {
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>
+            <div v-if="resumeCardView?.available" class="ai-budget-status">
+              {{ resumeCardView.card ? '续读卡已准备好' : resumeCardView.reason }}
+              <n-button size="tiny" @click="openAiAssistant('recap')">查看续读卡</n-button>
+            </div>
             <p v-if="chapterError" class="chapter-error">{{ chapterError }}</p>
             <p v-if="chapterFailHint" class="chapter-hint">{{ chapterFailHint }}</p>
             <n-space v-if="canRetryChapter || chapterError" justify="center" style="margin-bottom:16px">
@@ -2785,6 +2956,11 @@ onUnmounted(() => {
 
       <n-drawer v-model:show="showAiAssistant" placement="right" :width="420">
         <n-drawer-content title="AI 助手" closable>
+          <div v-if="legacyReadProposal" class="ai-budget-status">
+            <strong>旧书已读范围待确认</strong>
+            <div>旧版只记录到当前章节的进度。确认后，将它之前的章节与本章已到位置纳入 AI 已读范围；不确认时只使用新版实际记录的位置。</div>
+            <n-button size="small" @click="confirmLegacyFrontier">确认旧进度为已读</n-button>
+          </div>
           <div class="ai-assistant-heading">
             <strong>{{ book?.title }}</strong>
             <span>模型服务：{{ aiServiceOrigin || '未配置' }}</span>
@@ -2811,6 +2987,18 @@ onUnmounted(() => {
             结果已生成，但未能保存到书库。
             <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantSaveBusy" @click="retryAssistantSave">重试保存</n-button>
           </div>
+          <section class="ai-reading-desk" aria-label="AI 阅读工作台">
+            <div class="ai-reading-desk__title">
+              <strong>现在可以做什么</strong>
+              <span>先选任务，再由你决定是否调用模型。</span>
+            </div>
+            <div class="ai-reading-desk__actions">
+              <button type="button" @click="aiAssistantTab = 'recap'"><strong>接着读</strong><span>{{ recapText ? '查看已保存前情' : '整理读到这里的剧情' }}</span></button>
+              <button type="button" @click="aiAssistantTab = 'memory'"><strong>找人物与伏笔</strong><span>{{ memoryData ? `${memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length} 条本地记忆` : '建立已读剧情记忆' }}</span></button>
+              <button type="button" @click="aiAssistantTab = 'qa'"><strong>带依据地问</strong><span>回答可跳回已读原文</span></button>
+              <button type="button" @click="aiAssistantTab = 'notes'"><strong>记住本章</strong><span>{{ currentChapterNote ? '已有笔记，可继续修改' : '生成或手写本章笔记' }}</span></button>
+            </div>
+          </section>
           <div class="ai-budget-status">
             <strong>读完一章后整理</strong>
             <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
@@ -2837,8 +3025,25 @@ onUnmounted(() => {
             <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens；未报告的用量不计入 token 总数。不计算金额。</div>
             <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
           </div>
+          <div v-if="autoBudget" class="subtle">本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens；达到上限会暂停自动任务，实际费用以服务商账单为准。</div>
           <n-tabs v-model:value="aiAssistantTab" type="line" animated>
             <n-tab-pane name="recap" tab="前情">
+              <section v-if="resumeCardView?.available" class="ai-budget-status">
+                <strong>断点续读卡</strong>
+                <div class="subtle">上次会话附近最多 10 个读完的章节；只在你点击生成时调用模型。</div>
+                <div v-if="resumeCardView.reason" class="subtle">{{ resumeCardView.reason }}</div>
+                <template v-if="resumeCardView.card">
+                  <div v-for="group in ([['关键变化', resumeCardView.card.changes], ['当前冲突', resumeCardView.card.conflicts], ['待解疑问', resumeCardView.card.questions]] as const)" :key="group[0]">
+                    <strong>{{ group[0] }}</strong>
+                    <div v-for="(item, index) in group[1]" :key="index" class="memory-item">
+                      <p>{{ item.text }}</p>
+                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</button>
+                    </div>
+                  </div>
+                </template>
+                <div v-if="resumeCardWarning">{{ resumeCardWarning }} <n-button size="tiny" @click="generateResumeCard(true)">确认生成</n-button></div>
+                <n-button size="small" :loading="resumeCardLoading" @click="generateResumeCard(false)">{{ resumeCardView.card ? '重新生成续读卡' : '生成续读卡' }}</n-button>
+              </section>
               <div v-if="chapterSummaryBudget" class="ai-budget-status">
                 预计发送：{{ chapterSummaryBudget.chapterCount }} 章 / {{ chapterSummaryBudget.paragraphCount }} 段，约
                 {{ chapterSummaryBudget.sentCharacters }} 字 / {{ chapterSummaryBudget.estimatedTokens }} tokens（估算）
@@ -2862,6 +3067,18 @@ onUnmounted(() => {
             </n-tab-pane>
             <n-tab-pane name="memory" tab="记忆">
               <n-space vertical>
+                <section class="ai-budget-status">
+                  <strong>人物与伏笔时间线</strong>
+                  <div class="subtle">按已读章节显示出现、变化与当前状态。未读完的章节不会写入时间线。</div>
+                  <div v-if="timelineData?.message" class="subtle">{{ timelineData.message }}</div>
+                  <div v-for="entry in timelineData?.entries || []" :key="entry.id" class="memory-item">
+                    <strong>{{ entry.source.chapterTitle }} · {{ entry.name }} · {{ entry.phase }}</strong>
+                    <n-tag v-if="entry.uncertain" size="small" type="warning">存疑</n-tag>
+                    <n-tag v-if="entry.userEdited" size="small">读者已修正</n-tag>
+                    <p>{{ entry.text }}</p>
+                    <button class="memory-source" type="button" @click="jumpToMemorySource(entry.source)">{{ entry.source.excerpt }} · 查看原文</button>
+                  </div>
+                </section>
                 <n-space>
                   <n-button type="primary" :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying" @click="startMemoryJob('update')">更新记忆</n-button>
                   <n-popconfirm
@@ -2880,6 +3097,14 @@ onUnmounted(() => {
                 <div v-if="materialCoverage" class="subtle">
                   摘要覆盖到 {{ materialCoverage.uptoChapterTitle }}，缺 {{ materialCoverage.missing.length }} 章摘要。
                 </div>
+                <n-input
+                  v-if="memoryData"
+                  v-model:value="memoryQuery"
+                  clearable
+                  placeholder="搜索人物、别名、关系、伏笔或事件"
+                  aria-label="搜索小说记忆"
+                />
+                <p v-if="memoryData && memoryQuery" class="subtle">找到 {{ visibleMemoryCount }} 条；搜索只读取本地记忆，不调用模型。</p>
                 <n-empty
                   v-if="!memoryData || !(memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length)"
                   description="还没有人物与剧情记忆。"
@@ -2887,9 +3112,9 @@ onUnmounted(() => {
                   <template #extra>更新记忆后，可按人物、关系、伏笔和关键事件查看已读剧情。</template>
                 </n-empty>
                 <template v-else>
-                  <section v-if="memoryData.characters.length" class="memory-section">
+                  <section v-if="visibleMemoryCharacters.length" class="memory-section">
                     <h3>人物</h3>
-                    <details v-for="item in memoryData.characters" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryCharacters" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
                       <summary><strong>{{ item.name }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}<span v-if="item.userEditedAliases">（用户修正）</span></p><p>{{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input :value="aliasDrafts[item.id] ?? item.aliases.join('、')" size="small" placeholder="纠正别名，用顿号分隔" @update:value="(value: string) => { aliasDrafts[item.id] = value }" />
@@ -2901,9 +3126,9 @@ onUnmounted(() => {
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
                     </details>
                   </section>
-                  <section v-if="memoryData.relations.length" class="memory-section">
+                  <section v-if="visibleMemoryRelations.length" class="memory-section">
                     <h3>关系</h3>
-                    <details v-for="item in memoryData.relations" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryRelations" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
                       <summary><strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
@@ -2913,9 +3138,9 @@ onUnmounted(() => {
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
                     </details>
                   </section>
-                  <section v-if="memoryData.foreshadows.length" class="memory-section">
+                  <section v-if="visibleMemoryForeshadows.length" class="memory-section">
                     <h3>伏笔</h3>
-                    <details v-for="item in memoryData.foreshadows" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryForeshadows" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
                       <summary><strong>{{ item.desc }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
@@ -2925,9 +3150,9 @@ onUnmounted(() => {
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
                     </details>
                   </section>
-                  <section v-if="memoryData.events.length" class="memory-section">
+                  <section v-if="visibleMemoryEvents.length" class="memory-section">
                     <h3>关键事件</h3>
-                    <details v-for="item in memoryData.events" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryEvents" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
                       <summary><strong>{{ item.title }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
@@ -2937,17 +3162,42 @@ onUnmounted(() => {
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
                     </details>
                   </section>
+                  <n-empty v-if="memoryQuery && visibleMemoryCount === 0" description="本地记忆里没有匹配内容" />
                 </template>
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="qa" tab="问答">
+              <section class="ai-budget-status">
+                <strong>找回情节</strong>
+                <div class="subtle">先找已读原文，再决定是否让模型回答。启用语义索引后，新读内容会自动发送到你配置的向量服务。</div>
+                <div v-if="semanticState" class="subtle">{{ semanticState.message }} · 已索引 {{ semanticState.indexed }} / {{ semanticState.total }} 段</div>
+                <n-button size="tiny" @click="toggleSemanticIndex">{{ semanticState?.enabled ? '关闭自动语义索引' : '为本书开启语义索引' }}</n-button>
+                <n-input v-model:value="sceneQuestion" placeholder="例如：那封信是谁交给他的？" @keyup.enter="searchScenes" />
+                <n-space><n-button size="small" :loading="sceneSearching" @click="searchScenes">找原文</n-button><n-button v-if="sceneHits.length" size="small" @click="askFromScene">用这个问题问 AI</n-button></n-space>
+                <div v-if="sceneMessage" class="subtle">{{ sceneMessage }}</div>
+                <button v-for="hit in sceneHits" :key="hit.id" class="memory-source" type="button" @click="jumpToMemorySource(hit)">{{ hit.chapterTitle }} · 第 {{ hit.paragraphIndex + 1 }} 段：{{ hit.excerpt }} · 查看原文</button>
+              </section>
+              <div class="ai-quick-questions">
+                <strong>常用问题</strong>
+                <span class="subtle">点一下只会填入输入框，确认发送后才调用模型。</span>
+                <div>
+                  <n-button v-for="question in QUICK_READING_QUESTIONS" :key="question" size="tiny" @click="prepareQuickQuestion(question)">{{ question }}</n-button>
+                </div>
+              </div>
               <div class="chat-messages">
                 <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
                   <div class="chat-bubble">{{ msg.content }}</div>
                   <template v-if="msg.role === 'assistant'">
                     <n-tag v-if="msg.stopped" size="small" type="warning">已停止，以下为停止前生成的部分回答。</n-tag>
-                    <div v-if="msg.citations?.length" class="chat-evidence">
-                      <strong>依据</strong>
+                    <div v-if="msg.claims?.length" class="chat-evidence">
+                      <section v-for="(claim, claimIndex) in msg.claims" :key="claimIndex">
+                        <strong>结论 {{ claimIndex + 1 }}：{{ claim.text }}</strong>
+                        <button v-for="citation in msg.citations?.filter((item) => claim.citationIds.includes(item.id)) || []" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
+                      </section>
+                      <small>引用位置已校验；请自行核对原文是否支持每条结论。</small>
+                    </div>
+                    <div v-else-if="msg.citations?.length" class="chat-evidence">
+                      <strong>依据（旧版回答，未逐条对应）</strong>
                       <button v-for="citation in msg.citations" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
                     </div>
                     <div v-else-if="msg.citations === undefined && !msg.content.startsWith('错误：')" class="chat-legacy">旧版回答，无来源</div>
@@ -3513,6 +3763,76 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.ai-reading-desk {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--r-line);
+  border-radius: 10px;
+  background: var(--r-panel-bg);
+}
+
+.ai-reading-desk__title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.ai-reading-desk__title span {
+  color: var(--r-muted);
+  font-size: 12px;
+}
+
+.ai-reading-desk__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ai-reading-desk__actions button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--r-line);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-reading-desk__actions button:hover,
+.ai-reading-desk__actions button:focus-visible {
+  border-color: var(--active-chapter);
+}
+
+.ai-reading-desk__actions span {
+  color: var(--r-muted);
+  font-size: 11px;
+}
+
+.ai-quick-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.ai-quick-questions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-quick-questions .n-button {
+  height: auto;
+  min-height: 28px;
+  white-space: normal;
+  text-align: left;
 }
 
 .memory-section h3 {

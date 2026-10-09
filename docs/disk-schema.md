@@ -13,6 +13,7 @@
     book.json
     annotations.json       # 书签 / 划线（见下）
     tts-position.json      # 可选，每本书独立的听书续播位置
+    reading-frontier.json  # 段落级已读边界、旧进度确认与阅读会话
     origin\                 # 导入时保留的源文件
     chapters\
       0001.json
@@ -24,6 +25,11 @@
       chat.json            # 聊天 v1 / 证据问答 v2
       notes.json           # AI 生成或读者手写的本章笔记，见「ai/notes.json」
       follow.json          # 自动追剧的队列与进度真源，见「ai/follow.json」
+      monthly-usage.json   # 每书每月自动任务额度与预留
+      semantic-settings.json # 本书语义索引启用状态；默认关闭
+      semantic-index.json  # 可重建的已读原文向量缓存
+      resume-card.json     # 手动生成的断点续读卡缓存
+      timeline.json        # 随记忆更新写入的人物与伏笔变化
       index\               # 问答检索剪枝用的按章布隆过滤器，见「ai/index/」
 ```
 
@@ -32,6 +38,12 @@
 `tts-position.json` 为可选文件：`{ "chapterId": "c0001", "paragraphIndex": 0, "bodyHash": "1234abcd", "updatedAt": "<ISO-8601>" }`。正文指纹或章节不匹配时，阅读器回退到当前阅读位置。文件随书库备份和搬迁。在线 MP3 缓存位于应用 `userData/tts-cache`，总量上限 500 MB，不属于书库备份。
 
 `ai/bookOverview.json` 为可选文件，版本 1。`text` 保存含剧透的全书概览；`source` 记录各章节文件大小与修改时间；`chapterSummaries` 按章节 ID 保存正文 SHA-256 和章节摘要，用于中断续做及增量生成。`error` 与 `failedSignature` 记录当前章节版本的失败，手动重试时清除。文件缺失或损坏视为尚未生成，不影响阅读器。
+
+`reading-frontier.json` v1 保存 `legacyConfirmed`、按章节 ID 的 `{paragraphIndex, characterOffset, bodyHash, updatedAt}` 和最近阅读会话。旧书 `progress` 只显示为待确认范围；读者确认后才补记以前章节。正文指纹变化时对应位置不能用于 AI。文件原子写入，损坏视为未读。
+
+`ai/semantic-settings.json` v1 保存 `{enabled}`，每书默认关闭。`ai/semantic-index.json` v1 保存向量模型键与已读原文片段、向量及正文哈希；缺失、损坏或模型更换时按未生成重建。只对新增已读片段增量调用 Embeddings API，不保存 Key；Key 加密保存在应用设置存储。`ai/monthly-usage.json` v1 保存自然月、已用估算 tokens 与请求预留；自动概览、自动整理和索引共享每书默认 100000 tokens 上限。未知服务用量按预留计入；此上限不等于服务商账单金额。
+
+`ai/resume-card.json` 保存上次会话结束时间、来源哈希、关键变化/冲突/疑问和原文引用；来源或已读范围变化后视为过期。`ai/timeline.json` 保存记忆更新产生的“出现/变化”记录；当前状态从最新记忆读取。来源失效的条目不显示，重建记忆时从受影响章节重建。所有新增缓存原子写入，损坏按未生成处理。旧聊天、摘要与记忆文件继续可读；旧回答无可核验引用时隐藏内容。
 
 ---
 

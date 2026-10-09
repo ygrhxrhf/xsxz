@@ -397,6 +397,7 @@ describe('AI settings compatibility', () => {
       budgetWarningTokens: DEFAULT_AI_PREFS.budgetWarningTokens,
       trustedCustomOrigins: ['https://example.com', 'http://example.com:8080'],
       autoBookOverview: false,
+      autoMonthlyTokenLimit: DEFAULT_AI_PREFS.autoMonthlyTokenLimit,
       autoReadingFollow: false,
       followMaxChaptersPerRun: DEFAULT_AI_PREFS.followMaxChaptersPerRun,
       promptMode: {

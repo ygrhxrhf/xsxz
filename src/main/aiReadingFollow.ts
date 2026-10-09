@@ -12,7 +12,8 @@ import type {
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import { planChapterSummaryRequest, runAiTaskCompletion, type AiConfig } from './ai'
-import { promptBudget } from './aiBudget'
+import { estimateAiTokens, promptBudget } from './aiBudget'
+import { reserveAutomaticTokens } from './aiMonthlyBudget'
 import { MEMORY_BATCH_CHAPTERS, preserveUserMemoryCorrections } from './aiMaterial'
 import { executeMemoryOrchestration } from './aiMemoryOrchestrator'
 import { AiQueue } from './aiScheduler'
@@ -22,12 +23,14 @@ import {
 } from './library'
 import { assertTrustedAiEndpoint, getApiKey, getSettings, resolveEffectiveAiProvider } from './settings'
 import { isLibraryRestoring } from './libraryMaintenance'
+import { getReadFrontier, isFullyRead, visibleMemory } from './readFrontier'
+import { syncTimeline } from './aiTimeline'
 
 const FOLLOW_FILE = 'follow.json'
 /** 连续网络失败的退避节奏，用完仍未成功就停下来等用户点「继续」。 */
 const BACKOFF_MS = [5_000, 15_000, 60_000]
 /** 渲染层已按比率判定「读完」，这里只兜住明显不合理的上报。 */
-const FINISHED_RATIO_FLOOR = 0.8
+const FINISHED_RATIO_FLOOR = 0.999
 const QUEUE_CANCELLED = '已从队列取消'
 
 interface FollowChapterRecord {
@@ -222,6 +225,9 @@ export class AiReadingFollowService {
     const current = await readFollow(bookId)
     if (current.done[chapterId]) return this.view(bookId, current, book.chapters)
     if (meta?.status !== 'ready' || ratio < FINISHED_RATIO_FLOOR) return this.view(bookId, current, book.chapters)
+    const chapter = await readChapter(bookId, chapterId)
+    const frontier = await getReadFrontier(bookId)
+    if (!isFullyRead(chapter.body, frontier.chapters[chapterId])) return this.view(bookId, current, book.chapters)
     const file = await this.mutate(bookId, (fresh) => {
       if (!fresh.queued.includes(chapterId)) fresh.queued.push(chapterId)
     })
@@ -454,6 +460,8 @@ export class AiReadingFollowService {
       return this.skipChapter(book.id, chapterId)
     }
     const chapter = await readChapter(book.id, chapterId)
+    const frontier = await getReadFrontier(book.id)
+    if (!isFullyRead(chapter.body, frontier.chapters[chapterId])) return this.skipChapter(book.id, chapterId)
     const body = chapter.body.trim()
     if (!body) return this.skipChapter(book.id, chapterId)
     const sig = chapterSignature(body)
@@ -489,9 +497,17 @@ export class AiReadingFollowService {
     prompt: string,
     signal: AbortSignal,
   ): Promise<void> {
-    const completion = await runAiTaskCompletion(
-      config, [{ role: 'user', content: prompt }], { task: 'chapterSummary', signal },
-    )
+    const limit = (await getSettings()).ai?.autoMonthlyTokenLimit ?? DEFAULT_AI_PREFS.autoMonthlyTokenLimit
+    const reservation = await reserveAutomaticTokens(bookId, estimateAiTokens(prompt) + 500, limit)
+    let settled = false
+    let completion: Awaited<ReturnType<typeof runAiTaskCompletion>>
+    try {
+      completion = await runAiTaskCompletion(config, [{ role: 'user', content: prompt }], { task: 'chapterSummary', signal })
+      await reservation.settle(completion.usage)
+      settled = true
+    } finally {
+      if (!settled) await reservation.settle().catch(() => {})
+    }
     if (!completion.text.trim()) throw new Error('模型没有返回可用的章节摘要')
     await writeChapterSummary(bookId, chapterId, completion.text.trim(), { signal })
     await recordAiUsage(bookId, completion.usage)
@@ -508,13 +524,14 @@ export class AiReadingFollowService {
     for (const meta of [...book.chapters].sort((left, right) => left.index - right.index)) {
       if (!chapterIds.includes(meta.id) || meta.status !== 'ready') continue
       const chapter = await readChapter(book.id, meta.id)
-      if (chapter.body.trim()) ordered.push({ ...meta, body: chapter.body })
+      const frontier = await getReadFrontier(book.id)
+      if (chapter.body.trim() && isFullyRead(chapter.body, frontier.chapters[meta.id])) ordered.push({ ...meta, body: chapter.body })
     }
     if (!ordered.length) {
       await this.markMemoryApplied(book.id, chapterIds, false)
       return 'progress'
     }
-    const existing = await readAiMemory(book.id)
+    const existing = await visibleMemory(book.id, await readAiMemory(book.id))
     const instruction = resolveAiTaskInstruction(settings.ai ?? DEFAULT_AI_PREFS, 'memory')
     const config = this.trustedConfig(settings, apiKey)
     const job = await this.runJob(book.id, `follow:${book.id}:memory:${chapterIds.join('+')}`, async (signal) => {
@@ -525,16 +542,26 @@ export class AiReadingFollowService {
         0,
         instruction,
         async (request, requestSignal) => {
-          const completion = await runAiTaskCompletion(
-            config, [{ role: 'user', content: request.prompt }], { task: 'memory', signal: requestSignal },
-          )
+          const limit = (await getSettings()).ai?.autoMonthlyTokenLimit ?? DEFAULT_AI_PREFS.autoMonthlyTokenLimit
+          const reservation = await reserveAutomaticTokens(book.id, estimateAiTokens(request.prompt) + 3_000, limit)
+          let settled = false
+          let completion: Awaited<ReturnType<typeof runAiTaskCompletion>>
+          try {
+            completion = await runAiTaskCompletion(config, [{ role: 'user', content: request.prompt }], { task: 'memory', signal: requestSignal })
+            await reservation.settle(completion.usage)
+            settled = true
+          } finally {
+            if (!settled) await reservation.settle().catch(() => {})
+          }
           await recordAiUsage(book.id, completion.usage)
           if (!completion.json) throw new Error('模型返回的记忆 JSON 无法识别，原有记忆未改变')
           return completion.json
         },
         { signal },
       )
-      await writeAiMemory(book.id, preserveUserMemoryCorrections(memoryUpdate.memory, existing), { signal })
+      const merged = preserveUserMemoryCorrections(memoryUpdate.memory, existing)
+      await writeAiMemory(book.id, merged, { signal })
+      await syncTimeline(book.id, existing, merged)
     })
     if (job.kind === 'yielded') return 'yielded'
     if (job.kind === 'failed') {

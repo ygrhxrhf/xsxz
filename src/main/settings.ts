@@ -157,6 +157,9 @@ export function normalizeAiPrefs(value: unknown): AiPrefs {
       Number.isSafeInteger(ai.followMaxChaptersPerRun)
       ? Math.max(1, Math.min(50, ai.followMaxChaptersPerRun))
       : DEFAULT_AI_PREFS.followMaxChaptersPerRun,
+    autoMonthlyTokenLimit: typeof ai.autoMonthlyTokenLimit === 'number' && Number.isSafeInteger(ai.autoMonthlyTokenLimit)
+      ? Math.max(10_000, Math.min(1_000_000, ai.autoMonthlyTokenLimit))
+      : DEFAULT_AI_PREFS.autoMonthlyTokenLimit,
     promptMode,
     customPrompts,
     tierSense: normalizeTierSensePrefs(ai.tierSense),
@@ -273,6 +276,13 @@ export async function getApiKey(): Promise<string> {
   }
 }
 
+export async function getEmbeddingApiKey(): Promise<string> {
+  const raw = await loadRaw()
+  if (typeof raw.embeddingApiKeyEnc !== 'string' || !raw.embeddingApiKeyEnc) return ''
+  try { return safeStorage.decryptString(Buffer.from(raw.embeddingApiKeyEnc, 'base64')) }
+  catch { return '' }
+}
+
 export async function getSettings(): Promise<Settings> {
   const raw = await loadRaw()
   const tts = (raw.tts as Partial<TtsPrefs>) || {}
@@ -286,6 +296,11 @@ export async function getSettings(): Promise<Settings> {
     baseUrl: typeof raw.baseUrl === 'string' ? raw.baseUrl : DEFAULT_AI_PLACEHOLDER.baseUrl,
     model: typeof raw.model === 'string' ? raw.model : DEFAULT_AI_PLACEHOLDER.model,
     apiKeyConfigured: hasUsableEncryptedKey(raw.apiKeyEnc),
+    embedding: {
+      baseUrl: typeof readRecord(raw.embedding).baseUrl === 'string' ? String(readRecord(raw.embedding).baseUrl).trim() : '',
+      model: typeof readRecord(raw.embedding).model === 'string' ? String(readRecord(raw.embedding).model).trim() : '',
+      keyConfigured: hasUsableEncryptedKey(raw.embeddingApiKeyEnc),
+    },
     tierSenseKeyConfigured: hasUsableEncryptedKey(raw.tierSenseApiKeyEnc),
     reader: normalizeReaderPrefs(raw.reader),
     tts: {
@@ -354,6 +369,19 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
     } else {
       delete raw.apiKeyEnc
     }
+  }
+  if (patch.embedding) {
+    const next = { ...readRecord(raw.embedding) }
+    const incoming = readRecord(patch.embedding)
+    if (typeof incoming.baseUrl === 'string') next.baseUrl = incoming.baseUrl.trim()
+    if (typeof incoming.model === 'string') next.model = incoming.model.trim()
+    raw.embedding = next
+  }
+  if (typeof patch.embeddingApiKey === 'string') {
+    if (patch.embeddingApiKey) {
+      requireEncryptionAvailable()
+      raw.embeddingApiKeyEnc = safeStorage.encryptString(patch.embeddingApiKey).toString('base64')
+    } else delete raw.embeddingApiKeyEnc
   }
   if (patch.reader) {
     raw.reader = { ...readRecord(raw.reader), ...readRecord(patch.reader) }

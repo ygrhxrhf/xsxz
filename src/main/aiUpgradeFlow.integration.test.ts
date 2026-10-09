@@ -33,8 +33,8 @@ describe('trusted AI assistant mock flow', () => {
       }),
       search: async () => ({ citations: [citation], uptoChapterId: 'c0001', topScore: 0 }),
       answer: async () => ({
-        text: '{"answer":"在码头。","citations":["qa-c0001-p1"]}',
-        json: { answer: '在码头。', citations: [citation.id] }, usage: { inputTokens: 8, outputTokens: 5 }, truncated: false,
+        text: '{"answer":"在码头。","claims":[{"text":"在码头。","citationIds":["qa-c0001-p1"]}]}',
+        json: { answer: '在码头。', claims: [{ text: '在码头。', citationIds: [citation.id] }] }, usage: { inputTokens: 8, outputTokens: 5 }, truncated: false,
       }),
     })
     expect(result).toMatchObject({

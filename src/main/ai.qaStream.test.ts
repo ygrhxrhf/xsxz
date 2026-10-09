@@ -69,7 +69,7 @@ describe('evidence QA answer streaming', () => {
   })
 
   it('keeps the grounded pipeline unchanged: whitelisted citations and merged usage still win', async () => {
-    stubFetch(() => sseStream([`{"answer":"在码头。","citations":["${citation.id}"]}`]))
+    stubFetch(() => sseStream([`{"answer":"在码头。","claims":[{"text":"在码头。","citationIds":["${citation.id}"]}]}`]))
     const chunks: string[] = []
     const result = await executeEvidenceQaPipeline({
       question: '账册在哪里？',
@@ -89,7 +89,7 @@ describe('evidence QA answer streaming', () => {
   })
 
   it('still rejects a citation outside the candidate whitelist even after the text streamed', async () => {
-    stubFetch(() => sseStream(['{"answer":"前半', `","citations":["qa-9999-p0"]}`]))
+    stubFetch(() => sseStream(['{"answer":"前半', '","claims":[{"text":"前半","citationIds":["qa-9999-p0"]}]}']))
     const streamed: string[] = []
     await expect(
       streamAnswer(new AbortController().signal, (chunk) => streamed.push(chunk))([{ role: 'user', content: 'q' }]),

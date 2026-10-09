@@ -3,6 +3,7 @@ import type {
   AiBookUsage,
   AiBudgetEstimate,
   AiBudgetEvent,
+  AiCitation,
   AiChapterNote,
   AiChapterNotesResult,
   AiChatMessage,
@@ -19,8 +20,11 @@ import type {
   AiMemoryFile,
   AiMaterialCoverage,
   AiProvider,
+  AiResumeCard,
+  AiResumeCardView,
   AiStageEvent,
   AiSummaries,
+  AiTimelineView,
   BookListItem,
   BrowseState,
   BrowseFindResult,
@@ -29,6 +33,8 @@ import type {
   DownloadBlocked,
   DownloadProgress,
   ReadingProgress,
+  ReadFrontier,
+  ReadFrontierPosition,
   TtsPosition,
   Settings,
   SettingsUpdate,
@@ -86,6 +92,10 @@ const api = {
     import: (filePath: string) => ipcRenderer.invoke('library.import', { filePath }) as Promise<{ ok: boolean; bookId?: string; message?: string }>,
     setProgress: (bookId: string, progress: ReadingProgress) =>
       ipcRenderer.invoke('library.setProgress', { bookId, progress }),
+    getReadFrontier: (bookId: string) => ipcRenderer.invoke('library.getReadFrontier', { bookId }) as Promise<{ ok: true; frontier: ReadFrontier } | { ok: false; message: string }>,
+    markReadFrontier: (bookId: string, chapterId: string, paragraphIndex: number, characterOffset: number) =>
+      ipcRenderer.invoke('library.markReadFrontier', { bookId, chapterId, paragraphIndex, characterOffset }) as Promise<{ ok: true; position: ReadFrontierPosition } | { ok: false; message: string }>,
+    confirmLegacyReadRange: (bookId: string) => ipcRenderer.invoke('library.confirmLegacyReadRange', { bookId }) as Promise<{ ok: true; frontier: ReadFrontier } | { ok: false; message: string }>,
     updateMeta: (payload: { bookId: string; title: string; author: string; tags: string[] }) =>
       ipcRenderer.invoke('library.updateMeta', payload) as Promise<{ ok: true } | { ok: false; message: string }>,
     setCover: (payload: { bookId: string; sourcePath: string }) =>
@@ -304,9 +314,22 @@ const api = {
       >,
     getUsage: (bookId: string) =>
       ipcRenderer.invoke('ai.getUsage', { bookId }) as Promise<
-        | { ok: true; usage: AiBookUsage }
+        | { ok: true; usage: AiBookUsage; autoBudget: { month: string; usedTokens: number; reservedTokens: number; limitTokens: number; remainingTokens: number } }
         | { ok: false; message: string }
       >,
+    semanticIndexStatus: (bookId: string) => ipcRenderer.invoke('ai.semanticIndexStatus', { bookId }) as Promise<
+      { ok: true; status: { enabled: boolean; indexed: number; total: number; message: string } } | { ok: false; message: string }>,
+    semanticIndexSet: (bookId: string, enabled: boolean) => ipcRenderer.invoke('ai.semanticIndexSet', { bookId, enabled }) as Promise<
+      { ok: true; status: { enabled: boolean; indexed: number; total: number; message: string } } | { ok: false; message: string }>,
+    findScenes: (bookId: string, question: string) => ipcRenderer.invoke('ai.findScenes', { bookId, question }) as Promise<
+      { ok: true; hits: AiCitation[]; mode: 'semantic' | 'local'; message: string } | { ok: false; message: string }>,
+    resumeCard: (bookId: string) => ipcRenderer.invoke('ai.resumeCard', { bookId }) as Promise<
+      { ok: true; view: AiResumeCardView } | { ok: false; message: string }>,
+    timeline: (bookId: string) => ipcRenderer.invoke('ai.timeline', { bookId }) as Promise<
+      { ok: true; timeline: AiTimelineView } | { ok: false; message: string }>,
+    generateResumeCard: (bookId: string, confirmOverBudget = false) => ipcRenderer.invoke('ai.generateResumeCard', { bookId, confirmOverBudget }) as Promise<
+      { ok: true; card: AiResumeCard; budget: AiBudgetEstimate } |
+      { ok: false; message: string; confirmationRequired?: boolean; budget?: AiBudgetEstimate }>,
     retrySave: (saveToken: string) => ipcRenderer.invoke('ai.retrySave', { saveToken }) as Promise<
       { ok: true } | { ok: false; message: string }
     >,

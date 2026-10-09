@@ -92,4 +92,34 @@ describe('Reader unified AI assistant shell', () => {
     expect(helpers).toContain("if (opts.key.toLowerCase() === 'i') return 'open-assistant'")
     expect(helpers).toContain("if (opts.key.toLowerCase() === 'n') return 'open-note'")
   })
+
+  it('把高频阅读任务放到工作台，快捷问题只填草稿不直接计费', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    expect(source).toContain('aria-label="AI 阅读工作台"')
+    for (const label of ['接着读', '找人物与伏笔', '带依据地问', '记住本章']) {
+      expect(source).toContain(label)
+    }
+    expect(source).toContain('const QUICK_READING_QUESTIONS = [')
+    expect(source).toContain('有哪些已经出现但尚未回收的伏笔？')
+    const start = source.indexOf('function prepareQuickQuestion')
+    const block = source.slice(start, source.indexOf('async function sendChat', start))
+    expect(block).toContain("aiAssistantTab.value = 'qa'")
+    expect(block).toContain('chatInput.value = question')
+    expect(block).not.toContain('window.api')
+    expect(block).not.toContain('sendChat()')
+    expect(source).toContain('确认发送后才调用模型。')
+  })
+
+  it('人物关系搜索只过滤已加载的本地记忆', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const start = source.indexOf('const normalizedMemoryQuery')
+    const block = source.slice(start, source.indexOf('async function jumpToAnnotation', start))
+    expect(block).toContain('visibleMemoryCharacters')
+    expect(block).toContain('visibleMemoryRelations')
+    expect(block).toContain('visibleMemoryForeshadows')
+    expect(block).toContain('visibleMemoryEvents')
+    expect(block).not.toContain('window.api')
+    expect(source).toContain('搜索只读取本地记忆，不调用模型。')
+    expect(source).toContain('description="本地记忆里没有匹配内容"')
+  })
 })

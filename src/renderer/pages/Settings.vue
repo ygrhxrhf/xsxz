@@ -66,6 +66,9 @@ const settings = ref<Settings | null>(null)
 const baseUrl = ref('')
 const model = ref('')
 const apiKey = ref('')
+const embeddingBaseUrl = ref('')
+const embeddingModel = ref('')
+const embeddingApiKey = ref('')
 const ttsEndpoint = ref('')
 const ttsModel = ref('')
 const ttsVoice = ref('')
@@ -78,6 +81,7 @@ const autoBookOverview = ref(false)
 const autoReadingFollow = ref(false)
 const followMaxChaptersPerRun = ref(DEFAULT_AI_PREFS.followMaxChaptersPerRun)
 const budgetWarningTokens = ref(DEFAULT_AI_PREFS.budgetWarningTokens)
+const autoMonthlyTokenLimit = ref(DEFAULT_AI_PREFS.autoMonthlyTokenLimit)
 const trustedCustomOrigins = ref<string[]>([])
 const selectedPromptKind = ref<AiPromptKind>('clean')
 const promptMode = ref<Record<AiPromptKind, AiPromptMode>>({ ...DEFAULT_AI_PREFS.promptMode })
@@ -166,6 +170,8 @@ async function load() {
     settings.value = await window.api.settings.get()
     baseUrl.value = settings.value.baseUrl
     model.value = settings.value.model
+    embeddingBaseUrl.value = settings.value.embedding?.baseUrl ?? ''
+    embeddingModel.value = settings.value.embedding?.model ?? ''
     ttsEndpoint.value = settings.value.tts?.onlineEndpoint ?? ''
     ttsModel.value = settings.value.tts?.onlineModel ?? ''
     ttsVoice.value = settings.value.tts?.onlineVoice ?? ''
@@ -176,6 +182,7 @@ async function load() {
     autoReadingFollow.value = ai.autoReadingFollow
     followMaxChaptersPerRun.value = ai.followMaxChaptersPerRun
     budgetWarningTokens.value = ai.budgetWarningTokens
+    autoMonthlyTokenLimit.value = ai.autoMonthlyTokenLimit
     trustedCustomOrigins.value = [...ai.trustedCustomOrigins]
     promptMode.value = { ...ai.promptMode }
     customPrompts.value = { ...ai.customPrompts }
@@ -323,11 +330,20 @@ async function saveAi(): Promise<boolean> {
   msg.value = ''
   const trustedOrigins = await trustedOriginsForCurrentForm()
   if (!trustedOrigins) return false
+  if (embeddingBaseUrl.value.trim()) {
+    const embeddingOrigin = normalizeAiServiceOrigin(embeddingBaseUrl.value)
+    if (!embeddingOrigin) { msg.value = '向量接口地址仅支持有效的 HTTP(S) 地址'; msgType.value = 'error'; return false }
+    if (!trustedOrigins.includes(embeddingOrigin)) {
+      if (!await requestTrust(embeddingOrigin)) return false
+      trustedOrigins.push(embeddingOrigin)
+    }
+  }
   saving.value = true
   try {
     const update: import('@shared/types').SettingsUpdate = {
       baseUrl: baseUrl.value.trim(),
       model: model.value.trim(),
+      embedding: { baseUrl: embeddingBaseUrl.value.trim(), model: embeddingModel.value.trim() },
       ai: {
         provider: provider.value,
         thinkingEnabled: thinkingEnabled.value,
@@ -335,14 +351,17 @@ async function saveAi(): Promise<boolean> {
         autoReadingFollow: autoReadingFollow.value,
         followMaxChaptersPerRun: followMaxChaptersPerRun.value,
         budgetWarningTokens: budgetWarningTokens.value,
+        autoMonthlyTokenLimit: autoMonthlyTokenLimit.value,
         trustedCustomOrigins: trustedOrigins,
         promptMode: { ...promptMode.value },
         customPrompts: { ...customPrompts.value },
       },
     }
     if (apiKey.value) update.apiKey = apiKey.value
+    if (embeddingApiKey.value) update.embeddingApiKey = embeddingApiKey.value
     settings.value = await window.api.settings.set(update)
     apiKey.value = ''
+    embeddingApiKey.value = ''
     const savedAi = settings.value.ai ?? DEFAULT_AI_PREFS
     trustedCustomOrigins.value = [...savedAi.trustedCustomOrigins]
     promptMode.value = { ...savedAi.promptMode }
@@ -800,6 +819,11 @@ onMounted(load)
             placeholder="输入新的 API Key（留空则不更新）"
           />
         </n-input-group>
+        <div class="field-label">独立向量服务（用于按已读内容找情节）</div>
+        <div class="field-help">需支持兼容的 /embeddings 接口。每本书另行开启语义索引后，已读正文才会发送到此服务。</div>
+        <n-input-group><n-input-group-label style="width:80px">接口地址</n-input-group-label><n-input v-model:value="embeddingBaseUrl" placeholder="https://服务地址/v1" /></n-input-group>
+        <n-input-group><n-input-group-label style="width:80px">向量模型</n-input-group-label><n-input v-model:value="embeddingModel" placeholder="embeddings 模型名" /></n-input-group>
+        <n-input-group><n-input-group-label style="width:80px">向量 Key</n-input-group-label><n-input v-model:value="embeddingApiKey" type="password" show-password-on="click" :placeholder="settings?.embedding?.keyConfigured ? '已配置；留空则不更新' : '输入向量服务 Key'" /></n-input-group>
         <div class="switch-row">
           <div>
             <div class="field-label">复杂任务使用思考模式</div>
@@ -834,6 +858,10 @@ onMounted(load)
             <div class="field-help">预计输入达到阈值时，发送前要求确认；实际 token 和费用以服务商为准。</div>
           </div>
           <n-input-number v-model:value="budgetWarningTokens" :min="1000" :max="50000" :step="1000" style="width:140px" />
+        </div>
+        <div class="switch-row">
+          <div><div class="field-label">每书每月自动任务上限</div><div class="field-help">默认 10 万估算 tokens；自动概览、自动整理和自动语义索引共用。到限后暂停自动任务，手动任务仍可确认执行。实际费用以服务商账单为准。</div></div>
+          <n-input-number v-model:value="autoMonthlyTokenLimit" :min="10000" :max="1000000" :step="10000" style="width:160px" />
         </div>
         <n-alert v-if="usesCustomEndpoint" type="warning">
           {{ AI_CUSTOM_SERVICE_NOTICE }}

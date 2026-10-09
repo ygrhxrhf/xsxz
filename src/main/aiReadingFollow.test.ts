@@ -39,6 +39,7 @@ let sleeps: number[]
 function baseSettings(autoReadingFollow: boolean, followMaxChaptersPerRun = 12): Settings {
   return {
     libraryPath: directory, baseUrl: 'https://api.deepseek.com/v1', model: 'test', apiKeyConfigured: true,
+    tierSenseKeyConfigured: false,
     reader: DEFAULT_READER_PREFS, tts: DEFAULT_TTS_PREFS, appearance: DEFAULT_APPEARANCE_PREFS,
     ai: { ...DEFAULT_AI_PREFS, autoReadingFollow, followMaxChaptersPerRun },
     downloadPace: 'standard',

@@ -34,6 +34,7 @@ beforeEach(async () => {
   await setLibraryPath(directory)
   mocks.settings = {
     libraryPath: directory, baseUrl: 'https://api.deepseek.com/v1', model: 'test', apiKeyConfigured: true,
+    tierSenseKeyConfigured: false,
     reader: DEFAULT_READER_PREFS, tts: DEFAULT_TTS_PREFS, appearance: DEFAULT_APPEARANCE_PREFS,
     ai: { ...DEFAULT_AI_PREFS, autoBookOverview: true }, downloadPace: 'standard',
   }
