@@ -152,7 +152,7 @@ describe('single compatibility downgrade', () => {
     const fetchMock = vi.fn(async () => new Response('bad input', { status: 422 }))
     vi.stubGlobal('fetch', fetchMock)
     await expect(runAiTaskCompletion({ ...config, thinkingEnabled: false }, messages, {
-      task: 'characterCard',
+      task: 'chapterSummary',
     })).rejects.toThrow(/422/)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })

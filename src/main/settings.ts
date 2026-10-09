@@ -18,6 +18,7 @@ import type {
   Settings,
   SettingsUpdate,
   Skin,
+  TierSensePrefs,
   TtsPrefs,
 } from '../shared/types'
 import {
@@ -27,6 +28,7 @@ import {
   DEFAULT_READER_PREFS,
   DEFAULT_TTS_PREFS,
   DEFAULT_AI_PLACEHOLDER,
+  DEFAULT_TIER_SENSE_PREFS,
 } from '../shared/types'
 import { defaultLibraryPath } from './libraryPath'
 
@@ -107,6 +109,23 @@ export function assertTrustedAiEndpoint(baseUrl: string, ai: AiPrefs): void {
   }
 }
 
+export function normalizeTierSensePrefs(value: unknown): TierSensePrefs {
+  const ts = readRecord(value)
+  return {
+    enabled: ts.enabled === true,
+    baseUrl: typeof ts.baseUrl === 'string' ? ts.baseUrl.trim() : '',
+    difficultyEnabled: ts.difficultyEnabled !== false,
+    compressionEnabled: ts.compressionEnabled !== false,
+    memoryDecideEnabled: ts.memoryDecideEnabled !== false,
+    compressionMinTokens: typeof ts.compressionMinTokens === 'number' && Number.isSafeInteger(ts.compressionMinTokens)
+      ? Math.max(1000, Math.min(30000, ts.compressionMinTokens))
+      : DEFAULT_TIER_SENSE_PREFS.compressionMinTokens,
+    difficultyThreshold: typeof ts.difficultyThreshold === 'number' && Number.isFinite(ts.difficultyThreshold)
+      ? Math.max(0, Math.min(1, ts.difficultyThreshold))
+      : DEFAULT_TIER_SENSE_PREFS.difficultyThreshold,
+  }
+}
+
 export function normalizeAiPrefs(value: unknown): AiPrefs {
   const ai = readRecord(value)
   const rawPrompts = readRecord(ai.customPrompts)
@@ -133,8 +152,14 @@ export function normalizeAiPrefs(value: unknown): AiPrefs {
       : DEFAULT_AI_PREFS.budgetWarningTokens,
     trustedCustomOrigins: normalizeTrustedCustomOrigins(ai.trustedCustomOrigins),
     autoBookOverview: ai.autoBookOverview === true,
+    autoReadingFollow: ai.autoReadingFollow === true,
+    followMaxChaptersPerRun: typeof ai.followMaxChaptersPerRun === 'number' &&
+      Number.isSafeInteger(ai.followMaxChaptersPerRun)
+      ? Math.max(1, Math.min(50, ai.followMaxChaptersPerRun))
+      : DEFAULT_AI_PREFS.followMaxChaptersPerRun,
     promptMode,
     customPrompts,
+    tierSense: normalizeTierSensePrefs(ai.tierSense),
   }
 }
 
@@ -146,6 +171,7 @@ function mergeAiPrefs(current: unknown, patch: unknown): AiPrefs {
     ...update,
     promptMode: { ...readRecord(previous.promptMode), ...readRecord(update.promptMode) },
     customPrompts: { ...readRecord(previous.customPrompts), ...readRecord(update.customPrompts) },
+    tierSense: { ...readRecord(previous.tierSense), ...readRecord(update.tierSense) },
   })
 }
 
@@ -260,6 +286,7 @@ export async function getSettings(): Promise<Settings> {
     baseUrl: typeof raw.baseUrl === 'string' ? raw.baseUrl : DEFAULT_AI_PLACEHOLDER.baseUrl,
     model: typeof raw.model === 'string' ? raw.model : DEFAULT_AI_PLACEHOLDER.model,
     apiKeyConfigured: hasUsableEncryptedKey(raw.apiKeyEnc),
+    tierSenseKeyConfigured: hasUsableEncryptedKey(raw.tierSenseApiKeyEnc),
     reader: normalizeReaderPrefs(raw.reader),
     tts: {
       rate: readFiniteClamped(tts.rate, 0.5, 2, DEFAULT_TTS_PREFS.rate),
@@ -290,6 +317,16 @@ export async function getTtsApiKey(): Promise<string> {
   if (typeof raw.ttsApiKeyEnc !== 'string' || !raw.ttsApiKeyEnc) return ''
   try {
     return safeStorage.decryptString(Buffer.from(raw.ttsApiKeyEnc, 'base64'))
+  } catch {
+    return ''
+  }
+}
+
+export async function getTierSenseApiKey(): Promise<string> {
+  const raw = await loadRaw()
+  if (typeof raw.tierSenseApiKeyEnc !== 'string' || !raw.tierSenseApiKeyEnc) return ''
+  try {
+    return safeStorage.decryptString(Buffer.from(raw.tierSenseApiKeyEnc, 'base64'))
   } catch {
     return ''
   }
@@ -337,6 +374,12 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
       requireEncryptionAvailable()
       raw.ttsApiKeyEnc = safeStorage.encryptString(patch.ttsApiKey).toString('base64')
     } else delete raw.ttsApiKeyEnc
+  }
+  if (typeof patch.tierSenseApiKey === 'string') {
+    if (patch.tierSenseApiKey) {
+      requireEncryptionAvailable()
+      raw.tierSenseApiKeyEnc = safeStorage.encryptString(patch.tierSenseApiKey).toString('base64')
+    } else delete raw.tierSenseApiKeyEnc
   }
   if (patch.appearance) {
     const next = { ...readRecord(raw.appearance), ...readRecord(patch.appearance) }

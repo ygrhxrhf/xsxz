@@ -25,7 +25,7 @@ describe('Reader visual surface contract', () => {
     expect(source).not.toContain(':class="[\'reader-toolbar\', { visible: toolsVisible }]"')
     expect(source).toContain('class="tool-panel"')
     expect(source).toContain('v-model:show="showDrawer" placement="left" :width="320"')
-    expect(source).toContain('v-model:show="showAiResult" placement="right" :width="420"')
+    expect(source).not.toContain('v-model:show="showAiResult"')
     expect(source).toContain('v-model:show="showAiAssistant" placement="right" :width="420"')
     expect(source).toContain('v-model:show="showMarks" placement="left" :width="340"')
     expect(source).toContain('v-model:show="showSearch" placement="right" :width="420"')

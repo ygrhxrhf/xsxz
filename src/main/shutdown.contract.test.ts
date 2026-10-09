@@ -12,7 +12,8 @@ describe('退出与启动的状态收口', () => {
     const end = source.indexOf("app.on('window-all-closed'", start)
     const block = source.slice(start, end)
     for (const call of [
-      'cancelDownload()', 'cancelCheckAll()', 'aiQueue.cancelAll()', 'bookOverview.stop()', 'stopEvidenceIndex()',
+      'cancelDownload()', 'cancelCheckAll()', 'aiQueue.cancelAll()', 'bookOverview.stop()',
+      'aiReadingFollow.stop()', 'stopEvidenceIndex()',
     ]) {
       expect(block).toContain(call)
     }

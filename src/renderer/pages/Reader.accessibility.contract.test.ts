@@ -28,7 +28,7 @@ function installReaderApi() {
     settings: { get: async () => ({ reader: { fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium', paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll' }, tts: { rate: 1, autoNextChapter: true }, baseUrl: '' }), set: async () => ({}) },
     annotations: { list: async () => ({ ok: true, items: [] }) },
     download: { onProgress: () => () => {} },
-    ai: { onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {} },
+    ai: { onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {}, getMaterialCoverage: async () => ({ ok: true, coverage: null }), getUsage: async () => ({ ok: true, usage: { calls: 0 } }), chapterFinished: async () => ({ ok: false, message: '测试桩：不追剧' }) },
   } })
 }
 

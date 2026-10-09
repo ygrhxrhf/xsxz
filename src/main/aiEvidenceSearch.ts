@@ -326,7 +326,7 @@ export function selectLocalEvidence(
   chapters: readonly EvidenceSearchChapter[],
   query: EvidenceSearchQuery,
   options: EvidenceSearchOptions,
-): { citations: AiCitation[]; fallbackQuery: boolean; uptoChapterId: string } {
+): { citations: AiCitation[]; fallbackQuery: boolean; uptoChapterId: string; topScore: number } {
   const chapterIds = new Set<string>()
   for (const chapter of chapters) {
     if (chapterIds.has(chapter.id)) throw new Error('章节 ID 重复，无法生成唯一证据坐标')
@@ -336,7 +336,7 @@ export function selectLocalEvidence(
   const plan = planEvidenceQuery(ordered, query, options)
   const { cutoffPosition, uptoChapterId, currentPosition, baseTerms, searchTerms, expandedAliases, memoryHints, summaryHints, selectedAnchor, overlapWanted, noteParagraphs, noteChapterIds } = plan
   if (!searchTerms.corePhrase && !searchTerms.keywords.length && !memoryHints.size && !selectedAnchor && !overlapWanted.size) {
-    return { citations: [], fallbackQuery: baseTerms.fallback, uptoChapterId }
+    return { citations: [], fallbackQuery: baseTerms.fallback, uptoChapterId, topScore: 0 }
   }
   const excerptLimit = boundedInteger(options.excerptCharacters, 300, 80, 600)
   const candidates: Candidate[] = []
@@ -440,6 +440,7 @@ export function selectLocalEvidence(
     left.citation.paragraphIndex - right.citation.paragraphIndex || left.citation.id.localeCompare(right.citation.id))
   const maxResults = boundedInteger(options.maxResults, 8, 1, 8)
   const maxChapters = boundedInteger(options.maxChapters, 6, 1, 6)
+  const topScore = candidates[0]?.score ?? 0
   const selectedChapterIds = new Set<string>()
   const citations: AiCitation[] = []
   for (const candidate of candidates) {
@@ -449,5 +450,5 @@ export function selectLocalEvidence(
     selectedChapterIds.add(candidate.citation.chapterId)
     if (citations.length === maxResults) break
   }
-  return { citations, fallbackQuery: baseTerms.fallback, uptoChapterId }
+  return { citations, fallbackQuery: baseTerms.fallback, uptoChapterId, topScore }
 }

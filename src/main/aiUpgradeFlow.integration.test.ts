@@ -31,7 +31,7 @@ describe('trusted AI assistant mock flow', () => {
         text: '{"corePhrase":"账册","keywords":["码头"]}',
         json: { corePhrase: '账册', keywords: ['码头'] }, usage: { inputTokens: 4, outputTokens: 3 }, truncated: false,
       }),
-      search: async () => ({ citations: [citation], uptoChapterId: 'c0001' }),
+      search: async () => ({ citations: [citation], uptoChapterId: 'c0001', topScore: 0 }),
       answer: async () => ({
         text: '{"answer":"在码头。","citations":["qa-c0001-p1"]}',
         json: { answer: '在码头。', citations: [citation.id] }, usage: { inputTokens: 8, outputTokens: 5 }, truncated: false,
@@ -41,7 +41,7 @@ describe('trusted AI assistant mock flow', () => {
       kind: 'answer', text: '在码头。', citations: [citation], uptoChapterId: 'c0001',
       usage: { inputTokens: 12, outputTokens: 8 },
     })
-    expect(stages).toEqual(['rewriting', 'searching', 'requesting'])
+    expect(stages).toEqual(['searching', 'rewriting', 'searching', 'requesting'])
     if (result.kind !== 'answer') throw new Error('unexpected mock result')
     await writeChat('d_flow', [
       { role: 'user', content: '账册在哪里？' },

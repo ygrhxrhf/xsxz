@@ -3,9 +3,9 @@ import { DEFAULT_AI_PREFS } from './types'
 import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS, resolveAiTaskInstruction } from './aiPrompts'
 
 describe('AI task instruction resolution', () => {
-  it('defines the six fixed prompt tasks and their built-in editable requirements', () => {
+  it('defines the seven fixed prompt tasks and their built-in editable requirements', () => {
     expect(Object.keys(AI_PROMPT_LABELS)).toEqual([
-      'clean', 'translate', 'chapterSummary', 'recap', 'memory', 'evidenceQa',
+      'clean', 'translate', 'chapterSummary', 'chapterNote', 'recap', 'memory', 'evidenceQa',
     ])
     expect(Object.keys(BUILTIN_AI_PROMPTS)).toEqual(Object.keys(AI_PROMPT_LABELS))
     expect(Object.values(BUILTIN_AI_PROMPTS).every((text) => text.trim().length > 0)).toBe(true)

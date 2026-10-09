@@ -83,6 +83,47 @@ describe('annotations（书签/划线存储）', () => {
     expect(await updateAnnotation('d_anno', '不存在', { note: 'x' })).toBeNull()
   })
 
+  it('noteSource 跟着备注走，只改坐标不影响来源', async () => {
+    const aiNote = await addAnnotation({
+      bookId: 'd_anno',
+      chapterId: 'c0001',
+      kind: 'highlight',
+      start: 3,
+      end: 9,
+      excerpt: '窗外月光',
+      note: '这段是伏笔',
+      noteSource: 'ai',
+    })
+    expect(aiNote.noteSource).toBe('ai')
+
+    // 漂移校正只传坐标：备注与来源原样保留
+    const moved = await updateAnnotation('d_anno', aiNote.id, { start: 20, end: 26 })
+    expect(moved?.note).toBe('这段是伏笔')
+    expect(moved?.noteSource).toBe('ai')
+
+    // 读者改写文本 → 归属回到读者
+    const edited = await updateAnnotation('d_anno', aiNote.id, { note: '这段是伏笔，我加的' })
+    expect(edited?.noteSource).toBe('user')
+
+    // 清空备注 → 来源一并删除，不留孤儿标记
+    const cleared = await updateAnnotation('d_anno', aiNote.id, { note: '' })
+    expect(cleared?.note).toBeUndefined()
+    expect('noteSource' in (cleared ?? {})).toBe(false)
+
+    // 没有备注就不记来源
+    const bare = await addAnnotation({
+      bookId: 'd_anno',
+      chapterId: 'c0001',
+      kind: 'highlight',
+      start: 0,
+      end: 4,
+      excerpt: '张若尘',
+      noteSource: 'ai',
+    })
+    expect('noteSource' in bare).toBe(false)
+    expect((await listAnnotations('d_anno')).find((a) => a.id === bare.id)?.noteSource).toBeUndefined()
+  })
+
   it('removes annotations', async () => {
     const a = await addAnnotation({
       bookId: 'd_anno',
@@ -131,42 +172,5 @@ describe('annotations（书签/划线存储）', () => {
         excerpt: '',
       }),
     ).rejects.toThrow('摘录')
-  })
-})
-
-describe('character card storage（ai/characters.json）', () => {
-  let dir: string
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'spbf-charcard-'))
-    await setLibraryPath(dir)
-    await createBookFromBootstrap({
-      bookId: 'd_card',
-      title: '人物卡用书',
-      author: '',
-      importType: 'txt',
-      chapterTitles: ['第一章'],
-    })
-  })
-
-  it('writeCharacterCard / readCharacterCard round-trip', async () => {
-    const { readCharacterCard, writeCharacterCard } = await import('./library')
-    expect(await readCharacterCard('d_card')).toBeNull()
-
-    const card = {
-      version: 1 as const,
-      uptoChapterId: 'c0001',
-      characters: [{ name: '张若尘', role: '主角' }],
-      foreshadows: [{ desc: '轮回诀', open: true }],
-      raw: '{"characters":[]}',
-      updatedAt: new Date().toISOString(),
-    }
-    await writeCharacterCard('d_card', card)
-
-    const back = await readCharacterCard('d_card')
-    expect(back?.uptoChapterId).toBe('c0001')
-    expect(back?.characters[0].name).toBe('张若尘')
-    expect(back?.version).toBe(1)
-    expect(back?.updatedAt).toBeTruthy()
   })
 })

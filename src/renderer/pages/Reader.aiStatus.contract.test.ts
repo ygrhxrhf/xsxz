@@ -4,13 +4,17 @@ import { describe, expect, it } from 'vitest'
 describe('Reader AI task status contract', () => {
   it('subscribes and unsubscribes stage events with fixed Chinese copy', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const status = await readFile(new URL('./aiAssistantStatus.ts', import.meta.url), 'utf-8')
     expect(source).toContain('window.api.ai.onStage((event) =>')
     expect(source).toContain('unsubAiStage?.()')
+    // 文案真源在纯函数模块里，界面只负责按 jobId 覆盖阶段与进度句。
     for (const text of [
       '正在准备已读材料…', '正在改写检索问题…', '正在检索本地已读内容…',
-      '正在请求模型服务…', '正在保存到本地书库…',
-    ]) expect(source).toContain(text)
-    expect(source).toContain('assistantStages.value = { ...assistantStages.value, [event.jobId]: event.stage }')
+      '正在请求模型服务…', '正在保存到本地书库…', '已排队，等待前面的任务完成…',
+    ]) expect(status).toContain(text)
+    expect(status).toContain("indexing: '正在检索本地已读内容…'")
+    expect(source).toContain('[event.jobId]: { stage: event.stage, ...(detail ? { detail } : {}) }')
+    expect(source).toContain('describeAssistantStage(currentAssistantStage.value)')
     // 依据由本地检索先算出，必须在正文流完之前就写进气泡。
     expect(source).toContain('if (event.jobId === chatJobId.value && event.citations?.length && chatAssistantIndex.value >= 0)')
     expect(source).toContain('assistant.citations = event.citations')
@@ -36,7 +40,9 @@ describe('Reader AI task status contract', () => {
     const end = source.indexOf('async function setRecapLength', start)
     const block = source.slice(start, end)
     expect(block).toContain('const token = assistantSaveState.value.token')
-    expect(block).toContain('assistantBusy.value')
+    // 补写只该等它自己那一类任务，别的 tab 在跑不该挡住这次重试。
+    expect(block).toContain('assistantSaveBusy.value')
+    expect(block).not.toContain('assistantBusyByKind.value')
     expect(block).toContain('window.api.ai.retrySave(token)')
     expect(block).toContain('runAiSaveRecovery(async () =>')
     expect(block).toContain('clearRetriedAssistantSaveToken(assistantSaveState.value, token)')

@@ -16,10 +16,13 @@ export async function finalizeMemoryUpdate(
   dependencies: MemorySaveDependencies,
 ): Promise<void> {
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+  const remainingHint = memoryUpdate.remainingChapters > 0
+    ? `剩余 ${memoryUpdate.remainingChapters} 章未处理。`
+    : ''
   const event: Extract<AiDoneEvent, { ok: true }> = {
     jobId,
     ok: true,
-    text: `本次处理 ${memoryUpdate.processedChapters} 章，新增或更新 ${memoryUpdate.changedItems} 条记忆。`,
+    text: `本次处理 ${memoryUpdate.processedChapters} 章，新增或更新 ${memoryUpdate.changedItems} 条记忆。${remainingHint}`,
     memoryUpdate,
     ...(usage ? { usage } : {}),
   }

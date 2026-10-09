@@ -5,13 +5,16 @@ import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
 import type {
   AiBookUsage,
   AiBudgetEstimate,
+  AiBudgetEvent,
+  AiChapterNote,
   AiCitation,
   AiEvidenceChatMessage,
+  AiFollowCoverage,
+  AiFollowMode,
   AiMaterialCoverage,
   AiMemoryBase,
   AiMemoryCharacter,
   AiMemoryFile,
-  AiRequestStage,
   AiUsage,
   Book,
   ChapterMeta,
@@ -31,7 +34,6 @@ import {
   chapterScrollRatio,
   failAdvice,
   filterCatalogChapters,
-  formatCharacterCard,
   readerProgressLabel,
   readerScrollBehavior,
   remainingChapterCount,
@@ -63,12 +65,16 @@ import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
-import { enqueueCompletedChapter, finishOrganizedChapter, normalizeOrganizeQueue, pauseOrganizeQueue, resumeOrganizeQueue } from './aiOrganizeQueue'
 import { displayAiServiceOrigin } from './aiAssistantTransparency'
 import {
   assistantKindForJob,
+  type AssistantJobKind,
+  type AssistantPanelTab,
+  type AssistantSaveTokenState,
+  type AssistantStageState,
   clearRetriedAssistantSaveToken,
   currentAssistantStage as resolveAssistantStage,
+  describeAssistantStage,
   removeAssistantStage,
   updateAssistantSaveToken,
 } from './aiAssistantStatus'
@@ -113,17 +119,33 @@ const aiLoading = ref(false)
 const cleanRunning = ref(false)
 const aiResult = ref('')
 const aiResultTitle = ref('')
-const showAiResult = ref(false)
 const cleanBudget = ref<AiBudgetEstimate | null>(null)
 const cleanBudgetMessage = ref('')
 const showCleanBudgetConfirm = ref(false)
 const lastCleanBudget = ref<AiBudgetEstimate | null>(null)
 const showAiAssistant = ref(false)
-const aiAssistantTab = ref<'recap' | 'memory' | 'qa'>('recap')
+const aiAssistantTab = ref<AssistantPanelTab>('recap')
 const aiServiceOrigin = ref('')
-const aiAssistantTaskLabel = computed(() => ({ recap: '前情', memory: '记忆', qa: '问答' })[aiAssistantTab.value])
-const assistantBudgets = ref<Partial<Record<'recap' | 'memory' | 'qa', AiBudgetEstimate>>>({})
-const currentAssistantBudget = computed(() => assistantBudgets.value[aiAssistantTab.value] ?? null)
+const aiAssistantTaskLabel = computed(() => ({ recap: '前情', memory: '记忆', qa: '问答', notes: '笔记', output: '输出' })[aiAssistantTab.value])
+const assistantBudgets = ref<Partial<Record<AiBudgetEvent['task'], AiBudgetEstimate>>>({})
+// 前情 tab 跑的可能是整本前情也可能是本章摘要，按当前这次任务优先显示，另一种兜底。
+const currentAssistantBudget = computed(() => {
+  const budgets = assistantBudgets.value
+  switch (aiAssistantTab.value) {
+    case 'recap':
+      return (recapJobKind.value === 'chapter'
+        ? budgets.chapterSummary ?? budgets.recap
+        : budgets.recap ?? budgets.chapterSummary) ?? null
+    case 'memory':
+      return budgets.memory ?? null
+    case 'notes':
+      return budgets.chapterNote ?? null
+    case 'output':
+      return null
+    default:
+      return budgets.qa ?? null
+  }
+})
 const recapText = ref('')
 const recapJobId = ref('')
 const recapJobKind = ref<'chapter' | 'story' | ''>('')
@@ -137,11 +159,11 @@ const memoryJobKind = ref<'update' | 'rebuild' | 'fromSource' | ''>('')
 const memoryStarting = ref(false)
 const memoryStopping = ref(false)
 const memoryLoading = computed(() => memoryStarting.value || Boolean(memoryJobId.value))
-const assistantStages = ref<Record<string, AiRequestStage>>({})
+const assistantStages = ref<Record<string, AssistantStageState>>({})
 const lastAssistantUsage = ref<AiUsage | null>(null)
 const assistantCompleted = ref(false)
 const lastAssistantTruncated = ref(false)
-const assistantSaveState = ref<{ token: string; kind: 'recap' | 'memory' | 'qa' | '' }>({ token: '', kind: '' })
+const assistantSaveState = ref<AssistantSaveTokenState>({ token: '', kind: '' })
 const assistantSaveRetrying = aiSaveRecoveryActive
 const chapterSummaryBudget = ref<AiBudgetEstimate | null>(null)
 const chapterSummaryBudgetMessage = ref('')
@@ -151,6 +173,22 @@ const memoryBudgetMessage = ref('')
 const showMemoryBudgetConfirm = ref(false)
 const memoryBudgetRequest = ref<{ kind: 'update' | 'rebuild' | 'fromSource'; fromChapterId?: string } | null>(null)
 const recapBudgetConfirmKind = ref<'chapter' | 'story'>('chapter')
+const chapterNotes = ref<AiChapterNote[]>([])
+const currentChapterNote = ref<(AiChapterNote & { stale: boolean }) | null>(null)
+const chapterNoteJobId = ref('')
+const chapterNoteText = ref('')
+const chapterNoteDraft = ref('')
+const chapterNoteStarting = ref(false)
+const chapterNoteStopping = ref(false)
+const chapterNoteStopped = ref(false)
+const chapterNoteSaving = ref(false)
+const chapterNoteLoading = computed(() => Boolean(chapterNoteJobId.value))
+const notesBudget = ref<AiBudgetEstimate | null>(null)
+const notesBudgetMessage = ref('')
+const showNotesBudgetConfirm = ref(false)
+const noteOverwritePrompt = ref('')
+const chapterNoteView = computed(() => chapterNoteText.value || currentChapterNote.value?.text || '')
+const otherChapterNotes = computed(() => chapterNotes.value.filter((note) => note.chapterId !== currentChapter.value?.id))
 const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
@@ -160,45 +198,61 @@ const chatLoading = ref(false)
 const chatStarting = ref(false)
 const chatJobId = ref('')
 const chatAssistantIndex = ref(-1)
-type ReadingAiMode = 'manual' | 'ask' | 'auto'
-const readingAiMode = ref<ReadingAiMode>('manual')
-const completedChapterQueue = ref<string[]>([])
-const organizeQueuePaused = ref(false)
-const queueBudget = ref<AiBudgetEstimate | null>(null)
-const queueBudgetMessage = ref('')
-const queueBudgetApproved = ref(false)
+/**
+ * 从选区发起的那次提问：记住气泡序号与选区区间，回答完成后就能把 AI 的解释
+ * 存回读者刚才选中的同一段文字。换章、清空记录或手动提问都会让它失效。
+ */
+const selectionNoteTarget = ref<{
+  messageIndex: number
+  start: number
+  end: number
+  text: string
+} | null>(null)
+const selectionNoteSaving = ref(false)
+/** 追剧的队列、模式、进度和失败原因都在主进程的 follow.json 里，界面只显示与触发。 */
+const follow = ref<AiFollowCoverage | null>(null)
+const readingAiMode = computed<AiFollowMode>(() => follow.value?.mode ?? 'manual')
 const materialCoverage = ref<AiMaterialCoverage | null>(null)
 const bookUsage = ref<AiBookUsage | null>(null)
 const aliasDrafts = ref<Record<string, string>>({})
 const summaryDrafts = ref<Record<string, string>>({})
 const correctingAliasId = ref('')
 const correctingSummaryId = ref('')
-const organizingChapterId = ref('')
-const organizingJobId = ref('')
-const organizingStage = ref<'summary' | 'memory' | ''>('')
-const organizingBusy = ref(false)
-const completedChapterTitle = computed(() => book.value?.chapters.find((chapter) => chapter.id === completedChapterQueue.value[0])?.title ?? '')
-const assistantBusy = computed(() => organizingBusy.value || recapStarting.value || recapLoading.value || memoryLoading.value || chatStarting.value || chatLoading.value)
+/** 首次切到 auto 前的预算确认：确认后才把用户点的那个模式写给主进程。 */
+const pendingFollowMode = ref<AiFollowMode>('manual')
+const followBudget = ref<AiBudgetEstimate | null>(null)
+const followBudgetMessage = ref('')
+const showFollowBudgetConfirm = ref(false)
+/** 设置页的自动追剧总开关：本书选了自动但总开关关着时，界面要说明为什么不会自己跑。 */
+const autoFollowEnabled = ref(false)
+/** 追剧在跑时的拉取间隔：单元一跑几十秒，3 秒足够让进度跟上，也不会常占磁盘。 */
+const FOLLOW_POLL_MS = 3000
+let followPollTimer: ReturnType<typeof setInterval> | null = null
+/**
+ * 主进程的车道会排队而不是拒绝，所以界面也只按任务种类记账：
+ * 后台在整理记忆或前情时，问答输入框不该跟着变灰。
+ */
+const assistantBusyByKind = computed<Record<AssistantJobKind, boolean>>(() => ({
+  recap: recapStarting.value || recapLoading.value,
+  memory: memoryStarting.value || memoryLoading.value,
+  qa: chatStarting.value || chatLoading.value,
+  notes: chapterNoteStarting.value || chapterNoteLoading.value,
+}))
+/** 重试保存只该等它自己那一类任务，别的 tab 在跑不该挡住这次补写。 */
+const assistantSaveBusy = computed(() => {
+  const kind = assistantSaveState.value.kind
+  return kind ? assistantBusyByKind.value[kind] : false
+})
 const assistantJobIds = computed(() => ({
   recap: recapJobId.value,
   memory: memoryJobId.value,
   qa: chatJobId.value,
+  notes: chapterNoteJobId.value,
 }))
-const currentAssistantStage = computed(() => resolveAssistantStage(
-  assistantStages.value,
-  aiAssistantTab.value,
-  assistantJobIds.value,
-))
-const assistantStageText = computed(() => {
-  const labels: Partial<Record<AiRequestStage, string>> = {
-    preparing: '正在准备已读材料…',
-    rewriting: '正在改写检索问题…',
-    searching: '正在检索本地已读内容…',
-    requesting: '正在请求模型服务…',
-    saving: '正在保存到本地书库…',
-  }
-  return currentAssistantStage.value ? labels[currentAssistantStage.value] ?? '' : ''
-})
+const currentAssistantStage = computed(() => aiAssistantTab.value === 'output'
+  ? undefined
+  : resolveAssistantStage(assistantStages.value, aiAssistantTab.value, assistantJobIds.value))
+const assistantStageText = computed(() => describeAssistantStage(currentAssistantStage.value))
 const catalogQuery = ref('')
 const scrollRatioView = ref(0)
 const visualPageIndexView = ref(0)
@@ -612,8 +666,53 @@ async function askSelectedText(kind: 'explain' | 'person' | 'backstory' = 'expla
       ? '这件事之前发生了什么？按已读时间线简要追溯相关事件。'
       : '这段话是什么意思？结合已读剧情解释一下。'
   chatInput.value = `${question}\n\n「${excerpt}」`
+  // closeSelectionTools() 会清空 selectedRange，必须先取好区间，回答才能存回原文。
+  const target = selectedRange.value ?? selectionOffsets()
   closeSelectionTools()
   await sendChat()
+  selectionNoteTarget.value = target && chatJobId.value && chatAssistantIndex.value >= 0
+    ? { messageIndex: chatAssistantIndex.value, start: target.start, end: target.end, text: target.text }
+    : null
+}
+
+/** 把「解释这段」的回答存回读者选中的那个区间，出处标 ai，读者随后可以改写或删掉。 */
+async function saveAnswerAsSelectionNote(reply: AiEvidenceChatMessage) {
+  const target = selectionNoteTarget.value
+  const note = reply.content.trim()
+  if (!target || !book.value || !currentChapter.value) return
+  if (!note || note.startsWith('错误：')) {
+    message.warning('这条回答还不能保存为批注')
+    return
+  }
+  selectionNoteSaving.value = true
+  try {
+    const res = await window.api.annotations.add({
+      bookId: book.value.id,
+      chapterId: currentChapter.value.id,
+      kind: 'highlight',
+      start: target.start,
+      end: target.end,
+      excerpt: target.text,
+      note,
+      noteSource: 'ai',
+    })
+    if (!res.ok) {
+      message.error(res.message || '保存批注失败')
+      return
+    }
+    annotations.value.push(res.item)
+    selectionNoteTarget.value = null
+    message.success('解释已存为这段的批注')
+  } finally {
+    selectionNoteSaving.value = false
+  }
+}
+
+/** 只有「这次提问来自选区」的那条回答才给存回出口，且必须已经生成结束。 */
+function canSaveSelectionNote(reply: AiEvidenceChatMessage, index: number): boolean {
+  if (chatLoading.value || selectionNoteTarget.value?.messageIndex !== index) return false
+  const note = reply.content.trim()
+  return note.length > 0 && !note.startsWith('错误：')
 }
 
 const chapterBookmark = computed(
@@ -659,6 +758,18 @@ const sortedMarks = computed(() => {
   )
 })
 
+/**
+ * 生词本是纯视图：读者划过的词句（含他自己的批注）加上记忆里已核实的人物，
+ * 全部来自已有数据，不另建存储、不加 IPC，删不掉也改不坏原始标记。
+ */
+const WORDBOOK_TERM_LIMIT = 60
+const wordbookHighlights = computed(() => annotations.value
+  .filter((item) => item.kind === 'highlight' && item.excerpt.trim()))
+const wordbookTerms = computed(() => wordbookHighlights.value.slice(0, WORDBOOK_TERM_LIMIT))
+const wordbookTrimmed = computed(() => wordbookHighlights.value.length > wordbookTerms.value.length)
+const wordbookPeople = computed(() => (memoryData.value?.characters ?? [])
+  .filter((item) => item.accuracy === 'normal'))
+
 async function jumpToAnnotation(a: Annotation) {
   if (!book.value) return
   const ch = chapters.value.find((c) => c.id === a.chapterId)
@@ -678,6 +789,8 @@ async function saveNote(a: Annotation) {
   const res = await window.api.annotations.update(book.value.id, a.id, { note: noteDraft.value })
   if (res.ok) {
     a.note = res.item.note
+    // 读者改写过的备注就不再是 AI 的话，标识跟着落盘结果走。
+    a.noteSource = res.item.noteSource
     message.success('备注已保存')
   } else {
     message.error(res.message || '保存失败')
@@ -750,7 +863,6 @@ const FONT_MAX = 36
 function anyDrawerOpen() {
   return (
     showDrawer.value ||
-    showAiResult.value ||
     showAiAssistant.value ||
     showSearch.value ||
     showMarks.value ||
@@ -858,8 +970,7 @@ function toggleImmersiveLock() {
 }
 
 function closeTopReaderOverlay() {
-  if (showAiResult.value) showAiResult.value = false
-  else if (showAiAssistant.value) showAiAssistant.value = false
+  if (showAiAssistant.value) showAiAssistant.value = false
   else if (showSearch.value) showSearch.value = false
   else if (showMarks.value) showMarks.value = false
   else if (showDrawer.value) showDrawer.value = false
@@ -1005,6 +1116,12 @@ function onReaderKeydown(e: KeyboardEvent) {
     case 'open-appearance':
       toggleBottomPanel('font')
       break
+    case 'open-assistant':
+      void openAiAssistant('recap')
+      break
+    case 'open-note':
+      void openAiAssistant('notes')
+      break
     case 'toggle-tts':
       toggleTtsFromShortcut()
       break
@@ -1094,19 +1211,19 @@ async function loadBook(bookId: string) {
   ttsStop()
   ttsSavedPosition.value = null
   if (book.value && book.value.id !== bookId) {
-    if (organizingJobId.value) void window.api.ai.cancel(organizingJobId.value)
-    if (memoryJobId.value === organizingJobId.value) {
-      memoryJobId.value = ''
-      memoryJobKind.value = ''
-    }
-    completedChapterQueue.value = []
-    organizingJobId.value = ''
-    organizingChapterId.value = ''
-    organizingStage.value = ''
-    organizingBusy.value = false
-    queueBudget.value = null
-    queueBudgetMessage.value = ''
-    queueBudgetApproved.value = false
+    stopFollowPolling()
+    follow.value = null
+    materialCoverage.value = null
+    showFollowBudgetConfirm.value = false
+    followBudget.value = null
+    chapterNoteJobId.value = ''
+    chapterNotes.value = []
+    currentChapterNote.value = null
+    chapterNoteText.value = ''
+    chapterNoteDraft.value = ''
+    noteOverwritePrompt.value = ''
+    notesBudget.value = null
+    showNotesBudgetConfirm.value = false
   }
   chapterPrefetch.onBookChange(bookId)
   const previousChapterId = currentChapter.value?.id
@@ -1115,20 +1232,8 @@ async function loadBook(bookId: string) {
   if (res.book) {
     book.value = res.book
     ttsSavedPosition.value = await (window.api.tts?.getPosition?.(bookId) ?? Promise.resolve(null)).catch(() => null)
-    const savedMode = localStorage.getItem(`spbf:reading-ai:${bookId}`)
-    readingAiMode.value = savedMode === 'ask' || savedMode === 'auto' ? savedMode : 'manual'
-    try {
-      const savedQueue: unknown = JSON.parse(localStorage.getItem(`spbf:reading-ai-queue:${bookId}`) ?? '[]')
-      const cutoff = res.book.chapters.findIndex((chapter) => chapter.id === res.book?.progress?.chapterId)
-      organizeQueuePaused.value = localStorage.getItem(`spbf:reading-ai-paused:${bookId}`) === '1'
-      completedChapterQueue.value = readingAiMode.value !== 'manual'
-        ? normalizeOrganizeQueue(savedQueue)
-          .filter((id) => res.book!.chapters.some((chapter, position) => chapter.id === id && chapter.status === 'ready' && position <= cutoff))
-        : []
-    } catch { completedChapterQueue.value = [] }
-    if (readingAiMode.value === 'auto' && !organizeQueuePaused.value && completedChapterQueue.value.length) {
-      setTimeout(() => void organizeNextCompletedChapter(), 0)
-    }
+    // 追剧状态是主进程的真源：开书就拉一次，界面才知道该显示哪种模式、排了几章。
+    void loadAssistantMaterial()
     chapters.value = res.book.chapters
     currentChapter.value = null
     lostHighlightIds.value = new Set()
@@ -1155,8 +1260,14 @@ async function loadBook(bookId: string) {
 async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingProgress, continueListening = false) {
   if (!book.value) return
   const openingBookId = book.value.id
-  const finishedChapterId = currentChapter.value?.id !== ch.id && currentChapter.value?.status === 'ready' && contentRef.value &&
-    currentChapterRatio(contentRef.value) >= 0.9 ? currentChapter.value.id : ''
+  // 「这一章读完了」只有渲染层判得出来（主进程拿不到滚动位置），判出来就把实测比率交给主进程排队。
+  const finishedRatio = currentChapter.value && currentChapter.value.id !== ch.id &&
+    currentChapter.value.status === 'ready' && contentRef.value
+    ? currentChapterRatio(contentRef.value)
+    : 0
+  const finishedChapter = currentChapter.value && finishedRatio >= 0.9
+    ? { bookId: openingBookId, chapterId: currentChapter.value.id, ratio: finishedRatio }
+    : null
   chapterPrefetch.beginNavigation()
   closeSelectionTools()
   ttsStop(continueListening)
@@ -1201,8 +1312,8 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
         following: followingChapter.value,
         readChapter: (bookId, chapterId) => window.api.library.readChapter(bookId, chapterId),
       })
-      if (finishedChapterId) void progressSave.then((saved) => {
-        if (saved && book.value?.id === openingBookId) queueCompletedChapter(finishedChapterId)
+      if (finishedChapter) void progressSave.then((saved) => {
+        if (saved && book.value?.id === openingBookId) void reportFinishedChapter(finishedChapter)
       })
     } else {
       currentChapter.value = ch
@@ -1502,6 +1613,7 @@ async function loadPrefs() {
   ttsSource.value = s.tts?.source === 'online' ? 'online' : 'system'
   ttsVoiceURI.value = s.tts?.systemVoiceURI ?? ''
   recapLength.value = s.ai?.recapLength ?? 'standard'
+  autoFollowEnabled.value = s.ai?.autoReadingFollow ?? false
   aiServiceOrigin.value = displayAiServiceOrigin(s.baseUrl)
   libraryPath.value = s.libraryPath
 }
@@ -1518,7 +1630,7 @@ async function runCleanBody(confirmOverBudget: boolean) {
     if (res.ok) {
       aiResult.value = res.result.cleaned
       lastCleanBudget.value = res.budget
-      showAiResult.value = true
+      showAiOutput()
       void loadAssistantMaterial()
       return
     }
@@ -1563,7 +1675,7 @@ async function applyCleanedBody() {
   chapterPrefetch.invalidate(book.value.id, currentChapter.value.id)
   chapterBody.value = aiResult.value
   hasBodyRaw.value = true
-  showAiResult.value = false
+  showAiAssistant.value = false
   message.success('已应用到正文')
 }
 
@@ -1579,23 +1691,6 @@ async function restoreCleanedBody() {
   if (ch.chapter) {
     chapterBody.value = ch.chapter.body
     hasBodyRaw.value = false
-  }
-}
-
-async function aiSummarize() {
-  if (!book.value || !currentChapter.value) return
-  aiLoading.value = true
-  aiResultTitle.value = '前情摘要'
-  try {
-    const res = await window.api.ai.summarize(book.value.id, currentChapter.value.id)
-    if (res.ok) {
-      aiResult.value = res.text
-      showAiResult.value = true
-    } else {
-      message.error(res.message || '摘要失败')
-    }
-  } finally {
-    aiLoading.value = false
   }
 }
 
@@ -1642,151 +1737,120 @@ async function loadAssistantMaterial() {
     window.api.ai.getMaterialCoverage(book.value.id),
     window.api.ai.getUsage(book.value.id),
   ])
-  if (coverage.ok) materialCoverage.value = coverage.coverage
+  if (coverage.ok && coverage.coverage) {
+    materialCoverage.value = coverage.coverage
+    applyFollow(coverage.coverage.follow)
+  }
   if (usage.ok) bookUsage.value = usage.usage
 }
 
-function queueCompletedChapter(chapterId: string) {
-  if (!book.value || readingAiMode.value === 'manual') return
-  const next = enqueueCompletedChapter({
-    chapters: completedChapterQueue.value,
-    paused: organizeQueuePaused.value,
-  }, chapterId, organizingChapterId.value)
-  if (next.chapters === completedChapterQueue.value) return
-  completedChapterQueue.value = next.chapters
-  persistCompletedQueue()
-  if (readingAiMode.value === 'ask') message.info('这一章已读完，可在 AI 助手中整理摘要和小说记忆')
-  if (readingAiMode.value === 'auto' && !organizeQueuePaused.value) void organizeNextCompletedChapter()
+/**
+ * 「这一章读完了」只有渲染层判得出来（主进程拿不到滚动位置），判出来就把实测比率交出去。
+ * 上报只往主进程的 follow.json 排队，失败也不打扰阅读——追剧漏一章可以补，读不下去才是事故。
+ */
+async function reportFinishedChapter(finished: { bookId: string; chapterId: string; ratio: number }) {
+  const result = await window.api.ai.chapterFinished(finished.bookId, finished.chapterId, finished.ratio)
+  if (!result.ok) return
+  applyFollow(result.coverage)
+  if (result.coverage.mode === 'ask') message.info('这一章已读完，可在 AI 助手中整理摘要和小说记忆')
 }
 
-function pauseCompletedQueue() {
-  organizeQueuePaused.value = pauseOrganizeQueue({ chapters: completedChapterQueue.value, paused: organizeQueuePaused.value }).paused
-  if (book.value) localStorage.setItem(`spbf:reading-ai-paused:${book.value.id}`, '1')
-}
-
-function resumeCompletedQueue() {
-  if (queueBudget.value) {
-    showAiAssistant.value = true
-    message.warning('请先确认本次整理的发送预算')
+function applyFollow(coverage: AiFollowCoverage | null) {
+  follow.value = coverage
+  if (!coverage || coverage.mode === 'manual') {
+    stopFollowPolling()
     return
   }
-  organizeQueuePaused.value = resumeOrganizeQueue({ chapters: completedChapterQueue.value, paused: organizeQueuePaused.value }).paused
-  if (book.value) localStorage.removeItem(`spbf:reading-ai-paused:${book.value.id}`)
-  if (readingAiMode.value === 'auto') void organizeNextCompletedChapter()
+  startFollowPolling()
 }
 
-function persistCompletedQueue() {
-  if (book.value) localStorage.setItem(`spbf:reading-ai-queue:${book.value.id}`, JSON.stringify(completedChapterQueue.value))
+/** 队列、进度、失败原因都在主进程，界面只能拉：关窗、切书、刷新都不会打断它。 */
+function startFollowPolling() {
+  if (followPollTimer) return
+  followPollTimer = setInterval(() => void pollFollow(), FOLLOW_POLL_MS)
 }
 
-function setReadingAiMode(mode: ReadingAiMode) {
-  readingAiMode.value = mode
-  if (book.value) localStorage.setItem(`spbf:reading-ai:${book.value.id}`, mode)
-  if (mode === 'manual') {
-    completedChapterQueue.value = []
-    queueBudget.value = null
-    queueBudgetApproved.value = false
-    persistCompletedQueue()
+function stopFollowPolling() {
+  if (!followPollTimer) return
+  clearInterval(followPollTimer)
+  followPollTimer = null
+}
+
+async function pollFollow() {
+  const bookId = book.value?.id
+  if (!bookId) {
+    stopFollowPolling()
+    return
   }
-  if (mode === 'auto') void organizeNextCompletedChapter()
+  const result = await window.api.ai.getMaterialCoverage(bookId).catch(() => null)
+  if (!result?.ok || !result.coverage) return
+  materialCoverage.value = result.coverage
+  applyFollow(result.coverage.follow)
 }
 
-async function organizeNextCompletedChapter() {
-  if (!book.value || organizeQueuePaused.value || queueBudget.value || !completedChapterQueue.value.length || organizingBusy.value || assistantBusy.value || assistantSaveRetrying.value) return
-  const bookId = book.value.id
-  const chapterId = completedChapterQueue.value[0]!
-  organizingBusy.value = true
-  organizingChapterId.value = chapterId
-  try {
-    const stored = await window.api.ai.getSummaries(bookId)
-    if (!stored.ok) throw new Error(stored.message)
-    if (!stored.summaries.byChapter[chapterId]) {
-      const started = await window.api.ai.summarizeChapter(bookId, chapterId, queueBudgetApproved.value)
-      queueBudgetApproved.value = false
-      if (!started.ok) {
-        if ('confirmationRequired' in started && started.confirmationRequired) {
-          queueBudget.value = started.budget
-          queueBudgetMessage.value = started.message
-          organizeQueuePaused.value = true
-          persistQueuePaused()
-          message.warning('整理队列已暂停，请确认发送预算')
-        } else message.warning(started.message)
-        return
-      }
-      organizingJobId.value = started.jobId
-      organizingStage.value = 'summary'
+/** 模式的真源在主进程：只有拿到成功回执才认这个新模式，被拒绝就退回磁盘上的旧值。 */
+async function setReadingAiMode(mode: AiFollowMode) {
+  if (!book.value || mode === readingAiMode.value) return
+  pendingFollowMode.value = mode
+  const result = await window.api.ai.followSet(book.value.id, mode, false)
+  if (!result.ok) {
+    if ('confirmationRequired' in result && result.confirmationRequired) {
+      followBudget.value = result.budget
+      followBudgetMessage.value = result.message
+      showFollowBudgetConfirm.value = true
+      showAiAssistant.value = true
       return
     }
-    await organizeMemoryAfterSummary()
-  } catch (error) {
-    message.warning(error instanceof Error ? error.message : '整理已读章节失败')
-  } finally {
-    if (!organizingJobId.value) {
-      organizingBusy.value = false
-      organizingChapterId.value = ''
-    }
-  }
-}
-
-async function organizeMemoryAfterSummary() {
-  if (!book.value || !organizingChapterId.value) return
-  const started = await window.api.ai.updateMemory(book.value.id, organizingChapterId.value, queueBudgetApproved.value)
-  queueBudgetApproved.value = false
-  if (!started.ok) {
-    if ('confirmationRequired' in started && started.confirmationRequired) {
-      queueBudget.value = started.budget
-      queueBudgetMessage.value = started.message
-      organizeQueuePaused.value = true
-      persistQueuePaused()
-      message.warning('整理队列已暂停，请确认发送预算')
-    } else message.warning(started.message)
+    message.warning(result.message)
     return
   }
-  organizingJobId.value = started.jobId
-  organizingStage.value = 'memory'
-  memoryJobId.value = started.jobId
-  memoryJobKind.value = 'update'
+  followBudget.value = null
+  followBudgetMessage.value = ''
+  applyFollow(result.coverage)
 }
 
-function finishOrganizingChapter(success: boolean) {
-  const chapterId = organizingChapterId.value
-  organizingJobId.value = ''
-  organizingStage.value = ''
-  organizingBusy.value = false
-  organizingChapterId.value = ''
-  queueBudgetApproved.value = false
-  if (success && completedChapterQueue.value[0] === chapterId) {
-    completedChapterQueue.value = finishOrganizedChapter({
-      chapters: completedChapterQueue.value,
-      paused: organizeQueuePaused.value,
-    }, chapterId).chapters
-    persistCompletedQueue()
+async function confirmFollowBudget() {
+  const mode = pendingFollowMode.value
+  showFollowBudgetConfirm.value = false
+  followBudget.value = null
+  if (!book.value) return
+  const result = await window.api.ai.followSet(book.value.id, mode, true)
+  if (!result.ok) {
+    message.warning(result.message)
+    return
   }
-  if (success && readingAiMode.value === 'auto' && !organizeQueuePaused.value) setTimeout(() => void organizeNextCompletedChapter(), 0)
+  applyFollow(result.coverage)
 }
 
-function persistQueuePaused() {
-  if (book.value) localStorage.setItem(`spbf:reading-ai-paused:${book.value.id}`, '1')
+function cancelFollowBudget() {
+  showFollowBudgetConfirm.value = false
+  followBudget.value = null
+  followBudgetMessage.value = ''
+  pendingFollowMode.value = 'manual'
 }
 
-async function confirmQueueBudget() {
-  queueBudget.value = null
-  queueBudgetApproved.value = true
-  organizeQueuePaused.value = false
-  if (book.value) localStorage.removeItem(`spbf:reading-ai-paused:${book.value.id}`)
-  if (organizingChapterId.value && organizingStage.value === 'summary' && !organizingJobId.value) {
-    await organizeMemoryAfterSummary()
-    if (!organizingJobId.value && !queueBudget.value) finishOrganizingChapter(false)
-  } else {
-    void organizeNextCompletedChapter()
+/** 「现在整理 / 继续」：读者当场授权，主进程清掉失败与暂停标记后跑一轮。 */
+async function runFollowNow() {
+  if (!book.value) return
+  const result = await window.api.ai.followRetry(book.value.id)
+  if (!result.ok) {
+    message.warning(result.message)
+    return
   }
+  applyFollow(result.coverage)
 }
 
-function stopOrganizing() {
-  if (organizingJobId.value) void window.api.ai.cancel(organizingJobId.value)
+function stopFollowAuto() {
+  void setReadingAiMode('manual')
 }
 
-async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
+/** 一次性结果（清正文、翻译）不再单开抽屉，切到同一个 AI 壳的「输出」pane。 */
+function showAiOutput() {
+  aiAssistantTab.value = 'output'
+  showAiAssistant.value = true
+}
+
+async function openAiAssistant(tab: AssistantPanelTab = 'recap') {
   if (!book.value) return
   aiAssistantTab.value = tab
   showAiAssistant.value = true
@@ -1801,7 +1865,7 @@ async function openAiAssistant(tab: 'recap' | 'memory' | 'qa' = 'recap') {
 }
 
 async function startMemoryJob(kind: 'update' | 'rebuild', confirmOverBudget = false) {
-  if (!book.value?.progress?.chapterId || assistantBusy.value || assistantSaveRetrying.value) return
+  if (!book.value?.progress?.chapterId || assistantBusyByKind.value.memory || assistantSaveRetrying.value) return
   memoryStarting.value = true
   try {
     const start = kind === 'update' ? window.api.ai.updateMemory : window.api.ai.rebuildMemory
@@ -1883,7 +1947,7 @@ function earliestMemorySource(item: AiMemoryBase): string | null {
 }
 
 async function rebuildMemoryFromSource(item: AiMemoryBase, confirmOverBudget = false, savedFromChapterId?: string) {
-  if (!book.value?.progress?.chapterId || assistantBusy.value || assistantSaveRetrying.value) return
+  if (!book.value?.progress?.chapterId || assistantBusyByKind.value.memory || assistantSaveRetrying.value) return
   const fromChapterId = savedFromChapterId ?? earliestMemorySource(item)
   if (!fromChapterId) {
     message.warning('来源章节不存在，无法从此处重建')
@@ -1934,7 +1998,7 @@ async function confirmMemoryBudget() {
 }
 
 async function saveCharacterAliases(item: AiMemoryCharacter) {
-  if (!book.value || correctingAliasId.value || assistantBusy.value) return
+  if (!book.value || correctingAliasId.value || assistantBusyByKind.value.memory) return
   correctingAliasId.value = item.id
   const aliases = (aliasDrafts.value[item.id] ?? '').split(/[、,，]/).map((alias) => alias.trim()).filter(Boolean)
   try {
@@ -1955,7 +2019,7 @@ async function saveCharacterAliases(item: AiMemoryCharacter) {
 }
 
 async function saveMemorySummary(kind: 'character' | 'relation' | 'foreshadow' | 'event', item: AiMemoryBase) {
-  if (!book.value || correctingSummaryId.value || assistantBusy.value || assistantSaveRetrying.value) return
+  if (!book.value || correctingSummaryId.value || assistantBusyByKind.value.memory || assistantSaveRetrying.value) return
   correctingSummaryId.value = item.id
   try {
     const result = await window.api.ai.correctMemorySummary(book.value.id, kind, item.id, summaryDrafts.value[item.id] ?? '')
@@ -1988,7 +2052,7 @@ async function markMemoryItem(kind: 'character' | 'relation' | 'foreshadow' | 'e
 
 async function retryAssistantSave() {
   const token = assistantSaveState.value.token
-  if (!token || assistantSaveRetrying.value || assistantBusy.value) return
+  if (!token || assistantSaveRetrying.value || assistantSaveBusy.value) return
   try {
     await runAiSaveRecovery(async () => {
       const result = await window.api.ai.retrySave(token)
@@ -2016,7 +2080,7 @@ async function setRecapLength(value: 'short' | 'standard' | 'detailed') {
 }
 
 async function startRecap(kind: 'chapter' | 'story', confirmOverBudget = false) {
-  if (!book.value || !currentChapter.value || assistantBusy.value || assistantSaveRetrying.value) return
+  if (!book.value || !currentChapter.value || assistantBusyByKind.value.recap || assistantSaveRetrying.value) return
   if (kind === 'story' || !confirmOverBudget) chapterSummaryBudget.value = null
   const uptoChapterId = kind === 'chapter' ? currentChapter.value.id : book.value.progress?.chapterId
   if (!uptoChapterId) {
@@ -2068,6 +2132,120 @@ function stopRecap() {
   void window.api.ai.cancel(recapJobId.value)
 }
 
+/**
+ * 笔记的唯一真源是磁盘上的 ai/notes.json：整本列表用于「回看」，
+ * 当前章那条额外带回 stale，因为过期要拿正文重算 hash，只有主进程能做。
+ */
+async function loadChapterNotes() {
+  if (!book.value || !currentChapter.value) {
+    chapterNotes.value = []
+    currentChapterNote.value = null
+    return
+  }
+  try {
+    const res = await window.api.ai.chapterNotes(book.value.id, currentChapter.value.id)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    chapterNotes.value = res.notes
+    const previous = currentChapterNote.value?.text ?? ''
+    if (!chapterNoteDraft.value.trim() || chapterNoteDraft.value === previous) {
+      chapterNoteDraft.value = res.current?.text ?? ''
+    }
+    if (!chapterNoteLoading.value) chapterNoteText.value = ''
+    currentChapterNote.value = res.current
+  } catch {
+    message.error('无法读取本章笔记')
+  }
+}
+
+async function startChapterNote(confirmOverBudget = false, overwriteUserNote = false) {
+  if (!book.value || !currentChapter.value || chapterNoteStarting.value || chapterNoteLoading.value || assistantSaveRetrying.value) return
+  if (!confirmOverBudget) notesBudget.value = null
+  noteOverwritePrompt.value = ''
+  chapterNoteStarting.value = true
+  try {
+    const res = await window.api.ai.chapterNote(book.value.id, currentChapter.value.id, confirmOverBudget, overwriteUserNote)
+    if (!res.ok) {
+      if ('confirmationRequired' in res && res.confirmationRequired) {
+        notesBudget.value = res.budget
+        notesBudgetMessage.value = res.message
+        showNotesBudgetConfirm.value = true
+        return
+      }
+      if ('userNoteConfirmedRequired' in res && res.userNoteConfirmedRequired) {
+        noteOverwritePrompt.value = res.message
+        return
+      }
+      message.error(res.message)
+      return
+    }
+    chapterNoteStopping.value = false
+    chapterNoteJobId.value = res.jobId
+    chapterNoteText.value = ''
+    currentChapterNote.value = null
+    aiAssistantTab.value = 'notes'
+    showAiAssistant.value = true
+  } catch {
+    message.error('无法启动本章笔记任务')
+  } finally {
+    chapterNoteStarting.value = false
+  }
+}
+
+function confirmNotesBudget() {
+  showNotesBudgetConfirm.value = false
+  void startChapterNote(true)
+}
+
+function cancelNotesBudget() {
+  showNotesBudgetConfirm.value = false
+  notesBudget.value = null
+}
+
+function stopChapterNote() {
+  if (!chapterNoteJobId.value) return
+  chapterNoteStopping.value = true
+  void window.api.ai.cancel(chapterNoteJobId.value)
+}
+
+async function saveChapterNoteEdit() {
+  if (!book.value || !currentChapter.value || chapterNoteSaving.value) return
+  const text = chapterNoteDraft.value.trim()
+  if (!text) {
+    message.warning('笔记不能为空')
+    return
+  }
+  chapterNoteSaving.value = true
+  try {
+    const res = await window.api.ai.saveChapterNote(book.value.id, currentChapter.value.id, text)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    chapterNoteText.value = ''
+    noteOverwritePrompt.value = ''
+    currentChapterNote.value = { ...res.note, stale: false }
+    await loadChapterNotes()
+    message.success('笔记已保存')
+  } catch {
+    message.error('笔记保存失败')
+  } finally {
+    chapterNoteSaving.value = false
+  }
+}
+
+async function openChapterFromNote(chapterId: string) {
+  if (!book.value) return
+  const chapter = chapters.value.find((item) => item.id === chapterId)
+  if (!chapter) {
+    message.warning('章节不存在')
+    return
+  }
+  await openChapter(chapter)
+}
+
 function getSelectedText(): string {
   const sel = window.getSelection()
   return sel ? sel.toString().trim() : ''
@@ -2085,7 +2263,7 @@ async function translateSelectedText() {
     return
   }
   if (translateJobId.value) {
-    showAiResult.value = true
+    showAiOutput()
     message.warning('请先停止当前生成')
     return
   }
@@ -2097,7 +2275,7 @@ async function translateSelectedText() {
   translateJobId.value = res.jobId
   aiResultTitle.value = '翻译'
   aiResult.value = ''
-  showAiResult.value = true
+  showAiOutput()
   closeSelectionTools()
 }
 
@@ -2107,11 +2285,12 @@ function stopTranslate() {
 
 async function sendChat() {
   if (!book.value || !currentChapter.value || !chatInput.value.trim()) return
-  if (assistantBusy.value || assistantSaveRetrying.value) {
+  if (assistantBusyByKind.value.qa || assistantSaveRetrying.value) {
     message.warning('请先停止当前生成')
     return
   }
   const userMsg = chatInput.value.trim()
+  selectionNoteTarget.value = null
   chatMessages.value.push({ role: 'user', content: userMsg })
   chatInput.value = ''
   chatStarting.value = true
@@ -2142,41 +2321,9 @@ async function clearChat() {
   if (res.ok) {
     chatMessages.value = []
     chatInput.value = ''
+    selectionNoteTarget.value = null
   } else {
     message.error(res.message)
-  }
-}
-
-async function aiCharacterCard() {
-  if (!book.value || !currentChapter.value) return
-  aiLoading.value = true
-  aiResultTitle.value = '人物卡'
-  try {
-    const res = await window.api.ai.characterCard(book.value.id, currentChapter.value.id)
-    if (res.ok) {
-      aiResult.value = formatCharacterCard(res.card, (chapterId) => {
-        const ch = chapters.value.find((c) => c.id === chapterId)
-        const idx = chapters.value.findIndex((c) => c.id === chapterId)
-        return idx >= 0 ? `第 ${ch?.index ?? idx + 1} 章 ${ch?.title ?? ''}` : chapterId
-      })
-    } else {
-      // 没配 Key 等失败时，展示上次保存的人物卡
-      const stored = await window.api.ai.getCharacterCard(book.value.id)
-      if (stored.ok && stored.card) {
-        message.warning(`${res.message}；以下为上次生成的人物卡`)
-        aiResult.value = formatCharacterCard(stored.card, (chapterId) => {
-          const ch = chapters.value.find((c) => c.id === chapterId)
-          const idx = chapters.value.findIndex((c) => c.id === chapterId)
-          return idx >= 0 ? `第 ${ch?.index ?? idx + 1} 章 ${ch?.title ?? ''}` : chapterId
-        })
-      } else {
-        message.error(res.message || '生成人物卡失败')
-        return
-      }
-    }
-    showAiResult.value = true
-  } finally {
-    aiLoading.value = false
   }
 }
 
@@ -2199,7 +2346,12 @@ watch([ttsRate, ttsAutoNext, ttsSource, ttsVoiceURI], () => {
 watch(ttsRate, () => updateTtsRate())
 watch(ttsSource, () => { if (ttsSpeaking.value) ttsStop() })
 
-watch(() => props.bookId, (id) => { if (id) loadBook(id) })
+watch(() => props.bookId, (id) => { if (id) void loadBook(id) })
+// 选区坐标只在当前章的规范化正文里有意义，换章后必须作废。
+watch(() => currentChapter.value?.id, () => { selectionNoteTarget.value = null })
+watch([aiAssistantTab, currentChapter], ([tab]) => {
+  if (tab === 'notes') void loadChapterNotes()
+})
 watch([renderedParas, chapterBody], () => {
   void nextTick(() => updateViewportFocusAnchor())
 })
@@ -2210,7 +2362,7 @@ watch(renderedCount, (count) => {
 })
 watch(showDrawer, (open) => { if (open) void scrollCatalogToCurrent() })
 watch(
-  [showDrawer, showAiResult, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel, activeBottomPanel],
+  [showDrawer, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel, activeBottomPanel],
   () => {
     if (anyDrawerOpen() || selectionOpen()) toolsVisible.value = true
     lastToolActivityAt = Date.now()
@@ -2226,6 +2378,7 @@ onMounted(async () => {
   window.addEventListener('beforeunload', flushPendingReaderWrites)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => {
     if (jobId === recapJobId.value) recapText.value += delta
+    if (jobId === chapterNoteJobId.value) chapterNoteText.value += delta
     if (jobId === translateJobId.value) aiResult.value += delta
     if (jobId === chatJobId.value && chatAssistantIndex.value >= 0) {
       const assistant = chatMessages.value[chatAssistantIndex.value]
@@ -2233,7 +2386,11 @@ onMounted(async () => {
     }
   })
   unsubAiStage = window.api.ai.onStage((event) => {
-    assistantStages.value = { ...assistantStages.value, [event.jobId]: event.stage }
+    const detail = event.detail?.trim()
+    assistantStages.value = {
+      ...assistantStages.value,
+      [event.jobId]: { stage: event.stage, ...(detail ? { detail } : {}) },
+    }
     if (event.jobId === chatJobId.value && event.citations?.length && chatAssistantIndex.value >= 0) {
       const assistant = chatMessages.value[chatAssistantIndex.value]
       if (assistant) {
@@ -2246,9 +2403,6 @@ onMounted(async () => {
     assistantBudgets.value = { ...assistantBudgets.value, [task]: budget }
   })
   unsubAiDone = window.api.ai.onDone((event) => {
-    if (readingAiMode.value === 'auto' && !organizeQueuePaused.value && completedChapterQueue.value.length) {
-      setTimeout(() => void organizeNextCompletedChapter(), 0)
-    }
     if (event.ok && event.usage) void loadAssistantMaterial()
     const assistantKind = assistantKindForJob(event.jobId, assistantJobIds.value)
     if (assistantKind) {
@@ -2258,21 +2412,29 @@ onMounted(async () => {
       assistantSaveState.value = updateAssistantSaveToken(assistantSaveState.value, assistantKind, event)
     }
     assistantStages.value = removeAssistantStage(assistantStages.value, event.jobId)
-    if (event.jobId === organizingJobId.value && organizingStage.value === 'summary') {
-      if (event.ok && !event.stopped && !event.saveToken) {
-        organizingJobId.value = ''
-        void organizeMemoryAfterSummary().then(() => {
-          if (!organizingJobId.value && !queueBudget.value) finishOrganizingChapter(false)
-        }).catch(() => finishOrganizingChapter(false))
-      } else {
-        message.warning(event.ok && event.saveToken ? '摘要未保存，请在 AI 助手中处理后重试' : event.ok ? '整理已停止' : event.message)
-        finishOrganizingChapter(false)
-      }
-      return
-    }
     if (event.jobId === translateJobId.value) {
       translateJobId.value = ''
       aiResult.value = event.ok ? event.text : `错误：${event.message}`
+      return
+    }
+    if (event.jobId === chapterNoteJobId.value) {
+      chapterNoteJobId.value = ''
+      const stopped = chapterNoteStopping.value || event.stopped === true
+      chapterNoteStopping.value = false
+      if (!event.ok) {
+        chapterNoteStopped.value = false
+        chapterNoteText.value = ''
+        message.error(event.message)
+        return
+      }
+      chapterNoteStopped.value = stopped && Boolean(event.text)
+      if (stopped || event.saveToken) {
+        chapterNoteText.value = event.text
+        return
+      }
+      chapterNoteText.value = ''
+      void loadChapterNotes()
+      message.success('本章笔记已保存')
       return
     }
     if (event.jobId === chatJobId.value) {
@@ -2295,7 +2457,6 @@ onMounted(async () => {
       return
     }
     if (event.jobId === memoryJobId.value) {
-      const wasOrganizing = event.jobId === organizingJobId.value && organizingStage.value === 'memory'
       const kind = memoryJobKind.value
       const stopped = event.ok ? event.stopped === true : event.message === '已停止生成'
       memoryJobId.value = ''
@@ -2313,17 +2474,12 @@ onMounted(async () => {
         message.success(kind === 'rebuild'
           ? '小说记忆已重建'
           : kind === 'fromSource' ? '来源章节以后的记忆已重新分析'
-          : `本次处理 ${event.memoryUpdate.processedChapters} 章，新增或更新 ${event.memoryUpdate.changedItems} 条记忆。`)
+          : `本次处理 ${event.memoryUpdate.processedChapters} 章，新增或更新 ${event.memoryUpdate.changedItems} 条记忆。`
+            + (event.memoryUpdate.remainingChapters > 0
+              ? `剩余 ${event.memoryUpdate.remainingChapters} 章未处理。`
+              : ''))
       } else if (!event.ok) {
         message.error(event.message)
-      }
-      if (wasOrganizing) {
-        if (event.ok && !stopped && !event.saveToken && (event.memoryUpdate?.remainingChapters ?? 0) > 0) {
-          organizingJobId.value = ''
-          setTimeout(() => void organizeMemoryAfterSummary().then(() => {
-            if (!organizingJobId.value) finishOrganizingChapter(false)
-          }).catch(() => finishOrganizingChapter(false)), 0)
-        } else finishOrganizingChapter(event.ok && !stopped && !event.saveToken)
       }
       return
     }
@@ -2368,6 +2524,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', onReaderResize)
   window.removeEventListener('beforeunload', flushPendingReaderWrites)
   chapterPrefetch.dispose()
+  stopFollowPolling()
   ttsStop()
   if (renderTimer) clearTimeout(renderTimer)
   renderGeneration++
@@ -2461,13 +2618,14 @@ onUnmounted(() => {
               <div><dt>← / →</dt><dd>上一章 / 下一章</dd></div>
               <div><dt>Space / Shift+Space，J / K</dt><dd>下一屏 / 上一屏</dd></div>
               <div><dt>T / A / R</dt><dd>目录 / 外观 / 朗读</dd></div>
+              <div><dt>I / N</dt><dd>AI 助手 / 本章笔记</dd></div>
               <div><dt>M / Alt / Esc</dt><dd>沉浸模式 / 临时唤回 / 关闭面板</dd></div>
               <div><dt>Ctrl+F，+ / -</dt><dd>本书搜索 / 调整字号</dd></div>
             </dl>
           </template>
           <template v-else>
             <strong>AI</strong>
-            <n-space vertical :size="6"><n-button size="tiny" block :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button><n-button v-if="cleanRunning" size="tiny" block type="warning" @click="stopCleanBody">停止清正文</n-button><n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button><n-button size="tiny" block @click="openAiAssistant('recap')">AI 助手</n-button><n-button size="tiny" block :disabled="!chapterReady" :loading="aiLoading" @click="aiCharacterCard">人物卡</n-button><n-button size="tiny" block :disabled="!chapterReady" @click="openAiAssistant('qa')">聊书</n-button></n-space>
+            <n-space vertical :size="6"><n-button size="tiny" block :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button><n-button v-if="cleanRunning" size="tiny" block type="warning" @click="stopCleanBody">停止清正文</n-button><n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button><n-button size="tiny" block @click="openAiAssistant('recap')">AI 助手</n-button><n-button size="tiny" block :disabled="!chapterReady" @click="openAiAssistant('qa')">聊书</n-button></n-space>
           </template>
         </div>
       </div>
@@ -2586,24 +2744,6 @@ onUnmounted(() => {
         </n-drawer-content>
       </n-drawer>
 
-      <!-- AI result drawer -->
-      <n-drawer v-model:show="showAiResult" placement="right" :width="420">
-        <n-drawer-content :title="aiResultTitle" closable>
-          <div v-if="aiResultTitle === '清正文' && lastCleanBudget" class="ai-budget-status">
-            预计发送：{{ lastCleanBudget.chapterCount }} 章 / {{ lastCleanBudget.paragraphCount }} 段，约
-            {{ lastCleanBudget.sentCharacters }} 字 / {{ lastCleanBudget.estimatedTokens }} tokens（估算）
-          </div>
-          <div class="ai-result">{{ aiResult }}</div>
-          <template #footer>
-            <n-space v-if="aiResultTitle === '清正文'">
-              <n-button type="primary" size="small" @click="applyCleanedBody">应用到正文</n-button>
-              <n-button size="small" @click="showAiResult = false">取消</n-button>
-            </n-space>
-            <n-button v-else-if="aiResultTitle === '翻译' && translateLoading" type="warning" @click="stopTranslate">停止</n-button>
-          </template>
-        </n-drawer-content>
-      </n-drawer>
-
       <ai-budget-confirm
         :show="showCleanBudgetConfirm"
         :budget="cleanBudget"
@@ -2625,6 +2765,22 @@ onUnmounted(() => {
         :message="memoryBudgetMessage"
         @confirm="confirmMemoryBudget"
         @cancel="showMemoryBudgetConfirm = false; memoryBudgetRequest = null"
+      />
+
+      <ai-budget-confirm
+        :show="showNotesBudgetConfirm"
+        :budget="notesBudget"
+        :message="notesBudgetMessage"
+        @confirm="confirmNotesBudget"
+        @cancel="cancelNotesBudget"
+      />
+
+      <ai-budget-confirm
+        :show="showFollowBudgetConfirm"
+        :budget="followBudget"
+        :message="followBudgetMessage"
+        @confirm="confirmFollowBudget"
+        @cancel="cancelFollowBudget"
       />
 
       <n-drawer v-model:show="showAiAssistant" placement="right" :width="420">
@@ -2653,7 +2809,7 @@ onUnmounted(() => {
           <n-tag v-if="lastAssistantTruncated" type="warning">回答可能因输出上限而截断。</n-tag>
           <div v-if="assistantSaveState.token" class="ai-save-warning">
             结果已生成，但未能保存到书库。
-            <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantBusy" @click="retryAssistantSave">重试保存</n-button>
+            <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantSaveBusy" @click="retryAssistantSave">重试保存</n-button>
           </div>
           <div class="ai-budget-status">
             <strong>读完一章后整理</strong>
@@ -2662,21 +2818,24 @@ onUnmounted(() => {
               <n-radio-button value="ask">提醒我</n-radio-button>
               <n-radio-button value="auto">自动</n-radio-button>
             </n-radio-group>
-            <div class="subtle">离开已读超过 90% 的章节时触发；自动模式会调用模型并消耗你的 API 额度。</div>
-            <div v-if="completedChapterQueue.length">待整理 {{ completedChapterQueue.length }} 章：{{ completedChapterTitle }}{{ organizeQueuePaused ? '（已暂停）' : '' }}</div>
-            <n-button v-if="completedChapterQueue.length && !organizeQueuePaused" size="small" @click="pauseCompletedQueue">暂停队列</n-button>
-            <n-button v-if="organizeQueuePaused" size="small" type="primary" @click="resumeCompletedQueue">继续队列</n-button>
-            <div v-if="queueBudget" class="ai-budget-status">
-              {{ queueBudgetMessage }}
-              <div>预计 {{ queueBudget.estimatedTokens }} tokens，{{ queueBudget.chapterCount }} 章。</div>
-              <n-button size="small" type="primary" @click="confirmQueueBudget">确认预算并继续</n-button>
+            <div class="subtle">离开已读超过 90% 的章节时上报排队；自动模式会调用模型并消耗你的 API 额度，关窗、切书后主进程接着跑。</div>
+            <div v-if="follow" class="subtle">
+              <span v-if="follow.queuedChapters">待整理 {{ follow.queuedChapters }} 章。</span>
+              <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章<span v-if="follow.uptoChapterTitle">，到「{{ follow.uptoChapterTitle }}」</span>。</span>
+              <span v-if="follow.running">正在整理，跑完当前章节才让路。</span>
+              <span v-else-if="follow.paused">已暂停：{{ follow.pauseReason || '达到单次章数上限' }}。</span>
+              <span v-if="follow.failed">上次失败：{{ follow.failed.message }}。</span>
+              <span>本轮累计 {{ follow.calls }} 次调用、约 {{ follow.estimatedTokens }} tokens（估算，不计算金额）。</span>
             </div>
-            <n-button v-if="completedChapterQueue.length && !organizingBusy" size="small" :disabled="assistantBusy || organizeQueuePaused" @click="organizeNextCompletedChapter">整理下一章</n-button>
+            <div v-if="follow?.mode === 'auto' && !autoFollowEnabled" class="subtle">
+              设置页的「读完一章自动整理」总开关是关的，所以不会自己跑；点「现在整理」可以手动跑一轮。
+            </div>
+            <n-space>
+              <n-button size="small" :disabled="!follow?.queuedChapters" @click="runFollowNow">{{ follow?.paused ? '继续整理' : '现在整理' }}</n-button>
+              <n-button v-if="follow && follow.mode !== 'manual'" size="small" @click="stopFollowAuto">停止自动</n-button>
+            </n-space>
             <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens；未报告的用量不计入 token 总数。不计算金额。</div>
             <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
-            <div v-if="organizingBusy">正在整理：{{ organizingStage === 'memory' ? '更新小说记忆' : '生成章节摘要' }}
-              <n-button v-if="organizingJobId" size="tiny" type="warning" @click="stopOrganizing">停止</n-button>
-            </div>
           </div>
           <n-tabs v-model:value="aiAssistantTab" type="line" animated>
             <n-tab-pane name="recap" tab="前情">
@@ -2697,21 +2856,21 @@ onUnmounted(() => {
               </div>
               <div class="ai-result">{{ recapText || '还没有前情提要。' }}</div>
               <n-space>
-                <n-button :disabled="!book?.progress?.chapterId || assistantBusy || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
-                <n-button :disabled="!chapterReady || assistantBusy || assistantSaveRetrying" @click="startRecap('chapter')">生成本章摘要</n-button>
+                <n-button :disabled="!book?.progress?.chapterId || assistantBusyByKind.recap || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
+                <n-button :disabled="!chapterReady || assistantBusyByKind.recap || assistantSaveRetrying" @click="startRecap('chapter')">生成本章摘要</n-button>
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="memory" tab="记忆">
               <n-space vertical>
                 <n-space>
-                  <n-button type="primary" :disabled="!book?.progress?.chapterId || assistantBusy || assistantSaveRetrying" @click="startMemoryJob('update')">更新记忆</n-button>
+                  <n-button type="primary" :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying" @click="startMemoryJob('update')">更新记忆</n-button>
                   <n-popconfirm
                     positive-text="继续重建"
                     negative-text="取消"
                     @positive-click="startMemoryJob('rebuild')"
                   >
                     全部重建会删除现有 AI 记忆，并重新分析第一章到当前已读章节。旧记忆会在新结果完整保存后替换。确定继续吗？
-                    <template #trigger><n-button :disabled="!book?.progress?.chapterId || assistantBusy || assistantSaveRetrying">全部重建</n-button></template>
+                    <template #trigger><n-button :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying">全部重建</n-button></template>
                   </n-popconfirm>
                   <n-button v-if="memoryJobId" type="warning" :disabled="memoryStopping" @click="stopMemoryJob">{{ memoryStopping ? '正在停止…' : '停止生成' }}</n-button>
                 </n-space>
@@ -2734,10 +2893,10 @@ onUnmounted(() => {
                       <summary><strong>{{ item.name }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}<span v-if="item.userEditedAliases">（用户修正）</span></p><p>{{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input :value="aliasDrafts[item.id] ?? item.aliases.join('、')" size="small" placeholder="纠正别名，用顿号分隔" @update:value="(value: string) => { aliasDrafts[item.id] = value }" />
-                      <n-button size="tiny" :loading="correctingAliasId === item.id" :disabled="assistantBusy" @click="saveCharacterAliases(item)">保存别名</n-button>
+                      <n-button size="tiny" :loading="correctingAliasId === item.id" :disabled="assistantBusyByKind.memory" @click="saveCharacterAliases(item)">保存别名</n-button>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusy" @click="saveMemorySummary('character', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusy" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('character', item)">保存说明</n-button>
+                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
                     </details>
@@ -2748,8 +2907,8 @@ onUnmounted(() => {
                       <summary><strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusy" @click="saveMemorySummary('relation', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusy" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('relation', item)">保存说明</n-button>
+                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
                     </details>
@@ -2760,8 +2919,8 @@ onUnmounted(() => {
                       <summary><strong>{{ item.desc }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusy" @click="saveMemorySummary('foreshadow', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusy" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('foreshadow', item)">保存说明</n-button>
+                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
                     </details>
@@ -2772,8 +2931,8 @@ onUnmounted(() => {
                       <summary><strong>{{ item.title }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusy" @click="saveMemorySummary('event', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusy" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('event', item)">保存说明</n-button>
+                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
                       <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
                     </details>
@@ -2792,6 +2951,12 @@ onUnmounted(() => {
                       <button v-for="citation in msg.citations" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
                     </div>
                     <div v-else-if="msg.citations === undefined && !msg.content.startsWith('错误：')" class="chat-legacy">旧版回答，无来源</div>
+                    <n-button
+                      v-if="canSaveSelectionNote(msg, i)"
+                      size="tiny"
+                      :loading="selectionNoteSaving"
+                      @click="saveAnswerAsSelectionNote(msg)"
+                    >存为这段的批注</n-button>
                   </template>
                 </div>
                 <div v-if="chatMessages.length === 0 && !chatLoading" class="chat-empty">
@@ -2805,10 +2970,97 @@ onUnmounted(() => {
                     <n-button :disabled="chatLoading || assistantSaveRetrying || chatMessages.length === 0">清空聊天</n-button>
                   </template>
                 </n-popconfirm>
-                <n-input v-model:value="chatInput" type="textarea" :rows="2" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="assistantBusy || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
+                <n-input v-model:value="chatInput" type="textarea" :rows="2" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
                 <n-button v-if="chatLoading" type="warning" @click="stopChat">停止生成</n-button>
-                <n-button v-else type="primary" :disabled="!chatInput.trim() || assistantBusy || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
+                <n-button v-else type="primary" :disabled="!chatInput.trim() || assistantBusyByKind.qa || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
               </div>
+            </n-tab-pane>
+            <n-tab-pane name="notes" tab="笔记">
+              <n-space vertical>
+                <p class="subtle">只发送本章正文和本章的划线批注来生成读书笔记，不发送未读章节。</p>
+                <n-tag v-if="currentChapterNote?.stale" size="small" type="warning">正文已变，建议重新生成</n-tag>
+                <n-tag v-if="chapterNoteStopped" size="small" type="warning">已停止，以下为停止前生成的部分笔记。</n-tag>
+                <div class="ai-result">{{ chapterNoteView || '还没有本章笔记。' }}</div>
+                <n-input
+                  v-model:value="chapterNoteDraft"
+                  type="textarea"
+                  :rows="4"
+                  placeholder="也可以自己写：这一章想记住什么就记什么。"
+                  :disabled="chapterNoteLoading"
+                  @keydown.stop
+                />
+                <n-space>
+                  <n-button
+                    type="primary"
+                    :loading="chapterNoteStarting"
+                    :disabled="!chapterReady || chapterNoteLoading || assistantSaveRetrying"
+                    @click="startChapterNote()"
+                  >{{ currentChapterNote ? '重新生成' : '生成本章笔记' }}</n-button>
+                  <n-button v-if="chapterNoteJobId" type="warning" :disabled="chapterNoteStopping" @click="stopChapterNote">
+                    {{ chapterNoteStopping ? '正在停止…' : '停止生成' }}
+                  </n-button>
+                  <n-button :loading="chapterNoteSaving" :disabled="chapterNoteLoading || assistantSaveRetrying" @click="saveChapterNoteEdit">保存笔记</n-button>
+                </n-space>
+                <div v-if="noteOverwritePrompt" class="ai-budget-status">
+                  {{ noteOverwritePrompt }}
+                  <n-space>
+                    <n-button size="small" type="warning" :disabled="chapterNoteLoading" @click="startChapterNote(false, true)">覆盖重新生成</n-button>
+                    <n-button size="small" @click="noteOverwritePrompt = ''">保留我的笔记</n-button>
+                  </n-space>
+                </div>
+                <div v-if="otherChapterNotes.length" class="notes-archive">
+                  <strong>已写笔记的章节</strong>
+                  <details v-for="note in otherChapterNotes" :key="note.chapterId" class="notes-archive-item">
+                    <summary>{{ book?.chapters.find((chapter) => chapter.id === note.chapterId)?.title || note.chapterId }}</summary>
+                    <p>{{ note.text }}</p>
+                    <n-button size="tiny" @click="openChapterFromNote(note.chapterId)">跳到这一章</n-button>
+                  </details>
+                </div>
+                <div class="wordbook">
+                  <strong>生词本</strong>
+                  <p class="subtle">这里只汇总你自己的划线和已核实的记忆，不另外存一份。</p>
+                  <details v-if="wordbookPeople.length" class="notes-archive-item">
+                    <summary>人物 {{ wordbookPeople.length }} 个</summary>
+                    <ul class="wordbook-list">
+                      <li v-for="person in wordbookPeople" :key="person.id">
+                        <strong>{{ person.name }}</strong>
+                        <span v-if="person.aliases.length" class="subtle">{{ person.aliases.join('、') }}</span>
+                        <p>{{ person.summary }}</p>
+                      </li>
+                    </ul>
+                  </details>
+                  <details v-if="wordbookTerms.length" class="notes-archive-item">
+                    <summary>划线 {{ wordbookTerms.length }} 处{{ wordbookTrimmed ? '（只显示最近 60 处）' : '' }}</summary>
+                    <ul class="wordbook-list">
+                      <li v-for="term in wordbookTerms" :key="term.id">
+                        <button type="button" class="wordbook-term" @click="jumpToAnnotation(term)">{{ term.excerpt }}</button>
+                        <span class="subtle">{{ book?.chapters.find((chapter) => chapter.id === term.chapterId)?.title || term.chapterId }}</span>
+                        <p v-if="term.note">{{ term.note }}<n-tag v-if="term.noteSource === 'ai'" size="tiny">AI 解释</n-tag></p>
+                      </li>
+                    </ul>
+                  </details>
+                  <p v-if="!wordbookPeople.length && !wordbookTerms.length" class="subtle">
+                    在正文里划一段、或让它先记住几个人物，这里就会开始攒你自己的词表。
+                  </p>
+                </div>
+              </n-space>
+            </n-tab-pane>
+            <n-tab-pane name="output" tab="输出">
+              <n-space vertical>
+                <div class="ai-budget-status">
+                  <strong>{{ aiResultTitle || '输出' }}</strong>
+                  <div v-if="aiResultTitle === '清正文' && lastCleanBudget">
+                    预计发送：{{ lastCleanBudget.chapterCount }} 章 / {{ lastCleanBudget.paragraphCount }} 段，约 {{ lastCleanBudget.sentCharacters }} 字 / {{ lastCleanBudget.estimatedTokens }} tokens（估算）
+                  </div>
+                  <div v-else-if="!aiResult" class="subtle">清正文、翻译这类一次性结果会显示在这里。</div>
+                </div>
+                <div v-if="aiResult" class="ai-result">{{ aiResult }}</div>
+                <n-space v-if="aiResultTitle === '清正文'">
+                  <n-button type="primary" size="small" :disabled="!aiResult" @click="applyCleanedBody">应用到正文</n-button>
+                  <n-button size="small" @click="showAiAssistant = false">关闭</n-button>
+                </n-space>
+                <n-button v-else-if="aiResultTitle === '翻译' && translateLoading" type="warning" @click="stopTranslate">停止</n-button>
+              </n-space>
             </n-tab-pane>
           </n-tabs>
           <template #footer>
@@ -2863,7 +3115,9 @@ onUnmounted(() => {
               <div v-if="a.kind === 'highlight' && a.excerpt && !lostHighlightIds.has(a.id)" class="mark-excerpt" @click="jumpToAnnotation(a)">
                 {{ a.excerpt }}
               </div>
-              <div v-if="a.note && editingNoteId !== a.id" class="mark-note" @click="jumpToAnnotation(a)">备注：{{ a.note }}</div>
+              <div v-if="a.note && editingNoteId !== a.id" class="mark-note" @click="jumpToAnnotation(a)">
+                <span v-if="a.noteSource === 'ai'" class="mark-note-source">AI</span>备注：{{ a.note }}
+              </div>
               <div class="mark-actions">
                 <n-button size="tiny" quaternary @click.stop="editingNoteId = a.id; noteDraft = a.note ?? ''">备注</n-button>
                 <n-popconfirm positive-text="删除" negative-text="取消" @positive-click="deleteAnnotation(a)">
@@ -3144,6 +3398,17 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
+.mark-note-source {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 14px;
+  opacity: 0.7;
+}
+
 .mark-note-edit {
   margin-top: 6px;
 }
@@ -3267,6 +3532,72 @@ onUnmounted(() => {
 
 .memory-item summary:focus-visible {
   outline: 2px solid var(--active-chapter);
+  outline-offset: 2px;
+}
+
+.notes-archive strong {
+  display: block;
+  margin: 12px 0 6px;
+}
+
+.notes-archive-item {
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--r-line);
+  border-radius: 8px;
+}
+
+.notes-archive-item summary {
+  cursor: pointer;
+}
+
+.notes-archive-item summary:focus-visible {
+  outline: 2px solid var(--active-chapter);
+  outline-offset: 2px;
+}
+
+.notes-archive-item p {
+  margin: 6px 0;
+  white-space: pre-wrap;
+}
+
+.wordbook > strong {
+  display: block;
+  margin: 12px 0 6px;
+}
+
+.wordbook-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+
+.wordbook-list li {
+  margin-bottom: 8px;
+}
+
+.wordbook-list p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+
+.wordbook-term {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--active-chapter);
+  font: inherit;
+  text-align: left;
+  white-space: pre-wrap;
+  cursor: pointer;
+}
+
+.wordbook-term:hover {
+  text-decoration: underline;
+}
+
+.wordbook-term:focus-visible {
+  outline: 2px solid var(--r-focus);
   outline-offset: 2px;
 }
 

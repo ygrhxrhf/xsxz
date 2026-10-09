@@ -93,6 +93,9 @@ export function seedMemoryBeforeChapter(
   }
 }
 
+/** 一批送模型的记忆章节数：再大提示词容易顶到 30000 字预算，再小则调用次数失控。 */
+export const MEMORY_BATCH_CHAPTERS = 5
+
 export function selectRebuildBatches<T extends { id: string; index: number }>(
   eligible: readonly T[],
   fromChapterId: string,
@@ -103,7 +106,9 @@ export function selectRebuildBatches<T extends { id: string; index: number }>(
   if (!from || !cutoff || from.index > cutoff.index) throw new Error('来源章节超出已读范围')
   const selected = eligible.filter((chapter) => chapter.index >= from.index)
   const batches: T[][] = []
-  for (let index = 0; index < selected.length; index += 5) batches.push(selected.slice(index, index + 5))
+  for (let index = 0; index < selected.length; index += MEMORY_BATCH_CHAPTERS) {
+    batches.push(selected.slice(index, index + MEMORY_BATCH_CHAPTERS))
+  }
   return batches
 }
 
@@ -142,11 +147,12 @@ export function preserveUserMemoryCorrections(generated: AiMemoryFile, previous:
   return generated
 }
 
+/** 纯本地的材料覆盖视图；`AiMaterialCoverage.follow` 是运行状态，由持有追剧服务的调用方补齐。 */
 export function describeMaterialCoverage(
   chapters: readonly CoverageChapter[],
   progressChapterId: string | null | undefined,
   summarizedChapterIds: ReadonlySet<string>,
-): AiMaterialCoverage | null {
+): Omit<AiMaterialCoverage, 'follow'> | null {
   if (!progressChapterId) return null
   const ordered = [...chapters].sort((left, right) => left.index - right.index)
   const progressPosition = ordered.findIndex((chapter) => chapter.id === progressChapterId)

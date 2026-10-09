@@ -2,15 +2,24 @@ import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
 describe('Reader unified AI assistant shell', () => {
-  it('has one AI assistant drawer with the three fixed tabs', async () => {
+  it('has one AI assistant drawer with the five fixed tabs', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
     expect(source.match(/<n-drawer v-model:show="showAiAssistant"/g)).toHaveLength(1)
     expect(source).not.toContain('v-model:show="showChat"')
     expect(source).not.toContain('v-model:show="showRecap"')
+    // 一次性结果并入「输出」tab，不再开第二个 AI 抽屉。
+    expect(source).not.toContain('v-model:show="showAiResult"')
     expect(source).toContain('<n-drawer-content title="AI 助手"')
     expect(source).toContain('<n-tab-pane name="recap" tab="前情">')
     expect(source).toContain('<n-tab-pane name="memory" tab="记忆">')
     expect(source).toContain('<n-tab-pane name="qa" tab="问答">')
+    expect(source).toContain('<n-tab-pane name="notes" tab="笔记">')
+    expect(source).toContain('<n-tab-pane name="output" tab="输出">')
+    expect(source.match(/<n-tab-pane /g)).toHaveLength(5)
+    expect(source).toContain('清正文、翻译这类一次性结果会显示在这里。')
+    // 人物卡生成侧已下线：旧卡只经 ai.getMemory 兼容读取，不再有自己的频道、按钮与文案。
+    expect(source).not.toContain('人物卡')
+    expect(source).not.toContain('characterCard')
     expect(source).toContain('已读截止：')
     expect(source).toContain('aiServiceOrigin.value = displayAiServiceOrigin(s.baseUrl)')
     expect(source).toContain('模型服务：{{ aiServiceOrigin')
@@ -35,5 +44,52 @@ describe('Reader unified AI assistant shell', () => {
     expect(source).toContain("aiAssistantTab.value = 'qa'")
     expect(source).toContain("recapLoading && aiAssistantTab === 'recap'")
     expect(source).not.toContain('function askSuggested(')
+  })
+
+  it('生词本只是已有标记的视图，不开新频道', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    expect(source).toContain('<strong>生词本</strong>')
+    expect(source).toContain('这里只汇总你自己的划线和已核实的记忆，不另外存一份。')
+    const start = source.indexOf('const WORDBOOK_TERM_LIMIT')
+    expect(start).toBeGreaterThanOrEqual(0)
+    const block = source.slice(start, source.indexOf('async function jumpToAnnotation', start))
+    expect(block).toContain('WORDBOOK_TERM_LIMIT = 60')
+    expect(block).toContain("item.kind === 'highlight' && item.excerpt.trim()")
+    expect(block).toContain("item.accuracy === 'normal'")
+    expect(block).toContain('wordbookHighlights.value.slice(0, WORDBOOK_TERM_LIMIT)')
+    expect(block).toContain('memoryData.value?.characters ?? []')
+    expect(block, '纯视图不该碰 IPC').not.toContain('window.api')
+    // 跳回原处复用标记面板那条路径，不再写第二份滚动逻辑
+    expect(source).toContain('@click="jumpToAnnotation(term)"')
+    expect(source).toContain(`noteSource === 'ai'`)
+
+    const preload = await readFile(new URL('../../preload/index.ts', import.meta.url), 'utf-8')
+    expect(preload).not.toContain('wordbook')
+  })
+
+  it('忙只按任务种类接线，一类在跑不该灰掉别的 tab', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    expect(source).toContain('const assistantBusyByKind = computed<Record<AssistantJobKind, boolean>>')
+    // 单一的全局 busy 会把问答输入框连带灰掉，这正是「像摆设」的观感来源。
+    expect(source).not.toMatch(/const assistantBusy = computed/)
+    expect(source).not.toMatch(/[:=]\s*"assistantBusy[ "]/)
+    expect(source).toContain(':disabled="assistantBusyByKind.qa || assistantSaveRetrying"')
+    expect(source).toContain(':disabled="!chatInput.trim() || assistantBusyByKind.qa || assistantSaveRetrying"')
+    expect(source).toContain('assistantBusyByKind.recap || assistantSaveRetrying" type="primary" @click="startRecap')
+    expect(source).toContain('assistantBusyByKind.memory || assistantSaveRetrying" @click="startMemoryJob')
+    expect(source).toContain('if (!token || assistantSaveRetrying.value || assistantSaveBusy.value) return')
+  })
+
+  it('一次性结果并入输出 pane，快捷键 I/N 直连 AI 壳', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const helpers = await readFile(new URL('./readerHelpers.ts', import.meta.url), 'utf-8')
+    expect(source).toContain("aiAssistantTab.value = 'output'")
+    expect(source).toContain('function showAiOutput() {')
+    expect((source.match(/^\s+showAiOutput\(\)$/gm) ?? []).length).toBe(3)
+    expect(source).toContain("case 'open-assistant':")
+    expect(source).toContain("case 'open-note':")
+    expect(source).toContain("<dt>I / N</dt>")
+    expect(helpers).toContain("if (opts.key.toLowerCase() === 'i') return 'open-assistant'")
+    expect(helpers).toContain("if (opts.key.toLowerCase() === 'n') return 'open-note'")
   })
 })

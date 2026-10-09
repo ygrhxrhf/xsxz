@@ -6,7 +6,6 @@ import {
   chapterScrollRatio,
   failAdvice,
   focusHalfWindow,
-  formatCharacterCard,
   isParagraphInFocus,
   paragraphIndexAtViewportCenter,
   remainingChapterCount,
@@ -101,6 +100,14 @@ describe('resolveReaderKey', () => {
     expect(resolveReaderKey({ key: 'T' })).toBe('open-catalog')
     expect(resolveReaderKey({ key: 'a' })).toBe('open-appearance')
     expect(resolveReaderKey({ key: 'R' })).toBe('toggle-tts')
+  })
+
+  it('maps I/N to the AI shell and the chapter note tab', () => {
+    expect(resolveReaderKey({ key: 'i' })).toBe('open-assistant')
+    expect(resolveReaderKey({ key: 'I' })).toBe('open-assistant')
+    expect(resolveReaderKey({ key: 'n' })).toBe('open-note')
+    expect(resolveReaderKey({ key: 'N' })).toBe('open-note')
+    expect(resolveReaderKey({ key: 'i', targetTag: 'input' })).toBeNull()
   })
 
   it('maps +/-/=/_ to font size, including numpad-style =', () => {
@@ -218,29 +225,6 @@ describe('wheelPageDirection', () => {
 
   it('returns 1 for a typical page-wheel delta', () => {
     expect(wheelPageDirection(40)).toBe(1)
-  })
-})
-
-describe('formatCharacterCard', () => {
-  it('renders characters and foreshadows with chapter label', () => {
-    const text = formatCharacterCard(
-      {
-        uptoChapterId: 'c0003',
-        characters: [{ name: '张若尘', role: '主角', relations: '池瑶的未婚夫' }],
-        foreshadows: [{ desc: '九转轮回诀', where: '第一章', open: true }],
-      },
-      (id) => (id === 'c0003' ? '第 3 章 入门' : id),
-    )
-    expect(text).toContain('截至：第 3 章 入门')
-    expect(text).toContain('【人物】')
-    expect(text).toContain('· 张若尘 （主角）；池瑶的未婚夫')
-    expect(text).toContain('【伏笔】')
-    expect(text).toContain('九转轮回诀（首次出现：第一章） [未回收]')
-  })
-
-  it('falls back to raw output when nothing parsed', () => {
-    expect(formatCharacterCard({ raw: '模型直接写的文字' })).toBe('模型直接写的文字')
-    expect(formatCharacterCard({})).toBe('（人物卡为空）')
   })
 })
 

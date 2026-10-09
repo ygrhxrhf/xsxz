@@ -75,6 +75,8 @@ const ttsTesting = ref(false)
 const provider = ref<AiProvider>('deepseek')
 const thinkingEnabled = ref(true)
 const autoBookOverview = ref(false)
+const autoReadingFollow = ref(false)
+const followMaxChaptersPerRun = ref(DEFAULT_AI_PREFS.followMaxChaptersPerRun)
 const budgetWarningTokens = ref(DEFAULT_AI_PREFS.budgetWarningTokens)
 const trustedCustomOrigins = ref<string[]>([])
 const selectedPromptKind = ref<AiPromptKind>('clean')
@@ -171,6 +173,8 @@ async function load() {
     provider.value = inferAiProvider(settings.value.baseUrl, ai.provider)
     thinkingEnabled.value = ai.thinkingEnabled
     autoBookOverview.value = ai.autoBookOverview
+    autoReadingFollow.value = ai.autoReadingFollow
+    followMaxChaptersPerRun.value = ai.followMaxChaptersPerRun
     budgetWarningTokens.value = ai.budgetWarningTokens
     trustedCustomOrigins.value = [...ai.trustedCustomOrigins]
     promptMode.value = { ...ai.promptMode }
@@ -328,6 +332,8 @@ async function saveAi(): Promise<boolean> {
         provider: provider.value,
         thinkingEnabled: thinkingEnabled.value,
         autoBookOverview: autoBookOverview.value,
+        autoReadingFollow: autoReadingFollow.value,
+        followMaxChaptersPerRun: followMaxChaptersPerRun.value,
         budgetWarningTokens: budgetWarningTokens.value,
         trustedCustomOrigins: trustedOrigins,
         promptMode: { ...promptMode.value },
@@ -807,6 +813,20 @@ onMounted(load)
             <div class="field-help">保存并开启后，完整入库的已有书和新书会逐本向当前 AI 服务发送全部章节正文。长篇会产生多次调用并消耗额度；关闭后停止后续调用。</div>
           </div>
           <n-switch v-model:value="autoBookOverview" aria-label="自动生成全书概览" />
+        </div>
+        <div class="switch-row">
+          <div>
+            <div class="field-label">读完一章自动整理（含剧透）</div>
+            <div class="field-help">总开关。开启后，阅读器里把模式设为「自动」的书会在读完每章时把本章正文送给模型生成摘要并按批更新小说记忆，会持续消耗额度；关闭后自动触发立即停止，已排队的章节仍可在阅读页手动整理。</div>
+          </div>
+          <n-switch v-model:value="autoReadingFollow" aria-label="读完一章自动整理" />
+        </div>
+        <div class="switch-row">
+          <div>
+            <div class="field-label">单次自动整理章数上限</div>
+            <div class="field-help">一轮最多整理这么多章就停下来等你点「继续整理」，用于给自动追剧和增量记忆设花费上限。记忆仍按每 5 章一批送模型。</div>
+          </div>
+          <n-input-number v-model:value="followMaxChaptersPerRun" :min="1" :max="50" :step="1" style="width:140px" />
         </div>
         <div class="switch-row">
           <div>

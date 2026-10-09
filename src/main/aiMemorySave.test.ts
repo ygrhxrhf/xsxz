@@ -27,6 +27,22 @@ describe('memory update save finalization', () => {
     ])
   })
 
+  it('单次章数上限截断后如实报告剩余未处理章数', async () => {
+    const texts: Array<string | undefined> = []
+    const emit = (remainingChapters: number) => finalizeMemoryUpdate(
+      'job-cap', { ...memoryUpdate, remainingChapters }, undefined, new AbortController().signal, {
+        save: vi.fn(async () => {}),
+        retrySave: vi.fn(),
+        registerRetry: vi.fn(),
+        emitStage: vi.fn(),
+        emitDone: (event) => texts.push(event.ok ? event.text : undefined),
+      })
+    await emit(memoryUpdate.remainingChapters)
+    await emit(0)
+    expect(texts[0]).toContain('剩余 4 章未处理。')
+    expect(texts[1]).toBe('本次处理 3 章，新增或更新 2 条记忆。')
+  })
+
   it('returns the complete result and a process-memory retry closure after an ordinary save failure', async () => {
     const events: unknown[] = []
     const retrySave = vi.fn(async () => {})

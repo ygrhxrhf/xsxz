@@ -1005,19 +1005,6 @@ export async function readCharacterCard(bookId: string): Promise<CharacterCard |
   }
 }
 
-export async function writeCharacterCard(
-  bookId: string,
-  card: CharacterCard,
-  options: AtomicWriteOptions = {},
-): Promise<void> {
-  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
-  await atomicWriteText(
-    join(bookDir(bookId), 'ai', 'characters.json'),
-    JSON.stringify({ ...card, version: 1, updatedAt: now() }, null, 2),
-    options,
-  )
-}
-
 // ---------------------------------------------------------------------------
 // bootstrap book (from download or import)
 // ---------------------------------------------------------------------------

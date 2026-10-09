@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AiJobSlot } from './ai'
 import { AiQueue } from './aiScheduler'
 
 function latch() {
@@ -20,6 +19,20 @@ describe('AiQueue 车道调度', () => {
     expect(queued).toMatchObject({ ok: true, queued: true, position: 1 })
     expect(queued.jobId).not.toBe(started.jobId)
     expect(queue.laneDepth('interactive')).toBe(2)
+    hold.release()
+    await vi.waitFor(() => expect(queue.hasInFlight()).toBe(false))
+  })
+
+  it('排队位次只数同车道，后台任务不把交互积压算到自己前面', async () => {
+    const queue = new AiQueue()
+    const hold = latch()
+    queue.start(async () => { await hold.wait }, { lane: 'interactive' })
+    queue.start(async () => { await hold.wait }, { lane: 'interactive' })
+    const third = queue.start(async () => { await hold.wait }, { lane: 'interactive' })
+    const background = queue.start(async () => { await hold.wait }, { lane: 'background' })
+    expect(third).toMatchObject({ queued: true, position: 2 })
+    // 界面要说「前面还有几个」，跨车道累加会让自动任务报出根本不存在的排队长度。
+    expect(background).toMatchObject({ queued: true, position: 1 })
     hold.release()
     await vi.waitFor(() => expect(queue.hasInFlight()).toBe(false))
   })
@@ -186,25 +199,14 @@ describe('AiQueue 车道调度', () => {
     await vi.waitFor(() => expect(queue.busyFor('b1', ['memory', 'follow'])).toBe(false))
   })
 
-  it('兼容壳保持旧签名：busy 即在飞，第二个任务排队', async () => {
+  it('hasInFlight 覆盖两条车道，排队中的任务也算在飞', async () => {
     const queue = new AiQueue()
-    const slot = new AiJobSlot(queue)
     const hold = latch()
-    expect(slot.busy).toBe(false)
-    expect(slot.start(async () => { await hold.wait })).toMatchObject({ ok: true })
-    expect(slot.start(async () => {})).toMatchObject({ ok: true })
-    expect(slot.busy).toBe(true)
+    expect(queue.hasInFlight()).toBe(false)
+    queue.start(async () => { await hold.wait }, { lane: 'interactive', bookId: 'b1', cls: 'overview' })
+    queue.start(async () => {}, { lane: 'background', bookId: 'b2', cls: 'overview' })
+    expect(queue.hasInFlight()).toBe(true)
     hold.release()
-    await vi.waitFor(() => expect(slot.busy).toBe(false))
-  })
-
-  it('默认构造的旧式独占槽仍保持互斥语义：独占任务串行执行', async () => {
-    const slot = new AiJobSlot()
-    const order: string[] = []
-    const first = slot.runExclusive(async () => { order.push('a') })
-    const second = slot.runExclusive(async () => { order.push('b') })
-    await Promise.all([first, second])
-    expect(order).toEqual(['a', 'b'])
-    await vi.waitFor(() => expect(slot.busy).toBe(false))
+    await vi.waitFor(() => expect(queue.hasInFlight()).toBe(false))
   })
 })

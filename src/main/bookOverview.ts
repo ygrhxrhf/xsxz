@@ -3,7 +3,8 @@ import { mkdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Book, BookListItem, BookOverviewView, Settings } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
-import { AiJobSlot, runAiTaskCompletion, type AiConfig } from './ai'
+import { runAiTaskCompletion, type AiConfig } from './ai'
+import type { AiQueue } from './aiScheduler'
 import { atomicWriteText, bookDir, getBook, listBooks, readChapter, recordAiUsage } from './library'
 import { getApiKey, getSettings, assertTrustedAiEndpoint, resolveEffectiveAiProvider } from './settings'
 import { isLibraryRestoring } from './libraryMaintenance'
@@ -104,7 +105,7 @@ export class BookOverviewService {
   private aiJobId = ''
   private stopped = false
 
-  constructor(private readonly slot: AiJobSlot, private readonly changed: () => void) {}
+  constructor(private readonly queue: AiQueue, private readonly changed: () => void) {}
 
   start(): void {
     if (this.timer) return
@@ -117,7 +118,7 @@ export class BookOverviewService {
     this.stopped = true
     if (this.timer) clearInterval(this.timer)
     this.timer = null
-    if (this.aiJobId) this.slot.cancel(this.aiJobId)
+    if (this.aiJobId) this.queue.cancel(this.aiJobId)
   }
 
   wake(): void {
@@ -126,7 +127,7 @@ export class BookOverviewService {
   }
 
   settingsChanged(enabled: boolean): void {
-    if (!enabled && this.aiJobId) this.slot.cancel(this.aiJobId)
+    if (!enabled && this.aiJobId) this.queue.cancel(this.aiJobId)
     this.wake()
   }
 
@@ -172,7 +173,7 @@ export class BookOverviewService {
       if (isLibraryRestoring()) return
       const settings = await getSettings()
       if (!settings.ai?.autoBookOverview || !settings.apiKeyConfigured) {
-        if (this.aiJobId) this.slot.cancel(this.aiJobId)
+        if (this.aiJobId) this.queue.cancel(this.aiJobId)
         return
       }
       try { assertTrustedAiEndpoint(settings.baseUrl, settings.ai) }
@@ -209,7 +210,8 @@ export class BookOverviewService {
         provider: resolveEffectiveAiProvider(settings.baseUrl, settings.ai.provider),
         thinkingEnabled: false,
       }
-      const result = await this.slot.runExclusive(async (signal, jobId) => {
+      // 全书概览是自动任务：只能在后台车道取活，交互车道必须完全空闲。
+      const result = await this.queue.runExclusive(async (signal, jobId) => {
         this.aiJobId = jobId
         try {
           const response = await runAiTaskCompletion(config, [{ role: 'user', content: prompt }], { task: 'recap', recapLength: 'standard', signal })
@@ -217,7 +219,7 @@ export class BookOverviewService {
           if (response.truncated || !response.text.trim()) throw new Error('模型输出不完整')
           return response.text.trim()
         } finally { this.aiJobId = '' }
-      })
+      }, { lane: 'background', cls: 'overview', bookId })
       if (result.ok) return result.value
       await new Promise((resolve) => setTimeout(resolve, 1_000))
     }

@@ -44,7 +44,14 @@ function installApi(book: unknown, setProgress: (bookId: string, progress: never
     },
     annotations: { list: async () => ({ ok: true, items: [] }) },
     download: { onProgress: () => () => {} },
-    ai: { onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {} },
+    ai: {
+      onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {},
+      getMaterialCoverage: async () => ({ ok: true, coverage: null }),
+      getUsage: async () => ({ ok: true, usage: { calls: 0, inputTokens: 0, outputTokens: 0 } }),
+      chapterFinished: async () => ({ ok: false, message: '测试桩：不追剧' }),
+      followSet: async () => ({ ok: false, message: '测试桩：不追剧' }),
+      followRetry: async () => ({ ok: false, message: '测试桩：不追剧' }),
+    },
   } })
 }
 

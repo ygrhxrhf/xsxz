@@ -3,10 +3,16 @@ import type {
   AiBookUsage,
   AiBudgetEstimate,
   AiBudgetEvent,
+  AiChapterNote,
+  AiChapterNotesResult,
   AiChatMessage,
   AiChunkEvent,
   AiCleanResult,
   AiDoneEvent,
+  AiFollowCoverage,
+  AiFollowMode,
+  AiFollowStart,
+  AiGetChatResult,
   AiJobStart,
   AiMemoryBase,
   AiMemoryCharacter,
@@ -202,12 +208,7 @@ const api = {
         | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
         | { ok: false; stopped?: boolean; message: string }
       >,
-    summarize: (bookId: string, uptoChapterId: string) =>
-      ipcRenderer.invoke('ai.summarize', { bookId, uptoChapterId }),
-    translate: (text: string) => ipcRenderer.invoke('ai.translate', { text }),
-    chat: (bookId: string, chapterId: string, messages: AiChatMessage[]) =>
-      ipcRenderer.invoke('ai.chat', { bookId, chapterId, messages }),
-    getChat: (bookId: string) => ipcRenderer.invoke('ai.getChat', { bookId }) as Promise<{ ok: true; messages: AiChatMessage[] } | { ok: false; message: string }>,
+    getChat: (bookId: string) => ipcRenderer.invoke('ai.getChat', { bookId }) as Promise<AiGetChatResult>,
     clearChat: (bookId: string) => ipcRenderer.invoke('ai.clearChat', { bookId }) as Promise<{ ok: true } | { ok: false; message: string }>,
     test: (opts?: {
       baseUrl?: string
@@ -217,19 +218,28 @@ const api = {
       thinkingEnabled?: boolean
     }) =>
       ipcRenderer.invoke('ai.test', opts) as Promise<{ ok: boolean; text?: string; message?: string }>,
-    characterCard: (bookId: string, uptoChapterId: string) =>
-      ipcRenderer.invoke('ai.characterCard', { bookId, uptoChapterId }) as Promise<
-        | { ok: true; card: import('../shared/types').CharacterCard }
-        | { ok: false; message: string }
-      >,
-    getCharacterCard: (bookId: string) =>
-      ipcRenderer.invoke('ai.getCharacterCard', { bookId }) as Promise<
-        | { ok: true; card: import('../shared/types').CharacterCard | null }
-        | { ok: false; message: string }
-      >,
     summarizeChapter: (bookId: string, chapterId: string, confirmOverBudget = false) =>
       ipcRenderer.invoke('ai.summarizeChapter', { bookId, chapterId, confirmOverBudget }) as Promise<
         AiJobStart | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
+      >,
+    chapterNote: (
+      bookId: string,
+      chapterId: string,
+      confirmOverBudget = false,
+      overwriteUserNote = false,
+    ) =>
+      ipcRenderer.invoke('ai.chapterNote', { bookId, chapterId, confirmOverBudget, overwriteUserNote }) as Promise<
+        | AiJobStart
+        | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
+        | { ok: false; userNoteConfirmedRequired: true; message: string }
+        | { ok: false; message: string }
+      >,
+    chapterNotes: (bookId: string, chapterId?: string) =>
+      ipcRenderer.invoke('ai.chapterNotes', { bookId, chapterId }) as Promise<AiChapterNotesResult>,
+    saveChapterNote: (bookId: string, chapterId: string, text: string) =>
+      ipcRenderer.invoke('ai.saveChapterNote', { bookId, chapterId, text }) as Promise<
+        | { ok: true; note: AiChapterNote }
+        | { ok: false; message: string }
       >,
     storySoFar: (bookId: string, uptoChapterId: string, confirmOverBudget = false) =>
       ipcRenderer.invoke('ai.storySoFar', { bookId, uptoChapterId, confirmOverBudget }) as Promise<
@@ -278,6 +288,18 @@ const api = {
     getMaterialCoverage: (bookId: string) =>
       ipcRenderer.invoke('ai.getMaterialCoverage', { bookId }) as Promise<
         | { ok: true; coverage: AiMaterialCoverage | null }
+        | { ok: false; message: string }
+      >,
+    chapterFinished: (bookId: string, chapterId: string, ratio: number) =>
+      ipcRenderer.invoke('ai.chapterFinished', { bookId, chapterId, ratio }) as Promise<
+        | { ok: true; coverage: AiFollowCoverage }
+        | { ok: false; message: string }
+      >,
+    followSet: (bookId: string, mode: AiFollowMode, confirmOverBudget = false) =>
+      ipcRenderer.invoke('ai.followSet', { bookId, mode, confirmOverBudget }) as Promise<AiFollowStart | { ok: false; message: string }>,
+    followRetry: (bookId: string) =>
+      ipcRenderer.invoke('ai.followRetry', { bookId }) as Promise<
+        | { ok: true; coverage: AiFollowCoverage }
         | { ok: false; message: string }
       >,
     getUsage: (bookId: string) =>

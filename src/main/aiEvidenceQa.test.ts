@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiCitation } from '../shared/types'
 import {
+  EVIDENCE_REWRITE_SKIP_MIN_SCORE,
   NO_LOCAL_EVIDENCE_MESSAGE,
   buildEvidenceAnswerMessages,
   executeEvidenceQaPipeline,
   parseEvidenceAnswer,
   planEvidenceChapterReads,
+  shouldSkipQueryRewrite,
 } from './aiEvidenceQa'
 
 const citation: AiCitation = {
@@ -49,8 +51,47 @@ describe('evidence chapter read planning', () => {
 })
 
 describe('evidence QA pipeline', () => {
+  const many = [citation, { ...citation, id: 'qa-c1-p3', paragraphIndex: 3 }, { ...citation, id: 'qa-c1-p4', paragraphIndex: 4 }]
+
+  it('原句检索已经拿到足够依据时不再花一次改写往返', async () => {
+    const rewrite = vi.fn(async () => { throw new Error('不该再请求模型') })
+    const search = vi.fn(async () => ({ citations: many, uptoChapterId: 'c1', topScore: 120 }))
+    const stages: string[] = []
+    const result = await executeEvidenceQaPipeline({
+      question: '玉印给了谁？', taskInstruction: '规则', stopped: () => false,
+      onStage: (stage) => stages.push(stage), rewrite, search,
+      answer: async () => completion({ answer: '给了账房。', citations: [citation.id] }),
+    })
+    expect(rewrite).not.toHaveBeenCalled()
+    expect(search).toHaveBeenCalledTimes(1)
+    expect(search).toHaveBeenCalledWith({ originalQuestion: '玉印给了谁？' })
+    expect(stages).toEqual(['searching', 'requesting'])
+    expect(result).toMatchObject({ kind: 'answer', text: '给了账房。', usage: { inputTokens: 1, outputTokens: 2 } })
+  })
+
+  it('候选不够或最强那段只是词面重叠时仍走改写、再检索一次', () => {
+    expect(shouldSkipQueryRewrite({ citations: many, topScore: EVIDENCE_REWRITE_SKIP_MIN_SCORE })).toBe(true)
+    expect(shouldSkipQueryRewrite({ citations: many, topScore: EVIDENCE_REWRITE_SKIP_MIN_SCORE - 1 })).toBe(false)
+    expect(shouldSkipQueryRewrite({ citations: many.slice(0, 2), topScore: 999 })).toBe(false)
+    expect(shouldSkipQueryRewrite({ citations: [], topScore: 0 })).toBe(false)
+  })
+
+  it('改写换来更少依据时沿用原句检索的结果', async () => {
+    const onEvidenceSelected = vi.fn()
+    const result = await executeEvidenceQaPipeline({
+      question: '账册在哪里？', taskInstruction: '规则', stopped: () => false, onStage: () => {}, onEvidenceSelected,
+      rewrite: async () => completion({ corePhrase: '无人', keywords: [] }),
+      search: async (query) => query.corePhrase
+        ? { citations: [citation], uptoChapterId: 'c9', topScore: 0 }
+        : { citations: many, uptoChapterId: 'c1', topScore: 39 },
+      answer: async () => completion({ answer: '在码头。', citations: [citation.id] }),
+    })
+    expect(onEvidenceSelected).toHaveBeenCalledWith(many, 'c1')
+    expect(result).toMatchObject({ kind: 'answer', citations: [citation], uptoChapterId: 'c1' })
+  })
+
   it('falls back to the original question when rewrite fails', async () => {
-    const search = vi.fn(async (query) => ({ citations: [citation], uptoChapterId: 'c1', query }))
+    const search = vi.fn(async (query) => ({ citations: [citation], uptoChapterId: 'c1', topScore: 0, query }))
     const onRewriteStarted = vi.fn()
     const answer = vi.fn(async () => completion({ answer: '在码头。', citations: [citation.id] }))
     const result = await executeEvidenceQaPipeline({
@@ -59,6 +100,7 @@ describe('evidence QA pipeline', () => {
       rewrite: async () => { throw new Error('rewrite') }, search, answer,
     })
     expect(onRewriteStarted).toHaveBeenCalledOnce()
+    expect(search).toHaveBeenCalledTimes(1)
     expect(search).toHaveBeenCalledWith({ originalQuestion: '账册在哪里？' })
     expect(result).toMatchObject({ kind: 'answer', text: '在码头。', citations: [citation], uptoChapterId: 'c1' })
   })
@@ -71,11 +113,11 @@ describe('evidence QA pipeline', () => {
       question: '谁？', taskInstruction: '仅根据证据回答。', stopped: () => false,
       onStage: (stage) => stages.push(stage),
       rewrite: async () => completion({ corePhrase: '无人', keywords: [] }),
-      search: async () => ({ citations: [], uptoChapterId: 'c2' }), onEvidenceSelected, answer,
+      search: async () => ({ citations: [], uptoChapterId: 'c2', topScore: 0 }), onEvidenceSelected, answer,
     })
     expect(answer).not.toHaveBeenCalled()
     expect(onEvidenceSelected).toHaveBeenCalledWith([], 'c2')
-    expect(stages).toEqual(['rewriting', 'searching'])
+    expect(stages).toEqual(['searching', 'rewriting', 'searching'])
     expect(result).toEqual({
       kind: 'noEvidence', text: NO_LOCAL_EVIDENCE_MESSAGE, citations: [], uptoChapterId: 'c2',
       usage: { inputTokens: 1, outputTokens: 2 },
@@ -88,26 +130,26 @@ describe('evidence QA pipeline', () => {
       question: '账册在哪里？', taskInstruction: '仅根据证据回答。', stopped: () => false,
       onStage: (stage) => stages.push(stage),
       rewrite: async () => completion({ corePhrase: '账册', keywords: ['码头'] }, { inputTokens: 2, cacheHitTokens: 1 }),
-      search: async () => ({ citations: [citation], uptoChapterId: 'c1' }),
+      search: async () => ({ citations: [citation], uptoChapterId: 'c1', topScore: 0 }),
       answer: async () => completion({ answer: '在码头。', citations: [citation.id] }, { inputTokens: 3, outputTokens: 4 }),
     })
-    expect(stages).toEqual(['rewriting', 'searching', 'requesting'])
+    expect(stages).toEqual(['searching', 'rewriting', 'searching', 'requesting'])
     expect(result).toEqual({
       kind: 'answer', text: '在码头。', citations: [citation], uptoChapterId: 'c1', truncated: false,
       usage: { inputTokens: 5, outputTokens: 4, cacheHitTokens: 1 },
     })
   })
 
-  it('stops between stages without searching or answering', async () => {
+  it('改写途中按下停止就不再二次检索、不再提问', async () => {
     let stopped = false
-    const search = vi.fn()
+    const search = vi.fn(async () => ({ citations: [], uptoChapterId: 'c1', topScore: 0 }))
     const answer = vi.fn()
     const result = await executeEvidenceQaPipeline({
       question: '问题', taskInstruction: '规则', stopped: () => stopped, onStage: () => {},
       rewrite: async () => { stopped = true; return completion({ corePhrase: '问题' }) }, search, answer,
     })
     expect(result).toEqual({ kind: 'stopped' })
-    expect(search).not.toHaveBeenCalled()
+    expect(search).toHaveBeenCalledTimes(1)
     expect(answer).not.toHaveBeenCalled()
   })
 })

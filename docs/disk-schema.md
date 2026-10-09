@@ -22,6 +22,8 @@
       characters.json      # 旧 AI 人物卡 / 伏笔追踪；兼容保留
       memory.json          # 可核验小说记忆 v1（用户触发后生成）
       chat.json            # 聊天 v1 / 证据问答 v2
+      notes.json           # AI 生成或读者手写的本章笔记，见「ai/notes.json」
+      follow.json          # 自动追剧的队列与进度真源，见「ai/follow.json」
       index\               # 问答检索剪枝用的按章布隆过滤器，见「ai/index/」
 ```
 
@@ -183,6 +185,7 @@
 - 写入同目录临时文件，完成 fsync/close 后 rename 原子替换；失败清理临时文件并保留旧正式文件。
 - 新 `memory.json` 一旦存在，UI 只展示新记忆；旧 `characters.json` 不删除、不合并，可用于回退兼容读取。
 - 读者纠正人物别名时只替换该人物的 `aliases`，保留 id、来源和准确性；同名、空值和重复别名丢弃，单个别名不超过 20 字，最多 12 个。
+- `review` / `uncertain` 默认折叠且不得进入前情事实；模型不能覆盖用户已标记的保守状态。
 
 ---
 
@@ -200,7 +203,6 @@
   "updatedAt": "ISO-8601"
 }
 ```
-- `review` / `uncertain` 默认折叠且不得进入前情事实；模型不能覆盖用户已标记的保守状态。
 
 ---
 
@@ -244,11 +246,72 @@
 
 对齐 `Annotation[]`（`{ version: 1, items: [...] }`）。书签与划线共用；坐标以「规范化正文」（按空行切段、丢空段后 `\n\n` 连接）为准，划线必带 `excerpt` 供漂移校正。缺省文件视为无标记。
 
+`note` 可空；`noteSource` 只允许 `"user"` 或 `"ai"`，缺省视为 `"user"`。它记的是「这段批注的话是谁写的」：读者自己敲的、或在选区里让 AI 解释后存回来的。只有 AI 来源的批注在界面上标「AI 解释」，改了 `note` 正文就必须同时把 `noteSource` 落回 `"user"`，否则读者改过的话会一直顶着 AI 的名。书签不带 `note`，也就永远不带 `noteSource`。
+
 ---
 
-## ai/characters.json
+## ai/notes.json
 
-AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
+「一键本章笔记」的结果，对齐 `AiChapterNote[]`：
+
+```json
+{
+  "version": 1,
+  "notes": [
+    {
+      "chapterId": "c0012",
+      "bodyHash": "<64 位十六进制 sha256>",
+      "text": "这一章记下：玉印交到了码头账房手里。",
+      "updatedAt": "ISO 8601",
+      "userEdited": true
+    }
+  ]
+}
+```
+
+- 一章只留最新一条：同 `chapterId` 再写就覆盖，笔记多了不堆历史。文件内按 `chapterId` 定序，重复保存不产生无意义的 diff；界面展示顺序另按 `book.json` 的目录章序排。
+- `bodyHash` 是 `chapters/NNNN.json` 里 `body` 字段**原文**的 SHA-256，即生成这条笔记时发给模型的那份正文。读者改过正文（清正文、重新下载、撤销清理）之后 hash 变了，笔记就过期，但内容不删——过期只是提示，不是作废。
+- 过期判定要拿正文重算 hash，所以只有阅读器正看着的那一章能被判；其余章节既不为难读者也不谎报新鲜度，界面上不得给它们挂「正文已变」。
+- `userEdited` 为真表示这条是读者自己保存的话：AI 重新生成前必须先经读者确认（`ai.chapterNote` 带 `overwriteUserNote`），主进程在没有该标记时才直接覆写。`ai.saveChapterNote` 写入一律带 `userEdited: true`。
+- 缺省文件或坏 JSON 视为「还没有笔记」，读取路径照常返回空列表；这个文件随书库备份和搬迁，删掉只等于丢掉笔记，不影响阅读。
+- 笔记是读者的私人痕迹：`text` 只作为生成本章笔记与证据问答时「读者关心什么」的不可信线索发往模型，永不当作剧情事实，也永不参与全书概览、记忆抽取等需要引用可核验的 prompt。
+
+---
+
+## ai/follow.json
+
+自动追剧的队列与进度真源，对齐主进程 `FollowFile`。放在磁盘而不是渲染进程，是为了关窗、切书、重启后都能接着跑。
+
+```json
+{
+  "version": 1,
+  "mode": "auto",
+  "uptoChapterId": "c0012",
+  "queued": ["c0013"],
+  "done": { "c0012": { "sig": "<64 位十六进制 sha256>", "at": "ISO-8601", "memoryApplied": true } },
+  "paused": false,
+  "runChapters": 3,
+  "budget": { "calls": 4, "estimatedTokens": 1800 },
+  "updatedAt": "ISO-8601"
+}
+```
+
+- `mode` 只有 `manual | ask | auto`；缺省 `manual`，即永不自己花额度。`ask` 只记账，等读者点「现在整理」。
+- `queued` 是「已判定读完、摘要还没跑完」的章；`done[chapterId].sig` 是那次整理所用的正文指纹，同一份正文不会再花第二次钱。`memoryApplied` 表示这一章已进过记忆批次，攒够 5 章才送一批。
+- `uptoChapterId` 只记**摘要真正落盘**的最后一章：正文没了、超出已读范围而跳过的章不推进它，也永不倒退。
+- 写入必须在书锁内基于「此刻磁盘上的最新内容」只套用增量。一次模型请求要跑几十秒，期间读者还会继续上报新章，把开始时读到的整份快照写回去会抹掉那些新章和 `runChapters`，单次章数上限就此失效、额度白花。
+- `runChapters` 对应 `ai.followMaxChaptersPerRun` 护栏，到点置 `paused: true` 并写 `pauseReason`；`retry`（界面「继续 / 现在整理」）清零后才继续。
+- `failed.sig` 存的是**本批第一章自己的正文指纹**（记忆批次也一样）。它必须能和「这一章正文变了没」直接比较，存整批合成哈希会让同一批正文被当成正文已变而无限重试。指纹相同就停住等用户，正文真的变了才自动重来。
+- 连续网络失败按 5s / 15s / 60s 退避，用尽才落 `failed` 并 `paused`；退避期间被取消不算失败，也不计次。
+- 文件缺失、JSON 损坏或字段类型不符一律按缺省读取（`manual`、空队列、计数 0），非法字段单项忽略，不影响阅读与浏览。
+- `budget.calls` / `estimatedTokens` 只记次数与估算字数，不记金额、正文或提示词；实际用量以 `ai/usage.json` 为准。
+- 这个文件随书库备份和搬迁，删掉只等于「追剧进度没了」；它本身也永不作为任何提示词的材料。
+
+---
+
+## ai/characters.json（只读兼容）
+
+旧版本生成的人物卡 / 伏笔追踪，对齐 `CharacterCard`。**本程序不再生成或改写这个文件**（`ai.characterCard` / `ai.getCharacterCard` 频道已移除），只在 `memory.json` 缺失或无效时由 `ai.getMemory` 经 `readAiMemoryCompat` 读取一次，供升级后仍能取到旧数据。文件不存在或损坏时按「没有旧卡」处理。形状保留如下，便于解读历史文件：
 
 ```json
 {
@@ -260,8 +323,6 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
   "updatedAt": "ISO 8601"
 }
 ```
-
-材料红线与摘要一致：只允许已读进度之前的章节进入提示词。缺省文件视为无人物卡。
 
 ---
 
@@ -368,7 +429,7 @@ AI 人物卡 / 伏笔追踪，对齐 `CharacterCard`：
 - API Key **不得**明文写入书库或 git。
 - `settings.get` IPC 不返回明文，只返回 `apiKeyConfigured`。
 - 新安装默认 `baseUrl=https://api.deepseek.com/v1`、`model=deepseek-v4-flash`、`ai.provider=deepseek`；已有用户的 `baseUrl`、`model`、`apiKeyEnc` 原样保留，旧模型名只提示、不得静默改写。
-- 旧设置缺 `ai` 或其中字段损坏时逐字段补默认：`thinkingEnabled=true`、`recapLength=standard`、`budgetWarningTokens=8000`、trusted 空、六类 `promptMode=builtin`、`customPrompts={}`。预算提醒阈值限制在 1000–50000 tokens。非法 provider/origin/prompt kind 单项忽略，不丢弃其他合法字段。
+- 旧设置缺 `ai` 或其中字段损坏时逐字段补默认：`thinkingEnabled=true`、`recapLength=standard`、`budgetWarningTokens=8000`、trusted 空、`autoBookOverview=false`、`autoReadingFollow=false`、`followMaxChaptersPerRun=12`（只接受 1–50 的整数）、六类 `promptMode=builtin`、`customPrompts={}`。预算提醒阈值限制在 1000–50000 tokens。非法 provider/origin/prompt kind 单项忽略，不丢弃其他合法字段。
 - `trustedCustomOrigins` 只保存协议 + hostname + 有效端口组成的规范化 origin；路径变化不产生新信任项，协议或端口变化需要重新确认。
 - `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
 - 同级 `browse-state.json` 保存最近网页 `{ url, ratio, updatedAt }` 与按规范化域名映射的缩放比例；不属于书库备份。缺失或损坏时按无恢复位置、默认 100% 缩放读取。

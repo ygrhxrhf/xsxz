@@ -17,7 +17,7 @@ vi.mock('./ai', async (original) => {
   return { ...actual, runAiTaskCompletion: mocks.complete }
 })
 
-import { AiJobSlot } from './ai'
+import { AiQueue } from './aiScheduler'
 import { BookOverviewService } from './bookOverview'
 import { createBookFromBootstrap, listBooks, markChapterStatus, readAiUsage, setLibraryPath, updateChapterBody, writeChapterFile, refreshBookStatus } from './library'
 
@@ -38,7 +38,7 @@ beforeEach(async () => {
     ai: { ...DEFAULT_AI_PREFS, autoBookOverview: true }, downloadPace: 'standard',
   }
   mocks.complete.mockReset().mockResolvedValue({ text: '主角寻宝，最终归来。', truncated: false, usage: { inputTokens: 9, outputTokens: 5 } })
-  service = new BookOverviewService(new AiJobSlot(), () => {})
+  service = new BookOverviewService(new AiQueue(), () => {})
 })
 
 afterEach(async () => {
@@ -68,7 +68,7 @@ describe('automatic full-book overview', () => {
     expect(Object.keys(file.chapterSummaries)).toEqual(['c0001', 'c0002'])
     expect((await readAiUsage(bookId)).calls).toBe(3)
     service.stop()
-    service = new BookOverviewService(new AiJobSlot(), () => {})
+    service = new BookOverviewService(new AiQueue(), () => {})
     service.start()
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(mocks.complete).toHaveBeenCalledTimes(3)
@@ -82,7 +82,7 @@ describe('automatic full-book overview', () => {
     await updateChapterBody(bookId, 'c0002', '第二章，主角改变了目标。')
     expect((await view()).status).toBe('stale')
     expect((await view()).text).toContain('主角寻宝')
-    service = new BookOverviewService(new AiJobSlot(), () => {})
+    service = new BookOverviewService(new AiQueue(), () => {})
     service.start()
     await vi.waitFor(async () => { expect((await view()).status).toBe('ready') })
     expect(mocks.complete).toHaveBeenCalledTimes(5)

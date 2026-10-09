@@ -1,10 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildChapterSummaryPrompt,
-  buildSummarizePrompt,
   clampSummarizeChapters,
   planChapterSummaryRequest,
-  summarizeUpTo,
 } from './ai'
 import type { ChapterStatus } from '../shared/types'
 
@@ -114,53 +112,5 @@ describe('buildChapterSummaryPrompt', () => {
   it('rejects a chapter summary when fixed and custom content leave no body budget', () => {
     expect(() => planChapterSummaryRequest('测试书', '超长章', '正文', '要求'.repeat(20_000)))
       .toThrow('AI 请求固定内容过长，无法在 30000 字预算内发送')
-  })
-})
-
-describe('buildSummarizePrompt / summarizeUpTo payload', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-  })
-
-  it('prompt payload lists only clamped ids and omits UNREAD_CH2 / UNREAD_CH3', () => {
-    const clamped = clampSummarizeChapters(THREE, 'c0003', 'c0001')
-    const prompt = buildSummarizePrompt('测书', clamped)
-    expect(clamped.map((c) => c.id)).toEqual(['c0001'])
-    expect(prompt).toContain('READABLE_CH1')
-    expect(prompt).not.toContain('UNREAD_CH2')
-    expect(prompt).not.toContain('UNREAD_CH3')
-  })
-
-  it('summarizeUpTo drops later bodies even if the handler passes a too-large list', async () => {
-    let captured = ''
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        return {
-          ok: true,
-          json: async () => ({ choices: [{ message: { content: '摘要' } }] }),
-        }
-      }),
-    )
-    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>
-    fetchMock.mockImplementation(async (_url: string, init?: { body?: string }) => {
-      captured = String(init?.body ?? '')
-      return {
-        ok: true,
-        json: async () => ({ choices: [{ message: { content: '摘要' } }] }),
-      }
-    })
-
-    const text = await summarizeUpTo(
-      { baseUrl: 'https://example.invalid/v1', model: 'test-model', apiKey: 'k' },
-      '测书',
-      THREE,
-      { uptoChapterId: 'c0003', progressChapterId: 'c0001' },
-    )
-    expect(text).toBe('摘要')
-    expect(captured).toContain('READABLE_CH1')
-    expect(captured).not.toContain('UNREAD_CH2')
-    expect(captured).not.toContain('UNREAD_CH3')
   })
 })

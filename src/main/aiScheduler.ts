@@ -18,7 +18,10 @@ export interface AiJobPolicy {
   onCancelled?: (jobId: string) => void
 }
 
-/** 队列不再拒绝，所以排队信息挂在成功分支上；失败仍只由调用方自己的前置检查给出。 */
+/**
+ * 队列不再拒绝，所以排队信息挂在成功分支上；失败仍只由调用方自己的前置检查给出。
+ * `position` 是同车道等待队列里的位次（从 1 开始），已经开跑则为 0。
+ */
 export type AiStartResult = Extract<AiJobStart, { ok: true }> & { queued: boolean; position: number }
 
 export type AiExclusiveResult<T> = { ok: true; value: T } | { ok: false; message: string }
@@ -120,7 +123,9 @@ export class AiQueue {
   }
 
   private describe(entry: QueueEntry): AiStartResult {
-    const index = this.waiting.indexOf(entry)
+    // 界面要说「前面还有几个」，跨车道统计会把交互队列里的活算到后台任务头上。
+    const waiting = this.waiting.filter((candidate) => candidate.policy.lane === entry.policy.lane)
+    const index = waiting.indexOf(entry)
     return { ok: true, jobId: entry.jobId, queued: !entry.started, position: index < 0 ? 0 : index + 1 }
   }
 

@@ -3,26 +3,46 @@ import {
   assistantKindForJob,
   clearRetriedAssistantSaveToken,
   currentAssistantStage,
+  describeAssistantStage,
   removeAssistantStage,
   updateAssistantSaveToken,
 } from './aiAssistantStatus'
 
-const jobs = { recap: 'r1', memory: 'm1', qa: 'q1' }
+const jobs = { recap: 'r1', memory: 'm1', qa: 'q1', notes: 'n1' }
 
 describe('assistant stage lifecycle', () => {
   it('retains an early stage until the matching job id is registered and isolates tabs', () => {
-    const stages = { r1: 'requesting', m1: 'saving' } as const
+    const stages = { r1: { stage: 'requesting' }, m1: { stage: 'saving', detail: '已排队，前面还有 2 个任务' } } as const
     expect(currentAssistantStage(stages, 'recap', { ...jobs, recap: '' })).toBeUndefined()
-    expect(currentAssistantStage(stages, 'recap', jobs)).toBe('requesting')
-    expect(currentAssistantStage(stages, 'memory', jobs)).toBe('saving')
+    expect(currentAssistantStage(stages, 'recap', jobs)).toEqual({ stage: 'requesting' })
+    expect(currentAssistantStage(stages, 'memory', jobs)).toEqual({ stage: 'saving', detail: '已排队，前面还有 2 个任务' })
     expect(currentAssistantStage(stages, 'qa', jobs)).toBeUndefined()
+    expect(currentAssistantStage(stages, 'notes', jobs)).toBeUndefined()
   })
 
   it('filters unknown jobs and removes only the completed stage', () => {
     expect(assistantKindForJob('translate', jobs)).toBeNull()
     expect(assistantKindForJob('m1', jobs)).toBe('memory')
-    expect(removeAssistantStage({ r1: 'requesting', m1: 'saving' }, 'r1'))
-      .toEqual({ m1: 'saving' })
+    expect(assistantKindForJob('n1', jobs)).toBe('notes')
+    expect(removeAssistantStage({ r1: { stage: 'requesting' }, m1: { stage: 'saving' } }, 'r1'))
+      .toEqual({ m1: { stage: 'saving' } })
+  })
+
+  it('names every stage so a new one never renders an empty bubble', () => {
+    expect(describeAssistantStage(undefined)).toBe('')
+    expect(describeAssistantStage({ stage: 'preparing' })).toBe('正在准备已读材料…')
+    expect(describeAssistantStage({ stage: 'queued' })).toBe('已排队，等待前面的任务完成…')
+    expect(describeAssistantStage({ stage: 'indexing' })).toBe('正在检索本地已读内容…')
+    expect(describeAssistantStage({ stage: 'saving' })).toBe('正在保存到本地书库…')
+  })
+
+  it('prefers the main-process progress sentence over the generic label', () => {
+    expect(describeAssistantStage({ stage: 'queued', detail: '已排队，前面还有 4 个任务' }))
+      .toBe('已排队，前面还有 4 个任务')
+    expect(describeAssistantStage({ stage: 'indexing', detail: '检索索引已覆盖 800/800 章，本次只读 9 章' }))
+      .toBe('检索索引已覆盖 800/800 章，本次只读 9 章')
+    // 空白 detail 不能让界面变成一条空消息。
+    expect(describeAssistantStage({ stage: 'searching', detail: '   ' })).toBe('正在检索本地已读内容…')
   })
 })
 

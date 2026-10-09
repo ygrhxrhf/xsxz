@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiBookUsage, AiBudgetEstimate, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseState, BrowseChapterLink, Settings, SiteRule } from '../shared/types'
+import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseState, BrowseChapterLink, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import {
@@ -22,8 +22,6 @@ import {
   writeStorySoFar,
   writeChat,
   readChat,
-  readCharacterCard,
-  writeCharacterCard,
   readAiMemory,
   readAiMemoryCompat,
   writeAiMemory,
@@ -38,7 +36,7 @@ import {
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
-import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
+import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
 import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView } from './download'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
@@ -57,7 +55,6 @@ import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } fr
 import type { AiExclusiveResult, AiJobPolicy } from './aiScheduler'
 import { AiQueue } from './aiScheduler'
 import {
-  AiJobSlot,
   AiPendingSaveStore,
   AI_BUSY_MESSAGE,
   aiCompletionDoneEvent,
@@ -65,29 +62,37 @@ import {
   buildTranslatePrompt,
   cleanChapterBody,
   createJsonStringFieldSink,
+  planChapterNoteRequest,
   planChapterSummaryRequest,
   planCleanChapterRequest,
-  summarizeUpTo,
   streamAiTaskCompletion,
-  translateText,
-  clampSummarizeChapters,
-  generateCharacterCard,
   runAiSaveStage,
   runAiTaskCompletion,
-  parseCharacterCard,
   testConnection,
   type AiConfig,
   type AiSuccessDoneEvent,
 } from './ai'
+import { tierSenseAdvisorFor } from './tierSense'
 import { executeMemoryOrchestration, planMemoryPromptRequests, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
+import { chapterBodyHash, findChapterNote, isChapterNoteStale, listChapterNotes, writeChapterNote } from './aiChapterNotes'
 import { buildAiMemoryCandidates } from './aiMemory'
 import { finalizeMemoryUpdate } from './aiMemorySave'
 import { retrieveLocalEvidence } from './aiEvidenceRetrieval'
 import { stopEvidenceIndex, wakeEvidenceIndex } from './aiEvidenceIndex'
 import { describeMaterialCoverage, preserveUserMemoryCorrections, seedMemoryBeforeChapter, selectRebuildBatches } from './aiMaterial'
-import { buildEvidenceAnswerMessages, buildEvidenceQueryRewriteMessages, executeEvidenceQaPipeline, planEvidenceChapterReads } from './aiEvidenceQa'
-import { aiBudgetWarning, countTextCharacters, estimateAiTokens } from './aiBudget'
+import {
+  buildEvidenceAnswerMessages, buildEvidenceQueryRewriteMessages, executeEvidenceQaPipeline,
+  planEvidenceChapterReads, selectReaderAnnotations, type EvidenceAnswerNote,
+} from './aiEvidenceQa'
+import { aiBudgetWarning, promptBudget } from './aiBudget'
+import { AiReadingFollowService } from './aiReadingFollow'
+import {
+  parseChapterFinishedPayload,
+  parseFollowBookPayload,
+  parseFollowSetPayload,
+} from './aiFollowIpcValidation'
 import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
+import { indexingText, queueWaitingText } from './aiStageCopy'
 import { BookOverviewService } from './bookOverview'
 import { cancelTts, readTtsPosition, synthesizeTts, writeTtsPosition } from './tts'
 import {
@@ -125,10 +130,12 @@ let lastBounds = { x: SIDEBAR_WIDTH, y: 52, width: 900, height: 700 }
 const aiQueue = new AiQueue()
 /** 整文件替换写入的记忆族任务，同书必须串行，否则后写覆盖前写。 */
 const MEMORY_WRITE_CLASSES = ['memory', 'follow']
-const bookOverview = new BookOverviewService(new AiJobSlot(aiQueue, 'background'), () => {
+const bookOverview = new BookOverviewService(aiQueue, () => {
   mainWindow?.webContents.send('bookOverview.changed')
 })
 const aiPendingSaves = new AiPendingSaveStore()
+/** 后台追剧：单元跑在同一条 background 车道上，下载忙或书库恢复时自动退让。 */
+const aiReadingFollow = new AiReadingFollowService(aiQueue, { isDownloadBusy: () => isDownloadBusy() })
 let activeImports = 0
 
 function trustedAiConfig(
@@ -169,12 +176,13 @@ function sendAiQueueCancel(jobId: string): void {
 }
 
 /**
- * 提交流式任务：队列只排队不拒绝，所以对渲染层仍只有 `{ ok:true, jobId }` 这一种开始结果。
- * 排队位置不进 IPC，避免在契约未定前先造字段。
+ * 提交流式任务：队列只排队不拒绝，所以对渲染层仍只有 `{ ok:true, jobId }` 这一种开始结果，
+ * 额外带上排队位次，并在排队时立刻补一个 `queued` 阶段，界面才知道该显示「排队中」而不是「卡住」。
  */
 function aiStart(policy: AiJobPolicy, run: (jobId: string, signal: AbortSignal) => Promise<void>): AiJobStart {
   const started = aiQueue.start(run, { ...policy, onCancelled: sendAiQueueCancel })
-  return { ok: true, jobId: started.jobId }
+  if (started.queued) sendAiStage(started.jobId, 'queued', queueWaitingText(started.position))
+  return { ok: true, jobId: started.jobId, queued: started.queued, position: started.position }
 }
 
 /** 独占任务同样排队等待，模型错误仍原样抛给各频道自己的中文文案。 */
@@ -192,7 +200,11 @@ function sendAiEvidence(jobId: string, citations: AiCitation[], uptoChapterId: s
   })
 }
 
-function sendAiBudget(jobId: string, task: 'recap' | 'memory' | 'qa', budget: AiBudgetEstimate): void {
+function sendAiBudget(
+  jobId: string,
+  task: 'recap' | 'chapterSummary' | 'chapterNote' | 'memory' | 'qa',
+  budget: AiBudgetEstimate,
+): void {
   mainWindow?.webContents.send('ai.budget', { jobId, task, budget })
 }
 
@@ -207,27 +219,9 @@ async function persistAiUsage(bookId: string, usage: AiUsage | undefined): Promi
 async function materialCoverageFor(bookId: string): Promise<AiMaterialCoverage | null> {
   const book = await getBook(bookId)
   const summaries = await readSummaries(bookId)
-  return describeMaterialCoverage(book.chapters, book.progress?.chapterId, new Set(Object.keys(summaries.byChapter)))
-}
-
-function promptBudget(
-  requestGroups: readonly (readonly string[])[],
-  chapters: readonly { id: string; title: string }[],
-  paragraphCount: number,
-  range?: string,
-): AiBudgetEstimate {
-  const prompts = requestGroups.flat()
-  const sentCharacters = prompts.reduce((total, prompt) => total + countTextCharacters(prompt), 0)
-  const unique = [...new Map(chapters.map((chapter) => [chapter.id, chapter])).values()]
-  return {
-    originalCharacters: sentCharacters,
-    sentCharacters,
-    estimatedTokens: prompts.reduce((total, prompt) => total + estimateAiTokens(prompt), 0),
-    chapterCount: unique.length,
-    paragraphCount,
-    batchCount: requestGroups.length,
-    range: range ?? (unique.length ? `${unique[0]!.title} → ${unique.at(-1)!.title}` : '0 条本地证据'),
-  }
+  const coverage = describeMaterialCoverage(book.chapters, book.progress?.chapterId, new Set(Object.keys(summaries.byChapter)))
+  if (!coverage) return null
+  return { ...coverage, follow: await aiReadingFollow.coverage(bookId) }
 }
 
 async function saveAiDone(
@@ -917,6 +911,7 @@ function registerIpc(): void {
       await setLibraryPath(next.libraryPath)
     }
     bookOverview.settingsChanged(next.ai?.autoBookOverview === true)
+    void aiReadingFollow.settingsChanged()
     return next
   })
 
@@ -968,12 +963,14 @@ function registerIpc(): void {
         : mode === 'rebuildFrom'
           ? seedMemoryBeforeChapter(previous, book.chapters, (payload as import('./aiMemoryIpcValidation').MemoryRebuildFromPayload).fromChapterId)
           : null
+      const settings = await getSettings()
       const selection = selectMemoryChapterBatches(
         book.chapters,
         payload.uptoChapterId,
         book.progress?.chapterId,
         existing?.uptoChapterId,
         mode === 'update' ? 'update' : 'rebuild',
+        settings.ai?.followMaxChaptersPerRun ?? DEFAULT_AI_PREFS.followMaxChaptersPerRun,
       )
       if (mode === 'rebuildFrom') {
         const fromId = (payload as import('./aiMemoryIpcValidation').MemoryRebuildFromPayload).fromChapterId
@@ -988,7 +985,6 @@ function registerIpc(): void {
       ].some((item) => item.accuracy === 'review'
         && item.sources.every((source) => eligibleChapterIds.has(source.chapterId)))
       if (!selection.batches.length && !hasReviewItems) return { ok: false, message: '已更新到当前阅读进度' }
-      const settings = await getSettings()
       const batches: Array<Array<(typeof selection.batches)[number][number] & { body: string }>> = []
       for (const batch of selection.batches) {
         const loaded = []
@@ -1028,6 +1024,7 @@ function registerIpc(): void {
       }
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const tierSenseApiKey = await getTierSenseApiKey()
       const config = trustedAiConfig(settings, apiKey)
       return aiStart({
         lane: 'interactive', cls: 'memory', bookId: payload.bookId,
@@ -1035,6 +1032,15 @@ function registerIpc(): void {
       }, async (jobId, signal) => {
         sendAiBudget(jobId, 'memory', memoryBudget)
         sendAiStage(jobId, 'preparing')
+        const advisor = await tierSenseAdvisorFor(
+          settings,
+          tierSenseApiKey,
+          'memory',
+          (logLine, uiDetail) => {
+            console.info(logLine)
+            if (uiDetail) sendAiStage(jobId, 'preparing', { message: uiDetail })
+          },
+        )
         let usage: AiUsage | undefined
         try {
           const memoryUpdate = await executeMemoryOrchestration(
@@ -1048,7 +1054,7 @@ function registerIpc(): void {
               const completion = await runAiTaskCompletion(
                 config,
                 [{ role: 'user', content: request.prompt }],
-                { task: 'memory', signal: requestSignal },
+                { task: 'memory', signal: requestSignal, advisor },
               )
               await persistAiUsage(payload.bookId, completion.usage)
               if (!completion.json) throw new Error('模型返回的记忆 JSON 无法识别，原有记忆未改变')
@@ -1146,6 +1152,40 @@ function registerIpc(): void {
     }
   })
 
+  /** 读完一章的上报：只往 follow.json 排队，别的任务在跑也不能拒，否则追剧就断了。 */
+  ipcMain.handle('ai.chapterFinished', async (_e, unsafePayload?: unknown) => {
+    try {
+      const payload = parseChapterFinishedPayload(unsafePayload)
+      const coverage = await aiReadingFollow.chapterFinished(
+        payload.bookId,
+        payload.chapterId,
+        payload.ratio,
+      )
+      return { ok: true, coverage }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.followSet', async (_e, unsafePayload?: unknown) => {
+    try {
+      const payload = parseFollowSetPayload(unsafePayload)
+      return await aiReadingFollow.setMode(payload.bookId, payload.mode, payload.confirmOverBudget)
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  /** 「继续 / 现在整理」：用户亲自点的这一次不受设置页总开关约束。 */
+  ipcMain.handle('ai.followRetry', async (_e, unsafePayload?: unknown) => {
+    try {
+      const { bookId } = parseFollowBookPayload(unsafePayload)
+      return { ok: true, coverage: await aiReadingFollow.retry(bookId) }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
   ipcMain.handle('ai.getUsage', async (_e, unsafePayload?: unknown) => {
     try {
       const { bookId } = parseMemoryBookPayload(unsafePayload)
@@ -1205,10 +1245,20 @@ function registerIpc(): void {
       }
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const tierSenseApiKey = await getTierSenseApiKey()
       return aiStart({ lane: 'interactive', cls: 'recap', bookId: payload.bookId, dedupeKey: `recap:${payload.bookId}` }, async (jobId, signal) => {
         let partial = ''
         sendAiBudget(jobId, 'recap', plan.budget)
         sendAiStage(jobId, 'preparing')
+        const advisor = await tierSenseAdvisorFor(
+          settings,
+          tierSenseApiKey,
+          'recap',
+          (logLine, uiDetail) => {
+            console.info(logLine)
+            if (uiDetail) sendAiStage(jobId, 'preparing', { message: uiDetail })
+          },
+        )
         try {
           sendAiStage(jobId, 'requesting')
           const result = await streamAiTaskCompletion(
@@ -1219,7 +1269,7 @@ function registerIpc(): void {
               partial += delta
               mainWindow?.webContents.send('ai.chunk', { jobId, delta })
             },
-            { task: 'recap', recapLength },
+            { task: 'recap', recapLength, advisor },
           )
           await persistAiUsage(payload.bookId, result.usage)
           if (result.truncated) throw new Error('模型输出被截断，原有前情未改变')
@@ -1282,7 +1332,7 @@ function registerIpc(): void {
         resource: `${args.bookId}:write`, dedupeKey: `summary:${args.bookId}:${args.chapterId}`,
       }, async (jobId, signal) => {
         let partial = ''
-        sendAiBudget(jobId, 'recap', plan.budget)
+        sendAiBudget(jobId, 'chapterSummary', plan.budget)
         sendAiStage(jobId, 'preparing')
         try {
           sendAiStage(jobId, 'requesting')
@@ -1318,6 +1368,152 @@ function registerIpc(): void {
           })
         }
       })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.chapterNote', async (_e, args: {
+    bookId: string
+    chapterId: string
+    confirmOverBudget?: boolean
+    overwriteUserNote?: boolean
+  }) => {
+    try {
+      const settings = await getSettings()
+      const book = await getBook(args.bookId)
+      if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) {
+        return { ok: false, message: '章节不存在' }
+      }
+      const chapter = await readChapter(args.bookId, args.chapterId)
+      if (!chapter.body.trim()) return { ok: false, message: '当前章节没有可记笔记的正文' }
+      const existing = await findChapterNote(args.bookId, args.chapterId)
+      if (existing?.userEdited && args.overwriteUserNote !== true) {
+        return {
+          ok: false,
+          userNoteConfirmedRequired: true,
+          message: '本章笔记你已经改过，重新生成会覆盖你的修改。是否继续？',
+        }
+      }
+      // 只带本章的划线与批注：与 summarizeChapter 一样夹紧在当前章，绝不牵动未读内容。
+      const marks = (await listAnnotations(args.bookId))
+        .filter((item) => item.chapterId === args.chapterId && item.kind === 'highlight' && item.excerpt.trim())
+        .map((item) => ({ excerpt: item.excerpt, ...(item.note ? { note: item.note } : {}) }))
+      const instruction = aiTaskInstruction(settings, 'chapterNote')
+      const plan = planChapterNoteRequest(book.title, chapter.title, chapter.body, marks, instruction)
+      const budgetWarning = aiBudgetWarning(plan.budget, settings.ai?.budgetWarningTokens ?? DEFAULT_AI_PREFS.budgetWarningTokens)
+      if ((plan.requiresConfirmation || budgetWarning) && args.confirmOverBudget !== true) {
+        return {
+          ok: false,
+          confirmationRequired: true,
+          message: plan.requiresConfirmation ? '预计输入超过 30000 字。是否按上方缩减范围继续？' : budgetWarning!,
+          budget: plan.budget,
+        }
+      }
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const tierSenseApiKey = await getTierSenseApiKey()
+      const bodyHash = chapterBodyHash(chapter.body)
+      return aiStart({
+        lane: 'interactive', cls: 'chapterNote', bookId: args.bookId,
+        resource: `${args.bookId}:write`, dedupeKey: `note:${args.bookId}:${args.chapterId}`,
+      }, async (jobId, signal) => {
+        let partial = ''
+        sendAiBudget(jobId, 'chapterNote', plan.budget)
+        sendAiStage(jobId, 'preparing')
+        const advisor = await tierSenseAdvisorFor(
+          settings,
+          tierSenseApiKey,
+          'chapterNote',
+          (logLine, uiDetail) => {
+            console.info(logLine)
+            if (uiDetail) sendAiStage(jobId, 'preparing', { message: uiDetail })
+          },
+        )
+        try {
+          sendAiStage(jobId, 'requesting')
+          const result = await streamAiTaskCompletion(
+            trustedAiConfig(settings, apiKey),
+            [{ role: 'user', content: plan.prompt }],
+            signal,
+            (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
+            { task: 'chapterNote', advisor },
+          )
+          await persistAiUsage(args.bookId, result.usage)
+          await saveAiDone(
+            jobId,
+            aiCompletionDoneEvent(jobId, result),
+            async () => {
+              await writeChapterNote(args.bookId, {
+                chapterId: args.chapterId,
+                bodyHash,
+                text: result.text,
+                updatedAt: new Date().toISOString(),
+              }, { signal })
+            },
+            { signal, stoppedEvent: aiStoppedDoneEvent(jobId, partial) },
+          )
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
+            return
+          }
+          mainWindow?.webContents.send('ai.done', {
+            jobId,
+            ok: false,
+            message: e instanceof Error ? e.message : String(e),
+          })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.chapterNotes', async (_e, args: { bookId: string; chapterId?: string }) => {
+    try {
+      const book = await getBook(args.bookId)
+      const order = new Map(book.chapters.map((chapter) => [chapter.id, chapter.index]))
+      const notes = (await listChapterNotes(args.bookId))
+        .filter((note) => order.has(note.chapterId))
+        .sort((left, right) => (order.get(left.chapterId) ?? 0) - (order.get(right.chapterId) ?? 0))
+      const currentNote = args.chapterId ? notes.find((note) => note.chapterId === args.chapterId) : undefined
+      let current: (AiChapterNote & { stale: boolean }) | null = null
+      if (currentNote) {
+        // 过期要拿正文重算 hash，所以只为读者正看着的这一章花这次磁盘读。
+        const chapter = await readChapter(args.bookId, currentNote.chapterId)
+        current = { ...currentNote, stale: isChapterNoteStale(currentNote, chapterBodyHash(chapter.body)) }
+      }
+      return { ok: true, notes, current }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.saveChapterNote', async (_e, args: {
+    bookId: string
+    chapterId: string
+    text: string
+  }) => {
+    try {
+      const book = await getBook(args.bookId)
+      if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) {
+        return { ok: false, message: '章节不存在' }
+      }
+      const text = args.text.trim()
+      if (!text) return { ok: false, message: '笔记不能为空' }
+      const chapter = await readChapter(args.bookId, args.chapterId)
+      const note = await writeChapterNote(args.bookId, {
+        chapterId: args.chapterId,
+        bodyHash: chapterBodyHash(chapter.body),
+        text,
+        updatedAt: new Date().toISOString(),
+        userEdited: true,
+      })
+      return { ok: true, note }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
@@ -1374,45 +1570,7 @@ function registerIpc(): void {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
-  ipcMain.handle('ai.summarize', async (_e, { bookId, uptoChapterId }: { bookId: string; uptoChapterId: string }) => {
-    try {
-      const settings = await getSettings()
-      const apiKey = await getApiKey()
-      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const book = await getBook(bookId)
-      if (!book.chapters.some((c) => c.id === uptoChapterId)) {
-        return { ok: false, message: '章节不存在' }
-      }
-      const progressChapterId = book.progress?.chapterId ?? null
-      const cutoff = clampSummarizeChapters(book.chapters, uptoChapterId, progressChapterId)
-      const summaries: Array<(typeof cutoff)[number] & { body: string }> = []
-      for (const ch of cutoff) {
-        try {
-          const file = await readChapter(bookId, ch.id)
-          summaries.push({ ...ch, body: file.body })
-        } catch {
-          /* skip */
-        }
-      }
-      const exclusive = await aiExclusive(
-        { lane: 'interactive', cls: 'recapLegacy', bookId },
-        () => summarizeUpTo(
-          trustedAiConfig(settings, apiKey),
-          book.title,
-          summaries,
-          { uptoChapterId, progressChapterId },
-          aiTaskInstruction(settings, 'recap'),
-        ),
-      )
-      if (!exclusive.ok) return exclusive
-      const storyUptoChapterId = cutoff[cutoff.length - 1]?.id ?? uptoChapterId
-      await persistAiUsage(bookId, undefined)
-      await writeStorySoFar(bookId, storyUptoChapterId, exclusive.value)
-      return { ok: true, text: exclusive.value }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
+
   ipcMain.handle('ai.translateStream', async (_e, { text, bookId }: { text: string; bookId?: string }) => {
     try {
       const settings = await getSettings()
@@ -1455,25 +1613,6 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.translate', async (_e, { text }: { text: string }) => {
-    try {
-      const settings = await getSettings()
-      const apiKey = await getApiKey()
-      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const exclusive = await aiExclusive(
-        { lane: 'interactive', cls: 'translateLegacy' },
-        () => translateText(
-          trustedAiConfig(settings, apiKey),
-          text,
-          aiTaskInstruction(settings, 'translate'),
-        ),
-      )
-      if (!exclusive.ok) return exclusive
-      return { ok: true, text: exclusive.value }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
   ipcMain.handle('ai.chatStream', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
     try {
       const book = await getBook(args.bookId)
@@ -1485,6 +1624,7 @@ function registerIpc(): void {
       const settings = await getSettings()
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const tierSenseApiKey = await getTierSenseApiKey()
       const config = trustedAiConfig(settings, apiKey)
       const existingChat = await readChat(args.bookId)
       const persistedMessages: import('../shared/types').AiEvidenceChatMessage[] = [...existingChat.messages]
@@ -1535,10 +1675,28 @@ function registerIpc(): void {
 
         try {
           const readPlan = planEvidenceChapterReads(book.chapters, progressChapterId)
+          // 批注只在已读范围内才有资格：未读章的划线进 prompt 等于把未读正文送出机器。
+          const readableIds = new Set(readPlan.ordered.slice(0, readPlan.progressPosition + 1).map((chapter) => chapter.id))
+          const readerAnnotations = selectReaderAnnotations(await listAnnotations(args.bookId), readableIds)
+          const readerNotes: EvidenceAnswerNote[] = readerAnnotations.map((item) => ({
+            chapterTitle: book.chapters.find((chapter) => chapter.id === item.chapterId)?.title ?? '',
+            excerpt: item.excerpt,
+            ...(item.note ? { note: item.note } : {}),
+          }))
           const taskInstruction = aiTaskInstruction(settings, 'evidenceQa')
+          const advisor = await tierSenseAdvisorFor(
+            settings,
+            tierSenseApiKey,
+            'evidenceQa',
+            (logLine, uiDetail) => {
+              console.info(logLine)
+              if (uiDetail) sendAiStage(jobId, 'preparing', { message: uiDetail })
+            },
+          )
           const result = await executeEvidenceQaPipeline({
             question,
             taskInstruction,
+            readerNotes,
             stopped: () => signal.aborted,
             onStage: (stage) => sendAiStage(jobId, stage),
             onRewriteStarted: (messages) => sendAiBudget(jobId, 'qa', promptBudget(
@@ -1554,7 +1712,7 @@ function registerIpc(): void {
               const [memory, summaries] = await Promise.all([
                 readAiMemory(args.bookId), readSummaries(args.bookId),
               ])
-              const { citations, uptoChapterId } = await retrieveLocalEvidence({
+              const { citations, uptoChapterId, topScore } = await retrieveLocalEvidence({
                 bookId: args.bookId,
                 chapters: readPlan.ordered,
                 query,
@@ -1569,10 +1727,12 @@ function registerIpc(): void {
                   const local = await readChapter(args.bookId, chapterId)
                   return { body: local.body, status: local.status }
                 },
+                onProgress: (reads) => sendAiStage(jobId, 'indexing', indexingText(reads)),
+                readerNoteHints: readerAnnotations,
                 stopped: () => signal.aborted,
               })
-              if (signal.aborted) return { citations: [], uptoChapterId: progressChapterId }
-              return { citations, uptoChapterId }
+              if (signal.aborted) return { citations: [], uptoChapterId: progressChapterId, topScore: 0 }
+              return { citations, uptoChapterId, topScore }
             },
             onEvidenceSelected: (citations, uptoChapterId) => {
               candidateCitations = citations
@@ -1605,7 +1765,7 @@ function registerIpc(): void {
                 mainWindow?.webContents.send('ai.chunk', { jobId, delta: chunk })
               })
               const completion = await runAiTaskCompletion(config, messages, {
-                task: 'evidenceQa', stream: true, signal, onDelta: sink,
+                task: 'evidenceQa', stream: true, signal, onDelta: sink, advisor,
               })
               await persistAiUsage(args.bookId, completion.usage)
               return completion
@@ -1662,8 +1822,6 @@ function registerIpc(): void {
     }
   })
 
-  // Kept for preload/backward compatibility, but deliberately cannot bypass evidence-grounded chatStream.
-  ipcMain.handle('ai.chat', async () => ({ ok: false, message: '请使用已读证据问答' }))
   ipcMain.handle(
     'ai.test',
     async (_e, payload?: {
@@ -1701,77 +1859,6 @@ function registerIpc(): void {
       }
     },
   )
-  ipcMain.handle('ai.characterCard', async (_e, { bookId, uptoChapterId }: { bookId: string; uptoChapterId: string }) => {
-    try {
-      const settings = await getSettings()
-      const apiKey = await getApiKey()
-      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
-      const book = await getBook(bookId)
-      if (!book.chapters.some((c) => c.id === uptoChapterId)) {
-        return { ok: false, message: '章节不存在' }
-      }
-      // 材料红线：夹紧到已读进度，未读章绝不进提示词
-      const progressChapterId = book.progress?.chapterId ?? null
-      const cutoff = clampSummarizeChapters(book.chapters, uptoChapterId, progressChapterId)
-      if (cutoff.length === 0) {
-        return { ok: false, message: '还没有已读章节，先读几章再生成人物卡' }
-      }
-      const cutoffIds = new Set(cutoff.map((c) => c.id))
-      const cutIdx = Math.max(...book.chapters.map((c, i) => (cutoffIds.has(c.id) ? i : -1)))
-      const catalogTitles = book.chapters.slice(0, cutIdx + 1).map((c) => c.title)
-      const stored = await readSummaries(bookId)
-      const chapterSummaries = book.chapters
-        .slice(0, cutIdx + 1)
-        .map((c) => ({ title: c.title, text: stored.byChapter[c.id] || '' }))
-        .filter((s) => s.text)
-      const recentBodies: Array<{ title: string; body: string }> = []
-      for (const ch of cutoff.slice(-3)) {
-        try {
-          const file = await readChapter(bookId, ch.id)
-          if (file.body) recentBodies.push({ title: ch.title, body: file.body })
-        } catch {
-          /* skip */
-        }
-      }
-      const exclusive = await aiExclusive(
-        { lane: 'interactive', cls: 'characterCard', bookId, dedupeKey: `characterCard:${bookId}` },
-        () => generateCharacterCard(
-          trustedAiConfig(settings, apiKey),
-          {
-            bookTitle: book.title,
-            uptoChapterTitle: book.chapters[cutIdx]?.title || '',
-            catalogTitles,
-            chapterSummaries,
-            recentBodies,
-          },
-        ),
-      )
-      if (!exclusive.ok) return exclusive
-      const raw = exclusive.value
-      await persistAiUsage(bookId, undefined)
-      const parsed = parseCharacterCard(raw)
-      const card = {
-        version: 1 as const,
-        uptoChapterId,
-        characters: parsed?.characters ?? [],
-        foreshadows: parsed?.foreshadows ?? [],
-        raw,
-        updatedAt: new Date().toISOString(),
-      }
-      await writeCharacterCard(bookId, card)
-      return { ok: true, card }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
-  ipcMain.handle('ai.getCharacterCard', async (_e, { bookId }: { bookId: string }) => {
-    try {
-      const card = await readCharacterCard(bookId)
-      return { ok: true, card }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
 }
 
 app.setName('spbf')
@@ -1791,6 +1878,7 @@ app.whenReady().then(async () => {
   registerIpc()
   createWindow()
   bookOverview.start()
+  aiReadingFollow.start()
   // 启动后检查到期备份；维护锁使压缩期间的书库快照保持一致。
   setTimeout(() => {
     void (async () => {
@@ -1817,6 +1905,7 @@ app.on('before-quit', () => {
   cancelCheckAll()
   aiQueue.cancelAll()
   bookOverview.stop()
+  aiReadingFollow.stop()
   stopEvidenceIndex()
 })
 

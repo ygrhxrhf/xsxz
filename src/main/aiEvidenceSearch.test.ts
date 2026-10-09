@@ -126,7 +126,7 @@ describe('local read-range evidence selection', () => {
   it('returns an empty local result without model behavior when nothing matches', () => {
     expect(selectLocalEvidence(chapters, { originalQuestion: '不存在的人名' }, {
       requestedUptoChapterId: 'c0002', progressChapterId: 'c0002', currentChapterId: 'c0002',
-    })).toEqual({ citations: [], fallbackQuery: true, uptoChapterId: 'c0002' })
+    })).toEqual({ citations: [], fallbackQuery: true, uptoChapterId: 'c0002', topScore: 0 })
   })
 
   it('expands a canonical name to a stored alias and still cites the original paragraph', () => {

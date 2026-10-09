@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AiJobSlot, streamChatCompletion } from './ai'
+import { streamAiTaskCompletion } from './ai'
+import { AiQueue } from './aiScheduler'
 
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
-describe('streamChatCompletion', () => {
+describe('streamAiTaskCompletion', () => {
   it('parses split SSE data frames and requests stream mode', async () => {
     const encoder = new TextEncoder()
     const body = new ReadableStream<Uint8Array>({
@@ -21,52 +22,53 @@ describe('streamChatCompletion', () => {
       return new Response(body, { status: 200 })
     }))
     const deltas: string[] = []
-    const text = await streamChatCompletion(
+    const result = await streamAiTaskCompletion(
       { baseUrl: 'https://example.invalid/v1', model: 'm', apiKey: 'k' },
       [{ role: 'user', content: '测试' }],
       new AbortController().signal,
-      (delta) => deltas.push(delta),
+      (delta: string) => deltas.push(delta),
+      { task: 'recap' },
     )
     expect(deltas).toEqual(['你', '好'])
-    expect(text).toBe('你好')
+    expect(result.text).toBe('你好')
   })
 })
 
-describe('AiJobSlot', () => {
+describe('车道队列的排队与取消', () => {
   it('queues a second job, and cancel aborts only the matching job', async () => {
-    const slot = new AiJobSlot()
+    const queue = new AiQueue()
     let release!: () => void
     let signal!: AbortSignal
-    const first = slot.start(async (_id, nextSignal) => {
+    const first = queue.start(async (_id, nextSignal) => {
       signal = nextSignal
       await new Promise<void>((resolve) => { release = resolve })
-    })
+    }, { lane: 'interactive', bookId: 'b1', cls: 'qa' })
     expect(first.ok).toBe(true)
     await Promise.resolve()
     let secondStarted = false
-    const second = slot.start(async () => { secondStarted = true })
+    const second = queue.start(async () => { secondStarted = true }, { lane: 'interactive', bookId: 'b1', cls: 'qa' })
     expect(second.ok).toBe(true)
     await vi.waitFor(() => expect(secondStarted, '同车道应一次只跑一个任务').toBe(false))
-    slot.cancel('other')
+    queue.cancel('other')
     expect(signal.aborted).toBe(false)
-    if (first.ok) slot.cancel(first.jobId)
+    queue.cancel(first.jobId)
     expect(signal.aborted).toBe(true)
     release()
-    await vi.waitFor(() => expect(slot.busy).toBe(false))
+    await vi.waitFor(() => expect(queue.hasInFlight()).toBe(false))
   })
 
   it('shares the same lane with non-streaming AI work', async () => {
-    const slot = new AiJobSlot()
+    const queue = new AiQueue()
     let release!: () => void
-    const first = slot.start(async () => {
+    const first = queue.start(async () => {
       await new Promise<void>((resolve) => { release = resolve })
-    })
+    }, { lane: 'interactive', bookId: 'b1', cls: 'clean' })
     expect(first.ok).toBe(true)
     await Promise.resolve()
-    const second = slot.runExclusive(async () => '第二个')
-    expect(slot.busy).toBe(true)
+    const second = queue.runExclusive(async () => '第二个', { lane: 'interactive', bookId: 'b1', cls: 'clean' })
+    expect(queue.hasInFlight()).toBe(true)
     release()
     await expect(second).resolves.toEqual({ ok: true, value: '第二个' })
-    await vi.waitFor(() => expect(slot.busy).toBe(false))
+    await vi.waitFor(() => expect(queue.hasInFlight()).toBe(false))
   })
 })

@@ -23,7 +23,7 @@ describe('storySoFar trusted recap contract', () => {
     const block = source.slice(start, end)
     expect(block.indexOf('plan.requiresConfirmation')).toBeLessThan(block.indexOf('getApiKey()'))
     expect(block.indexOf('getApiKey()')).toBeLessThan(block.indexOf('aiStart('))
-    expect(block).toContain("{ task: 'recap', recapLength }")
+    expect(block).toContain("{ task: 'recap', recapLength, advisor }")
     expect(block.indexOf('result.truncated')).toBeLessThan(block.indexOf('validateAiRecapOutput'))
     expect(block.indexOf('validateAiRecapOutput')).toBeLessThan(block.indexOf('writeStorySoFar'))
     expect(block).toContain('plan.uptoChapterId')

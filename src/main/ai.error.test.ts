@@ -1,11 +1,9 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import {
-  clipChatMessages,
   formatAiRequestError,
   formatAiTransportError,
   testConnection,
 } from './ai'
-import type { AiChatMessage } from '../shared/types'
 
 describe('AI error copy', () => {
   it('maps 401 / 429 / 5xx / timeout to Chinese', () => {
@@ -24,19 +22,6 @@ describe('AI error copy', () => {
     expect(formatAiTransportError(new Error('ENOTFOUND'))).toMatch(/无法连接/)
   })
 
-  it('clips chat history and drops system turns', () => {
-    const msgs: AiChatMessage[] = [
-      { role: 'system', content: 'no' },
-      ...Array.from({ length: 12 }, (_, i) => ({
-        role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
-        content: `m${i}`,
-      })),
-    ]
-    const clipped = clipChatMessages(msgs, 8)
-    expect(clipped).toHaveLength(8)
-    expect(clipped[0].content).toBe('m4')
-    expect(clipped.every((m) => m.role !== 'system')).toBe(true)
-  })
 })
 
 describe('testConnection', () => {

@@ -80,7 +80,7 @@ describe('evidence QA answer streaming', () => {
         text: '{"corePhrase":"账册","keywords":["码头"]}',
         json: { corePhrase: '账册', keywords: ['码头'] }, usage: { inputTokens: 4, outputTokens: 3 }, truncated: false,
       }),
-      search: async () => ({ citations: [citation], uptoChapterId: 'c0001' }),
+      search: async () => ({ citations: [citation], uptoChapterId: 'c0001', topScore: 0 }),
       answer: streamAnswer(new AbortController().signal, (chunk) => chunks.push(chunk)),
     })
     expect(result).toMatchObject({ kind: 'answer', text: '在码头。', citations: [citation] })
@@ -101,7 +101,7 @@ describe('evidence QA answer streaming', () => {
       stopped: () => false,
       onStage: () => {},
       rewrite: async () => ({ text: '{}', json: {}, truncated: false }),
-      search: async () => ({ citations: [citation], uptoChapterId: 'c0001' }),
+      search: async () => ({ citations: [citation], uptoChapterId: 'c0001', topScore: 0 }),
       answer: streamAnswer(new AbortController().signal, () => {}),
     })).rejects.toThrow('候选范围外')
   })

@@ -41,7 +41,6 @@ import {
   stableAiMemoryId,
   markAiMemoryAccuracy,
   writeAiMemory,
-  writeCharacterCard,
   writeChapterFile,
   writeChapterSummary,
   writeChat,
@@ -641,13 +640,19 @@ describe('novel memory v1 storage', () => {
   })
 
   it('prefers valid new memory and otherwise falls back to the legacy character card', async () => {
-    await writeCharacterCard('d_memory', {
-      version: 1,
-      characters: [{ name: '旧人物' }],
-      foreshadows: [],
-      raw: '',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-    })
+    // 人物卡生成侧已下线：这里直接落一份旧版本写出的文件，验证升级后仍能读到。
+    await mkdir(join(dir, 'd_memory', 'ai'), { recursive: true })
+    await writeFile(
+      join(dir, 'd_memory', 'ai', 'characters.json'),
+      JSON.stringify({
+        version: 1,
+        characters: [{ name: '旧人物' }],
+        foreshadows: [],
+        raw: '',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }),
+      'utf-8',
+    )
     expect((await readAiMemoryCompat('d_memory') as { characters: Array<{ name: string }> }).characters[0]?.name)
       .toBe('旧人物')
     await writeAiMemory('d_memory', memory)

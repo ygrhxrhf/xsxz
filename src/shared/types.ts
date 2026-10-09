@@ -252,11 +252,21 @@ export interface Annotation {
   /** 原文片段，用于漂移校正；书签为空串 */
   excerpt: string
   note?: string
+  /**
+   * 备注出处：AI 生成（解释/本章笔记）标 'ai'，读者自己写的标 'user'。
+   * 缺省视为 'user'，旧数据不需要迁移。界面据此区分「AI 建议」和「我的话」，
+   * 也让 AI 知道这段关注点是读者本人的判断还是模型自己的上一轮输出。
+   */
+  noteSource?: AnnotationNoteSource
   createdAt: string
 }
 
+export type AnnotationNoteSource = 'user' | 'ai'
+
 export interface AnnotationUpdate {
   note?: string
+  /** 备注出处，只在与 note 一起提交时生效；note 被清空时该字段自动删除 */
+  noteSource?: AnnotationNoteSource
   /** 漂移校正后的新坐标（成对提供才生效） */
   start?: number
   end?: number
@@ -275,7 +285,13 @@ export interface ForeshadowEntry {
   open?: boolean
 }
 
-/** ai/characters.json 的内容；材料红线同摘要：只用已读部分 */
+/**
+ * ai/characters.json 的内容。
+ *
+ * @deprecated 人物卡生成侧已下线（无 `ai.characterCard` / `ai.getCharacterCard` 频道）。
+ * 这个形状只保留给 `readAiMemoryCompat` 读旧书，并作为 `ai.getMemory` 的兼容返回；
+ * 新写入路径一律用 `AiMemoryFile`，不要再为它添加生成入口。
+ */
 export interface CharacterCard {
   version: number
   uptoChapterId?: string
@@ -347,8 +363,19 @@ export interface AppearancePrefs {
 }
 
 export type AiProvider = 'deepseek' | 'custom'
-export type AiPromptKind = 'clean' | 'translate' | 'chapterSummary' | 'recap' | 'memory' | 'evidenceQa'
+export type AiPromptKind =
+  | 'clean' | 'translate' | 'chapterSummary' | 'chapterNote' | 'recap' | 'memory' | 'evidenceQa'
 export type AiPromptMode = 'builtin' | 'custom'
+
+export interface TierSensePrefs {
+  enabled: boolean
+  baseUrl: string
+  difficultyEnabled: boolean
+  compressionEnabled: boolean
+  memoryDecideEnabled: boolean
+  compressionMinTokens: number
+  difficultyThreshold: number
+}
 
 /** AI 供应商、思考模式、前情长度和用户可编辑提示词偏好。 */
 export interface AiPrefs {
@@ -361,8 +388,13 @@ export interface AiPrefs {
   trustedCustomOrigins: string[]
   /** 用户主动开启后，完整入库的书在后台串行生成含剧透的全书概览。 */
   autoBookOverview: boolean
+  /** 自动追剧：读完一章后自动整理本章摘要与记忆。默认关闭，必须由用户明确开启。 */
+  autoReadingFollow: boolean
+  /** 单次追剧/记忆更新最多处理的章节数；记忆仍按每 5 章一批送模型。 */
+  followMaxChaptersPerRun: number
   promptMode: Record<AiPromptKind, AiPromptMode>
   customPrompts: Partial<Record<AiPromptKind, string>>
+  tierSense: TierSensePrefs
 }
 
 export interface Settings {
@@ -371,6 +403,8 @@ export interface Settings {
   model: string
   /** 渲染进程只拿是否已配置，不回传明文 */
   apiKeyConfigured: boolean
+  /** TierSense API Key 是否已配置；渲染进程只拿布尔值。 */
+  tierSenseKeyConfigured: boolean
   reader: ReaderPrefs
   tts: TtsPrefs
   appearance: AppearancePrefs
@@ -392,6 +426,8 @@ export interface SettingsUpdate {
   tts?: Partial<TtsPrefs>
   /** 空字符串清除在线语音密钥。 */
   ttsApiKey?: string
+  /** 空字符串清除 TierSense 密钥。 */
+  tierSenseApiKey?: string
   appearance?: Partial<AppearancePrefs>
   ai?: Partial<AiPrefs>
   /** 省略则不改已保存档位。 */
@@ -483,8 +519,10 @@ export interface AiMemoryFile {
 
 export interface AiMemoryUpdateResult {
   memory: AiMemoryFile
+  /** 本次实际送模型的章节数。 */
   processedChapters: number
   changedItems: number
+  /** 受 followMaxChaptersPerRun 截断后仍未处理的已读章节数；重建恒为 0。 */
   remainingChapters: number
 }
 
@@ -505,6 +543,41 @@ export interface AiBookUsage {
   updatedAt: string
 }
 
+/**
+ * 追剧整理的每本书选择：manual 不自动整理；ask 读完只记账、等用户点「现在整理」；
+ * auto 读完即排队整理（仍受设置页总开关与单次章数上限约束）。
+ */
+export type AiFollowMode = 'manual' | 'ask' | 'auto'
+
+/** 自动追剧的运行视图，随 `ai.getMaterialCoverage` 返回，不另开事件通道。 */
+export interface AiFollowCoverage {
+  mode: AiFollowMode
+  /** 主进程当前是否正为这本书跑整理单元。 */
+  running: boolean
+  /** 因单次章数上限或连续网络失败而停住，等用户点「继续」。 */
+  paused: boolean
+  pauseReason?: string
+  /** 已判定读完、摘要或记忆还没跑完的章节数。 */
+  queuedChapters: number
+  /** 摘要已落盘的章节数。 */
+  organizedChapters: number
+  /** 摘要真正落盘到的最后一章；跳过的章（正文没了、超出已读范围）不会推进它。 */
+  uptoChapterId?: string
+  uptoChapterTitle?: string
+  failed?: { message: string; at: string }
+  calls: number
+  estimatedTokens: number
+}
+
+/**
+ * `ai.followSet` 的成功与预算确认结果。首次开启 auto 时与 `ai.updateMemory` 用同一套门禁：
+ * 没带 `confirmOverBudget` 就只回预算与文案，不落盘、不排队、不花额度。
+ * 只带 `message` 的失败（书不存在、模式非法）由 handler 的 catch 追加，见 preload 与契约文档。
+ */
+export type AiFollowStart =
+  | { ok: true; coverage: AiFollowCoverage }
+  | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
+
 /** 已读范围内章节摘要覆盖情况；缺摘要的章节仍可被原文检索。 */
 export interface AiMaterialCoverage {
   uptoChapterId: string
@@ -512,6 +585,8 @@ export interface AiMaterialCoverage {
   readyChapters: number
   summarizedChapters: number
   missing: Array<{ chapterId: string; title: string }>
+  /** 自动追剧的运行状态；主进程按当前 follow.json 与在跑标记填充。 */
+  follow: AiFollowCoverage
 }
 
 export interface AiBudgetEstimate {
@@ -524,11 +599,17 @@ export interface AiBudgetEstimate {
   range: string
 }
 
-export type AiRequestStage = 'preparing' | 'rewriting' | 'searching' | 'requesting' | 'saving'
+/**
+ * `queued` / `indexing` 只携带 `detail` 文案，不改变终态：旧监听方按未知阶段忽略即可，
+ * 界面拿它们解释「为什么还没开始出字」，不拿它们推断成败。
+ */
+export type AiRequestStage =
+  | 'preparing' | 'queued' | 'indexing' | 'rewriting' | 'searching' | 'requesting' | 'saving'
 
 export interface AiStageEvent {
   jobId: string
   stage: AiRequestStage
+  /** 面向用户的一句话进度（排队位置、索引覆盖度、批次进度）；缺省时界面按阶段名显示。 */
   detail?: string
   /** 证据问答的本地引用已先于回答算出，可提前展示；旧监听方可忽略。 */
   citations?: AiCitation[]
@@ -538,7 +619,7 @@ export interface AiStageEvent {
 
 export interface AiBudgetEvent {
   jobId: string
-  task: 'recap' | 'memory' | 'qa'
+  task: 'recap' | 'chapterSummary' | 'chapterNote' | 'memory' | 'qa'
   budget: AiBudgetEstimate
 }
 
@@ -572,8 +653,36 @@ export interface AiSummaries {
   updatedAt: string
 }
 
-/** 异步 AI 任务的启动响应。 */
-export type AiJobStart = { ok: true; jobId: string } | { ok: false; message: string }
+/**
+ * 「一键本章笔记」的落盘条目：正文一改，bodyHash 就对不上，界面提示重新生成，
+ * 但绝不悄悄改写读者已经认可的内容（userEdited 为真时更是只提示不覆盖）。
+ */
+export interface AiChapterNote {
+  chapterId: string
+  /** 生成时正文的 sha256，用来判断这条笔记是否已经过期 */
+  bodyHash: string
+  text: string
+  updatedAt: string
+  /** 读者亲手编辑过：AI 只提示过期，不再覆盖 */
+  userEdited?: boolean
+}
+
+/**
+ * ai.chapterNotes 的响应：notes 按章节顺序返回这本书已有的本章笔记；
+ * current 是调用方指定 chapterId 的那条笔记并带 stale 判定，未指定或该章无笔记则为 null。
+ * 过期要拿正文重算 hash，因此只对请求的这一章算，其余章节不谎报新鲜度。
+ */
+export type AiChapterNotesResult =
+  | { ok: true; notes: AiChapterNote[]; current: (AiChapterNote & { stale: boolean }) | null }
+  | { ok: false; message: string }
+
+/**
+ * 异步 AI 任务的启动响应。队列只排队不拒绝，因此成功分支可携带排队信息：
+ * `position` 是该任务在等待队列里的位次（从 1 开始），已经在跑则为 0。旧调用方忽略这两个字段即可。
+ */
+export type AiJobStart =
+  | { ok: true; jobId: string; queued?: boolean; position?: number }
+  | { ok: false; message: string }
 
 /** 主进程发送的流式文本增量。 */
 export interface AiChunkEvent {
@@ -648,10 +757,21 @@ export const AI_PROMPT_KINDS: readonly AiPromptKind[] = [
   'clean',
   'translate',
   'chapterSummary',
+  'chapterNote',
   'recap',
   'memory',
   'evidenceQa',
 ]
+
+export const DEFAULT_TIER_SENSE_PREFS: TierSensePrefs = {
+  enabled: false,
+  baseUrl: '',
+  difficultyEnabled: true,
+  compressionEnabled: true,
+  memoryDecideEnabled: true,
+  compressionMinTokens: 6000,
+  difficultyThreshold: 0.6,
+}
 
 export const DEFAULT_AI_PREFS: AiPrefs = {
   provider: 'deepseek',
@@ -660,15 +780,19 @@ export const DEFAULT_AI_PREFS: AiPrefs = {
   budgetWarningTokens: 8000,
   trustedCustomOrigins: [],
   autoBookOverview: false,
+  autoReadingFollow: false,
+  followMaxChaptersPerRun: 12,
   promptMode: {
     clean: 'builtin',
     translate: 'builtin',
     chapterSummary: 'builtin',
+    chapterNote: 'builtin',
     recap: 'builtin',
     memory: 'builtin',
     evidenceQa: 'builtin',
   },
   customPrompts: {},
+  tierSense: DEFAULT_TIER_SENSE_PREFS,
 }
 
 export const DEFAULT_AI_PLACEHOLDER = {

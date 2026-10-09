@@ -97,6 +97,22 @@ describe('settings atomic persistence', () => {
     expect((await getSettings()).ai?.autoBookOverview).toBe(false)
   })
 
+  it('自动追剧默认关闭，单次运行章数只接受正整数区间', async () => {
+    expect((await getSettings()).ai?.autoReadingFollow).toBe(false)
+    expect((await getSettings()).ai?.followMaxChaptersPerRun).toBe(DEFAULT_AI_PREFS.followMaxChaptersPerRun)
+
+    await updateSettings({ ai: { autoReadingFollow: true, followMaxChaptersPerRun: 300 } })
+    resetSettingsCacheForTests()
+    expect((await getSettings()).ai?.autoReadingFollow).toBe(true)
+    expect((await getSettings()).ai?.followMaxChaptersPerRun).toBe(50)
+
+    await updateSettings({ ai: { followMaxChaptersPerRun: 0 } })
+    expect((await getSettings()).ai?.followMaxChaptersPerRun).toBe(1)
+
+    await updateSettings({ ai: { followMaxChaptersPerRun: '12' as unknown as number } })
+    expect((await getSettings()).ai?.followMaxChaptersPerRun).toBe(DEFAULT_AI_PREFS.followMaxChaptersPerRun)
+  })
+
   it('keeps both disk and cache at the previous value when commit fails', async () => {
     await updateSettings({ model: 'old-model' })
     const before = await readFile(SETTINGS_FILE, 'utf-8')
@@ -381,15 +397,27 @@ describe('AI settings compatibility', () => {
       budgetWarningTokens: DEFAULT_AI_PREFS.budgetWarningTokens,
       trustedCustomOrigins: ['https://example.com', 'http://example.com:8080'],
       autoBookOverview: false,
+      autoReadingFollow: false,
+      followMaxChaptersPerRun: DEFAULT_AI_PREFS.followMaxChaptersPerRun,
       promptMode: {
         clean: 'custom',
         translate: 'builtin',
         chapterSummary: 'builtin',
+        chapterNote: 'builtin',
         recap: 'builtin',
         memory: 'builtin',
         evidenceQa: 'builtin',
       },
       customPrompts: { clean: '保留正文段落' },
+      tierSense: {
+        enabled: false,
+        baseUrl: '',
+        difficultyEnabled: true,
+        compressionEnabled: true,
+        memoryDecideEnabled: true,
+        compressionMinTokens: 6000,
+        difficultyThreshold: 0.6,
+      },
     })
   })
 

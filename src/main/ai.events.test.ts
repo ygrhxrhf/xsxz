@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  AiJobSlot,
   AiPendingSaveStore,
   aiCompletionDoneEvent,
   aiStoppedDoneEvent,
@@ -8,20 +7,21 @@ import {
   runAiSaveStage,
   streamAiTaskCompletion,
 } from './ai'
+import { AiQueue } from './aiScheduler'
 
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
-describe('AI exclusive slot cancellation', () => {
+describe('AI 车道取消语义', () => {
   it('cancels the running interactive job only for the matching job or a bare stop', async () => {
-    const slot = new AiJobSlot()
+    const slot = new AiQueue()
     let streamSignal: AbortSignal | undefined
     const started = slot.start(async (_jobId, signal) => {
       streamSignal = signal
       await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
-    })
+    }, { lane: 'interactive', bookId: 'b1', cls: 'clean' })
     expect(started.ok).toBe(true)
     await vi.waitFor(() => expect(streamSignal).toBeDefined())
     slot.cancel('other')
@@ -32,16 +32,16 @@ describe('AI exclusive slot cancellation', () => {
   })
 
   it('passes the shared abort signal into non-stream work', async () => {
-    const slot = new AiJobSlot()
+    const slot = new AiQueue()
     let started = false
     const running = slot.runExclusive((signal) => new Promise<string>((_resolve, reject) => {
       started = true
       signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
-    }))
+    }), { lane: 'interactive', bookId: 'b1', cls: 'translate' })
     await vi.waitFor(() => expect(started).toBe(true))
     slot.cancel()
     await expect(running).rejects.toMatchObject({ name: 'AbortError' })
-    expect(slot.busy).toBe(false)
+    expect(slot.hasInFlight()).toBe(false)
   })
 })
 

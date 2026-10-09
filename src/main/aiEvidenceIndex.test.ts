@@ -172,6 +172,40 @@ describe('按章布隆证据索引', () => {
     expect(after.calls.length, '剪枝必须真的省掉读盘').toBeLessThan(before.calls.length)
   })
 
+  it('读盘之前回报一次剪枝计划，界面才说得出第一次提问为什么慢', async () => {
+    const bodies = chapterBodies(12)
+    bodies[9] = `${bodies[9]}\n\n她把银子藏在墙根的暗格里，谁也没有看见。`
+    const seeded = await seed(bodies)
+    const upto = seeded.refs[11]!.id
+    const query = { originalQuestion: '顾清把银子藏在何处' }
+    const options = { requestedUptoChapterId: upto, progressChapterId: upto }
+
+    const events: string[] = []
+    const planOf = () => (progress: { indexed: number; total: number; read: number }) => {
+      events.push(`plan:${progress.indexed}/${progress.total}/${progress.read}`)
+    }
+    const before = readerFor(seeded)
+    await retrieveLocalEvidence({
+      bookId: BOOK, chapters: seeded.book.chapters, query, options,
+      readBody: async (chapterId) => { events.push(`read:${chapterId}`); return before.readBody(chapterId) },
+      onProgress: planOf(),
+    })
+    expect(events[0], '没建索引时不得声称有覆盖，且要老实说本次通读全部已读章').toBe('plan:0/12/12')
+
+    await ensureEvidenceIndex(BOOK, seeded.refs, { maxChapters: 12 })
+    events.length = 0
+    const after = readerFor(seeded)
+    await retrieveLocalEvidence({
+      bookId: BOOK, chapters: seeded.book.chapters, query, options,
+      readBody: async (chapterId) => { events.push(`read:${chapterId}`); return after.readBody(chapterId) },
+      onProgress: planOf(),
+    })
+    const [plan, ...reads] = events
+    expect(plan, '计划必须先于任何一次读盘').toBe(`plan:12/12/${after.calls.length}`)
+    expect(reads).toHaveLength(after.calls.length)
+    expect(after.calls.length, '有索引后计划读盘应远少于全扫').toBeLessThan(12)
+  })
+
   it('记忆提示指向的章即使词面毫不重叠也必须读盘', async () => {
     const seeded = await seed(chapterBodies(12))
     const upto = seeded.refs[11]!.id

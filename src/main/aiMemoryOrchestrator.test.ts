@@ -28,12 +28,27 @@ function rawCharacter(candidateId: string, name = '顾清'): Record<string, unkn
 }
 
 describe('memory chapter selection', () => {
-  it('clamps to reading progress and takes the earliest five chapters after the previous cutoff', () => {
+  it('clamps to reading progress and queues every pending chapter after the previous cutoff', () => {
     const all = chapters(12).reverse()
     const selected = selectMemoryChapterBatches(all, 'c0012', 'c0010', 'c0002', 'update')
-    expect(selected.batches[0]?.map((item) => item.id)).toEqual(['c0003', 'c0004', 'c0005', 'c0006', 'c0007'])
-    expect(selected.remainingChapters).toBe(3)
+    expect(selected.batches.map((batch) => batch.map((item) => item.id))).toEqual([
+      ['c0003', 'c0004', 'c0005', 'c0006', 'c0007'],
+      ['c0008', 'c0009', 'c0010'],
+    ])
+    expect(selected.remainingChapters).toBe(0)
     expect(selected.eligibleChapterIds.at(-1)).toBe('c0010')
+  })
+
+  it('截断单次运行的章数，并把没跑完的章数留给下一次', () => {
+    const selected = selectMemoryChapterBatches(chapters(20), 'c0020', 'c0020', 'c0002', 'update', 12)
+    expect(selected.batches.map((batch) => batch.length)).toEqual([5, 5, 2])
+    expect(selected.batches.flat().map((item) => item.id).at(-1)).toBe('c0014')
+    expect(selected.remainingChapters).toBe(6)
+    expect(selected.eligibleChapterIds).toHaveLength(20)
+
+    const tiny = selectMemoryChapterBatches(chapters(12), 'c0012', 'c0010', 'c0002', 'update', 3)
+    expect(tiny.batches.map((batch) => batch.length)).toEqual([3])
+    expect(tiny.remainingChapters).toBe(5)
   })
 
   it('excludes non-ready chapters and returns no material without reading progress', () => {
@@ -46,8 +61,8 @@ describe('memory chapter selection', () => {
     })
   })
 
-  it('partitions rebuild from the first ready chapter into groups of five', () => {
-    const selected = selectMemoryChapterBatches(chapters(12), 'c0012', 'c0012', 'c0008', 'rebuild')
+  it('章数上限只约束增量更新，重建一次跑完整个已读窗口', () => {
+    const selected = selectMemoryChapterBatches(chapters(12), 'c0012', 'c0012', 'c0008', 'rebuild', 5)
     expect(selected.batches.map((batch) => batch.length)).toEqual([5, 5, 2])
     expect(selected.batches[0]?.[0]?.id).toBe('c0001')
     expect(selected.remainingChapters).toBe(0)

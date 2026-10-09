@@ -11,7 +11,7 @@ describe('memory IPC main-process contract', () => {
     expect(source).toContain('const payload = parseMemoryRunPayload(unsafePayload)')
     expect(source).toContain('const payload = parseMemoryMarkPayload(unsafePayload)')
     expect(source).toContain("aiTaskInstruction(settings, 'memory')")
-    expect(source).toContain("{ task: 'memory', signal: requestSignal }")
+    expect(source).toContain("{ task: 'memory', signal: requestSignal, advisor }")
     expect(source).toContain('selectMemoryChapterBatches(')
     expect(source).toContain("const hasReviewItems = mode === 'update'")
     expect(source).toContain('if (!selection.batches.length && !hasReviewItems)')
@@ -34,10 +34,26 @@ describe('memory IPC main-process contract', () => {
     const source = await readFile(new URL('./index.ts', import.meta.url), 'utf-8')
     expect(source).toContain("const MEMORY_WRITE_CLASSES = ['memory', 'follow']")
     expect(source.match(/aiQueue\.busyFor\(payload\.bookId, MEMORY_WRITE_CLASSES\)/g)?.length).toBe(3)
-    expect(source).not.toContain('const aiJobSlot')
-    expect(source).not.toContain('aiJobSlot.')
+    expect(source).not.toContain('AiJobSlot')
     expect(source).toContain('const aiQueue = new AiQueue()')
-    expect(source).toContain("new AiJobSlot(aiQueue, 'background')")
+    expect(source).toContain('new BookOverviewService(aiQueue,')
     expect(source).toContain('onCancelled: sendAiQueueCancel')
+    // 兼容壳已删：车道由取活的一方自己声明，全书概览属于后台车道。
+    const overview = await readFile(new URL('./bookOverview.ts', import.meta.url), 'utf-8')
+    expect(await readFile(new URL('./ai.ts', import.meta.url), 'utf-8')).not.toContain('AiJobSlot')
+    expect(overview).toContain("{ lane: 'background', cls: 'overview', bookId }")
+  })
+
+  it('记忆更新的单次章数来自设置，而不是写死 5 章', async () => {
+    const source = await readFile(new URL('./index.ts', import.meta.url), 'utf-8')
+    const start = source.indexOf('const startMemoryUpdate = async')
+    const block = source.slice(start, source.indexOf("ipcMain.handle('ai.retrySave'", start))
+    expect(block.indexOf('const settings = await getSettings()')).toBeGreaterThan(-1)
+    expect(block.indexOf('const settings = await getSettings()'))
+      .toBeLessThan(block.indexOf('const selection = selectMemoryChapterBatches('))
+    expect(block).toContain(
+      'settings.ai?.followMaxChaptersPerRun ?? DEFAULT_AI_PREFS.followMaxChaptersPerRun',
+    )
+    expect(block).not.toContain('slice(0, 5)')
   })
 })

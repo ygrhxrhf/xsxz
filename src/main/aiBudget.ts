@@ -22,6 +22,27 @@ export function aiBudgetWarning(budget: AiBudgetEstimate, warningTokens: number)
   return `本次预计输入约 ${budget.estimatedTokens} tokens，达到设置的 ${warningTokens} tokens 提醒阈值。是否继续？`
 }
 
+/** 按将要发送的提示词组装用量估算；追剧与交互任务共用同一口径，避免两套预算数字。 */
+export function promptBudget(
+  requestGroups: readonly (readonly string[])[],
+  chapters: readonly { id: string; title: string }[],
+  paragraphCount: number,
+  range?: string,
+): AiBudgetEstimate {
+  const prompts = requestGroups.flat()
+  const sentCharacters = prompts.reduce((total, prompt) => total + countTextCharacters(prompt), 0)
+  const unique = [...new Map(chapters.map((chapter) => [chapter.id, chapter])).values()]
+  return {
+    originalCharacters: sentCharacters,
+    sentCharacters,
+    estimatedTokens: prompts.reduce((total, prompt) => total + estimateAiTokens(prompt), 0),
+    chapterCount: unique.length,
+    paragraphCount,
+    batchCount: requestGroups.length,
+    range: range ?? (unique.length ? `${unique[0]!.title} → ${unique.at(-1)!.title}` : '0 条本地证据'),
+  }
+}
+
 export function normalizeAiParagraphs(
   text: string,
   segmentLimit = CLEAN_PARAGRAPH_SEGMENT_LIMIT,

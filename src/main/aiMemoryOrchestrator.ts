@@ -1,5 +1,6 @@
 import type { AiMemoryBase, AiMemoryFile, AiMemoryUpdateResult, ChapterStatus } from '../shared/types'
 import { AI_INPUT_CHARACTER_BUDGET, countTextCharacters } from './aiBudget'
+import { MEMORY_BATCH_CHAPTERS } from './aiMaterial'
 import {
   applyAiMemoryExtraction,
   buildAiMemoryCandidates,
@@ -16,6 +17,7 @@ export interface MemoryChapterInput {
 
 export interface MemoryChapterSelection {
   batches: MemoryChapterInput[][]
+  /** 章数上限之后仍未处理的已读章节数；重建恒为 0。 */
   remainingChapters: number
   eligibleChapterIds: string[]
 }
@@ -38,6 +40,7 @@ export function selectMemoryChapterBatches(
   progressChapterId: string | null | undefined,
   previousUptoChapterId: string | undefined,
   mode: 'update' | 'rebuild',
+  maxChaptersPerRun = Number.POSITIVE_INFINITY,
 ): MemoryChapterSelection {
   const ordered = [...chapters].sort((left, right) => left.index - right.index)
   const requestedPosition = chapterPosition(ordered, requestedUptoChapterId)
@@ -51,17 +54,20 @@ export function selectMemoryChapterBatches(
   const pending = mode === 'update' && previousPosition >= 0
     ? eligible.filter((chapter) => chapterPosition(ordered, chapter.id) > previousPosition)
     : eligible
-  if (mode === 'update') {
-    const selected = pending.slice(0, 5)
-    return {
-      batches: selected.length ? [selected] : [],
-      remainingChapters: Math.max(0, pending.length - selected.length),
-      eligibleChapterIds: eligible.map((chapter) => chapter.id),
-    }
-  }
+  // 重建是一次性的，跑不完就等于没重建；只有增量更新按单次运行的章数截断。
+  const runLimit = mode === 'update' && Number.isFinite(maxChaptersPerRun) && maxChaptersPerRun > 0
+    ? Math.floor(maxChaptersPerRun)
+    : pending.length
+  const running = pending.slice(0, runLimit)
   const batches: MemoryChapterInput[][] = []
-  for (let index = 0; index < pending.length; index += 5) batches.push(pending.slice(index, index + 5))
-  return { batches, remainingChapters: 0, eligibleChapterIds: eligible.map((chapter) => chapter.id) }
+  for (let index = 0; index < running.length; index += MEMORY_BATCH_CHAPTERS) {
+    batches.push(running.slice(index, index + MEMORY_BATCH_CHAPTERS))
+  }
+  return {
+    batches,
+    remainingChapters: Math.max(0, pending.length - running.length),
+    eligibleChapterIds: eligible.map((chapter) => chapter.id),
+  }
 }
 
 function allMemoryItems(memory: AiMemoryFile): AiMemoryBase[] {

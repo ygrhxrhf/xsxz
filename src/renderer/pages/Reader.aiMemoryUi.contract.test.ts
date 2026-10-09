@@ -35,15 +35,20 @@ describe('Reader recap and memory UI contract', () => {
     for (const label of ['人物', '关系', '伏笔', '关键事件', '待复核', '存疑', '标记不准确']) {
       expect(source).toContain(label)
     }
-    expect(source).toContain('source.paragraphIndex + 1')
-    expect(source).toContain("item.aliases.join('、')")
-    expect(source).toContain("item.participants.join('、')")
-    expect(source).toContain('source.excerpt')
-    expect(source.match(/<details v-for=/g)).toHaveLength(4)
-    expect(source.match(/:open="item\.accuracy === 'normal'"/g)).toHaveLength(4)
-    expect(source.match(/<summary>/g)).toHaveLength(4)
-    expect(source.match(/class="memory-accuracy-tag"/g)).toHaveLength(4)
-    expect(source).not.toMatch(/<summary>[^\n]*<n-tag/)
+    // 数量断言只看记忆 pane：别的 tab 加折叠列表不该让这条测试误报。
+    const memoryPane = source.slice(
+      source.indexOf('<n-tab-pane name="memory"'),
+      source.indexOf('<n-tab-pane name="qa"'),
+    )
+    expect(memoryPane).toContain('source.paragraphIndex + 1')
+    expect(memoryPane).toContain("item.aliases.join('、')")
+    expect(memoryPane).toContain("item.participants.join('、')")
+    expect(memoryPane).toContain('source.excerpt')
+    expect(memoryPane.match(/<details v-for=/g)).toHaveLength(4)
+    expect(memoryPane.match(/:open="item\.accuracy === 'normal'"/g)).toHaveLength(4)
+    expect(memoryPane.match(/<summary>/g)).toHaveLength(4)
+    expect(memoryPane.match(/class="memory-accuracy-tag"/g)).toHaveLength(4)
+    expect(memoryPane).not.toMatch(/<summary>[^\n]*<n-tag/)
     expect(source).toContain('还没有人物与剧情记忆。')
     expect(source).toContain('更新记忆后，可按人物、关系、伏笔和关键事件查看已读剧情。')
     expect(source).not.toContain('v-html')
