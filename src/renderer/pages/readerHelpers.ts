@@ -58,7 +58,7 @@ export function readerProgressLabel(
   return `${ordinal} · 本章 ${pct}% · 还剩 ${left} 章`
 }
 
-export type CatalogChapterBadge = 'failed' | 'pending' | 'empty' | 'current' | 'read' | null
+export type CatalogChapterBadge = 'failed' | 'pending' | 'empty' | 'unlocked' | 'current' | 'read' | null
 
 export function catalogChapterBadge(opts: {
   status: ChapterStatus
@@ -66,11 +66,15 @@ export function catalogChapterBadge(opts: {
   currentChapterId?: string | null
   progressChapterId?: string | null
   chapters: Array<Pick<ChapterMeta, 'id'>>
+  /** 正文是付费墙自动恢复来的（见 UNLOCK_METHOD_ZH）；有值就挂「恢复」角标。 */
+  unlockedBy?: string
 }): CatalogChapterBadge {
   const status = opts?.status
   if (status === 'failed') return 'failed'
   if (status === 'pending') return 'pending'
   if (status === 'empty') return 'empty'
+  // 恢复来的正文要本人核对完整性，比「当前/已读」更该被看见
+  if (status === 'ready' && opts?.unlockedBy) return 'unlocked'
   const chapterId = opts?.chapterId
   if (chapterId && chapterId === opts?.currentChapterId) return 'current'
   const chapters = Array.isArray(opts?.chapters) ? opts.chapters : []

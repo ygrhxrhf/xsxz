@@ -43,167 +43,94 @@ const tabs: { id: Tab; label: string; iconPaths: string[] }[] = [
   },
 ]
 
-// 纸色主题：暖纸主色，统一 Naive UI 组件配色
-const paperOverrides: GlobalThemeOverrides = {
+// 微信读书式浅色界面：浅灰画布、白色纸面与克制的蓝色操作色。
+const lightOverrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: '#8C4A32',
-    primaryColorHover: '#A35C42',
-    primaryColorPressed: '#6F3A27',
-    primaryColorSuppl: '#8C4A32',
-    infoColor: '#3E6B8A',
-    infoColorHover: '#527EA0',
-    infoColorPressed: '#315773',
-    infoColorSuppl: '#3E6B8A',
-    successColor: '#2F7D5A',
-    successColorHover: '#3D916B',
-    successColorPressed: '#25684A',
-    successColorSuppl: '#2F7D5A',
-    warningColor: '#A56A1B',
-    warningColorHover: '#B87B2A',
-    warningColorPressed: '#8A5816',
-    warningColorSuppl: '#A56A1B',
-    errorColor: '#B4232C',
-    errorColorHover: '#C53A42',
-    errorColorPressed: '#941C24',
-    errorColorSuppl: '#B4232C',
-    textColorBase: '#2F2A24',
-    textColor1: '#2F2A24',
-    textColor2: '#6B6258',
-    textColor3: '#8A7F72',
-    placeholderColor: '#A3988A',
-    borderColor: '#E4DCCB',
-    dividerColor: '#E4DCCB',
-    cardColor: '#FFFCF6',
-    modalColor: '#F7F3E8',
-    popoverColor: '#FFFCF6',
-    drawerColor: '#F7F3E8',
-    inputColor: '#FFFCF6',
-    actionColor: '#F3EBDD',
-    hoverColor: 'rgba(47, 42, 36, 0.06)',
-    borderRadius: '8px',
-    borderRadiusSmall: '8px',
-  },
-  Card: {
-    borderRadius: '14px',
-    borderColor: '#E4DCCB',
-  },
-  Dialog: {
-    borderRadius: '16px',
-  },
-  Tag: {
-    borderRadius: '8px',
-  },
-}
-
-// 简约主题：浅色中性、石板蓝点缀、小圆角无装饰
-const minimalOverrides: GlobalThemeOverrides = {
-  common: {
-    primaryColor: '#5e6f9e',
-    primaryColorHover: '#7080ae',
-    primaryColorPressed: '#4d5d89',
-    primaryColorSuppl: '#5e6f9e',
-    infoColor: '#4c7dd4',
-    infoColorHover: '#6b93dd',
-    infoColorPressed: '#3f6cbd',
-    infoColorSuppl: '#4c7dd4',
-    successColor: '#2f9e6e',
-    successColorHover: '#47b183',
-    successColorPressed: '#278a5f',
-    successColorSuppl: '#2f9e6e',
-    warningColor: '#c78a2e',
-    warningColorHover: '#d69c45',
-    warningColorPressed: '#b57a26',
-    warningColorSuppl: '#c78a2e',
-    errorColor: '#d64550',
-    errorColorHover: '#de606a',
-    errorColorPressed: '#c23a45',
-    errorColorSuppl: '#d64550',
-    textColorBase: '#26262e',
-    textColor1: '#26262e',
-    textColor2: '#4a4a55',
-    textColor3: '#767682',
-    placeholderColor: '#a5a5b0',
-    borderColor: '#d9dae2',
-    dividerColor: '#e8e9ee',
+    primaryColor: '#4b93dd',
+    primaryColorHover: '#65a5e7',
+    primaryColorPressed: '#3278bf',
+    primaryColorSuppl: '#4b93dd',
+    infoColor: '#4b93dd',
+    infoColorHover: '#65a5e7',
+    infoColorPressed: '#3278bf',
+    infoColorSuppl: '#4b93dd',
+    successColor: '#3b9d77',
+    warningColor: '#b48436',
+    errorColor: '#d85a60',
+    textColorBase: '#25272b',
+    textColor1: '#25272b',
+    textColor2: '#60656d',
+    textColor3: '#898f97',
+    placeholderColor: '#a0a6ae',
+    borderColor: '#e5e8ec',
+    dividerColor: '#eceef1',
     cardColor: '#ffffff',
     modalColor: '#ffffff',
     popoverColor: '#ffffff',
     drawerColor: '#ffffff',
-    inputColor: '#f4f5f8',
-    actionColor: '#f4f5f8',
-    hoverColor: 'rgba(94, 111, 158, 0.08)',
-    borderRadius: '8px',
+    inputColor: '#f7f8fa',
+    actionColor: '#f7f8fa',
+    hoverColor: 'rgba(37, 39, 43, 0.05)',
+    borderRadius: '10px',
     borderRadiusSmall: '8px',
   },
   Card: {
-    borderRadius: '14px',
-    borderColor: '#e4e5ec',
+    borderRadius: '16px',
+    borderColor: '#e9ebee',
     color: '#ffffff',
   },
   Dialog: {
-    borderRadius: '16px',
+    borderRadius: '18px',
   },
   Tag: {
-    borderRadius: '8px',
+    borderRadius: '999px',
   },
 }
 
-const nightOverrides: GlobalThemeOverrides = {
+const darkOverrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: '#9aabd9',
-    primaryColorHover: '#b0bde4',
-    primaryColorPressed: '#8396ca',
-    primaryColorSuppl: '#9aabd9',
-    infoColor: '#9cbcf1',
-    infoColorHover: '#b4caf2',
-    infoColorPressed: '#85aae8',
-    infoColorSuppl: '#9cbcf1',
-    successColor: '#76c8a0',
-    successColorHover: '#92d4b3',
-    successColorPressed: '#5ab88c',
-    successColorSuppl: '#76c8a0',
-    warningColor: '#e2b66a',
-    warningColorHover: '#ecc789',
-    warningColorPressed: '#d4a44f',
-    warningColorSuppl: '#e2b66a',
-    errorColor: '#f18d93',
-    errorColorHover: '#f5a8ad',
-    errorColorPressed: '#e97981',
-    errorColorSuppl: '#f18d93',
-    textColorBase: '#e9ecf3',
-    textColor1: '#e9ecf3',
-    textColor2: '#c3c9d6',
-    textColor3: '#9aa4b6',
-    placeholderColor: '#929bad',
-    borderColor: '#3a4150',
-    dividerColor: '#343b49',
-    cardColor: '#262c38',
-    modalColor: '#262c38',
-    popoverColor: '#262c38',
-    drawerColor: '#262c38',
-    inputColor: '#303746',
-    actionColor: '#303746',
-    hoverColor: 'rgba(233, 236, 243, 0.08)',
-    borderRadius: '8px',
+    primaryColor: '#79b5f2',
+    primaryColorHover: '#9ac9f6',
+    primaryColorPressed: '#5b9ddd',
+    primaryColorSuppl: '#79b5f2',
+    infoColor: '#79b5f2',
+    successColor: '#79c8a4',
+    warningColor: '#e3bb79',
+    errorColor: '#ef9299',
+    textColorBase: '#e8e9eb',
+    textColor1: '#e8e9eb',
+    textColor2: '#c0c2c7',
+    textColor3: '#93969d',
+    placeholderColor: '#82858d',
+    borderColor: '#393b40',
+    dividerColor: '#33353a',
+    cardColor: '#282a2e',
+    modalColor: '#282a2e',
+    popoverColor: '#282a2e',
+    drawerColor: '#282a2e',
+    inputColor: '#303237',
+    actionColor: '#303237',
+    hoverColor: 'rgba(232, 233, 235, 0.07)',
+    borderRadius: '10px',
     borderRadiusSmall: '8px',
   },
-  Card: { borderRadius: '14px', borderColor: '#3a4150' },
-  Dialog: { borderRadius: '16px' },
-  Tag: { borderRadius: '8px' },
+  Card: { borderRadius: '16px', borderColor: '#393b40' },
+  Dialog: { borderRadius: '18px' },
+  Tag: { borderRadius: '999px' },
 }
 
-// 换肤：localStorage 快照让首帧即正确，settings.json 为权威值
+// 本地快照决定首帧，settings.json 在加载后校正为权威值。
 const SKIN_STORAGE_KEY = 'spbf.skin'
 
-function isSkin(v: unknown): v is Skin {
-  return v === 'paper' || v === 'white' || v === 'night'
+function normalizeCachedSkin(value: unknown): Skin {
+  return value === 'dark' || value === 'night' ? 'dark' : 'light'
 }
 
-const skin = ref<Skin>(isSkin(localStorage.getItem(SKIN_STORAGE_KEY)) ? localStorage.getItem(SKIN_STORAGE_KEY) as Skin : 'white')
+const skin = ref<Skin>(normalizeCachedSkin(localStorage.getItem(SKIN_STORAGE_KEY)))
 document.body.dataset.skin = skin.value
 
-const naiveTheme = computed(() => (skin.value === 'night' ? darkTheme : lightTheme))
-const themeOverrides = computed(() => (skin.value === 'night' ? nightOverrides : skin.value === 'white' ? minimalOverrides : paperOverrides))
+const naiveTheme = computed(() => (skin.value === 'dark' ? darkTheme : lightTheme))
+const themeOverrides = computed(() => (skin.value === 'dark' ? darkOverrides : lightOverrides))
 
 function onChangeSkin(s: Skin) {
   skin.value = s
@@ -265,9 +192,10 @@ onMounted(async () => {
   unsubProgress = window.api.download.onProgress(onDownloadProgress)
   try {
     const s = await window.api.settings.get()
-    if (isSkin(s.appearance?.skin) && s.appearance.skin !== skin.value) {
+    if (s.appearance?.skin && s.appearance.skin !== skin.value) {
       skin.value = s.appearance.skin
     }
+    localStorage.setItem(SKIN_STORAGE_KEY, skin.value)
   } catch {
     /* 设置读不到就沿用快照 */
   }
@@ -300,6 +228,7 @@ onUnmounted(() => {
               <path d="M21 5.5A3.5 3.5 0 0 0 17.5 2H13v17h4.5A3.5 3.5 0 0 1 21 22V5.5Z" />
             </svg>
           </span>
+          <span class="brand-title">小说浏览器</span>
           <nav class="app-nav" aria-label="主要功能">
             <button
               v-for="item in tabs"
@@ -316,12 +245,27 @@ onUnmounted(() => {
               <span class="nav-label">{{ item.label }}</span>
             </button>
           </nav>
-          <div v-if="dlRunning?.status === 'running'" class="sidebar-dl">
-            <div class="sidebar-dl-title" :title="dlRunning.title">{{ dlRunning.title }}</div>
-            <div class="sidebar-dl-row">
-              <span>已下 {{ dlRunning.done }} / {{ dlRunning.total }} 章</span>
-              <button class="sidebar-dl-cancel" type="button" @click="cancelSidebarDownload">取消</button>
+          <div class="app-bar-actions">
+            <div v-if="dlRunning?.status === 'running'" class="sidebar-dl" role="status">
+              <div class="sidebar-dl-title" :title="dlRunning.title">{{ dlRunning.title }}</div>
+              <div class="sidebar-dl-row">
+                <span>已下 {{ dlRunning.done }} / {{ dlRunning.total }} 章</span>
+                <button class="sidebar-dl-cancel" type="button" @click="cancelSidebarDownload">取消</button>
+              </div>
             </div>
+            <button
+              class="theme-toggle"
+              type="button"
+              :aria-label="skin === 'light' ? '切换深色外观' : '切换浅色外观'"
+              :title="skin === 'light' ? '切换深色外观' : '切换浅色外观'"
+              @click="onChangeSkin(skin === 'light' ? 'dark' : 'light')"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path v-if="skin === 'light'" d="M20.5 15.1A8.6 8.6 0 0 1 8.9 3.5 8.6 8.6 0 1 0 20.5 15.1Z" />
+                <template v-else><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" /></template>
+              </svg>
+              <span>{{ skin === 'light' ? '深色' : '浅色' }}</span>
+            </button>
           </div>
         </header>
         <section class="main">

@@ -41,6 +41,18 @@ describe('章节质量报告与人工修复', () => {
     expect((await readChapter('d_quality', 'c0001')).status).toBe('ready')
   })
 
+  it('flags an auto-unlocked chapter for a completeness check', async () => {
+    const text = '这是正常正文。'.repeat(60)
+    await writeChapterFile('d_quality', 'c0001', {
+      title: '一', body: text, status: 'ready', unlockedBy: 'hiddenDom',
+    })
+    const report = await auditBook('d_quality')
+    const unlocked = report.issues.filter((issue) => issue.kind === 'unlockedBody')
+    expect(unlocked.map((issue) => issue.chapterId)).toEqual(['c0001'])
+    expect(unlocked[0]!.reason).toContain('页面隐藏正文')
+    expect((await readChapter('d_quality', 'c0001')).unlockedBy).toBe('hiddenDom')
+  })
+
   it('saves manual text and preserves the first original for undo', async () => {
     await writeChapterFile('d_quality', 'c0001', { title: '一', body: '旧正文', status: 'ready' })
     await repairChapterBody('d_quality', 'c0001', '修好后的正文')

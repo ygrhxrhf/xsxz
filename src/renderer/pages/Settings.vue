@@ -57,9 +57,8 @@ const sectionOptions: { id: SettingsSection; label: string }[] = [
 ]
 
 const skinOptions: { id: Skin; name: string; desc: string }[] = [
-  { id: 'paper', name: '暖纸', desc: '米白纸面 · 长时间阅读' },
-  { id: 'white', name: '简约', desc: '现代浅色 · 清晰克制' },
-  { id: 'night', name: '夜间', desc: '深色 · 弱光阅读' },
+  { id: 'light', name: '浅色', desc: '浅灰画布 · 白色书页' },
+  { id: 'dark', name: '深色', desc: '深色界面 · 低亮阅读' },
 ]
 
 const settings = ref<Settings | null>(null)
@@ -122,6 +121,11 @@ const rulePreviousChapter = ref('')
 const ruleNextChapter = ref('')
 const ruleAdFilterEnabled = ref(true)
 const ruleAdHideSelectors = ref('')
+const rulePaywallUnlock = ref(true)
+const ruleUnlockSelectors = ref('')
+const ruleChapterApi = ref('')
+const ruleChapterApiBody = ref('')
+const ruleOcrUnlock = ref(false)
 const ruleSaving = ref(false)
 const ruleMsg = ref('')
 const ruleMsgType = ref<'success' | 'error' | 'info'>('info')
@@ -140,6 +144,9 @@ function previewRule(rule: SiteRule): string {
     previewField('上一章', rule.previousChapter),
     previewField('下一章', rule.nextChapter),
     `浏览去广告 ${rule.adFilterEnabled === false ? '关闭' : '开启'}`,
+    `付费墙自动解锁 ${rule.paywallUnlock === false ? '关闭' : '开启'}`,
+    `章节接口 ${(rule.chapterApi ?? '').trim() || '（空）'}`,
+    `图片/字形 OCR ${rule.ocrUnlock === true ? '开启' : '关闭'}`,
   ].join(' · ')
 }
 
@@ -153,6 +160,11 @@ function fillRuleForm(rule: SiteRule) {
   ruleNextChapter.value = rule.nextChapter ?? ''
   ruleAdFilterEnabled.value = rule.adFilterEnabled !== false
   ruleAdHideSelectors.value = rule.adHideSelectors ?? ''
+  rulePaywallUnlock.value = rule.paywallUnlock !== false
+  ruleUnlockSelectors.value = rule.unlockSelectors ?? ''
+  ruleChapterApi.value = rule.chapterApi ?? ''
+  ruleChapterApiBody.value = rule.chapterApiBody ?? ''
+  ruleOcrUnlock.value = rule.ocrUnlock === true
 }
 
 async function loadRules() {
@@ -524,6 +536,12 @@ async function saveRule() {
       nextChapter: ruleNextChapter.value,
       adFilterEnabled: ruleAdFilterEnabled.value,
       adHideSelectors: ruleAdHideSelectors.value,
+      paywallUnlock: rulePaywallUnlock.value,
+      unlockSelectors: ruleUnlockSelectors.value,
+      chapterApi: ruleChapterApi.value,
+      chapterApiMethod: ruleChapterApiBody.value.trim() ? 'POST' : 'GET',
+      chapterApiBody: ruleChapterApiBody.value,
+      ocrUnlock: ruleOcrUnlock.value,
     })
     if (!res.ok) {
       ruleMsg.value = res.message || '保存失败'
@@ -921,7 +939,8 @@ onMounted(load)
 
     <n-card v-show="activeSection === 'siteRules'" title="站点规则" class="settings-card">
       <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">
-        按域名配置提取规则与浏览页去广告。提取选择器留空时走通用提取。
+        按域名配置提取规则与浏览页去广告。提取选择器留空时走通用提取。<br>
+        付费墙自动解锁：撞墙时先在页面里找回正文，找不到才按墙暂停等人处理。
       </p>
       <n-space vertical :size="12">
         <n-input-group>
@@ -952,6 +971,26 @@ onMounted(load)
           <n-input-group-label style="width:110px">下一章选择器</n-input-group-label>
           <n-input v-model:value="ruleNextChapter" placeholder="可选，空则自动识别" />
         </n-input-group>
+        <n-input v-model:value="ruleUnlockSelectors" type="textarea" :rows="3" placeholder="解锁容器 CSS 选择器，每行一条（可选）：站点把全文藏在这些节点里时直取，含被样式隐藏的部分" />
+        <n-input-group>
+          <n-input-group-label style="width:110px">章节接口</n-input-group-label>
+          <n-input v-model:value="ruleChapterApi" placeholder="可选：/ajax/chapter?id={id}；{id} {cid} {chapterId} {page} 用当前页线索替换" />
+        </n-input-group>
+        <n-input v-model:value="ruleChapterApiBody" type="textarea" :rows="2" placeholder="可选：接口的 POST 请求体（JSON），填写后该站接口按 POST 调用，如 {&quot;cid&quot;:&quot;{id}&quot;}" />
+        <n-space align="center">
+          <span>付费墙自动解锁</span>
+          <n-switch v-model:value="rulePaywallUnlock" aria-label="付费墙自动解锁" />
+        </n-space>
+        <n-space align="center">
+          <span>图片/字形走 OCR</span>
+          <n-switch v-model:value="ruleOcrUnlock" aria-label="图片与字形替换走 OCR" />
+        </n-space>
+        <div class="field-help">
+          开了 OCR：正文是图片切片、或站点用自定义字体把字换成私用区乱码时，截图交给 OCR 认字（本机引擎，离线。认得慢，结果可能有错字，请核对后再读）。
+        </div>
+        <div class="field-help">
+          开启后撞付费墙先在页面内找回正文：解锁容器、被样式藏起来的全文、内联 JSON / 脚本变量 / data-* 属性、编码载荷、被藏起来的续页；都失败才在页面上下文里调上面那个章节接口（带当前登录态，不伪造凭证）。全部拿不到才按付费墙暂停等人处理。
+        </div>
         <n-space align="center">
           <span>浏览页去广告</span>
           <n-switch v-model:value="ruleAdFilterEnabled" aria-label="浏览页去广告" />
@@ -1056,8 +1095,9 @@ onMounted(load)
 <style scoped>
 .settings-page {
   width: 100%;
-  max-width: 1120px;
+  max-width: 1240px;
   margin: 0 auto;
+  padding: var(--space-8) clamp(24px, 3vw, 48px);
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -1074,8 +1114,8 @@ onMounted(load)
 
 .settings-layout {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: var(--space-6);
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: var(--space-8);
 }
 
 .settings-nav {
@@ -1084,14 +1124,14 @@ onMounted(load)
   gap: var(--space-1);
   align-self: start;
   padding: var(--space-2);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-card);
-  background: var(--surface-1);
+  background: transparent;
 }
 
 .settings-nav-item {
   position: relative;
-  min-height: 38px;
+  min-height: 42px;
   border: 0;
   border-radius: var(--radius-control);
   padding: 0 var(--space-3);
@@ -1118,8 +1158,8 @@ onMounted(load)
 }
 
 .settings-nav-item.active {
-  color: var(--text-primary);
-  background: var(--surface-3);
+  color: var(--focus);
+  background: var(--surface-1);
   font-weight: 700;
 }
 
@@ -1134,6 +1174,8 @@ onMounted(load)
 .settings-card + .settings-card {
   margin-top: var(--space-4);
 }
+
+.settings-card { box-shadow: var(--shadow-card); }
 
 .settings-card :deep(.n-card__content) {
   display: flex;
@@ -1197,7 +1239,7 @@ onMounted(load)
 
 .skin-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
 }
 
@@ -1211,7 +1253,7 @@ onMounted(load)
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: var(--radius-card);
-  padding: var(--space-3);
+  padding: var(--space-4);
   cursor: pointer;
   color: inherit;
   transition: border-color var(--motion-duration), box-shadow var(--motion-duration);
@@ -1233,27 +1275,22 @@ onMounted(load)
 
 .skin-swatch {
   width: 100%;
-  height: 44px;
-  border-radius: 8px;
+  height: 64px;
+  border-radius: var(--radius-control);
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
 }
 
-.skin-swatch.paper {
-  background: #f7f3e8;
-  border: 1px solid #e4dcc8;
+.skin-swatch.light {
+  background: linear-gradient(90deg, #f5f6f8 0 36%, #ffffff 36%);
+  border: 1px solid #e5e8ec;
 }
 
-.skin-swatch.white {
-  background: #ffffff;
-  border: 1px solid #e4e5ec;
-}
-
-.skin-swatch.night {
-  background: #202631;
-  border: 1px solid #3a4150;
+.skin-swatch.dark {
+  background: linear-gradient(90deg, #242426 0 36%, #282a2e 36%);
+  border: 1px solid #393b40;
 }
 
 .sw-dot {
@@ -1262,41 +1299,12 @@ onMounted(load)
   border-radius: 50%;
 }
 
-.paper .d1 {
-  background: #c4a574;
-}
-
-.paper .d2 {
-  background: #efe6d4;
-}
-
-.paper .d3 {
-  background: #2f2a24;
-}
-
-.white .d1 {
-  background: #5e6f9e;
-}
-
-.white .d2 {
-  background: #e6e7ee;
-}
-
-.white .d3 {
-  background: #26262e;
-}
-
-.night .d1 {
-  background: #9aabd9;
-}
-
-.night .d2 {
-  background: #303746;
-}
-
-.night .d3 {
-  background: #e9ecf3;
-}
+.light .d1 { background: #4b93dd; }
+.light .d2 { background: #e5e8ec; }
+.light .d3 { background: #25272b; }
+.dark .d1 { background: #79b5f2; }
+.dark .d2 { background: #393b40; }
+.dark .d3 { background: #e8e9eb; }
 
 .skin-name {
   font-size: 13px;

@@ -32,7 +32,7 @@ import {
 } from '../shared/types'
 import { defaultLibraryPath } from './libraryPath'
 
-const SKINS: readonly Skin[] = ['paper', 'white', 'night']
+const SKINS: readonly Skin[] = ['light', 'dark']
 const DOWNLOAD_PACES: readonly DownloadPace[] = ['slow', 'standard', 'fast']
 const READER_THEMES: readonly ReaderTheme[] = ['paper', 'sepia', 'gray', 'night']
 const READER_FONT_FAMILIES: readonly ReaderFontFamily[] = ['serif', 'system', 'mono']
@@ -45,9 +45,10 @@ const AI_RECAP_LENGTHS: readonly AiPrefs['recapLength'][] = ['short', 'standard'
 const AI_PROMPT_MODES: readonly AiPrefs['promptMode'][AiPromptKind][] = ['builtin', 'custom']
 const LEGACY_DEEPSEEK_MODELS = new Set(['deepseek-chat', 'deepseek-reasoner'])
 
-/** 已保存的三种外观原样保留；旧 sakura、minimal 回退暖纸，其余无效值使用新用户默认外观。 */
+/** 旧界面外观迁移到明暗两套；阅读正文偏好不受影响。 */
 export function normalizeSkin(value: unknown): Skin {
-  if (value === 'sakura' || value === 'minimal') return 'paper'
+  if (value === 'paper' || value === 'white' || value === 'sakura' || value === 'minimal') return 'light'
+  if (value === 'night') return 'dark'
   return SKINS.includes(value as Skin) ? (value as Skin) : DEFAULT_APPEARANCE_PREFS.skin
 }
 

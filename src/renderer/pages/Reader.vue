@@ -1184,11 +1184,11 @@ let unsubAiStage: (() => void) | null = null
 let unsubAiBudget: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
 
-const themeTokens: Record<ReaderTheme, { paper: string; text: string; outer: string }> = {
-  paper: { paper: '#F7F3E8', text: '#2F2A24', outer: '#E9E3D7' },
-  sepia: { paper: '#F3E2B8', text: '#3A2F22', outer: '#E6D2A4' },
-  gray: { paper: '#E5E7E6', text: '#252A2D', outer: '#D6D9D8' },
-  night: { paper: '#1B1D20', text: '#D8D2C7', outer: '#111316' },
+const themeTokens: Record<ReaderTheme, { paper: string; text: string }> = {
+  paper: { paper: '#FFFFFF', text: '#25272B' },
+  sepia: { paper: '#F3E2B8', text: '#3A2F22' },
+  gray: { paper: '#E5E7E6', text: '#252A2D' },
+  night: { paper: '#1B1D20', text: '#D8D2C7' },
 }
 const fontStacks: Record<ReaderFontFamily, string> = {
   serif: '"STSong", "Songti SC", "SimSun", serif',
@@ -1200,7 +1200,7 @@ const spacingValues: Record<ReaderParagraphSpacing, string> = { compact: '0.2em'
 const readerThemeStyle = computed(() => ({
   '--reader-paper': themeTokens[theme.value].paper,
   '--reader-paper-text': themeTokens[theme.value].text,
-  '--reader-outer': themeTokens[theme.value].outer,
+  '--reader-outer': 'var(--app-bg)',
 }))
 const contentStyle = computed(() => ({
   fontSize: fontSize.value + 'px',
@@ -1220,13 +1220,14 @@ const canRetryChapter = computed(() => {
   return ch.status === 'failed' || ch.status === 'empty' || ch.status === 'pending'
 })
 const filteredCatalog = computed(() => filterCatalogChapters(chapters.value, catalogQuery.value))
-function catalogBadge(ch: { id: string; status: typeof chapters.value[number]['status']; failCode?: typeof chapters.value[number]['failCode'] }) {
+function catalogBadge(ch: { id: string; status: typeof chapters.value[number]['status']; failCode?: typeof chapters.value[number]['failCode']; unlockedBy?: string }) {
   return catalogChapterBadge({
     status: ch.status,
     chapterId: ch.id,
     currentChapterId: currentChapter.value?.id,
     progressChapterId: book.value?.progress?.chapterId,
     chapters: chapters.value,
+    unlockedBy: ch.unlockedBy,
   })
 }
 const currentChapterIndex = computed(() => chapters.value.findIndex((chapter) => chapter.id === currentChapter.value?.id))
@@ -2907,6 +2908,7 @@ onUnmounted(() => {
                 <n-tag v-if="catalogBadge(ch) === 'failed'" size="tiny" type="error">{{ ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败' }}</n-tag>
                 <n-tag v-else-if="catalogBadge(ch) === 'pending'" size="tiny">未下</n-tag>
                 <n-tag v-else-if="catalogBadge(ch) === 'empty'" size="tiny" type="warning">空</n-tag>
+                <n-tag v-else-if="catalogBadge(ch) === 'unlocked'" size="tiny" type="success">恢复</n-tag>
                 <n-tag v-else-if="catalogBadge(ch) === 'current'" size="tiny" type="info">当前</n-tag>
                 <n-tag v-else-if="catalogBadge(ch) === 'read'" size="tiny">已读</n-tag>
               </div>
@@ -4033,13 +4035,13 @@ onUnmounted(() => {
   z-index: 30;
   flex: 0 0 auto;
   width: 100%;
-  min-height: 48px;
+  min-height: 56px;
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 12px;
+  padding: 6px 24px;
   border-bottom: 1px solid var(--r-line);
-  border-radius: var(--radius-card);
+  border-radius: 0;
   background: color-mix(in srgb, var(--r-bar-bg) 94%, var(--r-surface));
   opacity: 1;
   pointer-events: auto;
@@ -4105,6 +4107,7 @@ onUnmounted(() => {
 
 .reader-stage { flex: 1 1 auto; min-height: 0; display: flex; background: var(--reader-outer); }
 .reader-spine {
+  display: none;
   flex: 0 0 52px; width: 52px; align-self: stretch; margin: 0; padding: 16px 6px;
   border: 0; border-right: 1px solid var(--r-line);
   background: color-mix(in srgb, var(--r-bar-bg) 88%, var(--reader-outer));
@@ -4120,23 +4123,25 @@ onUnmounted(() => {
 }
 .reader-body {
   position: relative; flex: 1 1 auto; min-width: 0;
-  padding: 28px clamp(48px, 5vw, 72px) 20px; justify-content: center; overflow: hidden;
+  padding: 24px 96px 24px; justify-content: center; overflow: hidden;
   background: var(--reader-outer);
 }
 .reader-bottombar {
-  position: relative; z-index: 28; flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
-  gap: 8px; min-height: 48px; padding: 6px 12px; border-top: 1px solid var(--r-line);
-  background: color-mix(in srgb, var(--r-bar-bg) 94%, var(--r-surface));
+  position: absolute; z-index: 28; top: 50%; right: 24px; width: 62px;
+  display: flex; flex-direction: column; align-items: stretch; justify-content: center;
+  gap: 4px; padding: 8px 4px; border: 1px solid var(--r-line);
+  border-radius: 999px; transform: translateY(-50%);
+  background: var(--r-bar-bg); box-shadow: var(--shadow-card);
 }
 .bottom-button {
-  min-width: 64px; min-height: 32px; padding: 4px 12px; border: 0; border-radius: var(--radius-control);
-  background: transparent; color: inherit; font: inherit; font-size: 14px; cursor: pointer;
+  min-width: 0; min-height: 42px; padding: 4px; border: 0; border-radius: 999px;
+  background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer;
 }
 .bottom-button:hover, .bottom-button.active { background: var(--r-hover); }
 .bottom-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .bottom-panel {
-  position: absolute; left: 50%; bottom: calc(100% + 8px); width: min(420px, calc(100% - 24px));
-  max-height: min(420px, 60vh); transform: translateX(-50%); overflow-y: auto; display: flex;
+  position: absolute; top: 50%; right: calc(100% + 12px); width: min(390px, calc(100vw - 96px));
+  max-height: min(440px, 70vh); transform: translateY(-50%); overflow-y: auto; display: flex;
   flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--r-line);
   border-radius: var(--radius-overlay); background: var(--popover-bg); box-shadow: var(--shadow-overlay);
 }
@@ -4148,9 +4153,9 @@ onUnmounted(() => {
   width: min(100%, 38em);
   max-width: 38em;
   flex: 0 1 38em;
-  padding: 64px clamp(24px, 5vw, 56px) 100px;
-  border-radius: var(--radius-control) var(--radius-control) 0 0;
-  box-shadow: 0 2px 18px rgba(0, 0, 0, .08);
+  padding: 64px clamp(32px, 5vw, 60px) 100px;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
 }
 .reader-page-indicator {
   position: absolute;
@@ -4201,6 +4206,21 @@ onUnmounted(() => {
 .chapter-hotzone:disabled { cursor: default; }
 .chapter-hotzone span { font-size: 36px; line-height: 1; }
 .chapter-hotzone:focus-visible { outline: 2px solid var(--r-focus); outline-offset: -3px; }
+
+@media (max-width: 1180px) {
+  .reader-body { padding: 16px 16px 78px; }
+  .reader-bottombar {
+    top: auto; right: auto; bottom: 20px; left: 50%; width: auto;
+    flex-direction: row; padding: 4px 8px; transform: translateX(-50%);
+  }
+  .bottom-button { min-width: 58px; min-height: 36px; }
+  .bottom-panel {
+    top: auto; right: auto; bottom: calc(100% + 12px); left: 50%;
+    width: min(390px, calc(100vw - 32px));
+    transform: translateX(-50%);
+  }
+  .chapter-hotzone { width: 28px; }
+}
 
 .chapter-end-card {
   width: 100%;

@@ -10,6 +10,7 @@ import {
   formatChapterOrdinal,
   formatLibraryProgress,
   formatLibraryProgressTime,
+  libraryUnlockedNote,
   groupFailedChaptersByCode,
   hasFailedChapters,
   libraryReadChapterOrdinal,
@@ -122,7 +123,9 @@ describe('library check-update card helpers', () => {
       readyCount: 2,
       chapterCount: 6,
     })).toEqual([
+      'edit',
       'recap',
+      'quality',
       'check-update',
       'retry-failed',
       'view-failed',
@@ -138,6 +141,7 @@ describe('library check-update card helpers', () => {
       readyCount: 2,
       chapterCount: 2,
     })).toEqual([
+      'edit',
       'recap',
       'divider-export',
       'export-txt',
@@ -411,5 +415,13 @@ describe('reader progress / catalog helpers', () => {
   it('asks a rate-limited chapter to wait instead of visiting the browse page', () => {
     expect(failAdvice('RateLimited')).toMatch(/限流/)
     expect(failAdvice('RateLimited')).not.toMatch(/浏览页/)
+  })
+})
+
+describe('库卡片上的自动恢复提示', () => {
+  it('有恢复章才提示，并给出章数', () => {
+    expect(libraryUnlockedNote({ unlockedCount: 3 })).toBe('含 3 章自动恢复')
+    expect(libraryUnlockedNote({ unlockedCount: 0 })).toBe('')
+    expect(libraryUnlockedNote({})).toBe('')
   })
 })

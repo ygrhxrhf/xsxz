@@ -4,9 +4,9 @@ import { describe, expect, it } from 'vitest'
 describe('Library comfortable card contract', () => {
   it('keeps the fixed grid, generated cover, and keyboard-open structure', async () => {
     const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
-    expect(source).toContain('grid-template-columns: repeat(auto-fill, minmax(230px, 1fr))')
-    expect(source).toContain('width: 104px')
-    expect(source).toContain('height: 142px')
+    expect(source).toContain('grid-template-columns: repeat(auto-fill, minmax(240px, 1fr))')
+    expect(source).toContain('width: 112px')
+    expect(source).toContain('height: 156px')
     expect(source).toContain('width: 6px')
     expect(source).toContain('libraryCoverText(b.title)')
     expect(source).toContain(':style="coverStyle(b.id)"')
@@ -139,7 +139,8 @@ describe('Library comfortable card contract', () => {
 
   it('opens a Chinese 编辑信息 dialog, validates title, and saves via updateMeta', async () => {
     const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
-    expect(source).toContain('@click="openEdit(b)">编辑信息</n-button>')
+    expect(source).toContain("if (entry === 'edit') return { label: '编辑信息', key: entry }")
+    expect(source).toContain("if (action === 'edit') openEdit(book)")
     expect(source).toContain('title="编辑信息"')
     expect(source).toContain('<n-form-item label="书名">')
     expect(source).toContain('<n-form-item label="作者">')

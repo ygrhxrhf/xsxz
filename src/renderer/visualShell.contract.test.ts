@@ -15,13 +15,14 @@ describe('shared visual shell contract', () => {
       '--space-4: 16px',
       '--space-6: 24px',
       '--space-8: 32px',
-      '--radius-control: 8px',
-      '--radius-card: 14px',
-      '--radius-overlay: 16px',
+      '--radius-control: 10px',
+      '--radius-card: 16px',
+      '--radius-overlay: 18px',
       '--motion-duration: 150ms',
     ]) expect(styles).toContain(declaration)
 
-    expect(styles).toContain("body[data-skin='minimal']")
+    expect(styles).toContain("body[data-skin='light']")
+    expect(styles).toContain("body[data-skin='dark']")
     for (const token of [
       '--text-primary:', '--text-secondary:', '--text-muted:',
       '--surface-1:', '--surface-2:', '--surface-3:',
@@ -63,7 +64,8 @@ describe('shared visual shell contract', () => {
     expect(app).toContain('>取消</button>')
     expect(app).toContain(':aria-current="tab === item.id ? \'page\' : undefined"')
     expect(app).not.toMatch(/[🧭📚📖⚙️📘🌸]/u)
-    expect(styles).not.toMatch(/body\[data-skin='minimal'\]\s+\.nav-icon\s*\{[^}]*display:\s*none/s)
+    expect(app).toContain('class="theme-toggle"')
+    expect(styles).toContain('.nav-btn.active::after')
   })
 
   it('keeps shell lifecycle and Naive UI radii aligned with the design system', async () => {
@@ -74,10 +76,10 @@ describe('shared visual shell contract', () => {
     expect(app.match(/v-show="tab ===/g)).toHaveLength(4)
     expect(app).toContain('unsubProgress = window.api.download.onProgress(onDownloadProgress)')
     expect(app).toContain('unsubProgress?.()')
-    expect(app.match(/borderRadius: '8px'/g)?.length).toBeGreaterThanOrEqual(4)
-    expect(app.match(/borderRadius: '14px'/g)).toHaveLength(3)
-    expect(app.match(/borderRadius: '16px'/g)).toHaveLength(3)
-    expect(app).toContain("skin.value === 'night' ? nightOverrides")
-    expect(app).toContain("localStorage.getItem(SKIN_STORAGE_KEY) as Skin : 'white'")
+    expect(app).toContain("const lightOverrides: GlobalThemeOverrides")
+    expect(app).toContain("const darkOverrides: GlobalThemeOverrides")
+    expect(app).toContain("skin.value === 'dark' ? darkOverrides : lightOverrides")
+    expect(app).toContain("normalizeCachedSkin(localStorage.getItem(SKIN_STORAGE_KEY))")
+    expect(app).toContain("value === 'dark' || value === 'night' ? 'dark' : 'light'")
   })
 })

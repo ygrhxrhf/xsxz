@@ -458,20 +458,25 @@ onUnmounted(() => {
           >
             下载本书
           </n-button>
-          <n-button size="small" secondary :disabled="!currentHost()" @click.prevent="editCurrentSiteRule">
-            配置本站规则
-          </n-button>
-          <n-button size="small" secondary :disabled="!currentHost()" :loading="adFilterBusy" @click.prevent="toggleAdFilter">
-            {{ adFilterEnabled ? '关闭去广告' : '开启去广告' }}
-          </n-button>
-          <n-button
-            v-if="downloadProgress && !showProgress"
-            size="small"
-            tertiary
-            @click.prevent="restoreProgressDrawer"
-          >
-            下载进度
-          </n-button>
+          <details class="browser-more">
+            <summary>更多工具</summary>
+            <div class="browser-more-content">
+              <n-button size="small" secondary :disabled="!currentHost()" @click.prevent="editCurrentSiteRule">
+                配置本站规则
+              </n-button>
+              <n-button size="small" secondary :disabled="!currentHost()" :loading="adFilterBusy" @click.prevent="toggleAdFilter">
+                {{ adFilterEnabled ? '关闭去广告' : '开启去广告' }}
+              </n-button>
+              <n-button
+                v-if="downloadProgress && !showProgress"
+                size="small"
+                tertiary
+                @click.prevent="restoreProgressDrawer"
+              >
+                下载进度
+              </n-button>
+            </div>
+          </details>
         </div>
       </div>
     </form>
@@ -486,15 +491,18 @@ onUnmounted(() => {
       <button type="button" :disabled="!state.previousChapter" :title="state.previousChapter?.title || '未识别到上一章'" @click="changeChapter('previous')">上一章</button>
       <button type="button" :disabled="!state.nextChapter" :title="state.nextChapter?.title || '未识别到下一章'" @click="changeChapter('next')">下一章</button>
       <button type="button" :disabled="!state.url || readingBusy" @click="readingPage ? exitReadingMode() : enterReadingMode()">{{ readingPage ? '返回原网页' : '阅读模式' }}</button>
-      <template v-if="!readingPage">
-        <button type="button" aria-label="缩小网页" @click="setZoom(-0.1)">−</button>
-        <button type="button" title="恢复默认缩放" @click="setZoom('reset')">{{ Math.round(state.zoom * 100) }}%</button>
-        <button type="button" aria-label="放大网页" @click="setZoom(0.1)">＋</button>
-        <button type="button" @click="findOpen ? closeFind() : findOpen = true">{{ findOpen ? '关闭查找' : '网页查找' }}</button>
-        <button type="button" @click="hideAction(hidePicking ? 'stop' : 'start')">{{ hidePicking ? '退出点选' : '点选隐藏' }}</button>
-        <button type="button" :disabled="hiddenCount === 0" @click="hideAction('undo')">撤销隐藏{{ hiddenCount ? `（${hiddenCount}）` : '' }}</button>
-      </template>
-      <span class="web-shortcut-hint">Alt＋↑ / Alt＋↓ 翻章</span>
+      <details v-if="!readingPage" class="web-more">
+        <summary>网页工具</summary>
+        <div class="web-more-content">
+          <button type="button" aria-label="缩小网页" @click="setZoom(-0.1)">−</button>
+          <button type="button" title="恢复默认缩放" @click="setZoom('reset')">{{ Math.round(state.zoom * 100) }}%</button>
+          <button type="button" aria-label="放大网页" @click="setZoom(0.1)">＋</button>
+          <button type="button" @click="findOpen ? closeFind() : findOpen = true">{{ findOpen ? '关闭查找' : '网页查找' }}</button>
+          <button type="button" @click="hideAction(hidePicking ? 'stop' : 'start')">{{ hidePicking ? '退出点选' : '点选隐藏' }}</button>
+          <button type="button" :disabled="hiddenCount === 0" @click="hideAction('undo')">撤销隐藏{{ hiddenCount ? `（${hiddenCount}）` : '' }}</button>
+          <span class="web-shortcut-hint">Alt＋↑ / Alt＋↓ 翻章</span>
+        </div>
+      </details>
     </div>
     <div v-if="findOpen && !readingPage" class="web-find-row">
       <input ref="findInput" v-model="findQuery" aria-label="查找网页文字" placeholder="查找当前网页" @input="runFind()" @keydown.enter.prevent="runFind(true, true)" />
@@ -611,28 +619,38 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
   border-bottom: 1px solid var(--border);
   background: var(--surface-1);
   z-index: 2;
 }
 
 .web-reading-controls button, .web-find-row button {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--chip-bg);
-  color: var(--text-primary);
-  padding: 5px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 6px 12px;
   cursor: pointer;
 }
 
+.web-reading-controls button:hover:not(:disabled), .web-find-row button:hover:not(:disabled) { background: var(--surface-2); color: var(--text-primary); }
+.web-more { min-width: 0; margin-left: auto; }
+.web-more[open] { flex: 1 0 100%; }
+.web-more-content { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); padding-top: var(--space-2); }
+.web-shortcut-hint { margin-left: var(--space-2); }
+.web-more summary, .browser-more summary { list-style: none; border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; color: var(--text-secondary); background: var(--surface-1); font-size: 12px; cursor: pointer; }
+.web-more summary::-webkit-details-marker, .browser-more summary::-webkit-details-marker { display: none; }
+.web-more summary:hover, .browser-more summary:hover { border-color: var(--hover-line); color: var(--focus); }
+.web-more summary:focus-visible, .browser-more summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
 .web-reading-controls button:disabled { opacity: 0.45; cursor: default; }
-.web-shortcut-hint { margin-left: auto; color: var(--text-muted); font-size: 12px; }
+.web-shortcut-hint { color: var(--text-muted); font-size: 12px; }
 .web-find-row input { min-width: 160px; flex: 1; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--input-bg); color: var(--text-primary); }
 .web-find-row span { min-width: 70px; text-align: center; }
 .web-reading-stage { flex: 1; min-height: 0; overflow: auto; background: var(--web-outer); color: var(--web-ink); }
-.web-reading-article { box-sizing: border-box; width: min(100%, var(--web-width)); margin: 0 auto; min-height: 100%; padding: 40px 30px 80px; background: var(--web-paper); color: var(--web-ink); font: var(--web-size)/var(--web-line) var(--web-font); white-space: pre-wrap; overflow-wrap: anywhere; }
+.web-reading-article { box-sizing: border-box; width: min(100%, var(--web-width)); margin: 24px auto; min-height: calc(100% - 48px); padding: 56px clamp(30px, 6vw, 72px) 96px; border-radius: var(--radius-card); box-shadow: var(--shadow-card); background: var(--web-paper); color: var(--web-ink); font: var(--web-size)/var(--web-line) var(--web-font); white-space: pre-wrap; overflow-wrap: anywhere; }
 .web-reading-article h1 { font-size: 1.25em; line-height: 1.5; text-align: center; margin: 0 0 2em; }
 .web-reading-article p { margin: 0 0 var(--web-spacing); text-indent: var(--web-indent); }
 
@@ -655,11 +673,11 @@ onUnmounted(() => {
 }
 
 .browser-nav-row {
-  min-height: 52px;
+  min-height: 60px;
 }
 
 .browser-action-row {
-  min-height: 44px;
+  min-height: 48px;
   justify-content: space-between;
   border-top: 1px solid var(--border);
   background: var(--surface-1);
@@ -667,10 +685,10 @@ onUnmounted(() => {
 
 .browser-nav-row input {
   min-width: 120px;
-  height: 36px;
+  height: 40px;
   flex: 1;
   border: 1px solid var(--border);
-  border-radius: var(--radius-control);
+  border-radius: 999px;
   padding: 0 var(--space-3);
   color: var(--text-primary);
   background: var(--input-bg);
@@ -699,14 +717,14 @@ onUnmounted(() => {
 }
 
 .browser-icon-button {
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
   display: grid;
   place-items: center;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
+  border: 0;
+  border-radius: 999px;
   color: var(--text-primary);
   background: var(--chip-bg);
   cursor: pointer;
@@ -749,10 +767,10 @@ onUnmounted(() => {
 }
 
 .browser-open-button {
-  height: 36px;
+  height: 40px;
   flex: 0 0 auto;
   border: 1px solid transparent;
-  border-radius: var(--radius-control);
+  border-radius: 999px;
   padding: 0 var(--space-3);
   color: var(--on-accent);
   background: var(--focus);
@@ -803,6 +821,10 @@ onUnmounted(() => {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+
+.browser-more { min-width: 0; }
+.browser-more[open] { flex: 1 0 100%; }
+.browser-more-content { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); padding-top: var(--space-2); }
 
 .dl-progress {
   padding: var(--space-2) 0;

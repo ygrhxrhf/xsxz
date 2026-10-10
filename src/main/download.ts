@@ -1,5 +1,7 @@
 import { BrowserWindow, WebContentsView, session } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { JSDOM } from 'jsdom'
 import { extractPage, extractCatalog, extractBody } from './extract'
 import { findSiteRuleForUrl, normalizeHost } from './siteRules'
@@ -19,6 +21,7 @@ import {
 } from './library'
 import type {
   CatalogChapter,
+  ChapterFile,
   ChapterMeta,
   ChapterStatus,
   CheckAllProgress,
@@ -32,6 +35,7 @@ import type {
   FailCode,
   SiteRule,
   SiteRulePreview,
+  UnlockMethod,
 } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 import { isPathLikeHash } from '../shared/urlHash'
@@ -46,6 +50,16 @@ import {
 import { getSettings } from './settings'
 import { isLibraryRestoring } from './libraryMaintenance'
 import { auditBook } from './quality'
+import { PAGE_PROBE_SCRIPT, mergePageProbe } from './pageProbe'
+import {
+  buildChapterApiScript,
+  findChapterApiCandidates,
+  joinApiPayload,
+  parseChapterApiPayload,
+  type ChapterApiCandidate,
+} from './chapterApi'
+import { normalizeRecoveredBody, recoverBodyFromText } from './paywallUnlock'
+import { PAGE_OCR_SCRIPT, ocrImages, parseOcrPayload } from './ocrText'
 
 export const DOWNLOAD_SESSION_PARTITION = 'persist:novel'
 /** Off the visible chrome so chapter crawl cannot flash over the guest slot. */
@@ -56,6 +70,10 @@ const CHAPTER_GAP_MS: Record<DownloadPace, number> = {
   standard: 600,
   fast: 200,
 }
+/** 一章最多再接几页被藏起来的续页；再多就说明这不是「分页」，是整站。 */
+const MAX_CONTINUATION_PAGES = 3
+/** 墙页判定放在头几轮轮询里做：既快，又不给真正的 SPA 页面加每次轮询的解析开销。 */
+const WALL_PROBE_POLLS = 2
 const LOAD_TIMEOUT_MS = 25_000
 /** Poll interval after navigation settles. Classic HTML should pass the first tick. */
 export const HYDRATE_POLL_MS = 300
@@ -97,6 +115,8 @@ interface ActiveDownload {
   pausedForHuman?: DownloadBlocked
   /** 用户处理完：本轮跑完后需要再来一轮把退回 pending 的墙章补上。 */
   requeued?: boolean
+  /** 最近一次撞墙章「自动恢复为什么没成」的一句话，进人工提示给用户看。 */
+  lastUnlockReason?: string
 }
 
 type HtmlLoader = (url: string) => Promise<string>
@@ -127,14 +147,16 @@ export function isSiteWallFail(code: FailCode | undefined): boolean {
 }
 
 /** 撞墙时给人的话：说清卡在哪、要本人去做什么。软件不代做登录、付费或验证。 */
-function blockedMessage(code: FailCode): string {
+function blockedMessage(code: FailCode, unlockReason?: string): string {
   const why =
     code === 'Paywall'
-      ? '本章需要付费或会员'
+      ? '本章需要付费或会员，页面里也没有能自动找回的正文'
       : code === 'NeedLogin'
         ? '本章需要登录'
         : '页面被拦截或要求验证'
-  return `${why}，已暂停本次下载。请到浏览页用自己的账号登录或完成验证，再点「已处理好，继续下载」。`
+  const tried =
+    code === 'Paywall' && unlockReason ? `（自动恢复已试过：${unlockReason}）` : ''
+  return `${why}${tried}，已暂停本次下载。请到浏览页用自己的账号登录或完成验证，再点「已处理好，继续下载」。`
 }
 
 const RATE_LIMIT_STOP_MESSAGE = '站点连续限流，已停止本次下载。稍后用「重试失败章」继续。'
@@ -234,6 +256,7 @@ export function resetDownloadStateForTests(): void {
   humanWaiters.clear()
   resetHttpStatusObservationForTests()
   testHtmlLoader = null
+  testScriptRunner = null
   hiddenView = null
   browseView = null
   ownerWindow = null
@@ -364,7 +387,7 @@ async function pauseForHuman(dl: ActiveDownload, ch: ChapterMeta, code: FailCode
     chapterTitle: ch.title,
     url: ch.url ?? '',
     failCode: code,
-    message: blockedMessage(code),
+    message: blockedMessage(code, dl.lastUnlockReason),
   }
   dl.lastError = dl.pausedForHuman.message
   emitBlocked(dl.pausedForHuman)
@@ -460,6 +483,17 @@ export function isHydratedHtml(html: string, pageUrl: string, rule?: SiteRule): 
   return extractBody(html, pageUrl, rule).ok
 }
 
+/**
+ * 墙页（登录 / 付费 / 拦截）不会因为等更久长出正文。
+ * 认出来就立刻把 HTML 交回主流程——否则每张墙页都要白等满 `HYDRATE_TIMEOUT_MS`，
+ * 而付费墙自动解锁让「墙页不少是能读的章」，这个等待会摊到每一章上。
+ */
+export function isWallPageHtml(html: string, pageUrl: string, rule?: SiteRule): boolean {
+  const page = extractPage(html, pageUrl, undefined, rule)
+  if (page.ok) return false
+  return page.failCode === 'Paywall' || page.failCode === 'NeedLogin' || page.failCode === 'Intercepted'
+}
+
 async function withCancel<T>(work: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let finished = false
@@ -501,12 +535,15 @@ export async function waitUntilHydrated(
   const started = Date.now()
   const rule = opts?.rule
   let last = ''
+  let polls = 0
   while (true) {
     if (anyActiveCancelled()) throw new Error('已取消')
     last = await withCancel(pollHtml())
     if (anyActiveCancelled()) throw new Error('已取消')
     const siteRule = rule ?? (await ruleForPage(pageUrl))
     if (isHydratedHtml(last, pageUrl, siteRule)) return last
+    // 墙页只在头两轮判定：真站点的墙第二眼就能看出，SPA 骨架也在这一轮之后有内容
+    if (polls++ < WALL_PROBE_POLLS && isWallPageHtml(last, pageUrl, siteRule)) return last
     if (Date.now() - started >= timeoutMs) return last
     await interruptibleDelay(pollMs)
   }
@@ -599,9 +636,35 @@ async function loadAndGetHtml(view: WebContentsView, url: string, forceView = fa
   await guardHttpStatus(wc.getURL() || url)
   if (anyActiveCancelled()) throw new Error('已取消')
   const rule = await ruleForPage(url)
-  return waitUntilHydrated(() => wc.executeJavaScript('document.documentElement.outerHTML') as Promise<string>, url, {
+  const html = await waitUntilHydrated(() => wc.executeJavaScript('document.documentElement.outerHTML') as Promise<string>, url, {
     rule,
   })
+  // 不像正常章节 / 目录的页面（墙页、SPA 骨架）：Shadow DOM、iframe、window 上的数据
+  // 都不在 outerHTML 里，让页面自己报一次。正常章节不付这份开销。
+  if (isHydratedHtml(html, url, rule)) return html
+  return appendPageProbe(wc, html)
+}
+
+/** 页面内探测：合并失败、脚本报错都不影响主流程。 */
+async function appendPageProbe(wc: Electron.WebContents, html: string): Promise<string> {
+  try {
+    const probe = (await wc.executeJavaScript(PAGE_PROBE_SCRIPT)) as string
+    return mergePageProbe(html, probe)
+  } catch {
+    return html
+  }
+}
+
+/** 在页面上下文里跑一段脚本。测试可用 `setTestScriptRunner` 替掉。 */
+let testScriptRunner: ((script: string) => Promise<string>) | null = null
+
+export function setTestScriptRunner(runner: ((script: string) => Promise<string>) | null): void {
+  testScriptRunner = runner
+}
+
+async function runInPageContext(script: string): Promise<string> {
+  if (testScriptRunner) return testScriptRunner(script)
+  return (await getHiddenView().webContents.executeJavaScript(script)) as string
 }
 
 /** Test hook for the hidden-view settle path (skips setTestHtmlLoader). */
@@ -1009,6 +1072,128 @@ async function downloadPass(bookId: string, chapters: ChapterMeta[], dl: ActiveD
 }
 
 /**
+ * DOM 内恢复都失败后的最后一招：在**页面上下文**里调站点自己的章节接口。
+ *
+ * 隐藏视图此刻就停在这一章，cookie / referer / UA / 站点指纹与用户本人点击时一致；
+ * 主进程不裸 fetch、不伪造会员凭证、不猜接口签名。每章最多两个候选，
+ * 候选之间隔一次下载档位节流，失败不重试。
+ */
+type ApiUnlockOutcome =
+  | { ok: true; body: string; method: UnlockMethod; detail: string }
+  | { ok: false; /** 是否真的打过接口（用于给用户一句准确的话） */ attempted: boolean }
+
+async function tryChapterApiUnlock(
+  pageUrl: string,
+  html: string,
+  rule: SiteRule | undefined,
+  dl: ActiveDownload,
+): Promise<ApiUnlockOutcome> {
+  if (rule?.paywallUnlock === false) return { ok: false, attempted: false }
+  let candidates: ChapterApiCandidate[]
+  try {
+    candidates = findChapterApiCandidates(html, pageUrl, rule)
+  } catch {
+    return { ok: false, attempted: false }
+  }
+  if (candidates.length === 0) return { ok: false, attempted: false }
+
+  let attempted = false
+  for (const candidate of candidates) {
+    if (dl.cancelled) return { ok: false, attempted }
+    try {
+      await chapterGapDelay()
+    } catch (e: unknown) {
+      if (isCancelledError(e)) return { ok: false, attempted }
+    }
+    let payload: string
+    try {
+      attempted = true
+      payload = await runInPageContext(buildChapterApiScript([candidate]))
+    } catch {
+      continue
+    }
+    const responses = parseChapterApiPayload(payload)
+    const recovered = recoverBodyFromText(joinApiPayload(responses), '', {
+      method: 'api',
+      detail: `章节接口 ${candidate.detail}`,
+    })
+    if (recovered) return { ok: true, ...recovered }
+  }
+  return { ok: false, attempted }
+}
+
+/**
+ * 最后一层兜底：DOM 里没有字可抓（图片化正文 / 字形替换）时，把图交给 OCR 认字。
+ * 默认关闭，按站点在站点规则里用 `ocrUnlock` 打开——它慢，而且认出来要本人核对。
+ */
+async function tryOcrUnlock(
+  pageUrl: string,
+  rule: SiteRule | undefined,
+  dl: ActiveDownload,
+): Promise<{ body: string; method: UnlockMethod; detail: string } | null> {
+  if (rule?.ocrUnlock !== true) return null
+  if (dl.cancelled) return null
+  let payload: string
+  try {
+    payload = await runInPageContext(PAGE_OCR_SCRIPT)
+  } catch {
+    return null
+  }
+  const { images } = parseOcrPayload(payload)
+  if (images.length === 0) return null
+  let recognized: { text: string; detail: string } | null = null
+  try {
+    recognized = await ocrImages(images, ocrTempDir())
+  } catch {
+    return null
+  }
+  if (!recognized) return null
+  const body = normalizeRecoveredBody(recognized.text)
+  if (!body) return null
+  return { body, method: 'ocr', detail: `OCR ${recognized.detail}` }
+}
+
+/** OCR 临时图目录：走系统临时目录，取不到才退回进程目录，绝不因此中断下载。 */
+function ocrTempDir(): string {
+  try {
+    return join(tmpdir(), 'spbf-ocr')
+  } catch {
+    return join(process.cwd(), '.spbf-ocr')
+  }
+}
+
+/**
+ * 付费墙把正文切成多页时：把被站点藏起来的续页抓回来接在后面。
+ * 单页失败只跳过那一页——主体正文已经在手，不因为续页把整章判失败。
+ */async function appendContinuationPages(
+  baseBody: string,
+  urls: string[],
+  dl: ActiveDownload,
+): Promise<{ body: string; appended: number }> {
+  let body = baseBody
+  let appended = 0
+  for (const url of urls) {
+    if (dl.cancelled) break
+    try {
+      await chapterGapDelay()
+    } catch (e: unknown) {
+      if (isCancelledError(e)) break
+    }
+    try {
+      const html = await loadPageHtml(url)
+      const part = extractBody(html, url, await ruleForPage(url))
+      if (!part.ok || !part.body) continue
+      if (body.includes(part.body)) continue
+      body = `${body}\n\n${part.body}`
+      appended++
+    } catch {
+      /* 续页抓取失败不改判 */
+    }
+  }
+  return { body, appended }
+}
+
+/**
  * 下一张章：成功写正文，失败写占位并计数。
  * 返回最终失败码；当章成功或中途被取消时返回 undefined。
  */
@@ -1035,17 +1220,79 @@ async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownloa
       const bodyRule = await ruleForPage(chapterUrl)
       const bodyResult = extractBody(html, chapterUrl, bodyRule)
       if (bodyResult.ok) {
-        await writeChapterFile(bookId, ch.id, {
+        let body = bodyResult.body
+        let bodyRaw = bodyResult.bodyRaw ?? bodyResult.body
+        let unlockedBy: UnlockMethod | undefined = bodyResult.unlockedBy
+        if (unlockedBy && bodyResult.continuationUrls?.length) {
+          const merged = await appendContinuationPages(
+            body,
+            bodyResult.continuationUrls.slice(0, MAX_CONTINUATION_PAGES),
+            dl,
+          )
+          if (merged.appended > 0) {
+            body = merged.body
+            bodyRaw = merged.body
+            unlockedBy = 'paged'
+          }
+        }
+        const chapterData: ChapterFile = {
           title: ch.title,
           url: chapterUrl,
-          body: bodyResult.body,
-          bodyRaw: bodyResult.bodyRaw ?? bodyResult.body,
+          body,
+          bodyRaw,
           status: 'ready',
-        })
+        }
+        if (unlockedBy) chapterData.unlockedBy = unlockedBy
+        await writeChapterFile(bookId, ch.id, chapterData)
         ch.status = 'ready'
-        await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl })
+        await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl, unlockedBy })
         dl.done++
         return undefined
+      }
+      // DOM 内恢复失败：最后一招是站点自己的章节接口（页面上下文里发，带用户当前会话）
+      if (bodyResult.unlockReason) dl.lastUnlockReason = bodyResult.unlockReason
+      if (bodyResult.failCode === 'Paywall') {
+        const api = await tryChapterApiUnlock(chapterUrl, html, bodyRule, dl)
+        if (api.ok) {
+          const apiChapter: ChapterFile = {
+            title: ch.title,
+            url: chapterUrl,
+            body: api.body,
+            bodyRaw: api.body,
+            status: 'ready',
+            unlockedBy: api.method,
+          }
+          await writeChapterFile(bookId, ch.id, apiChapter)
+          ch.status = 'ready'
+          await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl, unlockedBy: api.method })
+          dl.done++
+          return undefined
+        }
+        if (api.attempted) {
+          dl.lastUnlockReason = `${dl.lastUnlockReason ?? '页面内没有可恢复的正文'}；章节接口也没拿到正文`
+        }
+      }
+      // 再退一层：图片化正文 / 字形替换，按站点开关走 OCR
+      if (bodyResult.failCode === 'Paywall' || bodyResult.unlockReason) {
+        const viaOcr = await tryOcrUnlock(chapterUrl, bodyRule, dl)
+        if (viaOcr) {
+          const ocrChapter: ChapterFile = {
+            title: ch.title,
+            url: chapterUrl,
+            body: viaOcr.body,
+            bodyRaw: viaOcr.body,
+            status: 'ready',
+            unlockedBy: viaOcr.method,
+          }
+          await writeChapterFile(bookId, ch.id, ocrChapter)
+          ch.status = 'ready'
+          await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl, unlockedBy: viaOcr.method })
+          dl.done++
+          return undefined
+        }
+        if (bodyRule?.ocrUnlock === true && !dl.lastUnlockReason?.includes('OCR')) {
+          dl.lastUnlockReason = `${dl.lastUnlockReason ?? '页面内没有可恢复的正文'}；OCR 也没认出可读正文`
+        }
       }
       lastCode = bodyResult.failCode || 'BodyEmpty'
       lastMsg = failMessage(lastCode, bodyResult.failMessage)

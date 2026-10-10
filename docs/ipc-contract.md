@@ -137,7 +137,7 @@
 
 `DownloadProgress.failedChapters` 可选，结束事件（`done` / `error` / `cancelled`）必带，没有失败或空章时为 `[]`；`running` 省略。元素字段：`chapterId`、`title`、`index`（磁盘 `ChapterMeta.index`，界面不再加减）、`reason`（优先 `failMessage`，否则 `FAIL_CODE_ZH[failCode]`，再否则「正文为空或过短」）、`failCode`（可选，无码失败时省略；界面按码分组）。来源是该书 `status` 为 `failed` 或 `empty` 的章。结束事件可带 `qualityIssueCount`。
 
-**撞墙暂停（人在环）**：同一类墙（`NeedLogin` / `Paywall` / `Intercepted` 中同一个码）连撞 `WALL_PAUSE_STREAK`（当前 3）章后不再逐章硬撞：当章仍记为 `failed`，`DownloadProgress.status` 置 `awaitingHuman`（非结束态，不带 `failedChapters`），并推送一次 `download.blocked`（`DownloadBlocked`：`bookId` / `chapterId` / `chapterTitle` / `url` / `failCode` / `message`）。`download.openUnblock` **只把内置浏览页导航到该章 URL**；登录、付费、人机验证一律由用户本人完成。红线：任何频道都不得代替用户登录、绕过付费流程、自动解答验证码或伪造/复用他人凭据——本契约只到「识别墙 + 交给本人」为止。`download.resumeUnblock` 唤醒停在当章的循环：把所有因墙码 `failed` 的章退回 `pending`（清 `failCode` / `failMessage`），再从头跑一趟新的串行通道，同类连击计数也随之重置；处理未生效时会再次暂停。等待期间该任务仍占单任务锁，`download.cancel` 可随时打断并保留已下章节。
+**撞墙暂停（人在环）**：同一类墙（`NeedLogin` / `Paywall` / `Intercepted` 中同一个码）连撞 `WALL_PAUSE_STREAK`（当前 3）章后不再逐章硬撞：当章仍记为 `failed`，`DownloadProgress.status` 置 `awaitingHuman`（非结束态，不带 `failedChapters`），并推送一次 `download.blocked`（`DownloadBlocked`：`bookId` / `chapterId` / `chapterTitle` / `url` / `failCode` / `message`）。`download.openUnblock` 把内置浏览页导航到该章 URL。`download.resumeUnblock` 唤醒停在当章的循环：把所有因墙码 `failed` 的章退回 `pending`（清 `failCode` / `failMessage`），再从头跑一趟新的串行通道，同类连击计数也随之重置；处理未生效时会再次暂停。等待期间该任务仍占单任务锁，`download.cancel` 可随时打断并保留已下章节。
 
 `RateLimited`（HTTP 429 / 503）不计入撞墙暂停：按站点 `Retry-After` 提示退避（缺失时用默认 30s，上限截到 120s），单章最多重试一次；连续 `RATE_LIMIT_STOP_COUNT` 章被限流则整本停止并提示稍后「重试失败章」，避免对已被限流的站零间隔硬撞。
 
@@ -187,7 +187,7 @@
 
 `Settings.downloadPace`（`'slow' | 'standard' | 'fast'`）是必填字段，`settings.get` 始终返回。默认 `'standard'`。旧 `settings.json` 缺该字段、空串或非法值都回退 `'standard'`。`SettingsUpdate.downloadPace` 可选；`settings.set` 写入合法档位，非法值回退 `'standard'` 后落盘并返回。它只影响下载时章与章之间的固定间隔：`slow` 2000ms、`standard` 600ms、`fast` 200ms。不新增 IPC 频道，仍走现有 `settings.get` / `settings.set`。
 
-`SettingsUpdate.appearance.skin`（`'paper' | 'white' | 'night'`）用于换肤：渲染层切皮肤时提交，主进程校验合法值后并入 `settings.json`；默认 `'paper'`；旧 `'sakura'` 与 `'minimal'` 读入为 `'paper'`；非法值按 `'paper'` 处理。
+`SettingsUpdate.appearance.skin`（`'light' | 'dark'`）用于应用界面明暗切换：渲染层切换时提交，主进程校验并写入 `settings.json`；默认 `'light'`。旧 `'paper'`、`'white'`、`'sakura'`、`'minimal'` 读入为 `'light'`，旧 `'night'` 读入为 `'dark'`，非法值回退 `'light'`。阅读正文的 `ReaderPrefs.theme` 独立保存。
 
 `Settings.reader` / `SettingsUpdate.reader` 使用同一个 `ReaderPrefs` 契约；更新时仍通过现有 `settings.set` 提交 `Partial<ReaderPrefs>`，频道名、请求响应外形和 preload API 不变：
 
@@ -235,9 +235,26 @@
 - 选择器字段均可空。空选择器 = 该字段走通用提取。非法 CSS 保存不拒，提取时当未命中。
 - `SiteRule.adFilterEnabled` 可选，缺省为 `true`；`adHideSelectors` 可选，每行一条浏览页额外隐藏选择器。关闭时同时停用该站的 CSS 隐藏和 AdGuard 网络规则。CSS 只注入浏览 View；网络请求只在 `webContentsId` 属于浏览 View 时匹配，下载 View 不受影响。
 - `SiteRule.previousChapter`、`SiteRule.nextChapter` 为可选 CSS 选择器。设置后优先用于当前页翻章链接识别；无效或未命中时该方向显示不可用。
+- `SiteRule.paywallUnlock` 可选，缺省为 `true`：撞付费墙时先尝试在页面内恢复正文（见下节）。`false` 时该站直接按付费墙暂停，不做自动恢复。
+- `SiteRule.unlockSelectors` 可选，每行一条 CSS 选择器：全文被站点藏在页面里时的直取入口（含被样式隐藏的节点），命中即取该节点全文，优先于通用恢复路径。非法 CSS 保存不拒，恢复时当未命中。
+- `SiteRule.chapterApi` 可选：章节接口模板，占位符 `{id}` / `{cid}` / `{chapterId}` / `{page}` / `{url}` 由当前页线索替换（例 `/ajax/chapter?id={id}`）。`chapterApiMethod` 缺省 `GET`，只有同时给了 `chapterApiBody` 才真的用 `POST`。接口请求在**页面上下文**里发（见下节）。
+- `SiteRule.ocrUnlock` 可选，缺省 `false`：图片化正文 / 字形替换（字体混淆）时走本机 OCR。开了才会启动 OCR 引擎，认得慢、结果可能有错字，落盘后由体检提示核对。
 - `siteRules.upsert` 仍整条替换；浏览页切换去广告时先读取当前规则并保留书名、作者、目录、正文等字段。保存规则后当前浏览页立即刷新隐藏 CSS，并重载页面以应用网络规则变化。
 - 落盘 `%APPDATA%/spbf/site-rules.json`（与 `settings.json` 同目录），不是 `settings.json`。
 - `siteRules.*` 不返回 API Key；文件内不得存 Key。
+
+## 付费墙自动解锁
+
+下载与预览共用，实现在 `src/main/paywallUnlock.ts`，只处理「正文已经发到浏览器、只是被页面挡住」的情况。
+
+- 尝试顺序：站点规则解锁容器 → 被样式/属性藏起来的全文节点（含 `<noscript>` 里的全文）→ 页面内探测结果（Shadow DOM、同源 iframe、`window` 上的小说数据，由 `src/main/pageProbe.ts` 在加载阶段补一次）→ 内联 JSON / JSON-LD / 脚本变量 / `data-*` 属性 → 上面这些串的 `\uXXXX`、百分号、base64 解码 → 被藏起来的续页 / 整页链接（`page=`、`_N.html`、`all/full`、`data-url` 按钮、跳页下拉）→ **章节接口旁路** → 站点开了 `ocrUnlock` 时再走 **OCR**。
+- 恢复出的正文必须 ≥ 200 有效字符（中文 ≥ 120）且比页面上已可见的试读多出 40 字以上，才算解锁成功；多路都有正文时按「结尾完整 + 与试读衔接」选，不盲目取最长。正文里私用区（PUA）码点占比 > 30% 时视为字体混淆，不当正文，直接按墙处理（乱码不进书库）。
+- 续页只回候选 URL（同域、被隐藏或带分页特征），由下载器逐页抓取拼接，每章最多接 3 页；单页失败跳过，不改判主体。
+- 加载阶段：隐藏视图识别出登录墙 / 付费墙 / 拦截页就立刻交回 HTML，不再等满 `HYDRATE_TIMEOUT_MS`；不像正常章节的页面才补跑页面内探测，正常章节不付这份开销。
+- **接口旁路**（`src/main/chapterApi.ts`）：只有 DOM 内恢复全失败、且判定为付费墙时才走。候选来源是站点规则的 `chapterApi` 与页面线索（脚本里的 `/ajax|api|...chapter|content` 路径、当前页 URL / `data-cid` / 脚本变量里的章节 id），每章最多两个候选，候选之间隔一次下载档位节流，失败不重试。请求一律在页面上下文用页面自己的 `fetch` 发出（`credentials: 'include'`、`X-Requested-With`），因此 cookie / referer / UA / 站点指纹与用户本人点击一致；主进程不裸请求、不伪造会员凭证、不猜接口签名。没有 id 线索时不生成候选，更不会拿无参请求去打站点。
+- **OCR 兜底**（`src/main/ocrText.ts`）：仅在站点规则 `ocrUnlock: true` 时启用。页面上下文里带 cookie 取回正文切片图（或把私用区乱码用页面自己的字体重绘到 canvas），交给本机 tesseract.js（WASM，无 native 模块）识别；语言包用随包的 `resources/*.traineddata.gz`，离线可用。识别结果按同一套判据收口（长度 / 中文占比），并抹掉 tesseract 汉字间的空格；单张图失败只跳过那一张。
+- 成功解锁的章落盘带 `unlockedBy`（`rule` \| `hiddenDom` \| `embeddedJson` \| `encoded` \| `paged` \| `api` \| `ocr`），见 `docs/disk-schema.md`；阅读器目录给这类章挂「恢复」角标，书库卡片显示「含 N 章自动恢复」，体检报告出 `unlockedBody` 提示核对。失败仍走原来的人工暂停（`download.blocked` + `download.resumeUnblock`），提示里会带上「自动恢复已试过：…」的一句话原因。
+- 不做也不代做：不冒充会员凭证、不伪造支付、不猜接口签名、不代登录 / 代付费 / 代验证。服务端不下发的正文不在这里找回；字体混淆与图片化正文需要 OCR 或字体还原，属于下一步。
 
 ---
 

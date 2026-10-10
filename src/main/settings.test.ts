@@ -223,26 +223,28 @@ describe('normalizeReaderPrefs', () => {
 })
 
 describe('normalizeSkin', () => {
-  it('keeps paper, white, and night', () => {
-    expect(normalizeSkin('paper')).toBe('paper')
-    expect(normalizeSkin('white')).toBe('white')
-    expect(normalizeSkin('night')).toBe('night')
+  it('keeps light and dark and maps the former three skins', () => {
+    expect(normalizeSkin('light')).toBe('light')
+    expect(normalizeSkin('dark')).toBe('dark')
+    expect(normalizeSkin('paper')).toBe('light')
+    expect(normalizeSkin('white')).toBe('light')
+    expect(normalizeSkin('night')).toBe('dark')
   })
 
-  it('maps legacy sakura and minimal to paper and does not treat them as legal skins', () => {
-    expect(normalizeSkin('sakura')).toBe('paper')
-    expect(normalizeSkin('minimal')).toBe('paper')
+  it('maps legacy sakura and minimal to light', () => {
+    expect(normalizeSkin('sakura')).toBe('light')
+    expect(normalizeSkin('minimal')).toBe('light')
   })
 
-  it('uses the new-user white default for unknown strings, missing values, and non-strings', () => {
-    expect(normalizeSkin('neon')).toBe('white')
-    expect(normalizeSkin('')).toBe('white')
-    expect(normalizeSkin(undefined)).toBe('white')
-    expect(normalizeSkin(null)).toBe('white')
-    expect(normalizeSkin(1)).toBe('white')
+  it('uses the new-user light default for unknown strings, missing values, and non-strings', () => {
+    expect(normalizeSkin('neon')).toBe('light')
+    expect(normalizeSkin('')).toBe('light')
+    expect(normalizeSkin(undefined)).toBe('light')
+    expect(normalizeSkin(null)).toBe('light')
+    expect(normalizeSkin(1)).toBe('light')
   })
 
-  it('reads stored legacy skins as paper and writes paper instead of sakura or minimal', async () => {
+  it('reads legacy skins without changing other fields and writes the canonical light/dark value', async () => {
     await mkdir(TEST_DIR, { recursive: true })
     await writeFile(
       SETTINGS_FILE,
@@ -251,7 +253,7 @@ describe('normalizeSkin', () => {
     )
     resetSettingsCacheForTests()
     const sakuraRead = await getSettings()
-    expect(sakuraRead.appearance.skin).toBe('paper')
+    expect(sakuraRead.appearance.skin).toBe('light')
     expect(sakuraRead.libraryPath).toBe('D:\\books')
     expect(sakuraRead.model).toBe('keep-me')
     expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8'))).toMatchObject({
@@ -267,24 +269,24 @@ describe('normalizeSkin', () => {
     )
     resetSettingsCacheForTests()
     const minimalRead = await getSettings()
-    expect(minimalRead.appearance.skin).toBe('paper')
+    expect(minimalRead.appearance.skin).toBe('light')
     expect(minimalRead.libraryPath).toBe('D:\\keep')
 
     await writeFile(SETTINGS_FILE, JSON.stringify({ model: 'untouched', appearance: { skin: 'mystery' } }), 'utf-8')
     resetSettingsCacheForTests()
     const unknownRead = await getSettings()
-    expect(unknownRead.appearance.skin).toBe('white')
+    expect(unknownRead.appearance.skin).toBe('light')
     expect(unknownRead.model).toBe('untouched')
 
     resetSettingsCacheForTests()
     await rm(TEST_DIR, { recursive: true, force: true })
-    expect((await getSettings()).appearance.skin).toBe('white')
+    expect((await getSettings()).appearance.skin).toBe('light')
 
-    const saved = await updateSettings({ appearance: { skin: 'sakura' as 'paper' } })
-    expect(saved.appearance.skin).toBe('paper')
-    expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')).appearance.skin).toBe('paper')
+    const saved = await updateSettings({ appearance: { skin: 'sakura' as 'light' } })
+    expect(saved.appearance.skin).toBe('light')
+    expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')).appearance.skin).toBe('light')
 
-    for (const skin of ['paper', 'white', 'night'] as const) {
+    for (const skin of ['light', 'dark'] as const) {
       const kept = await updateSettings({ appearance: { skin } })
       expect(kept.appearance.skin).toBe(skin)
       expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')).appearance.skin).toBe(skin)

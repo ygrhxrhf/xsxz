@@ -79,6 +79,7 @@ import {
   setBrowseView,
   setOwnerWindow,
   setTestHtmlLoader,
+  setTestScriptRunner,
   retryFailed,
   previewDownload,
   confirmDownload,
@@ -136,7 +137,11 @@ import {
 } from './library'
 import { extractPage } from './extract'
 import { setSiteRulesDir, upsertSiteRule } from './siteRules'
+import { __setOcrEngineForTests as setOcrEngineForTests } from './ocrText'
 import { FAIL_CODE_ZH, type DownloadBlocked, type DownloadProgress } from '../shared/types'
+
+const PNG_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAwAB/AF+g6wAAAAASUVORK5CYII='
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, '../../fixtures', name), 'utf-8')
 
@@ -1683,6 +1688,178 @@ describe('checkUpdate', () => {
     expect(paid?.failCode).toBe('Paywall')
     expect(paid?.failMessage).toBe('本章需要付费或会员')
     expect(book.chapters.filter((c) => c.status === 'ready').length).toBe(5)
+  })
+
+  it('recovers a paywalled chapter from hidden nodes and records how it was unlocked', async () => {
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      if (url.includes('1.html')) return fixture('paywall-hidden-dom.html')
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    const book = await loadBook(started.bookId!)
+    const unlocked = book.chapters.find((c) => c.url?.includes('1.html'))
+    expect(unlocked?.status).toBe('ready')
+    expect(unlocked?.failCode).toBeUndefined()
+    const file = await readChapter(started.bookId!, unlocked!.id)
+    expect(file.unlockedBy).toBe('hiddenDom')
+    expect(file.body).toContain('他数着那盏灯晃动的次数')
+    expect(book.chapters.filter((c) => c.status === 'ready').length).toBe(6)
+  })
+
+  it('asks the site chapter API in page context when DOM recovery fails', async () => {
+    const apiBody = '旧桥那头的灯笼忽然矮了一截，像是被谁按住了灯杆。林舟停住脚，听见桥下冰面裂开的声音。'.repeat(8)
+    const scripts: string[] = []
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      if (url.includes('1.html')) return fixture('paywall-api.html')
+      return fixture('chapter.html')
+    })
+    setTestScriptRunner(async (script) => {
+      scripts.push(script)
+      return JSON.stringify([
+        { url: 'https://example.com/ajax/chapter?cid=1', status: 200, text: JSON.stringify({ code: 0, data: { content: apiBody } }) },
+      ])
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(scripts.length).toBe(1)
+    expect(scripts[0]).toContain("credentials: 'include'")
+    expect(scripts[0]).toContain('ajax/chapter')
+    const book = await loadBook(started.bookId!)
+    const viaApi = book.chapters.find((c) => c.url?.includes('1.html'))
+    expect(viaApi?.status).toBe('ready')
+    expect(viaApi?.unlockedBy).toBe('api')
+    const file = await readChapter(started.bookId!, viaApi!.id)
+    expect(file.unlockedBy).toBe('api')
+    expect(file.body).toContain('旧桥那头的灯笼忽然矮了一截')
+  })
+
+  it('site rule can turn off automatic unlock and the wall stays a wall', async () => {
+    const rulesDir = await mkdtemp(join(tmpdir(), 'spbf-rules-api-'))
+    setSiteRulesDir(rulesDir)
+    try {
+      await upsertSiteRule({ host: 'example.com', paywallUnlock: false })
+      setTestHtmlLoader(async (url) => {
+        loadedUrls.push(url)
+        if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+        if (url.includes('1.html')) return fixture('paywall-api.html')
+        return fixture('chapter.html')
+      })
+      let scriptCalls = 0
+      setTestScriptRunner(async () => {
+        scriptCalls++
+        return '[]'
+      })
+      const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+      expect(started.ok).toBe(true)
+      if (!started.ok) return
+      await waitForIdle()
+      const book = await loadBook(started.bookId!)
+      const walled = book.chapters.find((c) => c.url?.includes('1.html'))
+      expect(walled?.status).toBe('failed')
+      expect(walled?.failCode).toBe('Paywall')
+      expect(scriptCalls).toBe(0)
+    } finally {
+      setSiteRulesDir(null)
+      await rm(rulesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('站点开了 OCR 开关时，图片正文走 OCR 认字入库', async () => {
+    const rulesDir = await mkdtemp(join(tmpdir(), 'spbf-rules-ocr-'))
+    setSiteRulesDir(rulesDir)
+    const ocrBody =
+      '雪下得很密，灯罩上结了薄薄一层白。林舟把灯笼搁在石阶上，蹲下去看那道刻痕，指尖碰到的地方凉得像铁。'.repeat(6)
+    try {
+      await upsertSiteRule({ host: 'example.com', ocrUnlock: true })
+      setTestHtmlLoader(async (url) => {
+        loadedUrls.push(url)
+        if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+        if (url.includes('1.html')) return fixture('paywall-ocr.html')
+        return fixture('chapter.html')
+      })
+      const ocrScripts: string[] = []
+      setTestScriptRunner(async (script) => {
+        ocrScripts.push(script)
+        return JSON.stringify({ images: [{ src: PNG_DATA_URL }], redraw: [] })
+      })
+      setOcrEngineForTests({
+        async recognize() {
+          return { data: { text: ocrBody } }
+        },
+      })
+      const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+      expect(started.ok).toBe(true)
+      if (!started.ok) return
+      await waitForIdle()
+      expect(ocrScripts.length).toBe(1)
+      expect(ocrScripts[0]).toContain('document.fonts.ready')
+      const book = await loadBook(started.bookId!)
+      const viaOcr = book.chapters.find((c) => c.url?.includes('1.html'))
+      expect(viaOcr?.status).toBe('ready')
+      expect(viaOcr?.unlockedBy).toBe('ocr')
+      const file = await readChapter(started.bookId!, viaOcr!.id)
+      expect(file.unlockedBy).toBe('ocr')
+      expect(file.body).toContain('雪下得很密')
+    } finally {
+      setOcrEngineForTests(null)
+      setSiteRulesDir(null)
+      await rm(rulesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('人工提示里写明自动恢复为什么没成', async () => {
+    const events: Array<{ status?: string }> = []
+    const blocked: unknown[] = []
+    setOwnerWindow(progressWindow(events, blocked) as never)
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('paywall-api.html')
+    })
+    setTestScriptRunner(async () => '[]')
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    const payload = await waitForBlocked(blocked)
+    expect(payload.failCode).toBe('Paywall')
+    expect(payload.message).toMatch(/自动恢复已试过/)
+    expect(payload.message).toMatch(/章节接口也没拿到正文/)
+    cancelDownload(started.bookId!)
+    await waitForIdle()
+  })
+
+  it('glues hidden continuation pages onto the recovered chapter', async () => {    const pagedFirstPage = fixture('paywall-hidden-dom.html').replace(
+      '<div class="footer">',
+      '<a href="1.html?page=2" style="display:none">下一页</a><div class="footer">',
+    )
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      if (url.includes('page=2')) return fixture('chapter.html')
+      if (url.includes('1.html')) return pagedFirstPage
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    expect(loadedUrls.some((url) => url.includes('page=2'))).toBe(true)
+    const book = await loadBook(started.bookId!)
+    const glued = book.chapters.find((c) => c.url?.includes('1.html'))
+    expect(glued?.status).toBe('ready')
+    const file = await readChapter(started.bookId!, glued!.id)
+    expect(file.unlockedBy).toBe('paged')
+    expect(file.body).toContain('他数着那盏灯晃动的次数')
+    expect(file.body).toContain('张若尘从梦中惊醒')
   })
 
   it('pauses on the third same-kind wall chapter and waits for the user', async () => {

@@ -64,6 +64,12 @@ function toStoredRule(rule: SiteRule, host: string): SiteRule {
   if (nextChapter !== undefined) stored.nextChapter = nextChapter
   if (typeof rule.adFilterEnabled === 'boolean') stored.adFilterEnabled = rule.adFilterEnabled
   if (typeof rule.adHideSelectors === 'string') stored.adHideSelectors = rule.adHideSelectors
+  if (typeof rule.paywallUnlock === 'boolean') stored.paywallUnlock = rule.paywallUnlock
+  if (typeof rule.unlockSelectors === 'string') stored.unlockSelectors = rule.unlockSelectors
+  if (typeof rule.chapterApi === 'string') stored.chapterApi = rule.chapterApi
+  if (rule.chapterApiMethod === 'GET' || rule.chapterApiMethod === 'POST') stored.chapterApiMethod = rule.chapterApiMethod
+  if (typeof rule.chapterApiBody === 'string') stored.chapterApiBody = rule.chapterApiBody
+  if (typeof rule.ocrUnlock === 'boolean') stored.ocrUnlock = rule.ocrUnlock
   return stored
 }
 
@@ -93,6 +99,14 @@ function parseFile(raw: unknown): SiteRulesFile {
       adFilterEnabled: typeof (item as SiteRule).adFilterEnabled === 'boolean'
         ? (item as SiteRule).adFilterEnabled : undefined,
       adHideSelectors: asSelector((item as SiteRule).adHideSelectors),
+      paywallUnlock: typeof (item as SiteRule).paywallUnlock === 'boolean'
+        ? (item as SiteRule).paywallUnlock : undefined,
+      unlockSelectors: asSelector((item as SiteRule).unlockSelectors),
+      chapterApi: asSelector((item as SiteRule).chapterApi),
+      chapterApiMethod: (item as SiteRule).chapterApiMethod === 'GET' || (item as SiteRule).chapterApiMethod === 'POST'
+        ? (item as SiteRule).chapterApiMethod : undefined,
+      chapterApiBody: asSelector((item as SiteRule).chapterApiBody),
+      ocrUnlock: typeof (item as SiteRule).ocrUnlock === 'boolean' ? (item as SiteRule).ocrUnlock : undefined,
     })
   }
   return { version: FILE_VERSION, rules }

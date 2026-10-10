@@ -110,12 +110,14 @@
   "url": "https://example.com/book/1.html",
   "body": "当前可读正文（纯文本）",
   "bodyRaw": "下载时抽取出的原文，自动清理或 AI 清正文前保留",
-  "status": "ready"
+  "status": "ready",
+  "unlockedBy": "hiddenDom"
 }
 ```
 
 - 阅读器只读 `body`。
 - 下载成功时：`bodyRaw` 保留抽取原文；若高置信度广告段落被自动清理，`body` 为清理结果，否则两者相同。只对新下载和重试章应用自动清理，不批量改旧章。
+- `unlockedBy` 可选，缺省表示正常抓取。本章正文是付费墙自动恢复来的才携带，取值 `rule` \| `hiddenDom` \| `embeddedJson` \| `encoded` \| `paged` \| `api` \| `ocr`（中文见 `UNLOCK_METHOD_ZH`）。`paged` = 隐藏续页拼接，`api` = 站点章节接口，`ocr` = 图片 / 字形 OCR 认出来的字（可能有错字，务必核对）。旧书没有这个字段，按正常抓取读。`book.json` 的 `chapters[].unlockedBy` 与章节文件保持一致。
 - 清正文确认后：只改 `body`；撤销 = `body = bodyRaw`。
 - 禁止存 HTML；禁止阅读器 `v-html`。
 
@@ -413,7 +415,7 @@
     "onlineVoice": ""
   },
   "appearance": {
-    "skin": "paper"
+    "skin": "light"
   },
   "autoBackup": {
     "destDir": "D:\\spbf\\backups",
@@ -446,7 +448,7 @@
 - `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
 - 同级 `browse-state.json` 保存最近网页 `{ url, ratio, updatedAt }` 与按规范化域名映射的缩放比例；不属于书库备份。缺失或损坏时按无恢复位置、默认 100% 缩放读取。
 - `autoBackup.destDir` 为空表示关闭；主进程启动时距上次成功满七天则创建 `spbf-auto-*.zip`，仅保留最近五份自动备份。旧设置缺失时按关闭读取。备份包不含设置与 API Key。
-- `appearance.skin` 取值 `paper`（暖纸，默认）/ `white`（白纸）/ `night`（夜间）；旧 `sakura`、`minimal` 读入为 `paper`；非法值回退 `paper`。
+- `appearance.skin` 取值 `light`（浅色，默认）/ `dark`（深色）。旧 `paper`、`white`、`sakura`、`minimal` 读入为 `light`，旧 `night` 读入为 `dark`；非法值回退 `light`。读取迁移不改动其他设置，下一次保存外观时写入正式值。
 - `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。
 - `reader.theme` 取值 `paper`（默认）/ `sepia` / `gray` / `night`；`reader.fontFamily` 取值 `serif`（默认）/ `system` / `mono`；`reader.contentWidth` 取值 `narrow` / `medium`（默认）/ `wide`；`reader.paragraphSpacing` 取值 `compact` / `normal`（默认）/ `relaxed`；`reader.paragraphIndent` 为布尔值，默认 `true`；`reader.focusMode` 取值 `off`（默认）/ `one` / `three` / `five`；`reader.readingMode` 取值 `scroll`（默认）/ `screen`。非法字段逐项回退，不影响其他合法设置。缺失或非法的 `focusMode` 回退 `off`。缺失或非法的 `readingMode` 回退 `scroll`。
 - 向后兼容：有效的新 `theme` 优先；新主题缺失或非法时，旧 `nightMode: true` 迁移为 `night`、`false` 迁移为 `paper`。首次成功保存新偏好后写入新字段；未知旧字段允许继续保留，但读取逻辑不再依赖它们。设置文件整体损坏时按默认值启动，不重建书库、章节、进度或标记数据。

@@ -16,6 +16,7 @@ import {
   formatChapterOrdinal,
   formatLibraryProgress,
   formatLibraryProgressTime,
+  libraryUnlockedNote,
   groupFailedChaptersByCode,
   isLibraryFindShortcut,
   libraryCoverHues,
@@ -661,7 +662,13 @@ function cardTaskLabel(book: BookListItem): string {
 function cardMenuOptions(book: BookListItem): DropdownOption[] {
   return libraryMenuEntries(book).map((entry) => {
     if (entry.startsWith('divider-')) return { type: 'divider', key: entry }
+    if (entry === 'edit') return { label: '编辑信息', key: entry }
     if (entry === 'recap') return { label: '前情提要', key: entry }
+    if (entry === 'quality') return {
+      label: `检查质量${qualityCounts.value[book.id] ? `（${qualityCounts.value[book.id]}）` : ''}`,
+      key: entry,
+      disabled: qualityLoading.value && qualityReport.value?.bookId === book.id,
+    }
     if (entry === 'check-update') {
       const running = hasTask(checkingIds.value, book.id) || hasTask(activeDownloadIds.value, book.id)
       return { label: running ? '正在检查更新…' : '检查更新', key: entry, disabled: running }
@@ -682,7 +689,9 @@ function cardMenuOptions(book: BookListItem): DropdownOption[] {
 
 function handleCardMenu(book: BookListItem, key: string | number) {
   const action = String(key) as LibraryMenuKey
-  if (action === 'recap') void openRecap(book)
+  if (action === 'edit') openEdit(book)
+  else if (action === 'recap') void openRecap(book)
+  else if (action === 'quality') void checkQuality(book.id)
   else if (action === 'check-update') void handleCheckUpdate(book.id)
   else if (action === 'retry-failed') void handleRetry(book.id)
   else if (action === 'view-failed') void openFailedList(book.id, book.title)
@@ -922,6 +931,13 @@ onUnmounted(() => {
               {{ statusLabel(b.status) }}
             </n-tag>
           </div>
+          <div
+            v-if="libraryUnlockedNote(b)"
+            class="book-progress"
+            :title="libraryUnlockedNote(b)"
+          >
+            {{ libraryUnlockedNote(b) }}
+          </div>
           <div class="book-progress" :title="fmtProgress(b)">{{ fmtProgress(b) }}</div>
           <div class="book-progress-time" :title="fmtProgressTime(b)">{{ fmtProgressTime(b) }}</div>
           <div
@@ -943,23 +959,22 @@ onUnmounted(() => {
             <n-button size="tiny" type="primary" @click="handleResumeUnblock(b.id)">我已处理好，继续下载</n-button>
           </n-space>
         </div>
-        <div class="book-overview">
-          <div class="book-overview-heading">全书概览 <span>含剧透</span></div>
-          <p
+        <div v-if="b.overview?.text || b.overview?.message" class="book-overview">
+          <button
             v-if="b.overview?.text"
+            class="book-overview-toggle"
+            type="button"
+            :aria-expanded="expandedOverviews.has(b.id)"
+            @click="toggleOverview(b.id)"
+          >{{ expandedOverviews.has(b.id) ? '收起全书概览' : '查看全书概览' }} <span>含剧透</span></button>
+          <div v-else class="book-overview-heading">全书概览 <span>含剧透</span></div>
+          <p
+            v-if="b.overview?.text && expandedOverviews.has(b.id)"
             class="book-overview-text"
-            :class="{ 'book-overview-clamped': !expandedOverviews.has(b.id) }"
           >{{ b.overview.text }}</p>
           <p v-if="b.overview?.message" class="book-overview-status" role="status">{{ b.overview.message }}</p>
-          <n-button v-if="b.overview?.text" size="tiny" quaternary @click="toggleOverview(b.id)">
-            {{ expandedOverviews.has(b.id) ? '收起概览' : '展开概览' }}
-          </n-button>
           <n-button v-if="b.overview?.status === 'failed'" size="tiny" @click="retryOverview(b.id)">重试概览</n-button>
         </div>
-        <n-button class="card-edit" size="small" @click="openEdit(b)">编辑信息</n-button>
-        <n-button v-if="b.importType === 'download'" size="small" quaternary :loading="qualityLoading && qualityReport?.bookId === b.id" @click="checkQuality(b.id)">
-          检查质量<span v-if="qualityCounts[b.id]">（{{ qualityCounts[b.id] }}）</span>
-        </n-button>
         <n-dropdown
           trigger="click"
           :options="cardMenuOptions(b)"
@@ -1034,7 +1049,7 @@ onUnmounted(() => {
             <n-button type="primary" :disabled="repairSaving" @click="applyQualityClean">应用预览结果</n-button>
           </template>
         </template>
-        <p v-else-if="repairIssue && ['suspectedWall', 'duplicateBody', 'duplicateUrl', 'truncated', 'short'].includes(repairIssue.kind)">此类问题请核对、重新提取或手动修复；AI 不补写缺失剧情。</p>
+        <p v-else-if="repairIssue && ['suspectedWall', 'unlockedBody', 'duplicateBody', 'duplicateUrl', 'truncated', 'short'].includes(repairIssue.kind)">此类问题请核对、重新提取或手动修复；AI 不补写缺失剧情。</p>
         <n-space justify="end">
           <n-button v-if="repairCanUndo" :disabled="repairSaving" @click="undoRepairBody">恢复原始正文</n-button>
           <n-button type="primary" :disabled="!repairBody.trim()" :loading="repairSaving" @click="saveRepairBody">保存正文</n-button>
@@ -1149,8 +1164,11 @@ onUnmounted(() => {
 
 <style scoped>
 .library-page {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
   overflow: auto;
-  padding: var(--space-6) var(--space-6) var(--space-8);
+  padding: var(--space-8) clamp(24px, 3vw, 48px) 48px;
   color: var(--text-primary);
   background: var(--app-bg);
 }
@@ -1160,15 +1178,13 @@ onUnmounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-4);
-  margin-bottom: var(--space-6);
-  padding-bottom: var(--space-4);
-  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-8);
 }
 
 .library-page :deep(.page-title) {
   margin: 0;
   color: var(--text-primary);
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 700;
   line-height: 1.25;
   letter-spacing: 0.01em;
@@ -1204,7 +1220,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: var(--space-6);
+  margin-bottom: var(--space-8);
 }
 
 .lib-tag-chips {
@@ -1225,14 +1241,16 @@ onUnmounted(() => {
 
 .book-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-6);
 }
 
 .book-card {
   min-width: 0;
+  border-color: var(--border);
   border-radius: var(--radius-card);
   background: var(--surface-1);
+  box-shadow: var(--shadow-card);
   transition: transform var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing), border-color var(--motion-duration) var(--motion-easing);
 }
 
@@ -1247,7 +1265,7 @@ onUnmounted(() => {
   display: flex;
   height: 100%;
   flex-direction: column;
-  padding: var(--space-4);
+  padding: var(--space-6) var(--space-4) var(--space-4);
 }
 
 .book-open-area {
@@ -1274,14 +1292,14 @@ onUnmounted(() => {
 
 .book-cover {
   position: relative;
-  width: 104px;
-  height: 142px;
-  flex: 0 0 142px;
+  width: 112px;
+  height: 156px;
+  flex: 0 0 156px;
   align-self: center;
   display: grid;
   place-items: center;
   overflow: hidden;
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-6);
   border-radius: 3px 8px 8px 3px;
   color: #f7f3e8;
   background: linear-gradient(
@@ -1328,8 +1346,7 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-:global(body[data-skin='minimal']) .book-cover,
-:global(body[data-skin='white']) .book-cover {
+:global(body[data-skin='light']) .book-cover {
   color: hsl(calc(var(--cover-hue) * 1deg) 22% 24%);
   background: linear-gradient(
     160deg,
@@ -1413,7 +1430,8 @@ onUnmounted(() => {
   z-index: 2;
   top: var(--space-2);
   right: var(--space-2);
-  background: var(--surface-1);
+  border-radius: 999px;
+  background: var(--surface-2);
 }
 
 .book-blocked {

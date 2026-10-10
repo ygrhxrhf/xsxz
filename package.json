@@ -19,7 +19,8 @@
     "@ghostery/adblocker": "^2.18.2",
     "@mozilla/readability": "^0.6.0",
     "jsdom": "^30.0.1",
-    "jszip": "^3.10.1"
+    "jszip": "^3.10.1",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@types/jsdom": "^30.0.0",

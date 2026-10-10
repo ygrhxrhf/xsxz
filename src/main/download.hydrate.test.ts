@@ -82,6 +82,7 @@ import {
   cancelDownload,
   getHiddenView,
   isHydratedHtml,
+  isWallPageHtml,
   loadAndGetHtmlForTests,
   resetDownloadStateForTests,
   setBrowseView,
@@ -253,6 +254,53 @@ describe('waitUntilHydrated', () => {
   })
 })
 
+describe('墙页不等满水合超时', () => {
+  afterEach(() => {
+    resetDownloadStateForTests()
+  })
+
+  it('把付费墙页当作已到位，第一轮就交回 HTML', async () => {
+    let polls = 0
+    const started = Date.now()
+    const html = await waitUntilHydrated(
+      async () => {
+        polls++
+        return fixture('paywall-vip.html')
+      },
+      'https://example.com/book/3.html',
+      { pollMs: 40, timeoutMs: 8000 },
+    )
+    expect(polls).toBe(1)
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(html).toContain('需要付费阅读')
+  })
+
+  it('能自动解锁的章在判定阶段就算 ready', async () => {
+    const html = fixture('paywall-hidden-dom.html')
+    expect(isHydratedHtml(html, 'https://example.com/book/32.html')).toBe(true)
+    expect(isWallPageHtml(html, 'https://example.com/book/32.html')).toBe(false)
+  })
+
+  it('空骨架不是墙：没爬到正文就继续轮询', async () => {
+    let polls = 0
+    await waitUntilHydrated(
+      async () => {
+        polls++
+        return EMPTY_APP
+      },
+      HASH_CATALOG,
+      { pollMs: 20, timeoutMs: 240 },
+    )
+    expect(polls).toBeGreaterThan(2)
+  })
+
+  it('登录墙、付费墙算墙，正常章不算', () => {
+    expect(isWallPageHtml(fixture('paywall-vip.html'), 'https://example.com/book/3.html')).toBe(true)
+    expect(isWallPageHtml(fixture('login-wall.html'), 'https://example.com/book/3.html')).toBe(true)
+    expect(isWallPageHtml(fixture('chapter.html'), 'https://example.com/book/1.html')).toBe(false)
+  })
+})
+
 describe('loadAndGetHtml settle', () => {
   afterEach(() => {
     resetDownloadStateForTests()
@@ -292,6 +340,22 @@ describe('loadAndGetHtml settle', () => {
     expect(html).toContain('第一章')
     expect(view.webContents.executeCalls).toBe(1)
     expect(Date.now() - started).toBeLessThan(400)
+  })
+
+  it('墙页在加载阶段补跑一次页面内探测，正常章不跑', async () => {
+    const wallView = getHiddenView() as unknown as FakeView
+    wallView.webContents.html = fixture('paywall-vip.html')
+    wallView.webContents.loadURLHandler = async () => {}
+    const wallHtml = await loadAndGetHtmlForTests(wallView as never, 'https://example.com/book/3.html')
+    expect(wallView.webContents.executeCalls).toBe(2)
+    expect(wallHtml).toContain('需要付费阅读')
+
+    resetDownloadStateForTests()
+    const chapterView = getHiddenView() as unknown as FakeView
+    chapterView.webContents.html = fixture('chapter.html')
+    chapterView.webContents.loadURLHandler = async () => {}
+    await loadAndGetHtmlForTests(chapterView as never, 'https://example.com/book/1.html')
+    expect(chapterView.webContents.executeCalls).toBe(1)
   })
 
   it('cancelDownload rejects in-flight load and calls webContents.stop()', async () => {

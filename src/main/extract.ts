@@ -6,55 +6,15 @@
  */
 import { Readability } from '@mozilla/readability'
 import { JSDOM } from 'jsdom'
-import type { CatalogChapter, ExtractBootstrap, FailCode, PageKind, SiteRule } from '../shared/types'
+import type { CatalogChapter, ExtractBootstrap, FailCode, PageKind, SiteRule, UnlockMethod } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 import { canonicalizeUrl, isPathLikeHash } from '../shared/urlHash'
+import { bodyText, cleanBodyText, effectiveLength, linkDensity, visibleText } from './bodyText'
+import { unlockAllowed, unlockPaywalledBody } from './paywallUnlock'
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-function visibleText(el: Element): string {
-  return (el.textContent || '').replace(/\s+/g, ' ').trim()
-}
-
-const BODY_BLOCKS = new Set(['ADDRESS', 'ARTICLE', 'BLOCKQUOTE', 'DIV', 'H1', 'H2', 'H3', 'H4', 'LI', 'P', 'SECTION'])
-const BODY_SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG'])
-
-/** Preserve paragraph boundaries so standalone site notices can be identified safely. */
-function bodyText(el: Element): string {
-  const chunks: string[] = []
-  const walk = (node: Node): void => {
-    if (node.nodeType === 3) {
-      chunks.push(node.textContent ?? '')
-      return
-    }
-    if (node.nodeType !== 1) return
-    const element = node as Element
-    if (BODY_SKIP.has(element.tagName)) return
-    if (element.tagName === 'BR') {
-      chunks.push('\n\n')
-      return
-    }
-    const block = BODY_BLOCKS.has(element.tagName)
-    if (block) chunks.push('\n\n')
-    for (const child of element.childNodes) walk(child)
-    if (block) chunks.push('\n\n')
-  }
-  walk(el)
-  return chunks.join('')
-    .replace(/\u00a0/g, ' ')
-    .replace(/[^\S\n]+/g, ' ')
-    .replace(/ *\n */g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function linkDensity(el: Element): number {
-  const total = visibleText(el).length || 1
-  const linkLen = [...el.querySelectorAll('a')].reduce((s, a) => s + visibleText(a).length, 0)
-  return linkLen / total
-}
 
 function catalogSeenKey(url: string): string {
   try {
@@ -327,15 +287,6 @@ const BODY_SELECTORS = [
   'article',
 ]
 
-const NAV_LINE_RE = /(?:^|\s).{0,10}(?:上一[章节页]|下一[章节页]|返回目录|回目录|返回书页|目录).{0,10}(?=\s|$)/g
-
-function cleanBodyText(text: string): string {
-  return text
-    .replace(NAV_LINE_RE, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
 const AD_PARAGRAPHS = [
   /^(?:最新网址|最新地址|本站网址|本书地址|小说最新地址).{0,100}(?:https?:\/\/|www\.|\.(?:com|net|cn|cc|org)|请收藏|搜索)/i,
   /^(?:请|记得)(?:先)?(?:收藏|关注)(?:本站|本书|本网站|我们的)?(?:网址|地址|域名|微信公众号|公众号|QQ群).{0,100}$/,
@@ -355,11 +306,6 @@ function cleanAdParagraphs(raw: string): string {
   const rawLength = effectiveLength(raw)
   const cleanedLength = effectiveLength(cleaned)
   return cleanedLength >= 80 && cleanedLength >= rawLength * 0.7 ? cleaned : raw
-}
-
-function effectiveLength(text: string): number {
-  // Count CJK + alphanumeric, skip whitespace and punctuation
-  return text.replace(/[\s\p{P}]/gu, '').length
 }
 
 /** 文本从哪来的：正文容器里的截断章文才能用弱档付费词。 */
@@ -485,15 +431,80 @@ function wallFail(kind: WallKind, pageKind: PageKind): ExtractResult {
   return { ok: false, pageKind, failCode: kind, failMessage: FAIL_CODE_ZH[kind] }
 }
 
-function bodyWallFail(kind: WallKind): { body: string; ok: boolean; failCode: FailCode; failMessage: string } {
-  return { body: '', ok: false, failCode: kind, failMessage: FAIL_CODE_ZH[kind] }
+interface BodyWallFail {
+  body: string
+  ok: boolean
+  failCode: FailCode
+  failMessage: string
+  /** 付费墙自动恢复的结论；没有试过时为 undefined。 */
+  unlockReason?: string
+}
+
+function bodyWallFail(kind: WallKind, unlockReason?: string): BodyWallFail {
+  const fail: BodyWallFail = { body: '', ok: false, failCode: kind, failMessage: FAIL_CODE_ZH[kind] }
+  if (unlockReason) fail.unlockReason = unlockReason
+  return fail
+}
+
+export interface UnlockMeta {
+  unlockedBy: UnlockMethod
+  unlockDetail: string
+  continuationUrls?: string[]
+}
+
+/**
+ * 撞付费墙时的第一反应：正文可能已经在页面里，只是被站点挡着。
+ * 恢复失败才退回原来的「按墙暂停」，语义与顺序都不变。
+ */
+function tryUnlockPaywall(
+  html: string,
+  pageUrl: string,
+  rule: SiteRule | undefined,
+  visibleBody: string,
+  doc?: Document,
+  /** 失败时把「为什么没救回来」回填给调用方，进人工提示。 */
+  out?: { reason?: string },
+): { body: string; meta: UnlockMeta } | null {
+  if (!unlockAllowed(rule)) {
+    if (out) out.reason = '本站已关闭自动解锁'
+    return null
+  }
+  const attempt = unlockPaywalledBody(html, pageUrl, rule, { visibleBody, doc })
+  if (!attempt.ok || !attempt.hit) {
+    if (out) out.reason = attempt.reason
+    return null
+  }
+  return {
+    body: cleanAdParagraphs(attempt.hit.body),
+    meta: {
+      unlockedBy: attempt.hit.method,
+      unlockDetail: attempt.hit.detail,
+      continuationUrls: attempt.hit.continuationUrls,
+    },
+  }
+}
+
+function chapterBootstrap(
+  doc: Document,
+  rule: SiteRule | undefined,
+  pageUrl: string,
+  catalogHint?: string,
+): ExtractBootstrap {
+  const catalogUrl = findCatalogLink(doc, pageUrl)
+  return {
+    pageKind: 'chapter',
+    bookTitle: bookTitleWithRule(doc, rule),
+    author: authorWithRule(doc, rule),
+    catalogUrl: catalogUrl || catalogHint || undefined,
+    chapters: [],
+  }
 }
 
 // ---------------------------------------------------------------------------
 // public API
 // ---------------------------------------------------------------------------
 
-export interface ExtractResult {
+export interface ExtractResult extends Partial<UnlockMeta> {
   ok: boolean
   pageKind: PageKind
   bootstrap?: ExtractBootstrap
@@ -548,18 +559,23 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
   const ruledBody = tryBodyFromRule(doc, rule)
   if (ruledBody) {
     const wall = classifyWall(doc, ruledBody, true)
+    if (wall === 'Paywall') {
+      const unlocked = tryUnlockPaywall(html, pageUrl, rule, ruledBody, doc)
+      if (unlocked) {
+        return {
+          ok: true,
+          pageKind: 'chapter',
+          bootstrap: chapterBootstrap(doc, rule, pageUrl, catalogHint),
+          body: unlocked.body,
+          ...unlocked.meta,
+        }
+      }
+    }
     if (wall) return wallFail(wall, 'chapter')
-    const catalogUrl = findCatalogLink(doc, pageUrl)
     return {
       ok: true,
       pageKind: 'chapter',
-      bootstrap: {
-        pageKind: 'chapter',
-        bookTitle: bookTitleWithRule(doc, rule),
-        author: authorWithRule(doc, rule),
-        catalogUrl: catalogUrl || catalogHint || undefined,
-        chapters: [],
-      },
+      bootstrap: chapterBootstrap(doc, rule, pageUrl, catalogHint),
       body: ruledBody,
     }
   }
@@ -569,19 +585,24 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
   const fromContainer = source === 'container'
   if (bodyOk) {
     const wall = classifyWall(doc, body, fromContainer)
+    if (wall === 'Paywall') {
+      const unlocked = tryUnlockPaywall(html, pageUrl, rule, body, doc)
+      if (unlocked) {
+        return {
+          ok: true,
+          pageKind: 'chapter',
+          bootstrap: chapterBootstrap(doc, rule, pageUrl, catalogHint),
+          body: unlocked.body,
+          ...unlocked.meta,
+        }
+      }
+    }
     if (wall) return wallFail(wall, 'chapter')
     // This looks like a chapter page - try to find catalog link
-    const catalogUrl = findCatalogLink(doc, pageUrl)
     return {
       ok: true,
       pageKind: 'chapter',
-      bootstrap: {
-        pageKind: 'chapter',
-        bookTitle: bookTitleWithRule(doc, rule),
-        author: authorWithRule(doc, rule),
-        catalogUrl: catalogUrl || catalogHint || undefined,
-        chapters: [], // will be filled after fetching catalog
-      },
+      bootstrap: chapterBootstrap(doc, rule, pageUrl, catalogHint),
       body,
     }
   }
@@ -589,12 +610,36 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
   // Body too short / empty — a wall (login, paywall, captcha) explains why
   if (partialText.length > 0) {
     const wall = classifyWall(doc, partialText, fromContainer)
+    if (wall === 'Paywall') {
+      const unlocked = tryUnlockPaywall(html, pageUrl, rule, partialText, doc)
+      if (unlocked) {
+        return {
+          ok: true,
+          pageKind: 'chapter',
+          bootstrap: chapterBootstrap(doc, rule, pageUrl, catalogHint),
+          body: unlocked.body,
+          ...unlocked.meta,
+        }
+      }
+    }
     if (wall) return wallFail(wall, 'unknown')
     return { ok: false, pageKind: 'unknown', failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
 
   // No body found at all — the surrounding page text may say why
   const wall = classifyWall(doc, '', false)
+  if (wall === 'Paywall') {
+    const unlocked = tryUnlockPaywall(html, pageUrl, rule, '', doc)
+    if (unlocked) {
+      return {
+        ok: true,
+        pageKind: 'chapter',
+        bootstrap: chapterBootstrap(doc, rule, pageUrl, catalogHint),
+        body: unlocked.body,
+        ...unlocked.meta,
+      }
+    }
+  }
   if (wall) return wallFail(wall, 'unknown')
 
   return { ok: false, pageKind: 'unknown', failCode: 'UnknownPage', failMessage: '无法识别为书' }
@@ -612,30 +657,49 @@ export function extractCatalog(html: string, catalogUrl: string, rule?: SiteRule
   return hit?.chapters ?? []
 }
 
+export interface ExtractBodyResult extends Partial<UnlockMeta> {
+  body: string
+  bodyRaw?: string
+  ok: boolean
+  failCode?: FailCode
+  failMessage?: string
+  /** 撞付费墙且自动恢复失败时的一句话原因。 */
+  unlockReason?: string
+}
+
 /**
- * 从章页 HTML 提取正文。
+ * 从章页 HTML 提取正文。撞付费墙时先尝试页面内恢复（见 paywallUnlock.ts）。
  */
-export function extractBody(
-  html: string,
-  pageUrl: string,
-  rule?: SiteRule,
-): { body: string; bodyRaw?: string; ok: boolean; failCode?: FailCode; failMessage?: string } {
+export function extractBody(html: string, pageUrl: string, rule?: SiteRule): ExtractBodyResult {
   const dom = new JSDOM(html, { url: pageUrl })
   const doc = dom.window.document
+  const unlockOut: { reason?: string } = {}
   const ruledBody = tryBodyFromRule(doc, rule)
   if (ruledBody) {
     const wall = classifyWall(doc, ruledBody, true)
-    if (wall) return bodyWallFail(wall)
+    if (wall === 'Paywall') {
+      const unlocked = tryUnlockPaywall(html, pageUrl, rule, ruledBody, doc, unlockOut)
+      if (unlocked) return { body: unlocked.body, bodyRaw: unlocked.body, ok: true, ...unlocked.meta }
+    }
+    if (wall) return bodyWallFail(wall, unlockOut.reason)
     return { body: cleanAdParagraphs(ruledBody), bodyRaw: ruledBody, ok: true }
   }
   const { body, ok, partialText, source } = tryExtractBody(doc)
   const fromContainer = source === 'container'
   if (!ok) {
     const wall = classifyWall(doc, partialText, fromContainer)
-    if (wall) return bodyWallFail(wall)
+    if (wall === 'Paywall') {
+      const unlocked = tryUnlockPaywall(html, pageUrl, rule, partialText, doc, unlockOut)
+      if (unlocked) return { body: unlocked.body, bodyRaw: unlocked.body, ok: true, ...unlocked.meta }
+    }
+    if (wall) return bodyWallFail(wall, unlockOut.reason)
     return { body: '', ok: false, failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
   const wall = classifyWall(doc, body, fromContainer)
-  if (wall) return bodyWallFail(wall)
+  if (wall === 'Paywall') {
+    const unlocked = tryUnlockPaywall(html, pageUrl, rule, body, doc, unlockOut)
+    if (unlocked) return { body: unlocked.body, bodyRaw: unlocked.body, ok: true, ...unlocked.meta }
+  }
+  if (wall) return bodyWallFail(wall, unlockOut.reason)
   return { body: cleanAdParagraphs(body), bodyRaw: body, ok: true }
 }

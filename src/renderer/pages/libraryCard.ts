@@ -3,7 +3,9 @@ import { FAIL_CODE_ZH, type BookListItem, type FailCode } from '@shared/types'
 export type LibraryStatusFilter = 'all' | 'downloading' | 'ready' | 'partial'
 export type LibrarySortKey = 'updated' | 'title' | 'author'
 export type LibraryMenuKey =
+  | 'edit'
   | 'recap'
+  | 'quality'
   | 'check-update'
   | 'retry-failed'
   | 'view-failed'
@@ -83,8 +85,8 @@ export function hasFailedChapters(b: Pick<BookListItem, 'status' | 'readyCount' 
 export function libraryMenuEntries(
   book: Pick<BookListItem, 'importType' | 'status' | 'readyCount' | 'chapterCount'>,
 ): LibraryMenuEntry[] {
-  const entries: LibraryMenuEntry[] = ['recap']
-  if (isDownloadBook(book)) entries.push('check-update')
+  const entries: LibraryMenuEntry[] = ['edit', 'recap']
+  if (isDownloadBook(book)) entries.push('quality', 'check-update')
   if (hasFailedChapters(book)) entries.push('retry-failed', 'view-failed')
   entries.push('divider-export', 'export-txt', 'export-epub', 'divider-trash', 'trash')
   return entries
@@ -96,6 +98,15 @@ export function checkUpdateMessage(
   if (!res.ok) return res.message
   if (res.added > 0) return `新增 ${res.added} 章`
   return '没有更新'
+}
+
+/**
+ * 「含 N 章自动恢复」提示。恢复来的正文可能不完整，需要本人核对；
+ * 没有恢复章时返回空串，卡片不显示这一行。
+ */
+export function libraryUnlockedNote(book: Pick<BookListItem, 'unlockedCount'>): string {
+  const count = book.unlockedCount ?? 0
+  return count > 0 ? `含 ${count} 章自动恢复` : ''
 }
 
 export function applyAddedChapterCount(chapterCount: number, added: number): number {

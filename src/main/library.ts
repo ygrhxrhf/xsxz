@@ -26,6 +26,7 @@ import type {
   ReadingProgress,
   TrashItem,
   CharacterCard,
+  UnlockMethod,
 } from '../shared/types'
 import { defaultLibraryPath } from './libraryPath'
 import { canonicalizeUrl } from '../shared/urlHash'
@@ -219,7 +220,7 @@ function shouldPromoteReady(file: Pick<ChapterFile, 'body' | 'status'>): boolean
 function applyChapterStatus(
   meta: ChapterMeta,
   status: ChapterStatus,
-  extra?: { failCode?: FailCode; failMessage?: string; url?: string },
+  extra?: { failCode?: FailCode; failMessage?: string; url?: string; unlockedBy?: UnlockMethod },
 ): void {
   meta.status = status
   if (extra?.url) meta.url = extra.url
@@ -229,6 +230,10 @@ function applyChapterStatus(
   } else if (extra?.failCode) {
     meta.failCode = extra.failCode
     meta.failMessage = extra.failMessage
+  }
+  if (status === 'ready') {
+    if (extra?.unlockedBy) meta.unlockedBy = extra.unlockedBy
+    else delete meta.unlockedBy
   }
 }
 
@@ -417,6 +422,7 @@ export async function rebuildIndex(): Promise<BookListItem[]> {
 
 function bookToList(b: Book): BookListItem {
   const readyCount = b.chapters.filter((c) => c.status === 'ready').length
+  const unlockedCount = b.chapters.filter((c) => c.status === 'ready' && c.unlockedBy).length
   return {
     id: b.id,
     title: b.title,
@@ -427,6 +433,7 @@ function bookToList(b: Book): BookListItem {
     status: b.status,
     chapterCount: b.chapters.length,
     readyCount,
+    unlockedCount,
     progress: b.progress,
     updatedAt: b.updatedAt,
   }
@@ -1146,14 +1153,26 @@ export async function writeChapterFile(bookId: string, chapterId: string, data: 
     const nextStatus = toWrite.status
     let dirty = false
     if (nextStatus && meta.status !== nextStatus) {
-      applyChapterStatus(meta, nextStatus, { failCode: toWrite.failCode, url: toWrite.url })
+      applyChapterStatus(meta, nextStatus, {
+        failCode: toWrite.failCode,
+        url: toWrite.url,
+        unlockedBy: toWrite.unlockedBy,
+      })
       dirty = true
-    } else if (toWrite.url && meta.url !== toWrite.url) {
-      meta.url = toWrite.url
-      dirty = true
-    } else if (nextStatus === 'ready' && (meta.failCode || meta.failMessage)) {
-      applyChapterStatus(meta, 'ready')
-      dirty = true
+    } else {
+      // 状态没变也要跟上来源标记：重下后「这章是恢复来的」不该留在旧值上
+      if (nextStatus === 'ready' && meta.unlockedBy !== toWrite.unlockedBy) {
+        applyChapterStatus(meta, 'ready', { unlockedBy: toWrite.unlockedBy })
+        dirty = true
+      }
+      if (toWrite.url && meta.url !== toWrite.url) {
+        meta.url = toWrite.url
+        dirty = true
+      }
+      if (nextStatus === 'ready' && (meta.failCode || meta.failMessage)) {
+        applyChapterStatus(meta, 'ready')
+        dirty = true
+      }
     }
     if (dirty) await saveBookUnlocked(book)
   })
@@ -1167,7 +1186,7 @@ export async function markChapterStatus(
   bookId: string,
   chapterId: string,
   status: ChapterStatus,
-  extra?: { failCode?: FailCode; failMessage?: string; url?: string },
+  extra?: { failCode?: FailCode; failMessage?: string; url?: string; unlockedBy?: UnlockMethod },
 ): Promise<void> {
   await withBookLock(bookId, async () => {
     const book = await loadBookUnlocked(bookId)

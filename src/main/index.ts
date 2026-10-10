@@ -40,6 +40,7 @@ import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTie
 import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView } from './download'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
+import { shutdownOcrEngine } from './ocrText'
 import { browserAdCss } from './browserAds'
 import { discoverChapterLinks, extractBrowseReadingPage } from './browseReading'
 import { getBrowseZoom, getLastBrowsePosition, setBrowsePosition, setBrowseZoom, clampZoom } from './browseState'
@@ -2051,6 +2052,8 @@ app.on('before-quit', () => {
   bookOverview.stop()
   aiReadingFollow.stop()
   stopEvidenceIndex()
+  // OCR 引擎是独立 worker，退出时收拾掉，别留残留进程
+  void shutdownOcrEngine()
 })
 
 app.on('window-all-closed', () => {

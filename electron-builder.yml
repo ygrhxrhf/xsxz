@@ -10,6 +10,13 @@ files:
   - "!node_modules/**/{test,tests,__tests__}/**"
   - "!node_modules/**/*.{md,ts,map}"
 asar: true
+# tesseract.js 会在运行时 fork worker 脚本，必须解包；语言包随 resources 一起发
+asarUnpack:
+  - "**/node_modules/tesseract.js/**"
+  - "**/node_modules/tesseract.js-core/**"
+extraResources:
+  - from: resources
+    to: resources
 win:
   target:
     - target: nsis

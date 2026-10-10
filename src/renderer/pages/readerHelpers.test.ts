@@ -417,4 +417,28 @@ describe('catalogChapterBadge', () => {
       }),
     ).toBeNull()
   })
+
+  it('marks an auto-unlocked chapter with its own badge, ahead of current/read', () => {
+    const chapters = [{ id: 'c1' }, { id: 'c2' }]
+    expect(
+      catalogChapterBadge({
+        status: 'ready',
+        chapterId: 'c1',
+        currentChapterId: 'c1',
+        progressChapterId: 'c2',
+        chapters,
+        unlockedBy: 'api',
+      }),
+    ).toBe('unlocked')
+    expect(
+      catalogChapterBadge({ status: 'ready', chapterId: 'c1', chapters, unlockedBy: 'hiddenDom' }),
+    ).toBe('unlocked')
+    // 失败/未下/空仍然优先，正文都不在就别谈来源
+    expect(
+      catalogChapterBadge({ status: 'failed', chapterId: 'c1', chapters, unlockedBy: 'api' }),
+    ).toBe('failed')
+    expect(
+      catalogChapterBadge({ status: 'ready', chapterId: 'c1', chapters }),
+    ).toBeNull()
+  })
 })

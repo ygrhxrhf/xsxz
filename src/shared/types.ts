@@ -27,6 +27,22 @@ export const FAIL_CODE_ZH: Record<FailCode, string> = {
 
 export type PageKind = 'catalog' | 'chapter' | 'unknown'
 
+/**
+ * 付费墙自动恢复正文的手段；`paywallUnlock.ts` 的尝试顺序即下方的排列顺序。
+ * 只见于「正文已到浏览器、只是被页面挡住」的情形。
+ */
+export type UnlockMethod = 'rule' | 'hiddenDom' | 'embeddedJson' | 'encoded' | 'paged' | 'api' | 'ocr'
+
+export const UNLOCK_METHOD_ZH: Record<UnlockMethod, string> = {
+  rule: '站点规则容器',
+  hiddenDom: '页面隐藏正文',
+  embeddedJson: '页面内嵌数据',
+  encoded: '编码载荷',
+  paged: '隐藏续页拼接',
+  api: '站点章节接口',
+  ocr: '图片/字形 OCR',
+}
+
 export interface ReadingProgress {
   chapterId: string
   /** 0–1，章内滚动比例 */
@@ -69,6 +85,8 @@ export interface ChapterMeta {
   status: ChapterStatus
   failCode?: FailCode
   failMessage?: string
+  /** 正文是付费墙自动恢复来的；缺省表示正常抓取。见 `UNLOCK_METHOD_ZH`。 */
+  unlockedBy?: UnlockMethod
 }
 
 export interface ChapterFile {
@@ -78,6 +96,8 @@ export interface ChapterFile {
   bodyRaw?: string
   status: ChapterStatus
   failCode?: FailCode
+  /** 本章正文是付费墙自动恢复来的；缺省表示正常抓取。见 `UNLOCK_METHOD_ZH`。 */
+  unlockedBy?: UnlockMethod
 }
 
 export interface Book {
@@ -107,6 +127,8 @@ export interface BookListItem {
   status: Book['status']
   chapterCount: number
   readyCount: number
+  /** 其中正文由付费墙自动恢复来的章数；缺省 0。 */
+  unlockedCount?: number
   progress: ReadingProgress | null
   updatedAt: string
   overview?: BookOverviewView
@@ -198,7 +220,15 @@ export interface QualityIssue {
   chapterId: string
   chapterIndex: number
   chapterTitle: string
-  kind: 'short' | 'truncated' | 'duplicateBody' | 'duplicateUrl' | 'suspectedAd' | 'suspectedWall'
+  kind:
+    | 'short'
+    | 'truncated'
+    | 'duplicateBody'
+    | 'duplicateUrl'
+    | 'suspectedAd'
+    | 'suspectedWall'
+    /** 正文是付费墙自动恢复来的：内容是否完整要本人核对。 */
+    | 'unlockedBody'
   reason: string
 }
 
@@ -366,8 +396,8 @@ export interface TtsPrefs {
   onlineKeyConfigured: boolean
 }
 
-/** 界面皮肤：暖纸 / 白纸 / 夜间 */
-export type Skin = 'paper' | 'white' | 'night'
+/** 应用界面外观：浅色 / 深色；阅读正文主题独立保存。 */
+export type Skin = 'light' | 'dark'
 
 /** 下载章与章之间的固定间隔档位。 */
 export type DownloadPace = 'slow' | 'standard' | 'fast'
@@ -470,6 +500,30 @@ export interface SiteRule {
   adFilterEnabled?: boolean
   /** 每行一个额外的广告元素 CSS 选择器。 */
   adHideSelectors?: string
+  /**
+   * 付费墙自动恢复正文：缺省开启。false 时遇到付费墙直接按墙暂停等本人处理。
+   */
+  paywallUnlock?: boolean
+  /**
+   * 每行一个解锁容器 CSS 选择器：站点把全文藏在页面里时直取。
+   * 命中即取该节点全文（含被样式隐藏的部分），不看可见性。
+   */
+  unlockSelectors?: string
+  /**
+   * 章节接口模板：首屏只有试读、正文要走站点自己的接口时填这个。
+   * 占位符 `{id}` / `{cid}` / `{chapterId}` / `{page}` 用当前页线索替换。
+   * 例：`/ajax/chapter?id={id}`、`/api/novel/content/{id}`。留空则只用页面里现成的线索。
+   */
+  chapterApi?: string
+  /** 接口方法，缺省 GET。只有配上 `chapterApiBody` 才会真的用 POST。 */
+  chapterApiMethod?: 'GET' | 'POST'
+  /** POST 请求体模板（JSON 文本），同样支持 `{id}` 占位。 */
+  chapterApiBody?: string
+  /**
+   * 图片正文 / 字形替换（字体混淆）时走 OCR：缺省关闭（要装 OCR 引擎、也慢）。
+   * 开了之后，接口也没拿到正文才认得动图，认得的结果要本人核对。
+   */
+  ocrUnlock?: boolean
 }
 
 export interface AiCleanResult {
@@ -808,7 +862,7 @@ export const DEFAULT_TTS_PREFS: TtsPrefs = {
 }
 
 export const DEFAULT_APPEARANCE_PREFS: AppearancePrefs = {
-  skin: 'white',
+  skin: 'light',
 }
 
 export const AI_PROMPT_KINDS: readonly AiPromptKind[] = [
