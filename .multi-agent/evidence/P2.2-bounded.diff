@@ -1,0 +1,275 @@
+commit bd0d491a91f0934f65a9eec29051ad9510dbeec7
+Author: 3524104839 <3524104839@qq.com>
+Date:   Tue Sep 8 10:02:04 2026 +0800
+
+    feat(P2.2): prefetch adjacent ready chapters
+
+diff --git a/src/renderer/pages/Reader.vue b/src/renderer/pages/Reader.vue
+index be87e1c..6c87fe0 100644
+--- a/src/renderer/pages/Reader.vue
++++ b/src/renderer/pages/Reader.vue
+@@ -47,6 +47,7 @@ import {
+   removeAssistantStage,
+   updateAssistantSaveToken,
+ } from './aiAssistantStatus'
++import { createChapterPrefetch } from './readerPrefetch'
+ 
+ const props = defineProps<{ bookId?: string }>()
+ const emit = defineEmits<{
+@@ -58,6 +59,7 @@ const message = useMessage()
+ const book = ref<Book | null>(null)
+ const chapters = ref<ChapterMeta[]>([])
+ const currentChapter = ref<ChapterMeta | null>(null)
++const chapterPrefetch = createChapterPrefetch()
+ const chapterBody = ref('')
+ const chapterError = ref('')
+ const hasBodyRaw = ref(false)
+@@ -836,6 +838,7 @@ const chapterFailHint = computed(() => failAdvice(currentChapter.value?.failCode
+ 
+ async function loadBook(bookId: string) {
+   assistantBudgets.value = {}
++  chapterPrefetch.onBookChange(bookId)
+   const previousChapterId = currentChapter.value?.id
+   saveProgress()
+   const res = await window.api.library.get(bookId)
+@@ -866,12 +869,16 @@ async function loadBook(bookId: string) {
+ 
+ async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
+   if (!book.value) return
++  chapterPrefetch.beginNavigation()
+   closeSelectionTools()
+   ttsStop()
+   if (currentChapter.value && currentChapter.value.id !== ch.id) saveProgress()
+   chapterLoading.value = true
+   try {
+-    const res = await window.api.library.readChapter(book.value.id, ch.id)
++    const cached = chapterPrefetch.get(book.value.id, ch.id)
++    const res = cached
++      ? { chapter: cached }
++      : await window.api.library.readChapter(book.value.id, ch.id)
+     if (res.chapter) {
+       currentChapter.value = { ...ch, status: res.chapter.status, failCode: res.chapter.failCode }
+       chapterBody.value = res.chapter.body || ''
+@@ -891,6 +898,12 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0) {
+       } else {
+         scrollToRatio(scrollRatio)
+       }
++      chapterPrefetch.scheduleNeighbors({
++        bookId: book.value.id,
++        previous: previousChapter.value,
++        following: followingChapter.value,
++        readChapter: (bookId, chapterId) => window.api.library.readChapter(bookId, chapterId),
++      })
+     } else {
+       currentChapter.value = ch
+       chapterBody.value = ''
+@@ -1097,6 +1110,7 @@ async function stopCleanBody() {
+ async function applyCleanedBody() {
+   if (!book.value || !currentChapter.value || !aiResult.value) return
+   await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, aiResult.value)
++  chapterPrefetch.invalidate(book.value.id, currentChapter.value.id)
+   chapterBody.value = aiResult.value
+   hasBodyRaw.value = true
+   showAiResult.value = false
+@@ -1106,6 +1120,7 @@ async function applyCleanedBody() {
+ async function restoreCleanedBody() {
+   if (!book.value || !currentChapter.value) return
+   const res = await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, '', true)
++  chapterPrefetch.invalidate(book.value.id, currentChapter.value.id)
+   if (res && 'ok' in res && res.ok === false) {
+     message.error((res as { message?: string }).message || '撤销失败')
+     return
+@@ -1577,6 +1592,7 @@ onMounted(async () => {
+ onUnmounted(() => {
+   window.removeEventListener('keydown', onReaderKeydown)
+   window.removeEventListener('resize', onReaderResize)
++  chapterPrefetch.dispose()
+   ttsStop()
+   if (scrollTimer) clearTimeout(scrollTimer)
+   clearToolHideTimer()
+diff --git a/src/renderer/pages/readerPrefetch.ts b/src/renderer/pages/readerPrefetch.ts
+new file mode 100644
+index 0000000..6e5c4c5
+--- /dev/null
++++ b/src/renderer/pages/readerPrefetch.ts
+@@ -0,0 +1,180 @@
++import type { ChapterFile, ChapterMeta } from '@shared/types'
++
++export const PREFETCH_CACHE_LIMIT = 2
++
++export type PrefetchNeighbor = Pick<ChapterMeta, 'id' | 'status'> | null | undefined
++
++export type PrefetchReadResult = { chapter?: ChapterFile; message?: string }
++
++export type PrefetchReadChapter = (bookId: string, chapterId: string) => Promise<PrefetchReadResult>
++
++export type IdleSchedulerHost = {
++  requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
++  cancelIdleCallback?: (id: number) => void
++  setTimeout: (cb: () => void, ms?: number) => unknown
++  clearTimeout: (id: unknown) => void
++}
++
++export function prefetchCacheKey(bookId: string, chapterId: string): string {
++  return `${bookId}\t${chapterId}`
++}
++
++export function adjacentReadyTargets(
++  bookId: string | null | undefined,
++  previous: PrefetchNeighbor,
++  following: PrefetchNeighbor,
++): Array<{ bookId: string; chapterId: string }> {
++  if (!bookId) return []
++  const targets: Array<{ bookId: string; chapterId: string }> = []
++  for (const chapter of [previous, following]) {
++    if (chapter && chapter.status === 'ready' && chapter.id) {
++      targets.push({ bookId, chapterId: chapter.id })
++    }
++  }
++  return targets
++}
++
++export function scheduleIdleWork(
++  run: () => void,
++  host: IdleSchedulerHost,
++  timeoutMs = 2000,
++): () => void {
++  if (typeof host.requestIdleCallback === 'function') {
++    const id = host.requestIdleCallback(() => run(), { timeout: timeoutMs })
++    return () => host.cancelIdleCallback?.(id)
++  }
++  const id = host.setTimeout(() => run(), 1)
++  return () => host.clearTimeout(id)
++}
++
++function resolveIdleHost(override?: IdleSchedulerHost): IdleSchedulerHost {
++  if (override) return override
++  const globalHost = globalThis as typeof globalThis & IdleSchedulerHost
++  return {
++    requestIdleCallback:
++      typeof globalHost.requestIdleCallback === 'function'
++        ? (cb, opts) => globalHost.requestIdleCallback!(cb, opts)
++        : undefined,
++    cancelIdleCallback:
++      typeof globalHost.cancelIdleCallback === 'function'
++        ? (id) => globalHost.cancelIdleCallback!(id)
++        : undefined,
++    setTimeout: (cb, ms) => setTimeout(cb, ms),
++    clearTimeout: (id) => clearTimeout(id as ReturnType<typeof setTimeout>),
++  }
++}
++
++export function createChapterPrefetch(options?: {
++  limit?: number
++  idleHost?: IdleSchedulerHost
++  idleTimeoutMs?: number
++}) {
++  const limit = options?.limit ?? PREFETCH_CACHE_LIMIT
++  const cache = new Map<string, ChapterFile>()
++  let epoch = 0
++  let activeBookId: string | null = null
++  let cancelScheduled: (() => void) | null = null
++
++  function cancelIdle() {
++    cancelScheduled?.()
++    cancelScheduled = null
++  }
++
++  function beginNavigation() {
++    epoch += 1
++    cancelIdle()
++    return epoch
++  }
++
++  function get(bookId: string, chapterId: string): ChapterFile | undefined {
++    const hit = cache.get(prefetchCacheKey(bookId, chapterId))
++    return hit ? { ...hit } : undefined
++  }
++
++  function put(bookId: string, chapterId: string, file: ChapterFile) {
++    const key = prefetchCacheKey(bookId, chapterId)
++    if (cache.has(key)) cache.delete(key)
++    cache.set(key, { ...file })
++    while (cache.size > limit) {
++      const oldest = cache.keys().next().value
++      if (oldest === undefined) break
++      cache.delete(oldest)
++    }
++  }
++
++  function invalidate(bookId: string, chapterId: string) {
++    cache.delete(prefetchCacheKey(bookId, chapterId))
++  }
++
++  function onBookChange(bookId: string) {
++    if (activeBookId !== null && activeBookId !== bookId) {
++      cache.clear()
++      beginNavigation()
++    }
++    activeBookId = bookId
++  }
++
++  function retainTargets(targets: Array<{ bookId: string; chapterId: string }>) {
++    const allowed = new Set(targets.map((target) => prefetchCacheKey(target.bookId, target.chapterId)))
++    for (const key of [...cache.keys()]) {
++      if (!allowed.has(key)) cache.delete(key)
++    }
++  }
++
++  async function prefetchTargets(
++    myEpoch: number,
++    targets: Array<{ bookId: string; chapterId: string }>,
++    readChapter: PrefetchReadChapter,
++  ) {
++    for (const target of targets) {
++      if (myEpoch !== epoch) return
++      if (cache.has(prefetchCacheKey(target.bookId, target.chapterId))) continue
++      try {
++        const result = await readChapter(target.bookId, target.chapterId)
++        if (myEpoch !== epoch) return
++        const file = result.chapter
++        if (!file || file.status !== 'ready') {
++          invalidate(target.bookId, target.chapterId)
++          continue
++        }
++        put(target.bookId, target.chapterId, file)
++      } catch {
++        // Prefetch failures stay silent and never reach the current chapter UI.
++      }
++    }
++  }
++
++  function scheduleNeighbors(input: {
++    bookId: string
++    previous: PrefetchNeighbor
++    following: PrefetchNeighbor
++    readChapter: PrefetchReadChapter
++  }) {
++    onBookChange(input.bookId)
++    const myEpoch = beginNavigation()
++    const targets = adjacentReadyTargets(input.bookId, input.previous, input.following)
++    retainTargets(targets)
++    if (targets.length === 0) return
++    const host = resolveIdleHost(options?.idleHost)
++    cancelScheduled = scheduleIdleWork(() => {
++      void prefetchTargets(myEpoch, targets, input.readChapter)
++    }, host, options?.idleTimeoutMs)
++  }
++
++  function dispose() {
++    beginNavigation()
++    cache.clear()
++    activeBookId = null
++  }
++
++  return {
++    get,
++    invalidate,
++    onBookChange,
++    beginNavigation,
++    scheduleNeighbors,
++    dispose,
++    size: () => cache.size,
++    keys: () => [...cache.keys()],
++  }
++}

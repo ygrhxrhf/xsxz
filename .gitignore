@@ -8,10 +8,12 @@ library-live/
 release/
 *.tsbuildinfo
 .mission-planning/
-.multi-agent/
+.multi-agent/**/*.png
+.multi-agent/**/*.tmp
 .dsh/
 .zcode/
 bundles/
 *.traineddata
 electron.vite.config.*.mjs
+.sock.lock
 

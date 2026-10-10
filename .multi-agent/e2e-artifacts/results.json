@@ -1,0 +1,211 @@
+{
+  "passed": 34,
+  "total": 34,
+  "failed": [],
+  "evidence": [
+    {
+      "resolution": "1280x800",
+      "item": "正文居中且旧侧栏/底栏消失",
+      "pass": true,
+      "detail": "{\"contentCenter\":740,\"bodyCenter\":740}"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "顶部工具顺序与中文 aria-label",
+      "pass": true,
+      "detail": "返回书库|目录|搜索|标记|朗读|AI|外观|沉浸模式"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "48px 章节热区",
+      "pass": true,
+      "detail": "48,48"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "底部进度不可点击",
+      "pass": true,
+      "detail": "none"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "工具静置3秒隐藏",
+      "pass": true,
+      "detail": "true"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "Alt 唤回工具",
+      "pass": true,
+      "detail": "true"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "M 锁定且 Esc 退出",
+      "pass": true,
+      "detail": "{\"locked\":true,\"unlocked\":true}"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "七项外观控件存在",
+      "pass": true,
+      "detail": "{\"texts\":[\"纸白\",\"暖黄\",\"柔灰\",\"夜间\",\"宋体阅读\",\"系统黑体\",\"等宽\",\"窄\",\"中\",\"宽\",\"紧凑\",\"标准\",\"宽松\",\"恢复默认\"],\"sliders\":2,\"indent\":true}"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "章末100%与全书进度详情",
+      "pass": true,
+      "detail": "{\"detail\":\"全书 50% · 本章 100% · 还剩 1 章\",\"card\":\"下一章：第二章 晨光\",\"width\":\"50%\"}"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "目录定位当前章",
+      "pass": true,
+      "detail": "{\"text\":\"第一章 长夜\",\"visible\":true}"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "减少动画关闭过渡",
+      "pass": true,
+      "detail": "true"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "外观立即生效并持久化",
+      "pass": true,
+      "detail": "{\"background\":\"rgb(243, 226, 184)\",\"font\":\"\\\"Cascadia Mono\\\", Consolas, monospace\",\"maxWidth\":\"828px\",\"settings\":{\"fontSize\":18,\"lineHeight\":1.8,\"theme\":\"sepia\",\"fontFamily\":\"mono\",\"contentWidth\":\"wide\",\"paragraphSpacing\":\"relaxed\",\"paragraphIndent\":true},\"error\":null}"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "方向键正确换章并遵守边界",
+      "pass": true,
+      "detail": "第一章→第二章→第一章"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "搜索流程与输入区快捷键保护",
+      "pass": true,
+      "detail": "{\"protectedInput\":true,\"hits\":2}"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "TTS与AI既有入口完整",
+      "pass": true,
+      "detail": "{\"tts\":\"朗读播放语速 1.0x 自动下一章\",\"ai\":\"AI清正文AI 助手人物卡聊书\"}"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "选区五项动作顺序",
+      "pass": true,
+      "detail": "复制|划线|备注|翻译|问 AI"
+    },
+    {
+      "resolution": "1280x800",
+      "item": "键盘焦点清晰可见",
+      "pass": true,
+      "detail": "true"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "正文居中且旧侧栏/底栏消失",
+      "pass": true,
+      "detail": "{\"contentCenter\":650,\"bodyCenter\":650}"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "顶部工具顺序与中文 aria-label",
+      "pass": true,
+      "detail": "返回书库|目录|搜索|标记|朗读|AI|外观|沉浸模式"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "48px 章节热区",
+      "pass": true,
+      "detail": "48,48"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "底部进度不可点击",
+      "pass": true,
+      "detail": "none"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "工具静置3秒隐藏",
+      "pass": true,
+      "detail": "true"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "Alt 唤回工具",
+      "pass": true,
+      "detail": "true"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "M 锁定且 Esc 退出",
+      "pass": true,
+      "detail": "{\"locked\":true,\"unlocked\":true}"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "七项外观控件存在",
+      "pass": true,
+      "detail": "{\"texts\":[\"纸白\",\"暖黄\",\"柔灰\",\"夜间\",\"宋体阅读\",\"系统黑体\",\"等宽\",\"窄\",\"中\",\"宽\",\"紧凑\",\"标准\",\"宽松\",\"恢复默认\"],\"sliders\":2,\"indent\":true}"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "章末100%与全书进度详情",
+      "pass": true,
+      "detail": "{\"detail\":\"全书 50% · 本章 100% · 还剩 1 章\",\"card\":\"下一章：第二章 晨光\",\"width\":\"50%\"}"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "目录定位当前章",
+      "pass": true,
+      "detail": "{\"text\":\"第一章 长夜\",\"visible\":true}"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "减少动画关闭过渡",
+      "pass": true,
+      "detail": "true"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "外观立即生效并持久化",
+      "pass": true,
+      "detail": "{\"background\":\"rgb(243, 226, 184)\",\"font\":\"\\\"Cascadia Mono\\\", Consolas, monospace\",\"maxWidth\":\"828px\",\"settings\":{\"fontSize\":18,\"lineHeight\":1.8,\"theme\":\"sepia\",\"fontFamily\":\"mono\",\"contentWidth\":\"wide\",\"paragraphSpacing\":\"relaxed\",\"paragraphIndent\":true},\"error\":null}"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "方向键正确换章并遵守边界",
+      "pass": true,
+      "detail": "第一章→第二章→第一章"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "搜索流程与输入区快捷键保护",
+      "pass": true,
+      "detail": "{\"protectedInput\":true,\"hits\":2}"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "TTS与AI既有入口完整",
+      "pass": true,
+      "detail": "{\"tts\":\"朗读播放语速 1.0x 自动下一章\",\"ai\":\"AI清正文AI 助手人物卡聊书\"}"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "选区五项动作顺序",
+      "pass": true,
+      "detail": "复制|划线|备注|翻译|问 AI"
+    },
+    {
+      "resolution": "1100x720",
+      "item": "键盘焦点清晰可见",
+      "pass": true,
+      "detail": "true"
+    }
+  ]
+}
