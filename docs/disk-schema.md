@@ -8,7 +8,7 @@
 <libraryPath>\
   index.json
   __tmp__\
-  __trash__\               # 回收站：删除的书整目录移入 <bookId>-<删除毫秒>；不自动清理
+  __trash__\               # 回收站：删除的书整目录移入 <bookId>-<删除毫秒>；启动时清掉超过 30 天的条目
   <bookId>\
     book.json
     annotations.json       # 书签 / 划线（见下）
@@ -54,6 +54,8 @@
 ```json
 {
   "version": 1,
+  "writtenAt": "2026-10-14T09:20:00.000Z",
+  "mtimes": { "d_0a776795d22acb41": 1760435200123.456 },
   "books": [
     {
       "id": "…",
@@ -95,8 +97,8 @@
 | chapters[].file | 相对书目录，如 `chapters/0001.json` |
 | chapters[].url | 下载章的源 URL；导入可空 |
 | chapters[].status | `pending` \| `ready` \| `failed` \| `empty` |
-| chapters[].failCode | 可选，`status` 为 `failed` 时携带：`CatalogNotFound` \| `BodyEmpty` \| `NeedLogin` \| `Paywall` \| `Intercepted` \| `RateLimited` \| `NavFailed` \| `UnknownPage`；文案取 `FAIL_CODE_ZH`，配套 `failMessage` 为可读说明 |
-| progress | `{ chapterId, scrollRatio, paragraphIndex?, paragraphOffset?, updatedAt }` 或 `null`；段落锚点无效时回退到滚动比例 |
+| chapters[].failCode | 可选，`status` 为 `failed` 时携带：`CatalogNotFound` \| `BodyEmpty` \| `BodyGarbled` \| `NeedLogin` \| `Paywall` \| `Intercepted` \| `RateLimited` \| `NavFailed` \| `UnknownPage`；文案取 `FAIL_CODE_ZH`，配套 `failMessage` 为可读说明 |
+| progress | `{ chapterId, scrollRatio, bodyHash?, renderedRatio?, paragraphIndex?, paragraphOffset?, updatedAt }` 或 `null`；段落锚点无效时回退到滚动比例。`bodyHash` 为正文指纹，`renderedRatio` 记录当时已渲染到的比例，只用于判「这一章是否读到过末尾」，两者都可选、旧书缺省 |
 
 ---
 
@@ -447,6 +449,8 @@
 - `trustedCustomOrigins` 只保存协议 + hostname + 有效端口组成的规范化 origin；路径变化不产生新信任项，协议或端口变化需要重新确认。
 - `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
 - 同级 `browse-state.json` 保存最近网页 `{ url, ratio, updatedAt }` 与按规范化域名映射的缩放比例；不属于书库备份。缺失或损坏时按无恢复位置、默认 100% 缩放读取。
+- `browse-state.json` 另存 `readingByUrl`：按 `canonicalizeUrl` 归一后的网页地址映射到阅读模式的 `{ paragraphIndex, scrollRatio, updatedAt }`，最多 200 条（超出按 `updatedAt` 淘汰最旧）。缺这个字段或条目非法时按无位置读取，不影响 `last` 与 `zoomByHost`。
+- `settings.json` 的 `webReading` 保存网页阅读模式偏好：`autoSpeed` 为 1–5 的整数（默认 3，越界夹紧、非数值回退默认），`autoPage` 为布尔值（默认 `true`）。缺失或损坏时补默认，不丢弃其他设置。
 - `autoBackup.destDir` 为空表示关闭；主进程启动时距上次成功满七天则创建 `spbf-auto-*.zip`，仅保留最近五份自动备份。旧设置缺失时按关闭读取。备份包不含设置与 API Key。
 - `appearance.skin` 取值 `light`（浅色，默认）/ `dark`（深色）。旧 `paper`、`white`、`sakura`、`minimal` 读入为 `light`，旧 `night` 读入为 `dark`；非法值回退 `light`。读取迁移不改动其他设置，下一次保存外观时写入正式值。
 - `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。
@@ -463,7 +467,7 @@
 {
   "version": 1,
   "rules": [
-    { "host": "example.com", "title": "h1", "author": ".author", "catalog": "#list", "body": "#content", "previousChapter": ".prev a", "nextChapter": ".next a", "adFilterEnabled": true, "adHideSelectors": ".floating-ad\n#banner" }
+    { "host": "example.com", "title": "h1", "author": ".author", "catalog": "#list", "body": "#content", "previousChapter": ".prev a", "nextChapter": ".next a", "adFilterEnabled": true, "adHideSelectors": ".floating-ad\n#banner", "bodyCleanPatterns": "^最新网址$|^手机版阅读$" }
   ]
 }
 ```
@@ -471,5 +475,46 @@
 - 缺省文件视为 `{ version: 1, rules: [] }`。
 - 旧规则缺少 `adFilterEnabled` 时浏览页去广告默认开启；`adHideSelectors` 缺省为空。每行一条额外隐藏选择器，无效选择器不影响内置隐藏规则。
 - `previousChapter` 与 `nextChapter` 可选，分别指向本页上一章、下一章的链接元素；旧规则缺少时自动识别。
+- `bodyCleanPatterns` 可选，每行一条正则，命中整段正文即删除（阅读模式与下载共用）。最多 20 行、每行 200 字符；非法正则忽略该行，不影响其它行与内置噪音规则。
 - 文件内不得存 API Key。
 - `%APPDATA%/spbf/adguard-network.bin` 是从 [AdGuard Base filter](https://filters.adtidy.org/extension/chromium/filters/2.txt) 编译出的本地网络规则缓存；只解析网络规则，不加载浏览器扩展或脚本注入规则。`adguard-network.json` 记录来源和更新时间。应用启动后后台加载缓存，并在缓存超过 8 天时从官方 HTTPS 地址更新。下载或解析失败时保留上次有效缓存；首次离线时只有本地 CSS 隐藏生效。缓存不含浏览历史或 API Key。
+
+---
+
+## 网页书架
+
+路径：`%APPDATA%/spbf/web-shelf.json`（与 `settings.json` 同目录），**不属于**书库备份，不保存在书库根目录里。
+
+```json
+{
+  "version": 1,
+  "books": [
+    {
+      "id": "site-9f2c1a4b",
+      "host": "example.com",
+      "title": "示例书名",
+      "author": "示例作者",
+      "coverUrl": "https://example.com/cover.jpg",
+      "catalogUrl": "https://example.com/book/65/",
+      "lastChapter": { "title": "第 12 章 起风", "url": "https://example.com/book/65/12.html" },
+      "chapters": [
+        { "title": "第 1 章 开端", "url": "https://example.com/book/65/1.html" }
+      ],
+      "chaptersFetchedAt": "2026-10-12T09:00:00.000Z",
+      "addedChapters": 3,
+      "lastRefreshedAt": "2026-10-12T09:00:00.000Z",
+      "progress": { "paragraphIndex": 24, "scrollRatio": 0.31, "updatedAt": "2026-10-12T09:20:00.000Z" },
+      "createdAt": "2026-10-10T08:00:00.000Z",
+      "updatedAt": "2026-10-12T09:20:00.000Z"
+    }
+  ]
+}
+```
+
+- 网页书只保存书目、目录快照与阅读位置，**不保存正文**；打开与续读都在内置浏览器里进行。
+- 上限：最多 500 本；每本 `chapters` 最多 3000 条，超出时保留靠前的 3000 条并把目录标为截断。
+- `chapters` 允许为空数组（抓不到目录的站），此时书架显示「目录待识别」，跳章依赖页面里的上一章 / 下一章。
+- `id` 由 host + 规范化 `catalogUrl` 生成，同一本书重复加入时更新原条目而不新增。
+- 文件缺失视为空书架；整体损坏时按空读取，不重建书库。单条非法（缺 `id` / 非 http(s) 地址 / 字段类型不对）时只丢弃该条，不影响其他条目。
+- `addedChapters` 是上次刷新发现的更新章数，只用于书架角标；刷新之间的变化不累计。
+- 读取顺序：先 `createdAt` 倒序，`progress` 非空的书按 `progress.updatedAt` 优先。（渲染侧排序口径见书架卡片实现。）

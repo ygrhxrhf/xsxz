@@ -48,6 +48,23 @@ function asSelector(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
+const CLEAN_PATTERN_LINE_LIMIT = 200
+const CLEAN_PATTERN_MAX_LINES = 20
+
+/** 正文噪音正则：每行一条，丢空行、超限行与非法正则，最多 20 条。 */
+function asCleanPatterns(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  const lines: string[] = []
+  for (const line of value.split('\n')) {
+    const text = line.trim()
+    if (!text || text.length > CLEAN_PATTERN_LINE_LIMIT) continue
+    try { new RegExp(text, 'i') } catch { continue }
+    lines.push(text)
+    if (lines.length >= CLEAN_PATTERN_MAX_LINES) break
+  }
+  return lines.length ? lines.join('\n') : undefined
+}
+
 function toStoredRule(rule: SiteRule, host: string): SiteRule {
   const stored: SiteRule = { host }
   const title = asSelector(rule.title)
@@ -70,6 +87,10 @@ function toStoredRule(rule: SiteRule, host: string): SiteRule {
   if (rule.chapterApiMethod === 'GET' || rule.chapterApiMethod === 'POST') stored.chapterApiMethod = rule.chapterApiMethod
   if (typeof rule.chapterApiBody === 'string') stored.chapterApiBody = rule.chapterApiBody
   if (typeof rule.ocrUnlock === 'boolean') stored.ocrUnlock = rule.ocrUnlock
+  // 手写的正文噪音正则也要落盘：以前这一项没被带过来，
+  // site-rules.json 里写好的 bodyCleanPatterns 会在任何一次保存后消失
+  const cleanPatterns = asCleanPatterns(rule.bodyCleanPatterns)
+  if (cleanPatterns !== undefined) stored.bodyCleanPatterns = cleanPatterns
   return stored
 }
 
@@ -99,6 +120,7 @@ function parseFile(raw: unknown): SiteRulesFile {
       adFilterEnabled: typeof (item as SiteRule).adFilterEnabled === 'boolean'
         ? (item as SiteRule).adFilterEnabled : undefined,
       adHideSelectors: asSelector((item as SiteRule).adHideSelectors),
+      bodyCleanPatterns: asCleanPatterns((item as SiteRule).bodyCleanPatterns),
       paywallUnlock: typeof (item as SiteRule).paywallUnlock === 'boolean'
         ? (item as SiteRule).paywallUnlock : undefined,
       unlockSelectors: asSelector((item as SiteRule).unlockSelectors),

@@ -89,6 +89,15 @@ const promptUndo = ref<Partial<Record<AiPromptKind, { mode: AiPromptMode; text?:
 const libraryPath = ref('')
 const downloadPace = ref<DownloadPace>('standard')
 const saving = ref(false)
+/** 本机 OCR 兜底引擎是否可用：null = 还在检查。 */
+const ocrStatus = ref<{ ready: boolean; reason?: string } | null>(null)
+const ocrStatusText = computed(() => {
+  if (!ocrStatus.value) return '正在检查本机 OCR 引擎…'
+  if (ocrStatus.value.ready) return '本机 OCR 引擎可用（tesseract.js，离线识别）。'
+  return `本机没有可用的 OCR 引擎：${ocrStatus.value.reason || '未安装 tesseract.js'}。开关可以先打开，但引擎就绪前不会生效。`
+})
+/** 输入框里的路径和已生效的路径不一致时，界面要说清「还没生效」。 */
+const libraryPathDirty = computed(() => libraryPath.value.trim() !== (settings.value?.libraryPath || '').trim())
 const testing = ref(false)
 const msg = ref('')
 const msgType = ref<'success' | 'error' | 'info'>('info')
@@ -117,6 +126,8 @@ const ruleTitle = ref('')
 const ruleAuthor = ref('')
 const ruleCatalog = ref('')
 const ruleBody = ref('')
+/** 正文噪音正则：每行一条，抓下来的正文里匹配到的片段会被删掉。 */
+const ruleBodyCleanPatterns = ref('')
 const rulePreviousChapter = ref('')
 const ruleNextChapter = ref('')
 const ruleAdFilterEnabled = ref(true)
@@ -156,6 +167,7 @@ function fillRuleForm(rule: SiteRule) {
   ruleAuthor.value = rule.author ?? ''
   ruleCatalog.value = rule.catalog ?? ''
   ruleBody.value = rule.body ?? ''
+  ruleBodyCleanPatterns.value = rule.bodyCleanPatterns ?? ''
   rulePreviousChapter.value = rule.previousChapter ?? ''
   ruleNextChapter.value = rule.nextChapter ?? ''
   ruleAdFilterEnabled.value = rule.adFilterEnabled !== false
@@ -532,6 +544,7 @@ async function saveRule() {
       author: ruleAuthor.value,
       catalog: ruleCatalog.value,
       body: ruleBody.value,
+      bodyCleanPatterns: ruleBodyCleanPatterns.value,
       previousChapter: rulePreviousChapter.value,
       nextChapter: ruleNextChapter.value,
       adFilterEnabled: ruleAdFilterEnabled.value,
@@ -595,6 +608,7 @@ async function removeRule(host: string) {
       ruleAuthor.value = ''
       ruleCatalog.value = ''
       ruleBody.value = ''
+      ruleBodyCleanPatterns.value = ''
       ruleAdFilterEnabled.value = true
       ruleAdHideSelectors.value = ''
     }
@@ -643,8 +657,11 @@ async function handleBackup() {
   backingUp.value = true
   try {
     const res = await window.api.backup.create(dest)
-    if (res.ok) msg.value = `已备份到 ${res.path}`
-    else {
+    if (res.ok) {
+      msg.value = `已备份到 ${res.path}`
+      // 手动备份成功说明书库现在是完好的：把上一次自动备份的报错清掉，别一直挂着旧错
+      settings.value = await window.api.settings.set({ autoBackup: { lastError: '' } })
+    } else {
       msg.value = res.message || '备份失败'
       msgType.value = 'error'
     }
@@ -695,6 +712,7 @@ watch(
       ruleAuthor.value = ''
       ruleCatalog.value = ''
       ruleBody.value = ''
+      ruleBodyCleanPatterns.value = ''
       ruleAdFilterEnabled.value = true
       ruleAdHideSelectors.value = ''
     }
@@ -703,6 +721,15 @@ watch(
 )
 
 onMounted(load)
+// 引擎状态只在进设置页时查一次：装没装 tesseract.js 不会在运行中途变化
+onMounted(async () => {
+  try {
+    const res = await window.api.ocr.status()
+    ocrStatus.value = { ready: Boolean(res.ok && res.ready), reason: res.reason }
+  } catch {
+    ocrStatus.value = { ready: false, reason: '检查失败' }
+  }
+})
 </script>
 
 <template>
@@ -752,6 +779,15 @@ onMounted(load)
           <span class="skin-desc">{{ s.desc }}</span>
         </button>
       </div>
+      <button
+        class="theme-toggle"
+        type="button"
+        :aria-label="skin === 'light' ? '切换深色外观' : '切换浅色外观'"
+        @click="emit('change-skin', skin === 'light' ? 'dark' : 'light')"
+      >
+        {{ skin === 'light' ? '切换到深色' : '切换到浅色' }}
+      </button>
+      <p class="field-help">外观只在这里切换，浏览、书库和阅读共用这一项。</p>
     </n-card>
 
     <n-card v-show="activeSection === 'library'" title="书库" class="settings-card">
@@ -763,6 +799,10 @@ onMounted(load)
         </n-input-group>
         <p style="color:var(--text-muted);font-size:13px;margin:0">
           搬迁仅接受空目录；复制并校验成功后切换，旧目录仍保留。
+        </p>
+        <p v-if="libraryPathDirty" class="field-warn">
+          路径已改，但还没生效：现在读写的仍是
+          <code>{{ settings?.libraryPath || '本机默认目录' }}</code>。点下面的「搬迁书库」才会真正切换。
         </p>
         <n-button type="primary" :loading="saving" @click="saveLibrary">搬迁书库</n-button>
         <div class="pace-row">
@@ -962,6 +1002,15 @@ onMounted(load)
         <n-input-group>
           <n-input-group-label style="width:110px">正文选择器</n-input-group-label>
           <n-input v-model:value="ruleBody" placeholder="可选，空则走通用提取" />
+          <n-input
+            v-model:value="ruleBodyCleanPatterns"
+            type="textarea"
+            :rows="3"
+            placeholder="正文噪音正则，每行一条（例如 ^本章未完 或 请记住本站）"
+          />
+          <div class="field-help">
+            抓下来的正文里匹配到的片段会被删掉；最多 20 条，非法正则会被忽略。清正文之前的原文仍保留，可随时撤销。
+          </div>
         </n-input-group>
         <n-input-group>
           <n-input-group-label style="width:110px">上一章选择器</n-input-group-label>
@@ -987,6 +1036,9 @@ onMounted(load)
         </n-space>
         <div class="field-help">
           开了 OCR：正文是图片切片、或站点用自定义字体把字换成私用区乱码时，截图交给 OCR 认字（本机引擎，离线。认得慢，结果可能有错字，请核对后再读）。
+        </div>
+        <div class="field-help" :class="{ 'field-warn': ocrStatus && !ocrStatus.ready }">
+          {{ ocrStatusText }}
         </div>
         <div class="field-help">
           开启后撞付费墙先在页面内找回正文：解锁容器、被样式藏起来的全文、内联 JSON / 脚本变量 / data-* 属性、编码载荷、被藏起来的续页；都失败才在页面上下文里调上面那个章节接口（带当前登录态，不伪造凭证）。全部拿不到才按付费墙暂停等人处理。
@@ -1050,7 +1102,10 @@ onMounted(load)
         <p>启动时检查到期备份，仅保留最近五份自动备份。手动备份不会被清理。</p>
         <p>目录：{{ settings?.autoBackup?.destDir || '未启用' }}</p>
         <p v-if="settings?.autoBackup?.lastSuccessAt">上次成功：{{ settings.autoBackup.lastSuccessAt }}</p>
-        <p v-if="settings?.autoBackup?.lastError" role="alert">上次错误：{{ settings.autoBackup.lastError }}</p>
+        <p v-if="settings?.autoBackup?.lastError" role="alert">
+          上次错误：{{ settings.autoBackup.lastError }}
+          <br />自动备份失败后不会自己重试；处理完上面说的原因，点下面的「备份书库…」手动跑一次即可。
+        </p>
         <n-space>
           <n-button :loading="configuringAutoBackup" @click="enableAutoBackup">{{ settings?.autoBackup?.destDir ? '更换目录' : '启用并选择目录' }}</n-button>
           <n-button v-if="settings?.autoBackup?.destDir" @click="disableAutoBackup">关闭自动备份</n-button>
@@ -1216,6 +1271,15 @@ onMounted(load)
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* 需要用户先动手才能生效的提示（路径没搬、OCR 引擎缺失） */
+.field-warn {
+  color: var(--warning, #d03050);
+}
+.field-warn code {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
 }
 
 .switch-row {

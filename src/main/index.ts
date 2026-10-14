@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseState, BrowseChapterLink, Settings, SiteRule } from '../shared/types'
+import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseReadingChapter, BrowseReadingPage, BrowseState, BrowseChapterLink, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import {
@@ -32,6 +32,7 @@ import {
   correctAiMemorySummary,
   assertImportable,
   recoverInterruptedStatus,
+  purgeExpiredTrash,
   type AiMemoryCollection,
 } from './library'
 import { importTxt } from './importTxt'
@@ -40,10 +41,22 @@ import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTie
 import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView } from './download'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
-import { shutdownOcrEngine } from './ocrText'
+import { ocrEngineReady, shutdownOcrEngine } from './ocrText'
 import { browserAdCss } from './browserAds'
 import { discoverChapterLinks, extractBrowseReadingPage } from './browseReading'
-import { getBrowseZoom, getLastBrowsePosition, setBrowsePosition, setBrowseZoom, clampZoom } from './browseState'
+import { getBrowseZoom, getLastBrowsePosition, getReadingPos, setBrowsePosition, setBrowseZoom, setReadingPos, clampZoom } from './browseState'
+import { destroyReadingSession, loadCatalog, loadReadingPage, prefetchReadingPage } from './readingSession'
+import {
+  addWebShelf,
+  getWebShelfChapters,
+  listWebShelf,
+  locateChapterInShelf,
+  refreshAllWebShelf,
+  refreshWebShelf,
+  removeWebShelf,
+  setWebShelfChangeListener,
+  setWebShelfProgress,
+} from './webShelf'
 import { READ_SCROLL, restoreScrollScript, START_HIDE, STOP_HIDE, UNDO_HIDE, CLEAR_HIDE, COUNT_HIDE } from './browsePageScripts'
 import { BrowserAdRequestFilter } from './adRequestFilter'
 import { exportBook } from './exportBook'
@@ -120,6 +133,9 @@ let browseAdCssKey: string | null = null
 let browseAdApplySeq = 0
 let browseVisible = false
 let browseReadingMode = false
+/** 退出阅读模式后闲置多久回收阅读会话的隐藏视图与缓存。 */
+const READING_SESSION_IDLE_MS = 5 * 60 * 1000
+let readingSessionIdleTimer: ReturnType<typeof setTimeout> | null = null
 let browsePreviousChapter: BrowseChapterLink | undefined
 let browseNextChapter: BrowseChapterLink | undefined
 let browsePageSeq = 0
@@ -491,7 +507,37 @@ function createWindow(): void {
   }
 }
 
+/** 退出阅读模式后闲置一段时间回收阅读会话，避免隐藏视图长期占内存。 */
+function scheduleReadingSessionIdle(): void {
+  if (readingSessionIdleTimer) clearTimeout(readingSessionIdleTimer)
+  readingSessionIdleTimer = setTimeout(() => {
+    readingSessionIdleTimer = null
+    destroyReadingSession()
+  }, READING_SESSION_IDLE_MS)
+}
+
+/** 给阅读页补上「属于哪本网页书 + 目录位置」，并把章节上下文推给渲染进程。 */
+async function attachReadingChapter(page: BrowseReadingPage): Promise<BrowseReadingPage> {
+  let chapter: BrowseReadingChapter = page.chapter ?? { title: page.title, url: page.url }
+  try {
+    const located = await locateChapterInShelf(page.url)
+    if (located) {
+      chapter = {
+        ...chapter,
+        shelfBookId: located.bookId,
+        index: located.index >= 0 ? located.index : undefined,
+        total: located.total || undefined,
+      }
+    }
+  } catch { /* 书架读不到不影响阅读 */ }
+  mainWindow?.webContents.send('browse.readingChapter', chapter)
+  return { ...page, chapter }
+}
+
 function registerIpc(): void {
+  setWebShelfChangeListener((reason) => {
+    mainWindow?.webContents.send('shelf.changed', { reason })
+  })
   ipcMain.handle('browse.load', async (_e, payload: { url: string }) => {
     const url = normalizeUrl(payload?.url ?? '')
     if (!url || !browseView) return { ok: false, message: '无效地址' }
@@ -557,7 +603,14 @@ function registerIpc(): void {
     emitBrowseState()
     return { ok: true, factor }
   })
-  ipcMain.handle('browse.readingPage', async () => {
+  ipcMain.handle('browse.readingPage', async (_e, payload?: { url?: string }) => {
+    const requested = typeof payload?.url === 'string' ? payload.url.trim() : ''
+    // 指定地址：走阅读会话的隐藏视图，不改动可见网页（续章 / 目录跳章 / 书架续读）。
+    if (requested) {
+      const result = await loadReadingPage(requested)
+      if (!result.ok) return { ok: false, message: result.message }
+      return { ok: true, page: await attachReadingChapter(result.page) }
+    }
     const wc = browseView?.webContents
     const url = wc?.getURL() ?? ''
     if (!wc || !/^https?:\/\//i.test(url)) return { ok: false, message: '请先打开章节网页' }
@@ -565,11 +618,88 @@ function registerIpc(): void {
       const html = await wc.executeJavaScript('document.documentElement.outerHTML') as string
       if (wc.getURL() !== url) return { ok: false, message: '网页已跳转，请重新开启阅读模式' }
       if (html.length > 8_000_000) return { ok: false, message: '当前网页过大，无法开启阅读模式' }
-      return extractBrowseReadingPage(html, url, await findSiteRuleForUrl(url))
+      const rule = await findSiteRuleForUrl(url)
+      const page = extractBrowseReadingPage(html, url, rule)
+      if (!page.ok) return { ok: false, message: page.message }
+      const links = discoverChapterLinks(html, url, rule)
+      const withChapter: BrowseReadingPage = {
+        ...page.page,
+        chapter: { title: page.page.title, url, previous: links.previous, next: links.next },
+      }
+      return { ok: true, page: await attachReadingChapter(withChapter) }
     } catch { return { ok: false, message: '读取当前网页失败' } }
   })
+  ipcMain.handle('browse.prefetchChapter', async (_e, payload?: { url?: string }) => {
+    const url = typeof payload?.url === 'string' ? payload.url.trim() : ''
+    if (!url) return { ok: false, cached: false }
+    return prefetchReadingPage(url)
+  })
+  ipcMain.handle('browse.chapterCatalog', async (_e, payload?: { catalogUrl?: string; url?: string }) => {
+    const requested = typeof payload?.catalogUrl === 'string' ? payload.catalogUrl.trim() : ''
+    if (requested) {
+      const result = await loadCatalog(requested)
+      if (!result.ok) return { ok: false, message: result.message }
+      const current = typeof payload?.url === 'string' && payload.url ? payload.url : browseView?.webContents.getURL() ?? ''
+      return { ok: true, catalogUrl: result.catalogUrl, chapters: result.chapters, currentIndex: result.chapters.findIndex((chapter) => chapter.url === current) }
+    }
+    const chapterUrl = typeof payload?.url === 'string' && payload.url ? payload.url : browseView?.webContents.getURL() ?? ''
+    if (!/^https?:\/\//i.test(chapterUrl)) return { ok: false, message: '请先打开这本书的章节页' }
+    // 1) 书架快照优先：不打扰站点就能出目录
+    try {
+      const located = await locateChapterInShelf(chapterUrl)
+      if (located) {
+        const shelfChapters = await getWebShelfChapters(located.bookId)
+        if (shelfChapters.ok && shelfChapters.chapters.length) {
+          return { ok: true, catalogUrl: chapterUrl, chapters: shelfChapters.chapters, currentIndex: located.index }
+        }
+      }
+    } catch { /* 书架读不到继续抓站点 */ }
+    // 2) 该页本身就是目录页
+    const result = await loadCatalog(chapterUrl)
+    if (!result.ok) return { ok: false, message: result.message }
+    return { ok: true, catalogUrl: result.catalogUrl, chapters: result.chapters, currentIndex: result.chapters.findIndex((chapter) => chapter.url === chapterUrl) }
+  })
+  ipcMain.handle('browse.saveReadingPos', async (_e, payload?: { url?: string; title?: string; paragraphIndex?: number; scrollRatio?: number }) => {
+    const url = typeof payload?.url === 'string' ? payload.url.trim() : ''
+    if (!url) return { ok: false }
+    const position = await setReadingPos(url, Number(payload?.paragraphIndex), Number(payload?.scrollRatio))
+    if (!position) return { ok: false }
+    try {
+      const located = await locateChapterInShelf(url)
+      if (located) {
+        const title = typeof payload?.title === 'string' && payload.title.trim() ? payload.title.trim().slice(0, 200) : '未命名章节'
+        await setWebShelfProgress(located.bookId, { title, url }, position.paragraphIndex, position.scrollRatio)
+      }
+    } catch { /* 书架写失败不影响阅读位置 */ }
+    return { ok: true }
+  })
+  ipcMain.handle('browse.getReadingPos', async (_e, payload?: { url?: string }) => {
+    const url = typeof payload?.url === 'string' ? payload.url.trim() : ''
+    if (!url) return { ok: true, position: null }
+    return { ok: true, position: await getReadingPos(url) }
+  })
+  ipcMain.handle('shelf.list', async () => ({ ok: true, books: await listWebShelf() }))
+  ipcMain.handle('shelf.add', async (_e, payload?: { url?: string }) => addWebShelf({ url: payload?.url }))
+  ipcMain.handle('shelf.remove', async (_e, payload?: { id?: string }) => removeWebShelf(String(payload?.id ?? '')))
+  ipcMain.handle('shelf.refresh', async (_e, payload?: { id?: string }) => refreshWebShelf(String(payload?.id ?? '')))
+  ipcMain.handle('shelf.refreshAll', async () => refreshAllWebShelf())
+  ipcMain.handle('shelf.setProgress', async (_e, payload?: { id?: string; chapter?: { title?: string; url?: string }; paragraphIndex?: number; scrollRatio?: number }) => {
+    const id = String(payload?.id ?? '')
+    const chapter = payload?.chapter
+    if (!id || !chapter || typeof chapter.url !== 'string') return { ok: false }
+    return setWebShelfProgress(id, { title: typeof chapter.title === 'string' ? chapter.title : '未命名章节', url: chapter.url }, Number(payload?.paragraphIndex), Number(payload?.scrollRatio))
+  })
+  ipcMain.handle('shelf.chapters', async (_e, payload?: { id?: string }) => getWebShelfChapters(String(payload?.id ?? '')))
   ipcMain.handle('browse.setReadingMode', (_e, payload: { enabled: boolean }) => {
     browseReadingMode = Boolean(payload?.enabled)
+    if (browseReadingMode) {
+      if (readingSessionIdleTimer) {
+        clearTimeout(readingSessionIdleTimer)
+        readingSessionIdleTimer = null
+      }
+    } else {
+      scheduleReadingSessionIdle()
+    }
     applyBrowseBounds()
     return { ok: true }
   })
@@ -693,6 +823,8 @@ function registerIpc(): void {
     let started = false
     try {
       if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
+      // 导入是长任务：重复点击会同时开两个导入，写同一份索引
+      if (activeImports > 0) return { ok: false, message: '已经有一个导入在进行，请等它完成' }
       activeImports++
       started = true
       const guard = assertImportable(filePath)
@@ -1250,6 +1382,16 @@ function registerIpc(): void {
       return { ok: true, coverage: await aiReadingFollow.retry(bookId) }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // OCR 兜底引擎：设置页需要知道本机到底装没装，否则开关看起来永远「可以打开」
+  ipcMain.handle('ocr.status', async () => {
+    try {
+      const status = await ocrEngineReady()
+      return status.ok ? { ok: true, ready: true } : { ok: true, ready: false, reason: status.reason }
+    } catch (e: unknown) {
+      return { ok: true, ready: false, reason: e instanceof Error ? e.message : String(e) }
     }
   })
 
@@ -2014,6 +2156,9 @@ app.whenReady().then(async () => {
   // 上次退出或崩溃会把在跑的书留在「下载中」：先按实际章节状态修正，再开窗口
   const repaired = await recoverInterruptedStatus()
   if (repaired > 0) console.info(`已修正 ${repaired} 本中断下载的书状态`)
+  // 回收站和书库共用同一块盘：过期条目在启动时清掉，别让它无声长大
+  const purged = await purgeExpiredTrash().catch(() => 0)
+  if (purged > 0) console.info(`已清理 ${purged} 本超过 30 天的回收站条目`)
   browserAdRequestFilter = new BrowserAdRequestFilter(app.getPath('userData'), () => {
     const wc = browseView?.webContents
     return wc && !wc.isDestroyed() ? { id: wc.id, url: wc.getURL() } : null
@@ -2029,11 +2174,20 @@ app.whenReady().then(async () => {
     void (async () => {
       let release: (() => void) | undefined
       try {
-        if (isDownloadBusy() || aiQueue.hasInFlight() || activeImports > 0) return
+        // 先占住维护锁，再判书库忙不忙：反过来的话，检查通过之后新起的下载
+        // 会一边写章节一边被压缩进同一份快照。
         release = beginLibraryRestore()
+        if (isDownloadBusy() || aiQueue.hasInFlight() || activeImports > 0) {
+          release()
+          release = undefined
+          return
+        }
         await runAsLibraryRestore(() => runAutoBackupIfDue())
       } catch (error) {
+        // 书库正忙时拿不到维护锁。记进设置，备份页才能看见，而不是只留在控制台。
+        const message = error instanceof Error ? error.message : String(error)
         console.warn('自动备份暂未完成：', error)
+        await updateSettings({ autoBackup: { lastError: `自动备份暂未完成：${message}` } }).catch(() => {})
       } finally { release?.() }
     })()
   }, 2_000)
@@ -2052,6 +2206,12 @@ app.on('before-quit', () => {
   bookOverview.stop()
   aiReadingFollow.stop()
   stopEvidenceIndex()
+  if (readingSessionIdleTimer) {
+    clearTimeout(readingSessionIdleTimer)
+    readingSessionIdleTimer = null
+  }
+  // 阅读会话的隐藏视图与正文缓存不跨进程保留
+  destroyReadingSession()
   // OCR 引擎是独立 worker，退出时收拾掉，别留残留进程
   void shutdownOcrEngine()
 })

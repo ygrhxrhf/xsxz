@@ -93,11 +93,26 @@ export function parseEvidenceAnswer(
 ): { answer: string; citations: AiCitation[]; claims: Array<{ text: string; citationIds: string[] }> } {
   const answer = readString(value.answer)
   if (!answer) throw new Error('模型没有返回可用回答')
-  if (!Array.isArray(value.claims) || !value.claims.length || value.claims.length > 12) throw new Error('模型没有按结论返回证据')
   const allowed = new Map(candidates.map((citation) => [citation.id, citation]))
+  let rawClaims = Array.isArray(value.claims) ? value.claims : []
+  // 兼容旧版形状 {answer, citations:[id]}：换过提示词的模型 / 兼容服务仍会这样回，
+  // 以前直接判成「没按结论返回证据」，整次问答白跑。
+  if (!rawClaims.length && Array.isArray(value.citations)) {
+    const ids = (value.citations as unknown[])
+      .map((item) => {
+        if (typeof item === 'string') return item
+        if (item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string') {
+          return (item as { id: string }).id
+        }
+        return null
+      })
+      .filter((id): id is string => Boolean(id))
+    if (ids.length) rawClaims = [{ text: answer, citationIds: ids }]
+  }
+  if (!rawClaims.length || rawClaims.length > 12) throw new Error('模型没有按结论返回证据')
   const ids: string[] = []
   const claims: Array<{ text: string; citationIds: string[] }> = []
-  for (const raw of value.claims) {
+  for (const raw of rawClaims) {
     if (!raw || typeof raw !== 'object') throw new Error('模型返回了无效结论')
     const item = raw as Record<string, unknown>
     const text = readString(item.text)

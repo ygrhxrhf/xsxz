@@ -16,7 +16,8 @@ describe('evidence QA IPC contract', () => {
     expect(block).toContain('const local = await readChapter(args.bookId, chapterId)')
     expect(block).toContain('executeEvidenceQaPipeline({')
     expect(block).toContain('if (signal.aborted) return { citations: [], uptoChapterId: progressChapterId, topScore: 0 }')
-    expect(block).toContain('return { citations, uptoChapterId, topScore }')
+    // 语义检索命中与关键词检索结果合并后再交给提问层
+    expect(block).toContain('return { citations: merged, uptoChapterId, topScore }')
     expect(block).not.toContain('buildBookChatMessages(')
     // 打分器只由检索编排层调用，IPC 层不再自己读正文、自己拼章节。
     expect(block).not.toContain('selectLocalEvidence(')

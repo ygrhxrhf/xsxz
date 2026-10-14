@@ -28,15 +28,21 @@ describe('evidence QA prompts and citation whitelist', () => {
       question: '账册在哪里？',
       evidence: [{ id: citation.id, title: citation.chapterTitle, excerpt: citation.excerpt }],
     }))
-    expect(messages[0]!.content).toContain('citations 只能填写候选证据中存在的 id')
+    // v2 契约：回答拆成逐条结论，每条只挂支持它的候选 id
+    expect(messages[0]!.content).toContain('citationIds 只能取支持这一条结论的候选 id')
   })
 
-  it('rejects fabricated, missing, or empty citations and deduplicates valid ids', () => {
-    expect(() => parseEvidenceAnswer({ answer: '回答', citations: ['invented'] }, [citation])).toThrow('候选范围外')
-    expect(() => parseEvidenceAnswer({ answer: '回答' }, [citation])).toThrow('有效证据引用')
-    expect(() => parseEvidenceAnswer({ answer: '回答', citations: [] }, [citation])).toThrow('缺少证据引用')
+  it('rejects fabricated ids, missing claims, and empty citation lists while accepting the legacy shape', () => {
+    // v2 契约：逐条结论各自带 citationIds
+    expect(() => parseEvidenceAnswer({ answer: '回答', claims: [{ text: '回答', citationIds: ['invented'] }] }, [citation]))
+      .toThrow('候选范围外')
+    expect(() => parseEvidenceAnswer({ answer: '回答' }, [citation])).toThrow('没有按结论返回证据')
+    expect(() => parseEvidenceAnswer({ answer: '回答', claims: [] }, [citation])).toThrow('没有按结论返回证据')
+    expect(() => parseEvidenceAnswer({ answer: '回答', claims: [{ text: '回答', citationIds: [] }] }, [citation]))
+      .toThrow('缺少证据引用')
+    // v1 形状（answer + citations）仍被接受：只保留候选范围内、去重后的 id
     expect(parseEvidenceAnswer({ answer: '回答', citations: [citation.id, citation.id] }, [citation]))
-      .toEqual({ answer: '回答', citations: [citation] })
+      .toMatchObject({ answer: '回答', citations: [citation] })
   })
 })
 
@@ -134,7 +140,7 @@ describe('evidence QA pipeline', () => {
       answer: async () => completion({ answer: '在码头。', citations: [citation.id] }, { inputTokens: 3, outputTokens: 4 }),
     })
     expect(stages).toEqual(['searching', 'rewriting', 'searching', 'requesting'])
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: 'answer', text: '在码头。', citations: [citation], uptoChapterId: 'c1', truncated: false,
       usage: { inputTokens: 5, outputTokens: 4, cacheHitTokens: 1 },
     })

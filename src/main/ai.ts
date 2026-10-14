@@ -166,13 +166,18 @@ export async function runAiSaveStage(
 }
 
 export function formatAiRequestError(status: number, bodyText = ''): string {
+  // 原始报文只进日志：把英文 JSON 直接甩给用户看不出该怎么办
   const snippet = bodyText.slice(0, 200)
+  if (snippet) console.warn(`[ai] 请求失败 ${status}：${snippet}`)
   if (status === 401 || status === 403) return 'API Key 无效或无权限，请到设置页核对'
   if (status === 402) return '模型服务余额不足，请到服务商控制台检查'
+  if (status === 404) return '接口地址或模型名不存在 (404)，请到设置页核对「接口地址」和「模型」两项'
+  if (status === 400) return '模型服务拒绝了这次请求 (400)：请求格式或参数不被接受，请到设置页核对模型名与接口地址'
+  if (status === 422) return '模型服务无法处理这次请求 (422)，请到设置页核对模型名'
   if (status === 429) return '请求过于频繁或额度用尽，请稍后再试'
   if (status === 408) return 'AI 请求超时，请稍后重试'
-  if (status >= 500) return `模型服务暂时不可用 (${status})`
-  return `AI 请求失败 (${status})${snippet ? `：${snippet}` : ''}`
+  if (status >= 500) return `模型服务暂时不可用 (${status})，请稍后重试`
+  return `AI 请求失败 (${status})，请到设置页核对接口地址、模型与密钥`
 }
 
 
@@ -180,7 +185,17 @@ export function formatAiTransportError(e: unknown): string {
   const name = e && typeof e === 'object' && 'name' in e ? String((e as { name?: string }).name) : ''
   const msg = e instanceof Error ? e.message : String(e)
   if (name === 'AbortError' || /aborted|timeout|超时/i.test(msg)) return 'AI 请求超时，请稍后重试'
-  if (/fetch|network|ECONN|ENOTFOUND|EAI_AGAIN|Failed to fetch|unable to connect/i.test(msg)) {
+  // 地址写错与网络不通是两回事，给的动作不一样
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo|Invalid URL/i.test(msg)) {
+    return '无法连接模型服务：接口地址解析不了 (ENOTFOUND)，请到设置页核对是否写错（要带 https:// 与完整路径）'
+  }
+  if (/ECONNREFUSED/i.test(msg)) {
+    return '无法连接模型服务：接口地址拒绝连接 (ECONNREFUSED)，请确认这个地址和端口上确实有服务在跑'
+  }
+  if (/ENETUNREACH|ETIMEDOUT|ECONNRESET|socket hang up|网络/i.test(msg)) {
+    return '无法连接模型服务，请检查本机网络或代理设置'
+  }
+  if (/fetch|network|Failed to fetch|unable to connect/i.test(msg)) {
     return '无法连接模型服务，请检查接口地址和网络'
   }
   return msg || 'AI 请求失败'

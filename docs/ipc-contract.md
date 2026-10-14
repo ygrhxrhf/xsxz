@@ -44,9 +44,13 @@
 | `browse.setVisible` | invoke | `{ visible: boolean }` | `{ ok: true }` |
 | `browse.resume` | invoke | 无 | `{ ok: true; restored: boolean } \| { ok: false; message: string }` |
 | `browse.zoom` | invoke | `{ factor: number }` | `{ ok: true; factor: number } \| { ok: false; message: string }` |
-| `browse.readingPage` | invoke | 无 | `{ ok: true; page: BrowseReadingPage } \| { ok: false; message: string }` |
+| `browse.readingPage` | invoke | `{ url?: string }` | `{ ok: true; page: BrowseReadingPage } \| { ok: false; message: string }` |
 | `browse.setReadingMode` | invoke | `{ enabled: boolean }` | `{ ok: true }` |
 | `browse.chapter` | invoke | `{ direction: 'previous' \| 'next' }` | `{ ok: boolean; message?: string }` |
+| `browse.prefetchChapter` | invoke | `{ url: string }` | `{ ok: boolean; cached: boolean }` |
+| `browse.chapterCatalog` | invoke | `{ catalogUrl?: string; url?: string }` | `{ ok: true; catalogUrl: string; chapters: WebShelfChapter[]; currentIndex: number } \| { ok: false; message: string }` |
+| `browse.saveReadingPos` | invoke | `{ url: string; title?: string; paragraphIndex: number; scrollRatio: number }` | `{ ok: boolean }` |
+| `browse.getReadingPos` | invoke | `{ url: string }` | `{ ok: true; position: WebShelfProgress \| null }` |
 | `browse.find` | invoke | `{ query: string; forward: boolean; findNext: boolean }` | `{ ok: boolean }` |
 | `browse.stopFind` | invoke | 无 | `{ ok: true }` |
 | `browse.hide` | invoke | `{ action: 'start' \| 'stop' \| 'undo' \| 'count' }` | `{ ok: true; remaining: number } \| { ok: false; message: string }` |
@@ -54,9 +58,39 @@
 | `browse.state` | 主→渲染 | — | `BrowseState` |
 | `browse.findResult` | 主→渲染 | — | `BrowseFindResult` |
 | `browse.shortcut` | 主→渲染 | — | `{ direction?: 'previous' \| 'next'; find?: boolean }` |
+| `browse.readingChapter` | 主→渲染 | — | `BrowseReadingChapter` |
 
 `browse.load` 的 url 若无协议，主进程补 `https://`。非 http(s) 拒绝。
 `BrowseState` 增加 `zoom`、可选的 `previousChapter` / `nextChapter`（`{ title, url }`）。阅读模式仅返回当前网页快照提取的纯文本；临时隐藏在导航/重载后清空。缩放与最后网页位置保存在应用数据目录 `browse-state.json`，不进入书库。
+
+阅读模式契约补充：
+
+- `browse.readingPage` 不带 `url` 时抓当前可见网页（返回 `BrowseReadingPage`）；带 `url` 时用阅读会话的隐藏视图取该章，不改动可见网页，用于续章、目录跳章与书架续读。返回的 `page.chapter` 带当前章在目录里的位置、上/下一章链接与来源书架 id。
+- `browse.prefetchChapter` 只预热缓存，不返回正文；缓存为内存 LRU（正文 6 条 / 目录 4 条），不进磁盘，退出时释放。
+- `browse.chapterCatalog` 优先用网页书架里的目录快照；没有快照或传了 `catalogUrl` 时抓目录页并解析。`currentIndex` 为当前可见章节在该目录中的 0 基序号，找不到为 `-1`。
+- `browse.saveReadingPos` / `browse.getReadingPos` 读写按规范化 URL 的阅读位置（段落锚点 + 滚动比例），存放在 `browse-state.json` 的 `readingByUrl`，最多 200 条。
+- 阅读模式内的续章、目录跳章与位置读写都走上面的频道；`browse.chapter` 仍只在非阅读模式下驱动可见网页的上一章 / 下一章。
+
+---
+
+## 网页书架
+
+网页小说不下载正文，只在本机保存书名、作者、目录快照与阅读位置；磁盘见 `docs/disk-schema.md` 的 `web-shelf.json`。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `shelf.list` | invoke | 无 | `{ ok: true; books: WebShelfBook[] }` |
+| `shelf.add` | invoke | `{ url?: string }` | `{ ok: true; book: WebShelfBook } \| { ok: false; message: string }` |
+| `shelf.remove` | invoke | `{ id: string }` | `{ ok: boolean }` |
+| `shelf.refresh` | invoke | `{ id: string }` | `{ ok: true; added: number; book: WebShelfBook } \| { ok: false; message: string }` |
+| `shelf.refreshAll` | invoke | 无 | `{ ok: true; checked: number; updated: number }` |
+| `shelf.setProgress` | invoke | `{ id: string; chapter: WebShelfChapter; paragraphIndex: number; scrollRatio: number }` | `{ ok: boolean }` |
+| `shelf.chapters` | invoke | `{ id: string }` | `{ ok: true; chapters: WebShelfChapter[]; currentIndex: number } \| { ok: false; message: string }` |
+| `shelf.changed` | 主→渲染 | — | `{ reason: 'add' \| 'remove' \| 'refresh' \| 'progress' }` |
+
+- `shelf.add` 省略 `url` 时用当前浏览页；目录抓取失败也允许加入，此时 `chapters` 为空数组，书架卡片显示「目录待识别」。
+- `shelf.refresh` 重新抓目录并按规范化地址对比快照，`added` 是新增章数；同一本书 10 分钟内不重复抓取。`shelf.refreshAll` 串行执行，最多 50 本，每本间隔 800 ms。
+- 更新提示只在用户主动刷新时计算，不做后台定时追更。
 
 ---
 
@@ -113,7 +147,7 @@
 | `library.restoreTrash` | invoke | `{ name: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.purgeTrash` | invoke | `{ name?: string }`（缺省 = 清空全部） | `{ ok: true; purged: number } \| { ok: false; message: string }` |
 
-回收站条目名固定 `<bookId>-<毫秒时间戳>`；非法名（含路径分隔符）一律拒绝。还原时书库已有同 ID 书则返回 `{ ok: false, message }`。手动管理：不自动清理。
+回收站条目名固定 `<bookId>-<毫秒时间戳>`；非法名（含路径分隔符）一律拒绝。还原时书库已有同 ID 书则返回 `{ ok: false, message }`。`TrashItem` 带可选 `sizeBytes`，界面显示每条与合计占用。超过 30 天的条目由启动时的 `purgeExpiredTrash()` 自动清理（只删文件，不写索引），其余仍由用户手动管理。
 
 ---
 
@@ -121,7 +155,7 @@
 
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
-| `download.preview` | invoke | 无（以当前浏览页为起点） | `{ ok: true; preview: DownloadPreview } \| { ok: false; message: string }` |
+| `download.preview` | invoke | 无（以当前浏览页为起点） | `{ ok: true; preview: DownloadPreview } \| { ok: false; message: string; pageKind?: 'catalog' \| 'chapter' \| 'unknown' }` |
 | `download.confirm` | invoke | `{ token: string }` | `{ ok: true; bookId: string } \| { ok: false; message: string }` |
 | `download.redownloadChapter` | invoke | `{ bookId: string; chapterId: string; url: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `download.cancel` | invoke | `{ bookId?: string }` | `{ ok: true }` |
@@ -129,7 +163,7 @@
 | `download.openUnblock` | invoke | `{ bookId: string; chapterId: string }` | `{ ok: true; url: string } \| { ok: false; message: string }` |
 | `download.resumeUnblock` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `download.blocked` | 主→渲染 | — | `DownloadBlocked` |
-| `download.checkUpdate` | invoke | `{ bookId: string }` | `{ ok: true; bookId: string; added: number } \| { ok: false; code?: FailCode; message: string }` |
+| `download.checkUpdate` | invoke | `{ bookId: string }` | `{ ok: true; bookId: string; added: number; changed: number } \| { ok: false; code?: FailCode; message: string }` |
 | `download.checkAll` | invoke | 无 | `CheckAllResult`（含 total / checked / booksWithUpdates / results） |
 | `download.cancelCheckAll` | invoke | 无 | `{ ok: true }` |
 | `download.progress` | 主→渲染 | — | `DownloadProgress` |
@@ -145,7 +179,7 @@
 
 禁止用裸 `fetch(chapterUrl)` 作为下书主路径。必须走同一 `persist:novel` 的隐藏 webContents。
 
-`download.checkUpdate` 只补该书已存 `sourceUrl` 的新目录项；`added` 只计新追加的目录行（重试已有 `failed` / `empty` 不加 `added`）。与 `start` / `retryFailed` 共用单任务锁。导入书或无 `sourceUrl` 时返回 `{ ok: false, message: '无原始目录地址，无法检查更新' }`。本频道只追加，不改 `start` / `retryFailed` 含义。
+`download.checkUpdate` 只补该书已存 `sourceUrl` 的新目录项；`added` 只计新追加的目录行（重试已有 `failed` / `empty` 不加 `added`），`changed` 计同名但源 URL 变了的章（站点重排目录），这些章会被重新排队下载。与 `start` / `retryFailed` 共用单任务锁。导入书或无 `sourceUrl` 时返回 `{ ok: false, message: '无原始目录地址，无法检查更新' }`。本频道只追加，不改 `start` / `retryFailed` 含义。
 
 `download.checkAll` 对书库里每本「下载来源且有 sourceUrl」的书**串行**调 `checkUpdate`：每本等下载队列空闲再继续，两本之间留约 1s 间隔；导入书 / 无 sourceUrl 直接跳过不计入 results。任一单本失败不中断批量（记录进 results），但等待空闲超时会中止剩余。`cancelCheckAll` 停止检查剩余的书，也会取消当前正在补章的那本（等同 `download.cancel()`）。批量进行中重复调用返回 `{ ok:false }`。
 
@@ -158,6 +192,7 @@
 | `backup.create` | invoke | `{ destDir: string }` | `{ ok: true; path: string; files: number } \| { ok: false; message: string }` |
 | `backup.restore` | invoke | `{ zipPath: string }` | `{ ok: true; books: number; files: number } \| { ok: false; message: string }` |
 | `backup.runAuto` | invoke | 无 | `{ status: 'disabled' \| 'notDue' \| 'created' \| 'failed'; message?: string }` |
+| `ocr.status` | invoke | 无 | `{ ok: true; ready: boolean; reason?: string }`：本机 OCR 兜底引擎（tesseract.js）是否可用；`ready=false` 时 `reason` 说明缺什么 |
 
 `backup.create` 把整个书库打包成 `spbf-backup-<日期>-<时间>.zip` 写入用户选的目录；顶层跳过 `__trash__` / `__tmp__`。空书库拒绝备份。`backup.restore` 是**整库覆盖**：先在书库同盘临时目录解压，拒绝不安全路径并校验索引、书籍元数据与已就绪章节；通过后将旧库移到临时回滚目录，再切换新库并重建索引。切换或重建失败时还原旧库；成功后清理旧库副本。下载、导入或 AI 保存进行中不启动恢复，恢复中拒绝新的书库写入。二次确认由渲染层负责。
 
@@ -362,12 +397,14 @@ A1.1 只冻结以上类型、频道与白名单形状；handler 与 preload 方�
 window.api = {
   dialog: { openFile, openDirectory, openZip },
   tts: { getPosition, setPosition, synthesize, cancel },
-  browse: { load, back, forward, reload, stop, setBounds, setVisible, resume, zoom, readingPage, setReadingMode, chapter, find, stopFind, hide, onFindResult, onShortcut, onUrl, onState },
+  browse: { load, back, forward, reload, stop, setBounds, setVisible, resume, zoom, readingPage, setReadingMode, chapter, prefetchChapter, chapterCatalog, saveReadingPos, getReadingPos, find, stopFind, hide, onFindResult, onShortcut, onUrl, onState, onReadingChapter },
+  shelf: { list, add, remove, refresh, refreshAll, setProgress, chapters, onChanged },
   library: { list, get, readChapter, delete, import, setProgress, getReadFrontier, markReadFrontier, confirmLegacyReadRange, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, listTrash, restoreTrash, purgeTrash },
   bookOverview: { retry, onChanged },
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   settings: { get, set },
   backup: { create, restore, runAuto },
+  ocr: { status },
   annotations: { list, add, update, remove },
   siteRules: { list, preview, upsert, remove },
   ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, translateStream, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },

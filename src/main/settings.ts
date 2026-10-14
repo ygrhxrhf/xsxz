@@ -20,6 +20,7 @@ import type {
   Skin,
   TierSensePrefs,
   TtsPrefs,
+  WebReadingPrefs,
 } from '../shared/types'
 import {
   AI_PROMPT_KINDS,
@@ -27,6 +28,7 @@ import {
   DEFAULT_APPEARANCE_PREFS,
   DEFAULT_READER_PREFS,
   DEFAULT_TTS_PREFS,
+  DEFAULT_WEB_READING_PREFS,
   DEFAULT_AI_PLACEHOLDER,
   DEFAULT_TIER_SENSE_PREFS,
 } from '../shared/types'
@@ -217,6 +219,15 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
   }
 }
 
+/** 网页阅读模式偏好：只做夹紧与默认，不因为单项非法丢弃其他设置。 */
+export function normalizeWebReadingPrefs(value: unknown): WebReadingPrefs {
+  const prefs = readRecord(value)
+  return {
+    autoPage: typeof prefs.autoPage === 'boolean' ? prefs.autoPage : DEFAULT_WEB_READING_PREFS.autoPage,
+    autoSpeed: Math.round(readFiniteClamped(prefs.autoSpeed, 1, 5, DEFAULT_WEB_READING_PREFS.autoSpeed)),
+  }
+}
+
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
@@ -318,6 +329,7 @@ export async function getSettings(): Promise<Settings> {
     appearance: {
       skin: normalizeSkin(appearance.skin),
     },
+    webReading: normalizeWebReadingPrefs(raw.webReading),
     ai: normalizeAiPrefs(raw.ai),
     downloadPace: readDownloadPace(raw.downloadPace),
     autoBackup: {
@@ -416,6 +428,9 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
     raw.appearance = next
   }
   if (patch.ai) raw.ai = mergeAiPrefs(raw.ai, patch.ai)
+  if (patch.webReading) {
+    raw.webReading = normalizeWebReadingPrefs({ ...readRecord(raw.webReading), ...readRecord(patch.webReading) })
+  }
   if ('downloadPace' in patch) raw.downloadPace = readDownloadPace(patch.downloadPace)
   if (patch.autoBackup) {
     const previous = readRecord(raw.autoBackup)

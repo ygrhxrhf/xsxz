@@ -110,3 +110,38 @@ describe('findSiteRuleForUrl / persist', () => {
     expect(await findSiteRuleForUrl('https://example.com/book/')).toBeUndefined()
   })
 })
+
+describe('bodyCleanPatterns 落盘', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-rules-clean-'))
+    setSiteRulesDir(dir)
+  })
+
+  afterEach(async () => {
+    setSiteRulesDir(null)
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('keeps the hand-written clean patterns across a save', async () => {
+    const rule = await upsertSiteRule({
+      host: 'clean.example.com',
+      body: '#content',
+      bodyCleanPatterns: '^本章未完\n请记住本站\n[a-z]{2,}-\\d+',
+    })
+    expect(rule.bodyCleanPatterns).toBe('^本章未完\n请记住本站\n[a-z]{2,}-\\d+')
+    // 从磁盘读回来还在：以前 toStoredRule 会把这个字段丢掉
+    const stored = (await listSiteRules()).find((item) => item.host === 'clean.example.com')
+    expect(stored?.bodyCleanPatterns).toBe('^本章未完\n请记住本站\n[a-z]{2,}-\\d+')
+  })
+
+  it('drops blank lines and illegal regexes instead of refusing the save', async () => {
+    const rule = await upsertSiteRule({
+      host: 'clean2.example.com',
+      body: '#content',
+      bodyCleanPatterns: '\n   \n这行合法\n[unclosed(\n',
+    })
+    expect(rule.bodyCleanPatterns).toBe('这行合法')
+  })
+})

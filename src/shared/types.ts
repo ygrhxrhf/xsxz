@@ -13,6 +13,8 @@ export type FailCode =
   | 'RateLimited'
   | 'NavFailed'
   | 'UnknownPage'
+  /** 抽到的正文疑似乱码或字形替换（PUA），不入库。 */
+  | 'BodyGarbled'
 
 export const FAIL_CODE_ZH: Record<FailCode, string> = {
   CatalogNotFound: '找不到目录',
@@ -23,6 +25,7 @@ export const FAIL_CODE_ZH: Record<FailCode, string> = {
   RateLimited: '站点限流，请求过于频繁',
   NavFailed: '章节地址加载失败',
   UnknownPage: '无法识别为书',
+  BodyGarbled: '正文疑似乱码或字形替换，未入库',
 }
 
 export type PageKind = 'catalog' | 'chapter' | 'unknown'
@@ -50,6 +53,10 @@ export interface ReadingProgress {
   /** 规范化正文的段落位置；旧书缺省时回退到 scrollRatio。 */
   paragraphIndex?: number
   paragraphOffset?: number
+  /** 正文指纹：恢复锚点时校验章节正文未被重下/清理过；旧文件缺省即不校验。 */
+  bodyHash?: string
+  /** 分批渲染期间的实测位置比（渲染进度与滚动比例的中间量）；旧文件缺省即只用 scrollRatio。 */
+  renderedRatio?: number
   updatedAt: string
 }
 
@@ -148,6 +155,8 @@ export interface TrashItem {
   author: string
   chapterCount: number
   trashedAt: string
+  /** 回收站内占用字节数；旧条目缺省时不显示。 */
+  sizeBytes?: number
 }
 
 export interface CatalogChapter {
@@ -204,6 +213,9 @@ export interface DownloadBlocked {
   message: string
 }
 
+/** 预览失败时附带的页面类型，界面据此决定提示和后续动作。 */
+export type PreviewPageKind = 'catalog' | 'chapter' | 'unknown'
+
 export interface DownloadPreview {
   token: string
   pageUrl: string
@@ -227,6 +239,8 @@ export interface QualityIssue {
     | 'duplicateUrl'
     | 'suspectedAd'
     | 'suspectedWall'
+    /** 正文疑似乱码或字形替换（PUA 码点），阅读时不可读。 */
+    | 'garbled'
     /** 正文是付费墙自动恢复来的：内容是否完整要本人核对。 */
     | 'unlockedBody'
   reason: string
@@ -257,7 +271,7 @@ export interface CheckAllProgress {
 }
 
 export type CheckOneResult =
-  | { ok: true; bookId: string; title: string; added: number }
+  | { ok: true; bookId: string; title: string; added: number; /** 同名但章节地址已变、被重新排队的章数。 */ changed?: number }
   | { ok: false; bookId: string; title: string; message: string }
 
 /** download.checkAll 的聚合结果。checked = 已尝试的本数；total = 候选总本数。 */
@@ -359,8 +373,63 @@ export interface BrowseState {
 }
 
 export interface BrowseChapterLink { title: string; url: string }
-export interface BrowseReadingPage { url: string; title: string; body: string }
+
+/** 阅读模式当前章在整本书里的位置；目录不可用时只给 previous/next。 */
+export interface BrowseReadingChapter {
+  title: string
+  url: string
+  /** 目录里的 0 基序号；目录不可用时缺省。 */
+  index?: number
+  /** 目录总章数；目录不可用时缺省。 */
+  total?: number
+  previous?: BrowseChapterLink
+  next?: BrowseChapterLink
+  /** 这一章来自书架里的哪本网页书。 */
+  shelfBookId?: string
+}
+
+export interface BrowseReadingPage {
+  url: string
+  title: string
+  body: string
+  /** 阅读模式续章与目录跳章时携带的上下文。 */
+  chapter?: BrowseReadingChapter
+}
 export interface BrowseFindResult { matches: number; activeMatch: number }
+
+/** 网页书的一章：只用标题 + 绝对地址，不保存正文。 */
+export interface WebShelfChapter { title: string; url: string }
+
+/** 网页书的阅读位置：段落锚点优先，滚动比例兜底。 */
+export interface WebShelfProgress {
+  paragraphIndex: number
+  scrollRatio: number
+  updatedAt: string
+}
+
+/**
+ * 网页书：加入书架的站点小说。正文不落盘，只存目录快照与阅读位置。
+ * 磁盘见 `docs/disk-schema.md` 的 `web-shelf.json`。
+ */
+export interface WebShelfBook {
+  id: string
+  host: string
+  title: string
+  author: string
+  coverUrl?: string
+  catalogUrl: string
+  /** 最近读到的章节。 */
+  lastChapter: WebShelfChapter
+  /** 目录快照；抓不到目录时为空数组。 */
+  chapters: WebShelfChapter[]
+  chaptersFetchedAt: string
+  /** 上次刷新发现的更新章数，供书架角标展示。 */
+  addedChapters: number
+  lastRefreshedAt: string
+  progress: WebShelfProgress | null
+  createdAt: string
+  updatedAt: string
+}
 
 export type ReaderTheme = 'paper' | 'sepia' | 'gray' | 'night'
 export type ReaderFontFamily = 'serif' | 'system' | 'mono'
@@ -379,6 +448,14 @@ export interface ReaderPrefs {
   paragraphIndent: boolean
   focusMode: ReaderFocusMode
   readingMode: ReaderReadingMode
+}
+
+/** 网页阅读模式（内置浏览器的阅读模式）偏好；与本地阅读器 ReaderPrefs 分开。 */
+export interface WebReadingPrefs {
+  /** 自动模式用翻页（true，一屏一页）还是连续滚动（false）。 */
+  autoPage: boolean
+  /** 自动滚动/自动翻页速度档，1–5。 */
+  autoSpeed: number
 }
 
 /** 朗读偏好（Web speechSynthesis） */
@@ -457,6 +534,8 @@ export interface Settings {
   reader: ReaderPrefs
   tts: TtsPrefs
   appearance: AppearancePrefs
+  /** 网页阅读模式偏好；主进程始终补齐，缺省按 DEFAULT_WEB_READING_PREFS。 */
+  webReading?: WebReadingPrefs
   /** A1.2 起主进程始终补齐；可选用于兼容尚未迁移的旧调用方。 */
   ai?: AiPrefs
   /** 章间间隔档位。getSettings 始终返回；缺省或非法回退 standard。 */
@@ -481,6 +560,7 @@ export interface SettingsUpdate {
   /** 空字符串清除 TierSense 密钥。 */
   tierSenseApiKey?: string
   appearance?: Partial<AppearancePrefs>
+  webReading?: Partial<WebReadingPrefs>
   ai?: Partial<AiPrefs>
   /** 省略则不改已保存档位。 */
   downloadPace?: DownloadPace
@@ -500,6 +580,11 @@ export interface SiteRule {
   adFilterEnabled?: boolean
   /** 每行一个额外的广告元素 CSS 选择器。 */
   adHideSelectors?: string
+  /**
+   * 每行一个正则，命中整段的正文噪音直接删掉（阅读模式与下载共用）。
+   * 最多 20 行、每行 200 字符以内；非法行忽略，不影响其它行。
+   */
+  bodyCleanPatterns?: string
   /**
    * 付费墙自动恢复正文：缺省开启。false 时遇到付费墙直接按墙暂停等本人处理。
    */
@@ -848,6 +933,11 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   paragraphIndent: true,
   focusMode: 'off',
   readingMode: 'scroll',
+}
+
+export const DEFAULT_WEB_READING_PREFS: WebReadingPrefs = {
+  autoPage: true,
+  autoSpeed: 3,
 }
 
 export const DEFAULT_TTS_PREFS: TtsPrefs = {

@@ -28,6 +28,7 @@ import type {
   BookListItem,
   BrowseState,
   BrowseFindResult,
+  BrowseReadingChapter,
   BrowseReadingPage,
   ChapterFile,
   DownloadBlocked,
@@ -39,6 +40,9 @@ import type {
   Settings,
   SettingsUpdate,
   SiteRule,
+  WebShelfBook,
+  WebShelfChapter,
+  WebShelfProgress,
 } from '../shared/types'
 
 type Unsub = () => void
@@ -72,9 +76,20 @@ const api = {
     setVisible: (visible: boolean) => ipcRenderer.invoke('browse.setVisible', { visible }),
     resume: () => ipcRenderer.invoke('browse.resume') as Promise<{ ok: boolean; restored?: boolean; message?: string }>,
     zoom: (factor: number) => ipcRenderer.invoke('browse.zoom', { factor }) as Promise<{ ok: boolean; factor?: number; message?: string }>,
-    readingPage: () => ipcRenderer.invoke('browse.readingPage') as Promise<{ ok: true; page: BrowseReadingPage } | { ok: false; message: string }>,
+    readingPage: (url?: string) => ipcRenderer.invoke('browse.readingPage', { url }) as Promise<{ ok: true; page: BrowseReadingPage } | { ok: false; message: string }>,
     setReadingMode: (enabled: boolean) => ipcRenderer.invoke('browse.setReadingMode', { enabled }),
     chapter: (direction: 'previous' | 'next') => ipcRenderer.invoke('browse.chapter', { direction }) as Promise<{ ok: boolean; message?: string }>,
+    prefetchChapter: (url: string) => ipcRenderer.invoke('browse.prefetchChapter', { url }) as Promise<{ ok: boolean; cached: boolean }>,
+    chapterCatalog: (params: { catalogUrl?: string; url?: string } = {}) =>
+      ipcRenderer.invoke('browse.chapterCatalog', { catalogUrl: params.catalogUrl, url: params.url }) as Promise<{ ok: true; catalogUrl: string; chapters: WebShelfChapter[]; currentIndex: number } | { ok: false; message: string }>,
+    saveReadingPos: (params: { url: string; title?: string; paragraphIndex: number; scrollRatio: number }) =>
+      ipcRenderer.invoke('browse.saveReadingPos', {
+        url: params.url,
+        title: params.title,
+        paragraphIndex: params.paragraphIndex,
+        scrollRatio: params.scrollRatio,
+      }) as Promise<{ ok: boolean }>,
+    getReadingPos: (url: string) => ipcRenderer.invoke('browse.getReadingPos', { url }) as Promise<{ ok: true; position: WebShelfProgress | null }>,
     find: (query: string, forward = true, findNext = false) => ipcRenderer.invoke('browse.find', { query, forward, findNext }),
     stopFind: () => ipcRenderer.invoke('browse.stopFind'),
     hide: (action: 'start' | 'stop' | 'undo' | 'count') => ipcRenderer.invoke('browse.hide', { action }) as Promise<{ ok: boolean; remaining?: number; message?: string }>,
@@ -82,6 +97,18 @@ const api = {
     onShortcut: (handler: (payload: { direction?: 'previous' | 'next'; find?: boolean }) => void) => on('browse.shortcut', handler),
     onUrl: (handler: (payload: { url: string }) => void) => on('browse.url', handler),
     onState: (handler: (payload: BrowseState) => void) => on('browse.state', handler),
+    onReadingChapter: (handler: (payload: BrowseReadingChapter) => void) => on('browse.readingChapter', handler),
+  },
+  shelf: {
+    list: () => ipcRenderer.invoke('shelf.list') as Promise<{ ok: true; books: WebShelfBook[] }>,
+    add: (url?: string) => ipcRenderer.invoke('shelf.add', { url }) as Promise<{ ok: true; book: WebShelfBook } | { ok: false; message: string }>,
+    remove: (id: string) => ipcRenderer.invoke('shelf.remove', { id }) as Promise<{ ok: boolean }>,
+    refresh: (id: string) => ipcRenderer.invoke('shelf.refresh', { id }) as Promise<{ ok: true; added: number; book: WebShelfBook } | { ok: false; message: string }>,
+    refreshAll: () => ipcRenderer.invoke('shelf.refreshAll') as Promise<{ ok: true; checked: number; updated: number }>,
+    setProgress: (id: string, chapter: WebShelfChapter, paragraphIndex: number, scrollRatio: number) =>
+      ipcRenderer.invoke('shelf.setProgress', { id, chapter, paragraphIndex, scrollRatio }) as Promise<{ ok: boolean }>,
+    chapters: (id: string) => ipcRenderer.invoke('shelf.chapters', { id }) as Promise<{ ok: true; chapters: WebShelfChapter[]; currentIndex: number } | { ok: false; message: string }>,
+    onChanged: (handler: (payload: { reason: 'add' | 'remove' | 'refresh' | 'progress' }) => void) => on('shelf.changed', handler),
   },
   library: {
     list: () => ipcRenderer.invoke('library.list') as Promise<{ books: BookListItem[] }>,
@@ -138,7 +165,7 @@ const api = {
   },
   download: {
     preview: () => ipcRenderer.invoke('download.preview') as Promise<
-      { ok: true; preview: import('../shared/types').DownloadPreview } | { ok: false; message: string }
+      { ok: true; preview: import('../shared/types').DownloadPreview } | { ok: false; message: string; pageKind?: import('../shared/types').PreviewPageKind }
     >,
     confirm: (token: string) => ipcRenderer.invoke('download.confirm', { token }) as Promise<
       { ok: true; bookId: string } | { ok: false; message: string }
@@ -178,6 +205,10 @@ const api = {
     runAuto: () => ipcRenderer.invoke('backup.runAuto') as Promise<
       { status: 'disabled' | 'notDue' | 'created' | 'failed'; message?: string }
     >,
+  },
+  /** OCR 兜底引擎的可用性：设置页要显示「本机是否装了 tesseract.js」。 */
+  ocr: {
+    status: () => ipcRenderer.invoke('ocr.status') as Promise<{ ok: true; ready: boolean; reason?: string }>,
   },
   annotations: {
     list: (bookId: string) =>
