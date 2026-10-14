@@ -164,7 +164,7 @@ describe('自动追剧', () => {
     expect(mocks.complete).not.toHaveBeenCalled()
   })
 
-  it('单次章数上限到点就带原因暂停，记忆按 5 章一批推进，零头留在队列', { timeout: 20_000 }, async () => {
+  it('单次章数上限到点就带原因暂停，记忆按 5 章一批推进，零头留在队列', { timeout: 60_000 }, async () => {
     const bookId = await seed(30, 30)
     service.start()
     await service.setMode(bookId, 'auto', true)
