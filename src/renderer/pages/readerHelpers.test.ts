@@ -35,7 +35,8 @@ describe('reader progress helpers', () => {
     expect(chapterScrollRatio(-50, 1800, 800)).toBe(0)
     expect(chapterScrollRatio(1200, 1800, 800)).toBe(1)
     expect(chapterScrollRatio(Number.NaN, 1800, 800)).toBe(0)
-    expect(chapterScrollRatio(100, 800, 800)).toBe(0)
+    // 内容不足一屏：没有可滚动距离就是已经看到底，短章要能判出「读完」
+    expect(chapterScrollRatio(100, 800, 800)).toBe(1)
     expect(chapterScrollRatio(100, Number.POSITIVE_INFINITY, 800)).toBe(0)
   })
 
@@ -440,5 +441,14 @@ describe('catalogChapterBadge', () => {
     expect(
       catalogChapterBadge({ status: 'ready', chapterId: 'c1', chapters }),
     ).toBeNull()
+  })
+})
+
+describe('chapterScrollRatio 尺寸未测出时', () => {
+  it('treats a zero-sized pane as unknown instead of 读完', () => {
+    // 章刚切进去、元素还没量出尺寸：不能算读到章末
+    expect(chapterScrollRatio(0, 0, 0)).toBe(0)
+    // 量出来了但整章只有一屏：确实看到底了
+    expect(chapterScrollRatio(0, 600, 600)).toBe(1)
   })
 })

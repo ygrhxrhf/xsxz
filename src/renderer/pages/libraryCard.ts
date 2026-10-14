@@ -93,11 +93,16 @@ export function libraryMenuEntries(
 }
 
 export function checkUpdateMessage(
-  res: { ok: true; added: number } | { ok: false; message: string },
+  res: { ok: true; added: number; changed?: number } | { ok: false; message: string },
 ): string {
   if (!res.ok) return res.message
-  if (res.added > 0) return `新增 ${res.added} 章`
-  return '没有更新'
+  const changed = res.changed ?? 0
+  const parts: string[] = []
+  if (res.added > 0) parts.push(`新增 ${res.added} 章`)
+  // 同名但地址变了：站点重排过目录，这些章要按新地址重下
+  if (changed > 0) parts.push(`地址有变、需重下 ${changed} 章`)
+  if (parts.length === 0) return '没有更新'
+  return parts.join('；')
 }
 
 /**
@@ -132,7 +137,10 @@ function catalogChapterOrdinal(chapterId?: string | null): number {
 }
 
 export function formatLibraryProgress(b: Pick<BookListItem, 'chapterCount' | 'progress'>): string {
-  return `已读 ${libraryReadChapterOrdinal(b)} / 共 ${b.chapterCount} 章`
+  const ordinal = libraryReadChapterOrdinal(b)
+  // 「已读 N」会被读成「读完了 N 章」；进度只记「读到哪一章」，字段内容并不是完整读过
+  if (ordinal <= 0) return `共 ${b.chapterCount} 章，还没开始读`
+  return `读到第 ${ordinal} 章 / 共 ${b.chapterCount} 章`
 }
 
 export function formatLibraryProgressTime(b: Pick<BookListItem, 'progress'>): string {
@@ -177,17 +185,22 @@ export function isLibraryFindShortcut(e: {
   return (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f'
 }
 
+/** 站点常把同义词用斜杠串成一个标签，拆开后书架才筛得动。 */
+export function splitLibraryTag(raw: string): string[] {
+  return raw.split(/[/／]/).map((part) => part.trim()).filter(Boolean)
+}
+
 export function collectLibraryTags(books: Array<Pick<BookListItem, 'tags'>>): string[] {
   const seen = new Set<string>()
   const tags: string[] = []
   for (const book of books) {
     for (const raw of book.tags || []) {
-      const tag = raw.trim()
-      if (!tag) continue
-      const key = tag.toLowerCase()
-      if (seen.has(key)) continue
-      seen.add(key)
-      tags.push(tag)
+      for (const tag of splitLibraryTag(raw)) {
+        const key = tag.toLowerCase()
+        if (seen.has(key)) continue
+        seen.add(key)
+        tags.push(tag)
+      }
     }
   }
   return tags

@@ -17,8 +17,13 @@ export function scrollableDistance(scrollHeight: number, clientHeight: number): 
 }
 
 export function chapterScrollRatio(scrollTop: number, scrollHeight: number, clientHeight: number): number {
+  // 非法输入（NaN / Infinity）不能当成「已经到底」
+  if (!Number.isFinite(scrollTop) || !Number.isFinite(scrollHeight) || !Number.isFinite(clientHeight)) return 0
   const distance = scrollableDistance(scrollHeight, clientHeight)
-  if (distance === 0 || !Number.isFinite(scrollTop)) return 0
+  // 没有可滚动距离 = 这一章只有一屏、人已经看到底了。
+  // 以前这里返回 0，导致短章永远判不出「读完」，追剧因此永远不入队。
+  // 但尺寸还是 0（章刚切进去、还没渲染完）不算看到底，否则会误报读完。
+  if (distance === 0) return scrollHeight > 0 && clientHeight > 0 ? 1 : 0
   return clampRatio(scrollTop / distance)
 }
 
@@ -113,6 +118,8 @@ export type ReaderKeyAction =
   | 'next-chapter'
   | 'page-down'
   | 'page-up'
+  | 'scroll-top'
+  | 'scroll-bottom'
   | 'font-larger'
   | 'font-smaller'
   | 'open-catalog'
@@ -188,6 +195,11 @@ export function resolveReaderKey(opts: {
   if (opts.key === 'ArrowLeft') return 'prev-chapter'
   if (opts.key === 'ArrowRight') return 'next-chapter'
   if (opts.key === ' ') return opts.shift ? 'page-up' : 'page-down'
+  // PageUp / PageDown / Home / End 是最常见的翻页键：以前按下去毫无反应
+  if (opts.key === 'PageDown') return 'page-down'
+  if (opts.key === 'PageUp') return 'page-up'
+  if (opts.key === 'Home') return 'scroll-top'
+  if (opts.key === 'End') return 'scroll-bottom'
   if (opts.key.toLowerCase() === 'j') return 'page-down'
   if (opts.key.toLowerCase() === 'k') return 'page-up'
   if (opts.key === 'Escape') return 'close-drawer'

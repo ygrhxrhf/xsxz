@@ -10,8 +10,8 @@ import {
   readableCitations, readClippedChapter, visibleMemory,
 } from './readFrontier'
 import {
-  createBookFromBootstrap, markChapterStatus, setLibraryPath, setProgress, writeAiMemory,
-  writeChapterFile,
+  createBookFromBootstrap, markChapterStatus, setLibraryPath, setProgress, updateChapterBody,
+  writeAiMemory, writeChapterFile,
 } from './library'
 
 const sha = (body: string) => createHash('sha256').update(body).digest('hex')
@@ -199,5 +199,36 @@ describe('visibleMemory', () => {
   it('returns null for null memory', async () => {
     const bookId = await seedBook(['第一章'])
     expect(await visibleMemory(bookId, null)).toBeNull()
+  })
+})
+
+describe('migrateReadFrontier', () => {
+  it('keeps the 读到章末 position after the body is replaced', async () => {
+    const bookId = await seedBook(['第一章'])
+    const oldBody = '第一章，主角继续北上。\n\n第一章内容。'
+    const paragraphs = renderedParagraphs(oldBody)
+    await markReadFrontier(bookId, 'c0001', paragraphs.length - 1, paragraphs.at(-1)!.length)
+    expect(isFullyRead(oldBody, (await getReadFrontier(bookId)).chapters.c0001)).toBe(true)
+
+    const newBody = '第一章改：主角往南走。\n\n新内容更长了，站点重排过这一章。'
+    await updateChapterBody(bookId, 'c0001', newBody)
+
+    // 站点换了正文不该把「已读」抹掉，否则追剧会静默断档
+    expect(isFullyRead(newBody, (await getReadFrontier(bookId)).chapters.c0001)).toBe(true)
+  })
+
+  it('maps a mid-chapter position onto the new body instead of dropping it', async () => {
+    const bookId = await seedBook(['第一章'])
+    const oldBody = '第一章，主角继续北上。\n\n第一章内容。'
+    await markReadFrontier(bookId, 'c0001', 0, 3)
+
+    const newBody = '一段。\n\n二段。\n\n三段。'
+    await updateChapterBody(bookId, 'c0001', newBody)
+
+    const position = (await getReadFrontier(bookId)).chapters.c0001
+    expect(position).toBeDefined()
+    expect(sha(newBody)).toBe(position!.bodyHash)
+    // 没读到底就按比例就近落点，不会平白变成「整章读完」
+    expect(isFullyRead(newBody, position)).toBe(false)
   })
 })

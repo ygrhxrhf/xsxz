@@ -17,6 +17,7 @@ const ruleHostPrefill = ref('')
 const ruleHostNonce = ref(0)
 const browsePrefillUrl = ref('')
 const browsePrefillNonce = ref(0)
+const browsePrefillReading = ref(false)
 const dlRunning = ref<DownloadProgress | null>(null)
 let unsubProgress: (() => void) | null = null
 
@@ -157,12 +158,18 @@ function backToLibrary() {
   tab.value = 'library'
 }
 
-function goBrowse(url?: string) {
+function goBrowse(url?: string, options: { reading?: boolean } = {}) {
+  browsePrefillReading.value = Boolean(options.reading)
   if (url) {
     browsePrefillUrl.value = url
     browsePrefillNonce.value += 1
   }
   tab.value = 'browse'
+}
+
+/** 网页书架续读：打开这一章的地址并直接进阅读模式。 */
+function openWebBook(url: string) {
+  goBrowse(url, { reading: true })
 }
 
 function goSettingsWithHost(host: string) {
@@ -174,7 +181,8 @@ function goSettingsWithHost(host: string) {
 }
 
 function onDownloadProgress(p: DownloadProgress) {
-  dlRunning.value = p.status === 'running' ? p : null
+  // awaitingHuman（卡在墙上等人处理）以前不进侧栏，用户没有全局的取消入口
+  dlRunning.value = p.status === 'running' || p.status === 'awaitingHuman' ? p : null
 }
 
 function cancelSidebarDownload() {
@@ -246,26 +254,14 @@ onUnmounted(() => {
             </button>
           </nav>
           <div class="app-bar-actions">
-            <div v-if="dlRunning?.status === 'running'" class="sidebar-dl" role="status">
+            <div v-if="dlRunning" class="sidebar-dl" role="status">
               <div class="sidebar-dl-title" :title="dlRunning.title">{{ dlRunning.title }}</div>
               <div class="sidebar-dl-row">
-                <span>已下 {{ dlRunning.done }} / {{ dlRunning.total }} 章</span>
+                <span v-if="dlRunning.status === 'awaitingHuman'">等你处理页面上的登录 / 验证</span>
+                <span v-else>已下 {{ dlRunning.done }} / {{ dlRunning.total }} 章</span>
                 <button class="sidebar-dl-cancel" type="button" @click="cancelSidebarDownload">取消</button>
               </div>
             </div>
-            <button
-              class="theme-toggle"
-              type="button"
-              :aria-label="skin === 'light' ? '切换深色外观' : '切换浅色外观'"
-              :title="skin === 'light' ? '切换深色外观' : '切换浅色外观'"
-              @click="onChangeSkin(skin === 'light' ? 'dark' : 'light')"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path v-if="skin === 'light'" d="M20.5 15.1A8.6 8.6 0 0 1 8.9 3.5 8.6 8.6 0 1 0 20.5 15.1Z" />
-                <template v-else><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" /></template>
-              </svg>
-              <span>{{ skin === 'light' ? '深色' : '浅色' }}</span>
-            </button>
           </div>
         </header>
         <section class="main">
@@ -274,6 +270,7 @@ onUnmounted(() => {
             :active="tab === 'browse'"
             :prefill-url="browsePrefillUrl"
             :prefill-nonce="browsePrefillNonce"
+            :prefill-reading="browsePrefillReading"
             @open-book="openBook"
             @edit-site-rule="goSettingsWithHost"
           />
@@ -282,6 +279,7 @@ onUnmounted(() => {
             :active="libraryActive"
             @open-book="openBook"
             @go-browse="goBrowse"
+            @open-web-book="openWebBook"
           />
           <ReaderPage
             v-show="tab === 'reader'"

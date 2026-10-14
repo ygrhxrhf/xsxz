@@ -178,7 +178,7 @@ describe('library check-update card helpers', () => {
     expect(formatChapterOrdinal('c0005', 5)).toBe('第 5 章')
   })
 
-  it('shows 已读 x / 共 y 章 from catalog ordinal and chapterCount', () => {
+  it('shows 读到第 N 章 / 共 M 章 from catalog ordinal and chapterCount', () => {
     const unread = {
       id: 'd_1',
       title: '测',
@@ -192,14 +192,14 @@ describe('library check-update card helpers', () => {
       updatedAt: '2026-01-01T00:00:00.000Z',
     }
     expect(libraryReadChapterOrdinal(unread)).toBe(0)
-    expect(formatLibraryProgress(unread)).toBe('已读 0 / 共 10 章')
+    expect(formatLibraryProgress(unread)).toBe('共 10 章，还没开始读')
     expect(formatLibraryProgressTime(unread)).toBe('未读')
     const reading = {
       ...unread,
       progress: { chapterId: 'c0003', scrollRatio: 0.42, updatedAt: '2026-01-01T00:00:00.000Z' },
     }
     expect(libraryReadChapterOrdinal(reading)).toBe(3)
-    expect(formatLibraryProgress(reading)).toBe('已读 3 / 共 10 章')
+    expect(formatLibraryProgress(reading)).toBe('读到第 3 章 / 共 10 章')
     expect(formatLibraryProgressTime(reading)).toBe(
       new Date('2026-01-01T00:00:00.000Z').toLocaleString('zh-CN'),
     )
@@ -208,7 +208,7 @@ describe('library check-update card helpers', () => {
         ...unread,
         progress: { chapterId: 'unknown', scrollRatio: 0, updatedAt: 'not-a-date' },
       }),
-    ).toBe('已读 0 / 共 10 章')
+    ).toBe('共 10 章，还没开始读')
     expect(
       formatLibraryProgressTime({
         progress: { chapterId: 'c0001', scrollRatio: 0, updatedAt: 'not-a-date' },
@@ -269,6 +269,9 @@ describe('library check-update card helpers', () => {
         { tags: ['都市', '穿越', 'XUANHUAN'] },
       ]),
     ).toEqual(['XuanHuan', '穿越', '都市'])
+    expect(
+      collectLibraryTags([{ tags: ['中文/中国语/Chinese/中国語/中國語', '纯爱／恋爱'] }]),
+    ).toEqual(['中文', '中国语', 'Chinese', '中国語', '中國語', '纯爱', '恋爱'])
   })
 
   it('normalizes edit tags by comma/trim/empty-drop/same-book dedupe', () => {

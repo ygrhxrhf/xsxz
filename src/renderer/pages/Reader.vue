@@ -241,7 +241,10 @@ const showFollowBudgetConfirm = ref(false)
 const autoFollowEnabled = ref(false)
 /** 追剧在跑时的拉取间隔：单元一跑几十秒，3 秒足够让进度跟上，也不会常占磁盘。 */
 const FOLLOW_POLL_MS = 3000
-let followPollTimer: ReturnType<typeof setInterval> | null = null
+/** 后台没任务在跑、或窗口不前台时的低频间隔。 */
+const FOLLOW_POLL_IDLE_MS = 15000
+let followPollBusy = false
+let followPollTimer: ReturnType<typeof setTimeout> | null = null
 /**
  * 主进程的车道会排队而不是拒绝，所以界面也只按任务种类记账：
  * 后台在整理记忆或前情时，问答输入框不该跟着变灰。
@@ -267,6 +270,20 @@ const currentAssistantStage = computed(() => aiAssistantTab.value === 'output'
   ? undefined
   : resolveAssistantStage(assistantStages.value, aiAssistantTab.value, assistantJobIds.value))
 const assistantStageText = computed(() => describeAssistantStage(currentAssistantStage.value))
+/**
+ * 后台 AI 是否在跑：面板关掉之后以前完全看不出来，用户不知道钱正在花。
+ * 这里给出常驻入口，点一下就能打开面板看细节。
+ */
+const backgroundAiLabel = computed(() => {
+  if (follow.value?.running) {
+    return follow.value.queuedChapters > 0
+      ? `AI 整理中 ${follow.value.queuedChapters} 章`
+      : 'AI 正在整理'
+  }
+  if (assistantStageText.value) return assistantStageText.value
+  if (follow.value?.paused && follow.value.pauseReason) return 'AI 已暂停，点开看原因'
+  return ''
+})
 const catalogQuery = ref('')
 const scrollRatioView = ref(0)
 const visualPageIndexView = ref(0)
@@ -399,6 +416,11 @@ async function ttsContinueSaved() {
     return
   }
   ttsStart(position.paragraphIndex)
+}
+
+/** 本机是否要求减少动效：翻页/跳转的滚动行为统一走这里。 */
+function hereScrollBehavior(): ScrollBehavior {
+  return readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
 }
 
 watch(spokenPara, (i) => {
@@ -1144,6 +1166,14 @@ function onReaderKeydown(e: KeyboardEvent) {
       e.preventDefault()
       pageByScreen(-1)
       break
+    case 'scroll-top':
+      e.preventDefault()
+      contentRef.value?.scrollTo({ top: 0, behavior: hereScrollBehavior() })
+      break
+    case 'scroll-bottom':
+      e.preventDefault()
+      contentRef.value?.scrollTo({ top: contentRef.value.scrollHeight, behavior: hereScrollBehavior() })
+      break
     case 'font-larger':
       setFontSize(fontSize.value + 1)
       break
@@ -1267,7 +1297,10 @@ async function loadBook(bookId: string) {
     showNotesBudgetConfirm.value = false
   }
   chapterPrefetch.onBookChange(bookId)
-  const previousChapterId = currentChapter.value?.id
+  const previousBookId = book.value?.id
+  // 只有同一本书才沿用「当前章」：换书时两本书都有 c0001，
+  // 沿用会让新书从第一章开始读，把这本书自己的阅读进度跳过去。
+  const previousChapterId = previousBookId === bookId ? currentChapter.value?.id : undefined
   void readerProgress.writeNow()
   const res = await window.api.library.get(bookId)
   if (res.book) {
@@ -1917,12 +1950,32 @@ function applyFollow(coverage: AiFollowCoverage | null) {
 /** 队列、进度、失败原因都在主进程，界面只能拉：关窗、切书、刷新都不会打断它。 */
 function startFollowPolling() {
   if (followPollTimer) return
-  followPollTimer = setInterval(() => void pollFollow(), FOLLOW_POLL_MS)
+  const tick = async (): Promise<void> => {
+    // 窗口在后台时不必每 3 秒问一次；上一次还没回来也不叠加新请求
+    if (document.hidden) {
+      followPollTimer = setTimeout(() => void tick(), FOLLOW_POLL_IDLE_MS)
+      return
+    }
+    if (!followPollBusy) {
+      followPollBusy = true
+      try {
+        await pollFollow()
+      } catch {
+        /* 拉取失败下次再来 */
+      } finally {
+        followPollBusy = false
+      }
+    }
+    // 后台没任务在跑时改成低频轮询，有任务才恢复 3 秒
+    const active = follow.value?.running === true || (follow.value?.queuedChapters ?? 0) > 0
+    followPollTimer = setTimeout(() => void tick(), active ? FOLLOW_POLL_MS : FOLLOW_POLL_IDLE_MS)
+  }
+  followPollTimer = setTimeout(() => void tick(), FOLLOW_POLL_MS)
 }
 
 function stopFollowPolling() {
   if (!followPollTimer) return
-  clearInterval(followPollTimer)
+  clearTimeout(followPollTimer)
   followPollTimer = null
 }
 
@@ -2732,6 +2785,14 @@ onUnmounted(() => {
         <button class="tool-button" title="标记" aria-label="标记" @click="showMarks = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg></button>
         <button class="tool-button" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg></button>
         <button class="tool-button" title="AI" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg></button>
+        <button
+          v-if="backgroundAiLabel"
+          class="tool-button tool-text"
+          type="button"
+          role="status"
+          :title="`${backgroundAiLabel}：点开看后台 AI 任务`"
+          @click="toggleToolPanel('ai')"
+        >{{ backgroundAiLabel }}</button>
         <span class="toolbar-gap" aria-hidden="true"></span>
         <template v-if="downloadProgress?.status === 'running' && downloadProgress.bookId === book.id">
           <span class="tool-button tool-text" role="status">已下 {{ downloadProgress.done }} / {{ downloadProgress.total }} 章</span>
@@ -2965,7 +3026,11 @@ onUnmounted(() => {
           </div>
           <div class="ai-assistant-heading">
             <strong>{{ book?.title }}</strong>
-            <span>模型服务：{{ aiServiceOrigin || '未配置' }}</span>
+            <span v-if="aiServiceOrigin">模型服务：{{ aiServiceOrigin }}</span>
+            <span v-else class="ai-heading-missing">
+              模型服务：未配置
+              <n-button size="tiny" text type="primary" @click="emit('go-settings')">去设置</n-button>
+            </span>
             <span>当前任务：{{ aiAssistantTaskLabel }}</span>
             <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
             <span>仅包含当前阅读进度以内的内容，不发送未读章节。</span>
@@ -3008,7 +3073,7 @@ onUnmounted(() => {
               <n-radio-button value="ask">提醒我</n-radio-button>
               <n-radio-button value="auto">自动</n-radio-button>
             </n-radio-group>
-            <div class="subtle">离开已读超过 90% 的章节时上报排队；自动模式会调用模型并消耗你的 API 额度，关窗、切书后主进程接着跑。</div>
+            <div class="subtle">读到章节末尾再换章时上报排队；本章不足一屏、翻页即到底的短章同样算读完。自动模式会调用模型并消耗你的 API 额度，关窗、切书后主进程接着跑。</div>
             <div v-if="follow" class="subtle">
               <span v-if="follow.queuedChapters">待整理 {{ follow.queuedChapters }} 章。</span>
               <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章<span v-if="follow.uptoChapterTitle">，到「{{ follow.uptoChapterTitle }}」</span>。</span>
@@ -3027,7 +3092,9 @@ onUnmounted(() => {
             <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens；未报告的用量不计入 token 总数。不计算金额。</div>
             <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
           </div>
-          <div v-if="autoBudget" class="subtle">本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens；达到上限会暂停自动任务，实际费用以服务商账单为准。</div>
+          <div v-if="autoBudget" class="subtle">
+            本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens（已含排队预留 {{ autoBudget.reservedTokens }}）；达到上限会暂停自动任务，实际费用以服务商账单为准。
+          </div>
           <n-tabs v-model:value="aiAssistantTab" type="line" animated>
             <n-tab-pane name="recap" tab="前情">
               <section v-if="resumeCardView?.available" class="ai-budget-status">
@@ -4107,7 +4174,9 @@ onUnmounted(() => {
 
 .reader-stage { flex: 1 1 auto; min-height: 0; display: flex; background: var(--reader-outer); }
 .reader-spine {
-  display: none;
+  /* 阅读模式没有顶栏，这条书脊是唯一的「返回书库」入口，必须一直可见 */
+  display: flex;
+  align-items: flex-start; justify-content: center;
   flex: 0 0 52px; width: 52px; align-self: stretch; margin: 0; padding: 16px 6px;
   border: 0; border-right: 1px solid var(--r-line);
   background: color-mix(in srgb, var(--r-bar-bg) 88%, var(--reader-outer));

@@ -27,9 +27,11 @@ vi.mock('./ai', async (original) => {
 import { AiReadingFollowService } from './aiReadingFollow'
 import { AiQueue } from './aiScheduler'
 import {
-  createBookFromBootstrap, markChapterStatus, readAiMemory, readAiUsage, readSummaries,
+  createBookFromBootstrap, readAiMemory, readAiUsage, readSummaries,
   setLibraryPath, setProgress, updateChapterBody, writeAiMemory, writeChapterFile,
 } from './library'
+import { markReadFrontier } from './readFrontier'
+import { renderedParagraphs } from '../shared/aiText'
 
 let directory = ''
 let queue: AiQueue
@@ -72,14 +74,20 @@ async function seed(chapterCount: number, readTo = chapterCount): Promise<string
     `${title}，主角继续北上，在渡口遇见一名白发剑客。剑客说旧账未清，转身消失在雨里。\n`
     + '夜里破庙宿了一晚，主角翻出那枚旧铜钱，听见门外马蹄声由远及近，剑客的声音隔着雨幕再次响起，问他要不要一起北上。'
   for (const chapter of book.chapters) {
+    // writeChapterFile 自己会把 ready 写回目录元数据，不必再来一次 markChapterStatus
     await writeChapterFile(book.id, chapter.id, {
       title: chapter.title, body: body(chapter.title), status: 'ready',
     })
-    await markChapterStatus(book.id, chapter.id, 'ready')
   }
   await setProgress(book.id, {
     chapterId: chapterId(readTo), scrollRatio: 1, updatedAt: '2026-01-01T00:00:00.000Z',
   })
+  // setProgress 不写已读前沿：追剧按前沿判断「读者真的读到这一章了」，
+  // 所以 seed 必须把读过的章逐章标到章末，否则任何一章都不会入队。
+  for (const chapter of book.chapters.slice(0, readTo)) {
+    const paragraphs = renderedParagraphs(body(chapter.title))
+    await markReadFrontier(book.id, chapter.id, paragraphs.length - 1, paragraphs.at(-1)!.length)
+  }
   return book.id
 }
 
@@ -156,7 +164,7 @@ describe('自动追剧', () => {
     expect(mocks.complete).not.toHaveBeenCalled()
   })
 
-  it('单次章数上限到点就带原因暂停，记忆按 5 章一批推进，零头留在队列', async () => {
+  it('单次章数上限到点就带原因暂停，记忆按 5 章一批推进，零头留在队列', { timeout: 20_000 }, async () => {
     const bookId = await seed(30, 30)
     service.start()
     await service.setMode(bookId, 'auto', true)

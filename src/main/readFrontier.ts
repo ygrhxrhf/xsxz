@@ -3,7 +3,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { renderedParagraphs } from '../shared/aiText'
 import type { AiCitation, AiMemoryFile, ReadFrontier, ReadFrontierPosition, ReadingProgress } from '../shared/types'
-import { atomicWriteText, bookDir, getBook, readChapter, withBookLock } from './library'
+import { atomicWriteText, bookDir, getBook, readChapter, registerBodyChangeHook, withBookLock } from './library'
 
 interface FrontierFile {
   version: 1
@@ -77,6 +77,47 @@ export async function markReadFrontier(bookId: string, chapterId: string, paragr
     return file.chapters[chapterId]!
   })
 }
+
+/**
+ * 正文被改写（清正文 / 重下 / 手工修复）后把已读位置搬到新正文上。
+ * 读者「读到章末」这件事不该因为站点换了正文而作废，否则追剧会静默断档。
+ * 原来的位置在旧正文末尾时，新位置也落在新正文末尾；否则按段落比例就近落点。
+ */
+export async function migrateReadFrontier(
+  bookId: string,
+  chapterId: string,
+  oldBody: string,
+  newBody: string,
+): Promise<void> {
+  const file = await readFileSafe(bookId)
+  const prior = file.chapters[chapterId]
+  if (!prior || prior.bodyHash !== hash(oldBody)) return
+  const oldParagraphs = renderedParagraphs(oldBody)
+  const newParagraphs = renderedParagraphs(newBody)
+  if (!newParagraphs.length) return
+  const atEnd = prior.paragraphIndex === oldParagraphs.length - 1
+    && prior.characterOffset === (oldParagraphs.at(-1)?.length ?? 0)
+  const ratio = oldParagraphs.length
+    ? (prior.paragraphIndex + prior.characterOffset / Math.max(1, oldParagraphs[prior.paragraphIndex]?.length ?? 1)) / oldParagraphs.length
+    : 0
+  const target = Math.min(newParagraphs.length - 1, Math.max(0, Math.floor(ratio * newParagraphs.length)))
+  const next: ReadFrontierPosition = {
+    paragraphIndex: atEnd ? newParagraphs.length - 1 : target,
+    characterOffset: atEnd
+      ? newParagraphs.at(-1)!.length
+      : Math.min(newParagraphs[target]!.length, prior.characterOffset),
+    bodyHash: hash(newBody),
+    updatedAt: new Date().toISOString(),
+  }
+  await withBookLock(bookId, async () => {
+    const fresh = await readFileSafe(bookId)
+    fresh.chapters[chapterId] = next
+    await save(bookId, fresh)
+  })
+}
+
+// 模块加载即注册：library 的正文改写路径要回到这里迁移已读位置
+registerBodyChangeHook(migrateReadFrontier)
 
 export async function getReadFrontier(bookId: string): Promise<ReadFrontier> {
   const book = await getBook(bookId)

@@ -2,7 +2,7 @@
 import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, NForm, NFormItem, NDynamicTags, useMessage } from 'naive-ui'
 import type { DropdownOption, InputInst } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { BookListItem, ChapterMeta, DownloadBlocked, DownloadProgress, FailCode, QualityIssue, QualityReport, TrashItem } from '@shared/types'
+import type { BookListItem, ChapterMeta, DownloadBlocked, DownloadProgress, FailCode, QualityIssue, QualityReport, TrashItem, WebShelfBook } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
 import { aiSaveRecoveryActive } from '../aiSaveRecoveryLock'
 import {
@@ -37,6 +37,7 @@ const props = defineProps<{ active?: boolean }>()
 const emit = defineEmits<{
   (e: 'open-book', bookId: string): void
   (e: 'go-browse', url?: string): void
+  (e: 'open-web-book', url: string): void
 }>()
 
 const message = useMessage()
@@ -54,6 +55,7 @@ const query = ref('')
 const searchInputRef = ref<InputInst | null>(null)
 const statusFilter = ref<LibraryStatusFilter>('all')
 const selectedTag = ref('')
+const tagsExpanded = ref(false)
 const sortKey = ref<LibrarySortKey>('updated')
 const failedOpen = ref(false)
 const failedTitle = ref('')
@@ -112,6 +114,22 @@ const visibleBooks = computed(() =>
 const libraryTags = computed(() => collectLibraryTags(books.value))
 const duplicateGroups = computed(() => findLibraryDuplicateGroups(books.value))
 const duplicateOpen = ref(false)
+function shelfProgress(book: BookListItem): number {
+  if (!book.chapterCount || !book.progress?.chapterId) return 0
+  const match = /^c(\d+)$/.exec(book.progress.chapterId)
+  const index = match ? Number(match[1]) : 1
+  return Math.max(2, Math.min(100, Math.round((index / book.chapterCount) * 100)))
+}
+
+const shelfRows = computed(() => {
+  const rows: BookListItem[][] = []
+  visibleBooks.value.forEach((book, index) => {
+    if (index % 8 === 0) rows.push([])
+    rows[rows.length - 1].push(book)
+  })
+  return rows
+})
+
 const continueBook = computed(() => {
   const withProgress = books.value.filter((book) => book.progress?.chapterId)
   if (!withProgress.length) return null
@@ -121,6 +139,86 @@ const continueBook = computed(() => {
     return bTime - aTime
   })[0]
 })
+// 网页书架：只存书目、目录快照与阅读位置，正文留在站点上。
+const webBooks = ref<WebShelfBook[]>([])
+const webRefreshing = ref(false)
+const webBusyId = ref('')
+let unsubShelf: (() => void) | null = null
+
+async function refreshWebShelf(): Promise<void> {
+  try {
+    const res = await window.api.shelf.list()
+    webBooks.value = res.ok ? res.books : []
+  } catch {
+    webBooks.value = []
+  }
+}
+
+function continueWebBook(book: WebShelfBook): void {
+  emit('open-web-book', book.lastChapter.url || book.catalogUrl)
+}
+
+async function refreshWebBook(book: WebShelfBook): Promise<void> {
+  if (webBusyId.value) return
+  webBusyId.value = book.id
+  try {
+    const res = await window.api.shelf.refresh(book.id)
+    if (!res.ok) { message.warning(res.message || '刷新失败'); return }
+    message.success(res.added > 0 ? `《${book.title}》更新 ${res.added} 章` : `《${book.title}》暂无更新`)
+    await refreshWebShelf()
+  } catch { message.error('刷新失败') }
+  finally { webBusyId.value = '' }
+}
+
+async function refreshAllWebBooks(): Promise<void> {
+  if (webRefreshing.value) return
+  webRefreshing.value = true
+  try {
+    const res = await window.api.shelf.refreshAll()
+    message.success(`已检查 ${res.checked} 本，${res.updated} 本有更新`)
+    await refreshWebShelf()
+  } catch { message.error('刷新失败') }
+  finally { webRefreshing.value = false }
+}
+
+async function removeWebBook(book: WebShelfBook): Promise<void> {
+  try {
+    await window.api.shelf.remove(book.id)
+    await refreshWebShelf()
+    message.success(`已从网页书架移除《${book.title}》`)
+  } catch { message.error('移除失败') }
+}
+
+/** 章节序号优先，没有目录快照时退回滚动比例。 */
+function webProgress(book: WebShelfBook): number {
+  const total = book.chapters.length
+  if (total > 0) {
+    const index = book.chapters.findIndex((chapter) => chapter.url === book.lastChapter.url)
+    if (index >= 0) return Math.max(2, Math.min(100, Math.round(((index + 1) / total) * 100)))
+  }
+  if (!book.progress) return 0
+  return Math.max(2, Math.min(100, Math.round(book.progress.scrollRatio * 100) || 2))
+}
+
+function webTime(raw: string): string {
+  const time = Date.parse(raw)
+  if (!Number.isFinite(time)) return ''
+  const date = new Date(time)
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function webProgressLabel(book: WebShelfBook): string {
+  const total = book.chapters.length
+  const index = total > 0 ? book.chapters.findIndex((chapter) => chapter.url === book.lastChapter.url) : -1
+  const where = index >= 0 ? `读到第 ${index + 1} / ${total} 章` : book.lastChapter.title || '还没读过'
+  const stamp = webTime(book.progress?.updatedAt || book.createdAt)
+  return stamp ? `${where} · ${stamp}` : where
+}
+
+function webChapterCountLabel(book: WebShelfBook): string {
+  return book.chapters.length ? `${book.chapters.length} 章` : '目录待识别'
+}
+
 const initialLoading = computed(() => loading.value && books.value.length === 0)
 const loadError = ref('')
 const hasActiveFilter = computed(
@@ -148,7 +246,7 @@ const statusOptions = [
   { label: '部分', value: 'partial' },
 ]
 const sortOptions = [
-  { label: '最近更新', value: 'updated' },
+  { label: '最近读过', value: 'updated' },
   { label: '书名', value: 'title' },
   { label: '作者', value: 'author' },
 ]
@@ -181,14 +279,21 @@ async function refresh() {
 }
 
 async function handleImport() {
+  // 大型 txt / epub 要写几十秒盘，按钮不置灰时用户会以为没反应而反复点
+  if (importing.value) return
   const { filePaths } = await window.api.dialog.openFile()
   if (!filePaths?.length) return
-  const res = await window.api.library.import(filePaths[0])
-  if (res.ok) {
-    await refresh()
-    emit('open-book', res.bookId!)
-  } else {
-    message.error(res.message || '导入失败')
+  importing.value = true
+  try {
+    const res = await window.api.library.import(filePaths[0])
+    if (res.ok) {
+      await refresh()
+      emit('open-book', res.bookId!)
+    } else {
+      message.error(res.message || '导入失败')
+    }
+  } finally {
+    importing.value = false
   }
 }
 
@@ -314,6 +419,8 @@ async function handleDelete(bookId: string) {
 const trashOpen = ref(false)
 const trashLoading = ref(false)
 const trashItems = ref<TrashItem[]>([])
+/** 导入进行中：按钮置灰 + 文案改成「导入中…」，避免重复提交。 */
+const importing = ref(false)
 
 async function openTrash() {
   trashOpen.value = true
@@ -334,6 +441,16 @@ async function reloadTrash() {
 function fmtTrashedAt(iso: string): string {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN')
+}
+
+/** 回收站占用：删掉的书还占着同一块盘，界面得让人看得见。 */
+const trashTotalBytes = computed(() => trashItems.value.reduce((sum, item) => sum + (item.sizeBytes || 0), 0))
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
 async function handleRestore(name: string) {
@@ -459,6 +576,12 @@ async function handleResumeUnblock(bookId: string) {
   else message.error(res.message || '无法继续下载')
 }
 
+/** 卡在墙上的任务以前只能等，现在可以直接收工（已下好的章不受影响）。 */
+async function handleCancelDownload(bookId: string) {
+  await window.api.download.cancel(bookId)
+  message.success('已取消本次下载，已下好的章节保留')
+}
+
 async function handleRetry(bookId: string) {
   if (hasTask(retryingIds.value, bookId) || hasTask(activeDownloadIds.value, bookId)) return
   startTask(retryingIds, bookId)
@@ -475,7 +598,7 @@ async function handleCheckUpdate(bookId: string) {
   try {
     const res = await window.api.download.checkUpdate(bookId)
     endTask(checkingIds, bookId)
-    if (res.ok && res.added > 0) {
+    if (res.ok && (res.added > 0 || (res.changed ?? 0) > 0)) {
       startTask(activeDownloadIds, bookId)
       const i = books.value.findIndex((b) => b.id === bookId)
       if (i >= 0) {
@@ -722,7 +845,10 @@ function fmtProgressTime(b: BookListItem): string {
 watch(
   () => props.active,
   (active) => {
-    if (active) void refresh()
+    if (active) {
+      void refresh()
+      void refreshWebShelf()
+    }
   },
 )
 
@@ -767,6 +893,8 @@ async function refreshRecap() {
 
 onMounted(() => {
   unsubOverview = window.api.bookOverview.onChanged(() => { void refresh() })
+  unsubShelf = window.api.shelf.onChanged(() => { void refreshWebShelf() })
+  void refreshWebShelf()
   window.addEventListener('keydown', onLibraryKeydown)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => { if (jobId === recapJobId.value) recapText.value += delta })
   unsubAiDone = window.api.ai.onDone((event) => {
@@ -827,6 +955,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   unsubOverview?.()
+  unsubShelf?.()
   window.removeEventListener('keydown', onLibraryKeydown)
   unsubProgress?.()
   unsubBlocked?.()
@@ -840,8 +969,8 @@ onUnmounted(() => {
   <div class="page library-page">
     <header class="library-header">
       <div>
-        <h2 class="page-title">我的书库</h2>
-        <p class="library-subtitle">收藏、阅读并维护保存在本机的书。</p>
+        <h2 class="page-title">书架</h2>
+        <p class="library-subtitle">最近在读放在最前，其余按书架排开。</p>
       </div>
       <div class="library-header-actions">
         <span v-if="loading && books.length" class="library-refresh-status" role="status" aria-label="正在加载书库">
@@ -863,14 +992,16 @@ onUnmounted(() => {
         <n-button v-else class="shelf-action" :disabled="!books.length" @click="handleCheckAll">全部检查更新</n-button>
         <n-button v-if="duplicateGroups.length" class="shelf-action" @click="duplicateOpen = true">可能重复 {{ duplicateGroups.length }} 组</n-button>
         <n-button class="shelf-action" @click="openTrash">回收站</n-button>
-        <n-button class="shelf-action" @click="handleImport">导入 txt / epub</n-button>
+        <n-button class="shelf-action" :loading="importing" :disabled="importing" @click="handleImport">
+          {{ importing ? '导入中…' : '导入 txt / epub' }}
+        </n-button>
       </div>
     </header>
     <div v-if="books.length" class="lib-toolbar">
       <n-input ref="searchInputRef" v-model:value="query" clearable placeholder="按书名、作者或标签筛选" style="max-width:240px" />
       <n-select v-model:value="statusFilter" :options="statusOptions" style="width:120px" />
       <n-select v-model:value="sortKey" :options="sortOptions" style="width:132px" />
-      <div v-if="libraryTags.length" class="lib-tag-chips" role="list" aria-label="按标签筛选">
+      <div v-if="libraryTags.length" class="lib-tag-chips" :class="{ expanded: tagsExpanded }" role="list" aria-label="按标签筛选">
         <n-tag
           v-for="tag in libraryTags"
           :key="tag"
@@ -883,6 +1014,9 @@ onUnmounted(() => {
         >
           {{ tag }}
         </n-tag>
+        <button type="button" class="lib-tag-toggle" @click="tagsExpanded = !tagsExpanded">
+          {{ tagsExpanded ? '收起标签' : '更多标签' }}
+        </button>
       </div>
     </div>
 
@@ -903,26 +1037,42 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <section v-else-if="!books.length && !hasActiveFilter" class="library-empty empty-state">
+    <section v-else-if="!books.length && !webBooks.length && !hasActiveFilter" class="library-empty empty-state">
       <h3>还没有书</h3>
-      <p>导入一本 txt 或 epub，或去浏览里下载。</p>
+      <p>导入一本 txt 或 epub，或去浏览里下载。在内置浏览器里打开小说网页后，还能用阅读模式的「加书架」收藏网址。</p>
       <div class="empty-actions">
         <n-button type="primary" @click="emit('go-browse')">去浏览</n-button>
       </div>
     </section>
 
-    <section v-else-if="!visibleBooks.length" class="library-empty empty-state">
+    <section v-else-if="!visibleBooks.length && !webBooks.length" class="library-empty empty-state">
       <h3>没有匹配的书</h3>
     </section>
 
     <template v-else>
       <p v-if="loadError" class="library-inline-error" role="alert">{{ loadError }}</p>
-      <div class="book-grid">
-      <n-card v-for="b in visibleBooks" :key="b.id" hoverable class="book-card">
+      <section v-if="continueBook && !hasActiveFilter" class="shelf-continue">
+        <button class="shelf-continue-open" type="button" @click="continueReading">
+          <div class="book-cover" :style="coverStyle(continueBook.id)" aria-hidden="true">
+            <img v-if="continueBook.coverPath" class="book-cover-img" :src="coverImgSrc(continueBook) || undefined" alt="" />
+            <span v-else>{{ libraryCoverText(continueBook.title) }}</span>
+          </div>
+          <div>
+            <div class="shelf-kicker">最近在读</div>
+            <div class="book-title" :title="continueBook.title">{{ continueBook.title }}</div>
+            <div class="book-author">{{ continueBook.author || '未知作者' }}</div>
+            <div class="book-progress">{{ fmtProgress(continueBook) }} · {{ fmtProgressTime(continueBook) }}</div>
+          </div>
+        </button>
+      </section>
+      <div v-if="visibleBooks.length" class="book-grid">
+      <section v-for="(row, rowIndex) in shelfRows" :key="rowIndex" class="shelf-row">
+      <n-card v-for="b in row" :key="b.id" hoverable class="book-card">
         <button class="book-open-area" type="button" :aria-label="`打开《${b.title}》`" @click="emit('open-book', b.id)">
           <div class="book-cover" :style="coverStyle(b.id)" aria-hidden="true">
             <img v-if="b.coverPath" class="book-cover-img" :src="coverImgSrc(b) || undefined" alt="" />
             <span v-else>{{ libraryCoverText(b.title) }}</span>
+            <i v-if="shelfProgress(b)" class="cover-progress" :style="{ width: `${shelfProgress(b)}%` }" />
           </div>
           <div class="book-title" :title="b.title">{{ b.title }}</div>
           <div v-if="b.author" class="book-author" :title="b.author">{{ b.author }}</div>
@@ -952,11 +1102,12 @@ onUnmounted(() => {
         <div v-if="blockedByBook[b.id]" class="book-blocked" role="alert">
           <p class="book-blocked-reason">{{ blockedByBook[b.id].message }}</p>
           <p class="book-blocked-chapter">卡住的那一章：{{ blockedByBook[b.id].chapterTitle }}</p>
-          <n-space size="small">
+            <n-space size="small">
             <n-button size="tiny" :loading="hasTask(unblockingIds, b.id)" @click="handleOpenUnblock(b.id)">
               去浏览这一章
             </n-button>
             <n-button size="tiny" type="primary" @click="handleResumeUnblock(b.id)">我已处理好，继续下载</n-button>
+            <n-button size="tiny" quaternary type="error" @click="handleCancelDownload(b.id)">取消这次下载</n-button>
           </n-space>
         </div>
         <div v-if="b.overview?.text || b.overview?.message" class="book-overview">
@@ -985,7 +1136,53 @@ onUnmounted(() => {
           </n-button>
         </n-dropdown>
       </n-card>
+      </section>
       </div>
+      <section v-if="webBooks.length" class="web-shelf">
+        <div class="web-shelf-head">
+          <h3>
+            网页书架
+            <span class="web-shelf-count">{{ webBooks.length }}</span>
+          </h3>
+          <div class="web-shelf-actions">
+            <n-button size="small" :loading="webRefreshing" @click="refreshAllWebBooks">全部刷新目录</n-button>
+            <n-button size="small" tertiary @click="emit('go-browse')">继续添加</n-button>
+          </div>
+        </div>
+        <p class="web-shelf-hint">网页书不占本机空间，读的是站点上的正文；进度与目录存在本机，随时接着读。</p>
+        <div class="web-shelf-grid">
+          <div v-for="book in webBooks" :key="book.id" class="web-shelf-card">
+            <button class="web-shelf-open" type="button" :title="`继续读《${book.title}》`" @click="continueWebBook(book)">
+              <div class="book-cover" :style="coverStyle(book.id)" aria-hidden="true">
+                <img v-if="book.coverUrl" class="book-cover-img" :src="book.coverUrl" alt="" />
+                <span v-else>{{ libraryCoverText(book.title) }}</span>
+                <i v-if="webProgress(book)" class="cover-progress" :style="{ width: `${webProgress(book)}%` }" />
+                <em v-if="book.addedChapters > 0" class="web-update-badge">＋{{ book.addedChapters }} 章</em>
+              </div>
+              <div class="book-title" :title="book.title">{{ book.title }}</div>
+              <div class="book-author" :title="book.host">{{ book.author || book.host }}</div>
+              <div class="book-progress" :title="webProgressLabel(book)">{{ webProgressLabel(book) }}</div>
+              <div class="book-progress-time">{{ webChapterCountLabel(book) }}</div>
+            </button>
+            <div class="web-shelf-tools">
+              <n-button
+                size="tiny"
+                quaternary
+                :loading="webBusyId === book.id"
+                @click="refreshWebBook(book)"
+              >
+                刷新目录
+              </n-button>
+              <n-popconfirm @positive-click="removeWebBook(book)">
+                <template #trigger>
+                  <n-button size="tiny" quaternary type="error">移除</n-button>
+                </template>
+                把《{{ book.title }}》从网页书架移除？不会删除任何本地文件。
+              </n-popconfirm>
+            </div>
+          </div>
+        </div>
+      </section>
     </template>
     <n-modal
       :show="editOpen"
@@ -1091,6 +1288,7 @@ onUnmounted(() => {
             <div class="fail-title">{{ formatChapterOrdinal(ch.id, ch.index) }} {{ ch.title }}</div>
             <div class="fail-reason">{{ failLabel(ch) }}</div>
           </div>
+          <n-button v-if="ch.url" size="tiny" @click="emit('go-browse', ch.url)">打开这一章</n-button>
         </div>
       </div>
       <template #footer>
@@ -1134,7 +1332,9 @@ onUnmounted(() => {
         <div v-for="t in trashItems" :key="t.name" class="fail-row">
           <div>
             <div class="fail-title">《{{ t.title }}》{{ t.author ? ` · ${t.author}` : '' }}（{{ t.chapterCount }} 章）</div>
-            <div class="fail-reason">删除于 {{ fmtTrashedAt(t.trashedAt) }}</div>
+            <div class="fail-reason">
+              删除于 {{ fmtTrashedAt(t.trashedAt) }}<template v-if="t.sizeBytes"> · 占用 {{ fmtBytes(t.sizeBytes) }}</template>
+            </div>
           </div>
           <n-space>
             <n-button size="tiny" @click="handleRestore(t.name)">还原</n-button>
@@ -1148,15 +1348,20 @@ onUnmounted(() => {
         </div>
       </div>
       <template #footer>
-        <n-space justify="end">
-          <n-popconfirm v-if="trashItems.length" @positive-click="handlePurge()">
-            <template #trigger>
-              <n-button size="small" type="error">清空回收站</n-button>
-            </template>
-            彻底删除回收站里的全部 {{ trashItems.length }} 本？此操作不可撤销。
-          </n-popconfirm>
-          <n-button size="small" @click="trashOpen = false">关闭</n-button>
-        </n-space>
+        <div class="trash-footer">
+          <span v-if="trashItems.length" class="fail-reason">
+            共占用 {{ fmtBytes(trashTotalBytes) }}；超过 30 天的条目会在下次启动时自动清理
+          </span>
+          <n-space justify="end">
+            <n-popconfirm v-if="trashItems.length" @positive-click="handlePurge()">
+              <template #trigger>
+                <n-button size="small" type="error">清空回收站</n-button>
+              </template>
+              彻底删除回收站里的全部 {{ trashItems.length }} 本？此操作不可撤销。
+            </n-popconfirm>
+            <n-button size="small" @click="trashOpen = false">关闭</n-button>
+          </n-space>
+        </div>
       </template>
     </n-modal>
   </div>
@@ -1228,6 +1433,23 @@ onUnmounted(() => {
   flex-wrap: wrap;
   flex: 1 0 100%;
   gap: var(--space-2);
+  max-height: 32px;
+  overflow: hidden;
+}
+
+.lib-tag-chips.expanded { max-height: none; }
+
+.lib-tag-toggle {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--focus);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .checkall-status {
@@ -1242,7 +1464,160 @@ onUnmounted(() => {
 .book-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: var(--space-6);
+  gap: 28px;
+}
+
+/* 网页书架：和本地书同排，但角标与工具更轻，一眼能分清来源 */
+.web-shelf {
+  margin-bottom: 28px;
+}
+
+.web-shelf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.web-shelf-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 15px;
+}
+
+.web-shelf-count {
+  min-width: 22px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.web-shelf-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.web-shelf-hint {
+  margin: 0 0 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.web-shelf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 18px;
+}
+
+.web-shelf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.web-shelf-open {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 12px);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, transform 140ms ease;
+}
+
+.web-shelf-open:hover {
+  border-color: var(--hover-line);
+  transform: translateY(-2px);
+}
+
+.web-shelf-open .book-cover {
+  margin-inline: auto;
+}
+
+.web-shelf-open .book-progress {
+  margin-top: 2px;
+}
+
+.web-update-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--success, #18a058);
+  color: #fff;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.web-shelf-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.shelf-continue {
+  margin-bottom: 28px;
+}
+
+.shelf-continue-open {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: min(560px, 100%);
+  border: 0;
+  border-radius: 16px;
+  padding: 14px;
+  color: inherit;
+  background: var(--surface-1);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: var(--shadow-card);
+}
+
+.shelf-kicker {
+  margin-bottom: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.shelf-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 18px 16px;
+  padding: 8px 8px 22px;
+  border-bottom: 10px solid color-mix(in srgb, var(--text-primary) 8%, var(--surface-1));
+  border-radius: 0 0 8px 8px;
+}
+
+.cover-progress {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: #c4554a;
+}
+
+.shelf-row .book-card {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.shelf-row :deep(.book-card > .n-card__content) {
+  padding: 8px 4px 4px;
 }
 
 .book-card {
@@ -1354,6 +1729,18 @@ onUnmounted(() => {
     hsl(calc(var(--cover-hue-secondary) * 1deg) 20% 78%)
   );
   text-shadow: none;
+}
+
+.shelf-row .book-title {
+  min-height: 40px;
+  font-size: 14px;
+  text-align: center;
+}
+
+.shelf-row .book-author,
+.shelf-row .book-progress,
+.shelf-row .book-progress-time {
+  text-align: center;
 }
 
 .book-title {

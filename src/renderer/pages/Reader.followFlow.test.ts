@@ -158,13 +158,31 @@ describe('Reader 追剧改用主进程状态', () => {
     installApi(fixture)
     const reader = await mountReader()
     try {
-      setScroll(reader.pane, 1490)
+      // 贴到底（scrollTop 与 scrollHeight 相等）才算「这一章读完了」
+      setScroll(reader.pane, 2000, 2000, 500)
       await nextTick()
       reader.goNextChapter()
       await vi.waitFor(() => expect(reader.bodyText()).toContain('c2正文。'))
       await vi.waitFor(() => expect(fixture.finished).toHaveLength(1))
       expect(fixture.finished[0]!.chapterId).toBe('c1')
       expect(fixture.finished[0]!.ratio).toBeGreaterThanOrEqual(0.9)
+    } finally { reader.app.unmount() }
+  })
+
+  it('本章不足一屏（没有滚动距离）翻到下一章也算读完', async () => {
+    const fixture: Fixture = {
+      follow: followView({ mode: 'auto' }), finished: [], sets: [], setResults: [], retries: 0, coverageCalls: 0,
+    }
+    installApi(fixture)
+    const reader = await mountReader()
+    try {
+      // scrollHeight === clientHeight：整章只有一屏，短章永远滚不出距离
+      setScroll(reader.pane, 0, 500, 500)
+      await nextTick()
+      reader.goNextChapter()
+      await vi.waitFor(() => expect(reader.bodyText()).toContain('c2正文。'))
+      await vi.waitFor(() => expect(fixture.finished).toHaveLength(1))
+      expect(fixture.finished[0]!.chapterId).toBe('c1')
     } finally { reader.app.unmount() }
   })
 
@@ -231,10 +249,15 @@ describe('Reader 追剧改用主进程状态', () => {
       finished: [], sets: [], setResults: [], retries: 0, coverageCalls: 0,
     }
     const ticks: Array<() => void> = []
-    vi.spyOn(globalThis, 'setInterval').mockImplementation((fn: () => void) => {
-      ticks.push(fn)
-      return 1 as unknown as ReturnType<typeof setInterval>
-    })
+    // 轮询走可自适应的 setTimeout（有任务 3s、空闲 15s），只拦这两个间隔，别的计时器照常
+    const realSetTimeout = globalThis.setTimeout
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      if (ms === 3000 || ms === 15000) {
+        ticks.push(fn)
+        return 1 as unknown as ReturnType<typeof setTimeout>
+      }
+      return realSetTimeout(fn as never, ms)
+    }) as never)
     installApi(fixture)
     const reader = await mountReader()
     try {

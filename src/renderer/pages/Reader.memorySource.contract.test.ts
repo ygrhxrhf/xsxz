@@ -22,8 +22,9 @@ describe('Reader memory source navigation contract', () => {
 
   it('renders every source as a keyboard-accessible plain-text button', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
-    expect(source.match(/<button v-for="source in item.sources"/g)).toHaveLength(4)
-    expect(source.match(/@click="jumpToMemorySource\(source\)"/g)).toHaveLength(4)
+    // 记忆看板里每个来源都要能跳回原文：人物、关系、伏笔、事件、时间线各一处
+    expect(source.match(/<button v-for="source in item.sources"/g)).toHaveLength(5)
+    expect(source.match(/@click="jumpToMemorySource\(source\)"/g)).toHaveLength(5)
     expect(source).toContain('· 查看原文</button>')
     expect(source).toContain('来源章节不存在')
     expect(source).toContain('来源章节正文不可用')

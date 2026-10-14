@@ -24,6 +24,7 @@ import {
   loadBook,
   listBooks,
   updateMeta,
+  writeChaptersBatch,
   setCover,
   markChapterStatus,
   readChapter,
@@ -761,7 +762,10 @@ describe('critical library JSON writes', () => {
         if (i === 1) await expect(writeChapterFile('d_atomic', 'c0001', {
           title: '第一章', body: '新正文', status: 'ready',
         })).rejects.toThrow('disk full')
-        if (i === 2) await expect(rebuildIndex()).rejects.toThrow('disk full')
+        if (i === 2) {
+          // 改元信息会落 book.json 再更新 index.json：这里注入的是索引写失败
+          await expect(updateMeta({ bookId: 'd_atomic', title: '改名', author: '', tags: [] })).rejects.toThrow('disk full')
+        }
         expect(await readFile(target, 'utf-8')).toBe(originals[i])
         expect((await readdir(i === 1 ? join(dir, 'd_atomic', 'chapters') : i === 0 ? join(dir, 'd_atomic') : dir))
           .filter((name) => name.endsWith('.tmp'))).toEqual([])
@@ -1211,5 +1215,48 @@ describe('recoverInterruptedStatus', () => {
     await saveBook(book({ id: 'd_run', status: 'downloading', chapters: [chapter('c0001', 1, 'ready'), chapter('c0002', 2, 'pending')] }))
     expect(await recoverInterruptedStatus([{ id: 'd_run', status: 'downloading' }])).toBe(1)
     expect((await loadBook('d_run')).status).toBe('partial')
+  })
+})
+
+describe('writeChaptersBatch', () => {
+  it('writes every chapter with one book.json pass and marks them ready', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spbf-batch-'))
+    try {
+      await setLibraryPath(dir)
+      const book = await createBookFromBootstrap({
+        bookId: 'd_batch', title: '批量导入', author: '', importType: 'txt',
+        chapterTitles: ['第一章', '第二章', '第三章'],
+      })
+      await writeChaptersBatch('d_batch', [
+        { chapterId: 'c0001', file: { title: '第一章', body: '正文一', status: 'ready' } },
+        { chapterId: 'c0002', file: { title: '第二章', body: '正文二', status: 'ready' } },
+        { chapterId: 'c0003', file: { title: '第三章', body: '正文三', status: 'ready' } },
+      ])
+      const after = await loadBook('d_batch')
+      expect(after.chapters.map((chapter) => chapter.status)).toEqual(['ready', 'ready', 'ready'])
+      expect((await readChapter('d_batch', 'c0001')).body).toBe('正文一')
+      expect((await readChapter('d_batch', 'c0003')).body).toBe('正文三')
+      void book
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores chapter ids that are not in the catalog', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spbf-batch-skip-'))
+    try {
+      await setLibraryPath(dir)
+      await createBookFromBootstrap({
+        bookId: 'd_batch2', title: '批量导入', author: '', importType: 'txt', chapterTitles: ['第一章'],
+      })
+      await writeChaptersBatch('d_batch2', [
+        { chapterId: 'c9999', file: { title: '不存在', body: 'x', status: 'ready' } },
+      ])
+      const after = await loadBook('d_batch2')
+      expect(after.chapters).toHaveLength(1)
+      expect(after.chapters[0]!.status).toBe('pending')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

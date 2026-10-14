@@ -188,6 +188,17 @@ function applyOverallStatus(book: Book): void {
 const bookLocks = new Map<string, Promise<unknown>>()
 
 /** Per-book serial lock; shared with the annotations store in the same dir. */
+type BodyChangeHook = (bookId: string, chapterId: string, oldBody: string, newBody: string) => Promise<void>
+let bodyChangeHook: BodyChangeHook | null = null
+
+/**
+ * 正文被改写（清正文 / 重下 / 手工修复）后要迁移已读位置。
+ * 钩子由 readFrontier 注册：library 不能反过来 import readFrontier，会成环。
+ */
+export function registerBodyChangeHook(hook: BodyChangeHook): void {
+  bodyChangeHook = hook
+}
+
 export async function withBookLock<T>(bookId: string, fn: () => Promise<T>): Promise<T> {
   return withLibraryWrite(async () => {
     const prev = bookLocks.get(bookId) ?? Promise.resolve()
@@ -300,7 +311,11 @@ async function reconcilePendingChapters(bookId: string): Promise<void> {
 }
 
 /** Merge catalog entries into an existing book. Ready chapters stay; new ones append. Does not persist. */
-export function mergeIncomingChapters(book: Book, incoming: CatalogChapter[]): { added: number } {
+export function mergeIncomingChapters(
+  book: Book,
+  incoming: CatalogChapter[],
+  opts?: { requeueChangedUrls?: boolean },
+): { added: number; changed: number } {
   const byUrl = new Map<string, ChapterMeta>()
   const byTitle = new Map<string, ChapterMeta>()
   for (const ch of book.chapters) {
@@ -311,13 +326,26 @@ export function mergeIncomingChapters(book: Book, incoming: CatalogChapter[]): {
 
   let nextIndex = book.chapters.length ? Math.max(...book.chapters.map((c) => c.index)) : 0
   let added = 0
+  let changed = 0
 
   for (const inc of incoming) {
     const nurl = inc.url ? normalizeChapterUrl(inc.url) : ''
     const titleKey = inc.title.trim()
     const existing = (nurl && byUrl.get(nurl)) || (titleKey ? byTitle.get(titleKey) : undefined)
     if (existing) {
+      const oldUrl = existing.url ? normalizeChapterUrl(existing.url) : ''
+      const urlChanged = Boolean(inc.url) && Boolean(existing.url) && nurl !== oldUrl
       if (inc.url && !existing.url) existing.url = inc.url
+      // 同名但章节地址变了（站点重排过目录）：老地址多半已失效。
+      // 只有「检查更新」会把这一章退回 pending 重下，普通「重试失败章」不动已读的内容。
+      if (urlChanged && opts?.requeueChangedUrls) {
+        existing.url = inc.url
+        if (existing.status === 'ready') {
+          existing.status = 'pending'
+          existing.failCode = undefined
+          changed++
+        }
+      }
       if (nurl) byUrl.set(nurl, existing)
       continue
     }
@@ -335,7 +363,7 @@ export function mergeIncomingChapters(book: Book, incoming: CatalogChapter[]): {
     if (titleKey && !byTitle.has(titleKey)) byTitle.set(titleKey, meta)
     added++
   }
-  return { added }
+  return { added, changed }
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +403,28 @@ function splitTrashName(name: string): { bookId: string; trashedAt: string } | n
 
 interface IndexData {
   version: number
+  /** 上次写入时间：缓存是什么时候的，一眼能看出来。 */
+  writtenAt?: string
+  /** bookId → book.json 的 mtime(ms)。对得上就说明这本书没被改过，缓存可直接用。 */
+  mtimes?: Record<string, number>
   books: BookListItem[]
+}
+
+async function readIndex(): Promise<IndexData | null> {
+  try {
+    const parsed = JSON.parse(await readFile(indexFile(), 'utf-8')) as IndexData
+    return Array.isArray(parsed.books) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+async function bookJsonMtime(bookId: string): Promise<number | null> {
+  try {
+    return (await stat(join(bookDir(bookId), 'book.json'))).mtimeMs
+  } catch {
+    return null
+  }
 }
 
 async function writeIndex(data: IndexData): Promise<void> {
@@ -383,16 +432,14 @@ async function writeIndex(data: IndexData): Promise<void> {
 }
 
 async function upsertIndexItem(book: Book): Promise<void> {
-  let books: BookListItem[] = []
-  try {
-    const parsed = JSON.parse(await readFile(indexFile(), 'utf-8')) as IndexData
-    if (Array.isArray(parsed.books)) books = parsed.books.filter((item) => item?.id !== book.id)
-  } catch {
-    /* missing or corrupt index — write this book only; listBooks rebuilds the rest */
-  }
+  const cached = await readIndex()
+  const books = (cached?.books ?? []).filter((item) => item?.id !== book.id)
   books.push(bookToList(book))
   books.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-  await writeIndex({ version: 1, books })
+  const mtimes = { ...(cached?.mtimes ?? {}) }
+  const mtime = await bookJsonMtime(book.id)
+  if (mtime !== null) mtimes[book.id] = mtime
+  await writeIndex({ version: 1, books, writtenAt: new Date().toISOString(), mtimes })
 }
 
 export async function rebuildIndex(): Promise<BookListItem[]> {
@@ -405,8 +452,27 @@ export async function rebuildIndex(): Promise<BookListItem[]> {
   } catch {
     return []
   }
-  const items: BookListItem[] = []
+
+  // 缓存命中判据：书目录集合一致，且每本 book.json 的 mtime 都没变过。
+  // 走缓存时只做一次 stat；不走缓存要逐本 loadBook + 逐章对账（1600 章要读 1600 个文件）。
+  const mtimes: Record<string, number> = {}
   for (const id of entries) {
+    const mtime = await bookJsonMtime(id)
+    if (mtime !== null) mtimes[id] = mtime
+  }
+  const ids = Object.keys(mtimes)
+  const cached = await readIndex()
+  if (
+    cached?.mtimes &&
+    cached.books.length === ids.length &&
+    Object.keys(cached.mtimes).length === ids.length &&
+    ids.every((id) => cached.mtimes![id] === mtimes[id])
+  ) {
+    return cached.books
+  }
+
+  const items: BookListItem[] = []
+  for (const id of ids) {
     try {
       await reconcilePendingChapters(id)
       const book = await loadBook(id)
@@ -416,7 +482,13 @@ export async function rebuildIndex(): Promise<BookListItem[]> {
     }
   }
   items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-  await writeIndex({ version: 1, books: items })
+  // 对账过程可能改写了 book.json，落盘前重新取一遍 mtime
+  const fresh: Record<string, number> = {}
+  for (const id of ids) {
+    const mtime = await bookJsonMtime(id)
+    if (mtime !== null) fresh[id] = mtime
+  }
+  await writeIndex({ version: 1, books: items, writtenAt: new Date().toISOString(), mtimes: fresh })
   return items
 }
 
@@ -509,6 +581,7 @@ export async function listTrash(): Promise<TrashItem[]> {
         author: book.author || '',
         chapterCount: Array.isArray(book.chapters) ? book.chapters.length : 0,
         trashedAt: parts.trashedAt,
+        sizeBytes: await dirSizeBytes(join(trashDir(), ent.name)),
       })
     } catch {
       /* skip corrupt trash entry */
@@ -516,6 +589,59 @@ export async function listTrash(): Promise<TrashItem[]> {
   }
   items.sort((a, b) => b.trashedAt.localeCompare(a.trashedAt))
   return items
+}
+
+/** 目录占用的字节数：回收站条目要显示「删掉的这些占了多少盘」。 */
+async function dirSizeBytes(dir: string): Promise<number> {
+  let total = 0
+  const walk = async (current: string): Promise<void> => {
+    let entries: Dirent[]
+    try {
+      entries = await readdir(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const ent of entries) {
+      const full = join(current, ent.name)
+      if (ent.isDirectory()) {
+        await walk(full)
+        continue
+      }
+      try {
+        total += (await stat(full)).size
+      } catch {
+        /* 读不到大小就跳过这一项 */
+      }
+    }
+  }
+  await walk(dir)
+  return total
+}
+
+/** 回收站条目保留天数：超过就由启动时的清理删掉。 */
+export const TRASH_MAX_AGE_DAYS = 30
+
+/** 清掉回收站里过期的条目：回收站不是长期仓库，占的是同一块盘。 */
+export async function purgeExpiredTrash(maxAgeDays = TRASH_MAX_AGE_DAYS): Promise<number> {
+  return withLibraryWrite(async () => {
+    const deadline = Date.now() - maxAgeDays * 86_400_000
+    let entries: Dirent[]
+    try {
+      entries = await readdir(trashDir(), { withFileTypes: true })
+    } catch {
+      return 0
+    }
+    let count = 0
+    for (const ent of entries) {
+      if (!ent.isDirectory() || !safeTrashName(ent.name)) continue
+      const parts = splitTrashName(ent.name)
+      if (!parts) continue
+      if (new Date(parts.trashedAt).getTime() > deadline) continue
+      await rm(join(trashDir(), ent.name), { recursive: true, force: true }).catch(() => {})
+      count++
+    }
+    return count
+  })
 }
 
 export async function restoreFromTrash(name: string): Promise<void> {
@@ -554,13 +680,23 @@ export async function purgeTrash(name?: string): Promise<number> {
   })
 }
 
+/**
+ * 旧书可能存着 CRLF（早期导入端没做换行规范化）：读出来先统一，
+ * 否则阅读器按空行分段时整章会挤成一段。只改内存里的副本，不改磁盘格式。
+ */
+export function normalizeChapterNewlines(file: ChapterFile): ChapterFile {
+  if (file.body?.includes('\r')) file.body = file.body.replace(/\r\n?/g, '\n')
+  if (file.bodyRaw?.includes('\r')) file.bodyRaw = file.bodyRaw.replace(/\r\n?/g, '\n')
+  return file
+}
+
 export async function readChapter(bookId: string, chapterId: string): Promise<ChapterFile> {
   const book = await loadBook(bookId)
   const meta = book.chapters.find((c) => c.id === chapterId)
   if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
   try {
     const raw = await readFile(chapterPath(bookId, meta.file), 'utf-8')
-    const file = JSON.parse(raw) as ChapterFile
+    const file = normalizeChapterNewlines(JSON.parse(raw) as ChapterFile)
     if (shouldPromoteReady(file) && file.status !== 'ready') {
       await writeChapterFile(bookId, chapterId, { ...file, status: 'ready' })
       const latest = await loadBook(bookId)
@@ -586,11 +722,13 @@ export async function readChapter(bookId: string, chapterId: string): Promise<Ch
 }
 
 export async function updateChapterBody(bookId: string, chapterId: string, body: string, restoreRaw?: boolean): Promise<void> {
-  await withBookLock(bookId, async () => {
+  // 在锁内只记下新旧正文，迁移已读位置放到锁外做（withBookLock 不可重入）
+  const changed = await withBookLock(bookId, async () => {
     const book = await loadBook(bookId)
     const meta = book.chapters.find((c) => c.id === chapterId)
     if (!meta) throw new Error(`章节 ${chapterId} 不存在`)
     const file: ChapterFile = JSON.parse(await readFile(chapterPath(bookId, meta.file), 'utf-8'))
+    const before = file.body
     if (restoreRaw) {
       if (file.bodyRaw) file.body = file.bodyRaw
     } else {
@@ -598,7 +736,9 @@ export async function updateChapterBody(bookId: string, chapterId: string, body:
       file.body = body
     }
     await atomicWriteText(chapterPath(bookId, meta.file), JSON.stringify(file, null, 2))
+    return before === file.body ? null : { oldBody: before, newBody: file.body }
   })
+  if (changed) await bodyChangeHook?.(bookId, chapterId, changed.oldBody, changed.newBody).catch(() => {})
 }
 
 /** 人工修复正文：保留首次编辑前的文本，失败章可直接恢复为可读状态。 */
@@ -1180,6 +1320,45 @@ export async function writeChapterFile(bookId: string, chapterId: string, data: 
 
 export async function markChapterReady(bookId: string, chapterId: string, status: ChapterStatus): Promise<void> {
   await markChapterStatus(bookId, chapterId, status)
+}
+
+/**
+ * 批量写入章节正文：导入一本 txt 要写上千章，逐章走 `writeChapterFile`
+ * 会把同一份 book.json 反复读、反复写上千次（导入卡住的主因）。
+ * 这里只加一次锁、只读写一次 book.json，章节文件逐个落盘。
+ */
+export async function writeChaptersBatch(
+  bookId: string,
+  entries: Array<{ chapterId: string; file: ChapterFile }>,
+): Promise<void> {
+  if (entries.length === 0) return
+  await withBookLock(bookId, async () => {
+    const book = await loadBookUnlocked(bookId)
+    const byId = new Map(book.chapters.map((meta) => [meta.id, meta]))
+    let dirty = false
+    for (const entry of entries) {
+      const meta = byId.get(entry.chapterId)
+      if (!meta) continue
+      const toWrite: ChapterFile = { ...entry.file }
+      if (shouldPromoteReady(toWrite)) {
+        toWrite.status = 'ready'
+        delete toWrite.failCode
+      }
+      await persistChapterJson(bookId, meta.file, toWrite)
+      if (toWrite.status && meta.status !== toWrite.status) {
+        applyChapterStatus(meta, toWrite.status, {
+          failCode: toWrite.failCode,
+          url: toWrite.url,
+          unlockedBy: toWrite.unlockedBy,
+        })
+        dirty = true
+      } else if (toWrite.url && meta.url !== toWrite.url) {
+        meta.url = toWrite.url
+        dirty = true
+      }
+    }
+    if (dirty) await saveBookUnlocked(book)
+  })
 }
 
 export async function markChapterStatus(

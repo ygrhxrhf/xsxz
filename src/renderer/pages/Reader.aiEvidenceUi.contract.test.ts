@@ -14,7 +14,8 @@ describe('Reader evidence QA UI contract', () => {
 
   it('renders whitelisted citations as plain-text source buttons and distinguishes legacy answers', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
-    expect(source).toContain('<strong>依据</strong>')
+    // v2 逐条结论各挂自己的引用；没有 claims 的旧回答保留一个「未逐条对应」的依据块
+    expect(source).toContain('<strong>依据（旧版回答，未逐条对应）</strong>')
     expect(source).toContain('v-for="citation in msg.citations"')
     expect(source).toContain('@click="jumpToMemorySource(citation)"')
     expect(source).toContain('旧版回答，无来源')
