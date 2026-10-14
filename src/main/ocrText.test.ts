@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -77,7 +77,7 @@ describe('OCR 认字', () => {
         ],
         dir,
       )
-      expect(result?.text).toBe('第一段正文\n\n第二段正文')
+      expect(result.ok && result.text).toBe('第一段正文\n\n第二段正文')
       expect(engine.calls).toBe(2)
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -103,21 +103,36 @@ describe('OCR 认字', () => {
         ],
         dir,
       )
-      expect(result?.text).toBe('后面这张认出来了')
+      expect(result.ok && result.text).toBe('后面这张认出来了')
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
   })
 
-  it('没有图、没有引擎都给 null（不抛）', async () => {
+  it('没有图、没有引擎都给出原因码（不抛）', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'spbf-ocr-'))
     try {
       __setOcrEngineForTests(fakeEngine(['x']))
-      expect(await ocrImages([], dir)).toBeNull()
+      expect(await ocrImages([], dir)).toEqual({ ok: false, reason: 'no-image' })
       __setOcrEngineForTests(null, '引擎没装')
-      expect(await ocrImages([{ dataUrl: PNG, detail: '图片正文' }], dir)).toBeNull()
+      const missing = await ocrImages([{ dataUrl: PNG, detail: '图片正文' }], dir)
+      expect(missing.ok).toBe(false)
+      expect(!missing.ok && missing.reason).toBe('no-engine')
+      expect(!missing.ok && missing.detail).toBe('引擎没装')
       const status = await ocrEngineReady()
       expect(status.ok).toBe(false)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('认完就把临时图删掉，不留在 %TEMP%', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spbf-ocr-'))
+    try {
+      __setOcrEngineForTests(fakeEngine(['认出来的字']))
+      const result = await ocrImages([{ dataUrl: PNG, detail: '图片正文' }], dir)
+      expect(result.ok).toBe(true)
+      expect(await readdir(dir)).toEqual([])
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

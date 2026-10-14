@@ -13,7 +13,7 @@
  */
 import { JSDOM } from 'jsdom'
 import type { SiteRule, UnlockMethod } from '../shared/types'
-import { bodyText, cjkLength, cleanBodyText, effectiveLength, linkDensity, visibleText } from './bodyText'
+import { bodyText, cjkLength, cleanBodyText, effectiveLength, linkDensity, looksFontObfuscated, visibleText } from './bodyText'
 
 /** 恢复出的正文至少要有这么多有效字符，才敢当「解锁成功」。 */
 export const MIN_UNLOCK_CHARS = 200
@@ -122,15 +122,8 @@ function stripPaywallNotices(text: string): string {
   return effectiveLength(cleaned) >= MIN_UNLOCK_CHARS ? cleaned : text
 }
 
-/** 私用区（PUA）码点：站点拿自定义字体把字换成这批码点时，正文在 DOM 里就是乱码。 */
-const PUA_RE = /[\ue000-\uf8ff]/g
-
-export function looksFontObfuscated(text: string): boolean {
-  const compact = text.replace(/\s+/g, '')
-  if (compact.length < 40) return false
-  const hits = compact.match(PUA_RE)
-  return Boolean(hits) && hits!.length / compact.length > 0.3
-}
+/** 私用区（PUA）码点判定已收口到 bodyText：抽取与解锁两条路共用同一口径。 */
+export { looksFontObfuscated } from './bodyText'
 
 /**
  * 一段串够不够格当「被解锁的正文」。
@@ -529,11 +522,30 @@ function parseDom(html: string, pageUrl: string): JSDOM | null {
 // 主入口
 // ---------------------------------------------------------------------------
 
+/**
+ * pageProbe 会把页面里所有同名 JSON 都塞进一个 `<script id="spbf-page-probe">`，
+ * 里面既有正文也可能有广告 / 推荐列表。这条通道的候选要额外过一道判据。
+ */
+const PROBE_SOURCE_RE = /spbf-page-probe/i
+const AD_TEXT_RE = /(?:最新网址|请收藏本站|加入书架|广告|注册|下载APP|扫码|公众号|推荐阅读|本站所有小说|转载作品|由网友上传)/
+
+/** probe 通道的候选：中文占比要高、开头不能是站点广告话术。 */
+function probeLooksTrustworthy(text: string): boolean {
+  const compact = text.replace(/\s+/g, '')
+  if (compact.length < MIN_UNLOCK_CHARS) return false
+  if (cjkLength(compact) / compact.length < 0.6) return false
+  return !AD_TEXT_RE.test(compact.slice(0, 400))
+}
+
 function pickBest(candidates: Candidate[], visible: string): { hit: UnlockHit } | { tried: string[] } {
   const tried: string[] = []
   let best: { hit: UnlockHit; score: number } | null = null
   const ranked = [...candidates].sort((a, b) => effectiveLength(b.text) - effectiveLength(a.text))
   for (const candidate of ranked) {
+    if (PROBE_SOURCE_RE.test(candidate.detail) && !probeLooksTrustworthy(candidate.text)) {
+      tried.push(`${candidate.detail}：中文占比或广告词判据没过`)
+      continue
+    }
     const accepted = acceptCandidate(candidate.text, visible)
     if (!accepted) {
       tried.push(`${candidate.detail}：${effectiveLength(candidate.text)} 字，不够或与试读重合`)

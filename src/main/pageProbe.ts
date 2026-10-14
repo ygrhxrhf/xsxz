@@ -52,8 +52,13 @@ export const PAGE_PROBE_SCRIPT = `(() => {
   };
   try { walk(document, 0); } catch (e) {}
   try {
+    var AD_FRAME_RE = /(?:^|[.\/_-])(ad|ads|adv|advert|banner|promo|gg|guanggao)(?:[.\/_-]|$)/i;
     var frames = document.querySelectorAll('iframe,frame');
     for (var f = 0; f < frames.length; f++) {
+      // 广告位 iframe 里的文字不是正文，采进来只会污染候选
+      var src = '';
+      try { src = frames[f].getAttribute('src') || frames[f].src || ''; } catch (e) { src = ''; }
+      if (src && AD_FRAME_RE.test(src)) continue;
       var text = '';
       try {
         var doc = frames[f].contentDocument;

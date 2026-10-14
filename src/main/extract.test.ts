@@ -804,3 +804,47 @@ ${filler}
     expect(existing.chapters[0].status).toBe('ready')
   })
 })
+
+describe('extractBody — 正文噪音净化', () => {
+  const NOISY_URL = 'https://example.com/book/7.html'
+
+  it('drops site navigation and repeated paragraphs', () => {
+    const result = extractBody(fixture('noisy-chapter.html'), NOISY_URL)
+    expect(result.ok).toBe(true)
+    expect(result.body).not.toContain('请记住本书首发域名')
+    expect(result.body).not.toContain('加入书架')
+    expect(result.body).not.toContain('\n 上一章')
+    // 站点特有的水印不在内置规则里，留给站点规则处理
+    expect(result.body).toContain('编号 A-2291')
+    expect(result.body.match(/越过这道垭口/g)).toHaveLength(1)
+    expect(result.body).toContain('风从山口压下来')
+  })
+
+  it('applies the site rule bodyCleanPatterns on top of the built-in rules', () => {
+    const rule: SiteRule = { host: 'example.com', bodyCleanPatterns: 'A-2291' }
+    const result = extractBody(fixture('noisy-chapter.html'), NOISY_URL, rule)
+    expect(result.ok).toBe(true)
+    expect(result.body).not.toContain('编号 A-2291')
+    expect(result.body).toContain('风从山口压下来')
+  })
+
+  it('ignores an invalid clean pattern instead of dropping the body', () => {
+    const rule: SiteRule = { host: 'example.com', bodyCleanPatterns: '这不是正则([' }
+    const result = extractBody(fixture('noisy-chapter.html'), NOISY_URL, rule)
+    expect(result.ok).toBe(true)
+    expect(result.body).toContain('编号 A-2291')
+    expect(result.body).toContain('风从山口压下来')
+  })
+
+  it('keeps every prose paragraph when the noise is small', () => {
+    const first = '风从山口压下来，把整片草场按出一道长长的波纹。她记得父亲说过，越过这道垭口就是另一重天地，可真正站在垭口上时只看见云在脚下翻滚，远处的雷声一点点近起来。'
+    const second = '林昭把缰绳绕在手腕上，一步一步朝那片翻滚的云里走去。她没有回头，只是把斗篷勒得更紧，心里清楚地知道今天是回不去了。'
+    const html = `<html><body><div id="content"><p>${first}</p><p>${second}</p></div>
+      <div>加入书架</div><div>上一章</div><div>下一章</div>
+      <div>请记住本书首发域名：www.example.com</div></body></html>`
+    const result = extractBody(html, NOISY_URL)
+    expect(result.ok).toBe(true)
+    expect(result.body).toContain('越过这道垭口就是另一重天地')
+    expect(result.body).toContain('心里清楚地知道今天是回不去了')
+  })
+})

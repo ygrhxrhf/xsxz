@@ -32,6 +32,7 @@ import type {
   DownloadProgress,
   DownloadPreview,
   ExtractBootstrap,
+  PreviewPageKind,
   FailCode,
   SiteRule,
   SiteRulePreview,
@@ -117,6 +118,8 @@ interface ActiveDownload {
   requeued?: boolean
   /** 最近一次撞墙章「自动恢复为什么没成」的一句话，进人工提示给用户看。 */
   lastUnlockReason?: string
+  /** 同一章被「我已处理好」重排过几次：超过上限就不再自动重排，避免死循环。 */
+  wallRequeues?: Map<string, number>
 }
 
 type HtmlLoader = (url: string) => Promise<string>
@@ -146,6 +149,9 @@ export function isSiteWallFail(code: FailCode | undefined): boolean {
   return code === 'NeedLogin' || code === 'Paywall' || code === 'Intercepted'
 }
 
+/** 同一章撞墙后被重排的上限：超过就说明「处理好了」其实没生效，别再空转。 */
+export const WALL_REQUEUE_LIMIT = 2
+
 /** 撞墙时给人的话：说清卡在哪、要本人去做什么。软件不代做登录、付费或验证。 */
 function blockedMessage(code: FailCode, unlockReason?: string): string {
   const why =
@@ -156,7 +162,7 @@ function blockedMessage(code: FailCode, unlockReason?: string): string {
         : '页面被拦截或要求验证'
   const tried =
     code === 'Paywall' && unlockReason ? `（自动恢复已试过：${unlockReason}）` : ''
-  return `${why}${tried}，已暂停本次下载。请到浏览页用自己的账号登录或完成验证，再点「已处理好，继续下载」。`
+  return `${why}${tried}，已暂停本次下载。请在该页面用自己的账号登录或完成验证，再点「我已处理好，继续下载」。`
 }
 
 const RATE_LIMIT_STOP_MESSAGE = '站点连续限流，已停止本次下载。稍后用「重试失败章」继续。'
@@ -304,6 +310,8 @@ export function getHiddenView(): WebContentsView {
 }
 
 const EMPTY_CHAPTER_REASON = '正文为空或过短'
+const CATALOG_PAGE_HINT = '这是目录页，没有正文。点「下载本书」会按目录把整本下载到书库。'
+const CHAPTER_PAGE_HINT = '这一页没有目录。回到这本书的目录页再下载，或先在设置里配置本站规则。'
 
 /** 结束清单原因：failMessage > FAIL_CODE_ZH[failCode] > 正文为空或过短。 */
 export function failedChapterReason(ch: {
@@ -433,14 +441,26 @@ function notifyHumanResumed(bookId: string): void {
  */
 async function requeueWallFailedChapters(bookId: string, dl: ActiveDownload): Promise<void> {
   const book = await loadBook(bookId)
+  const requeues = dl.wallRequeues ?? (dl.wallRequeues = new Map<string, number>())
   let count = 0
+  let exhausted = 0
   for (const ch of book.chapters) {
     if (ch.status !== 'failed' || !isSiteWallFail(ch.failCode)) continue
+    const tries = requeues.get(ch.id) ?? 0
+    // 「我已处理好」却没生效时别再无限重排：同一章最多退回 pending 两次
+    if (tries >= WALL_REQUEUE_LIMIT) {
+      exhausted++
+      continue
+    }
+    requeues.set(ch.id, tries + 1)
     await markChapterStatus(bookId, ch.id, 'pending')
     dl.failed = Math.max(0, dl.failed - 1)
     count++
   }
   if (count > 0) dl.requeued = true
+  if (exhausted > 0 && count === 0) {
+    dl.lastError = `有 ${exhausted} 章连续 ${WALL_REQUEUE_LIMIT + 1} 次都卡在同一堵墙，已停止自动重排。请确认页面已可正常阅读后，用书库的「重试失败章」继续。`
+  }
 }
 
 function interruptibleDelay(ms: number): Promise<void> {
@@ -491,6 +511,8 @@ export function isHydratedHtml(html: string, pageUrl: string, rule?: SiteRule): 
 export function isWallPageHtml(html: string, pageUrl: string, rule?: SiteRule): boolean {
   const page = extractPage(html, pageUrl, undefined, rule)
   if (page.ok) return false
+  // 乱码 / 字形替换页也不会因为等更久长出可读正文：直接交回主流程记失败原因
+  if (page.failCode === 'BodyGarbled') return true
   return page.failCode === 'Paywall' || page.failCode === 'NeedLogin' || page.failCode === 'Intercepted'
 }
 
@@ -525,13 +547,21 @@ async function withCancel<T>(work: Promise<T>): Promise<T> {
   })
 }
 
+/** 空正文页（占位章 / 已删章）等不来内容，把总预算收到这里就走。 */
+export const EMPTY_BODY_TIMEOUT_MS = 3_000
+
+function isEmptyBodyHtml(html: string, pageUrl: string, rule?: SiteRule): boolean {
+  const page = extractPage(html, pageUrl, undefined, rule)
+  return !page.ok && page.failCode === 'BodyEmpty'
+}
+
 export async function waitUntilHydrated(
   pollHtml: () => Promise<string>,
   pageUrl: string,
   opts?: { pollMs?: number; timeoutMs?: number; rule?: SiteRule },
 ): Promise<string> {
   const pollMs = opts?.pollMs ?? HYDRATE_POLL_MS
-  const timeoutMs = opts?.timeoutMs ?? HYDRATE_TIMEOUT_MS
+  let timeoutMs = opts?.timeoutMs ?? HYDRATE_TIMEOUT_MS
   const started = Date.now()
   const rule = opts?.rule
   let last = ''
@@ -544,6 +574,10 @@ export async function waitUntilHydrated(
     if (isHydratedHtml(last, pageUrl, siteRule)) return last
     // 墙页只在头两轮判定：真站点的墙第二眼就能看出，SPA 骨架也在这一轮之后有内容
     if (polls++ < WALL_PROBE_POLLS && isWallPageHtml(last, pageUrl, siteRule)) return last
+    // 页面已经看得出是「空正文」就不再等满 12s（每章 3 次重试下来是 37s 的白等）
+    if (timeoutMs > EMPTY_BODY_TIMEOUT_MS && polls > WALL_PROBE_POLLS && isEmptyBodyHtml(last, pageUrl, siteRule)) {
+      timeoutMs = EMPTY_BODY_TIMEOUT_MS
+    }
     if (Date.now() - started >= timeoutMs) return last
     await interruptibleDelay(pollMs)
   }
@@ -728,7 +762,7 @@ export async function followCatalogIfNeeded(
           ? catPage.bootstrap.chapters
           : extractCatalog(catHtml, bs.catalogUrl, catRule)
       if (chapters.length < 2) {
-        return { ok: false, code: 'CatalogNotFound', message: '从章节目录未找到足够的章节链接' }
+        return { ok: false, code: 'CatalogNotFound', message: '这一章识别到了目录，但目录里没有足够的章节链接。' }
       }
       return {
         ok: true,
@@ -747,7 +781,7 @@ export async function followCatalogIfNeeded(
   }
 
   if (bs.chapters.length === 0) {
-    return { ok: false, code: 'CatalogNotFound', message: '未找到章节列表' }
+    return { ok: false, code: 'CatalogNotFound', message: CHAPTER_PAGE_HINT }
   }
   return { ok: true, bootstrap: bs }
 }
@@ -816,8 +850,28 @@ export async function startDownload(): Promise<{ ok: boolean; bookId?: string; c
 }
 
 /** 识别当前页和样本，不创建书籍。确认令牌只在当前浏览页有效。 */
+/**
+ * 预览取哪几章做样本：中位章优先。
+ * 第 1 章常常是站点自己的「作者的话 / 公告 / 空占位」，拿它当样本会让用户盲确认。
+ */
+function sampleChapterOrder<T>(chapters: T[]): T[] {
+  if (chapters.length <= 1) return [...chapters]
+  const mid = Math.floor(chapters.length / 2)
+  const picks = [chapters[mid], chapters[0], chapters[Math.min(mid + 1, chapters.length - 1)]]
+  return picks.filter((item, index) => item !== undefined && picks.indexOf(item) === index)
+}
+
+/** 失败提示要带页面类型：目录页可以继续下，章节页要先回到目录。 */
+function previewFailure(
+  message: string,
+  pageKind: PreviewPageKind,
+  code?: FailCode,
+): { ok: false; code?: FailCode; message: string; pageKind: PreviewPageKind } {
+  return { ok: false, code, message, pageKind }
+}
+
 export async function previewDownload(): Promise<
-  { ok: true; preview: DownloadPreview } | { ok: false; code?: FailCode; message: string }
+  { ok: true; preview: DownloadPreview } | { ok: false; code?: FailCode; message: string; pageKind?: PreviewPageKind }
 > {
   pendingPreview = null
   if (isLibraryRestoring() || isDownloadBusy()) return { ok: false, message: '书库或下载任务正忙，请稍后再试' }
@@ -833,21 +887,38 @@ export async function previewDownload(): Promise<
     extracted = extractPage(reloaded, pageUrl, undefined, rule)
   }
   if (!extracted.ok || !extracted.bootstrap) {
-    return { ok: false, code: extracted.failCode || 'UnknownPage', message: extracted.failMessage || '无法识别为书' }
+    // extractPage 只在整体识别成功时才回 catalog，所以这里自己再判一次：
+    // 页面上确实有目录却没能成书时，提示不该说「这一页没有目录」。
+    const catalogHits = extractCatalog(html, pageUrl, rule).length
+    const pageKind: PreviewPageKind = catalogHits >= 2 ? 'catalog' : extracted.pageKind === 'chapter' ? 'chapter' : 'unknown'
+    const message = catalogHits >= 2
+      ? `页面里有 ${catalogHits} 条目录链接，但没能识别成书。请在设置里为本站配置站点规则后重试。`
+      : pageKind === 'catalog'
+        ? CATALOG_PAGE_HINT
+        : pageKind === 'chapter'
+          ? CHAPTER_PAGE_HINT
+          : extracted.failMessage || '无法识别为书'
+    return previewFailure(message, pageKind, extracted.failCode || 'UnknownPage')
   }
   const followed = await followCatalogIfNeeded(extracted.bootstrap, loadPageHtml)
-  if (!followed.ok) return { ok: false, code: followed.code, message: followed.message || '无法识别目录' }
+  if (!followed.ok) return previewFailure(followed.message || '无法识别目录', 'chapter', followed.code)
   if (wc.isDestroyed() || wc.getURL() !== pageUrl) return { ok: false, message: '网页已切换，请重新预览' }
   const bootstrap = followed.bootstrap
-  const sampleChapter = bootstrap.chapters[0]
+  const order = sampleChapterOrder(bootstrap.chapters)
+  let sampleChapter = bootstrap.chapters[0]
   let sampleBody = ''
   let sampleError: string | undefined
-  if (sampleChapter) {
+  for (const candidate of order) {
+    sampleChapter = candidate
     try {
-      const sampleHtml = await loadPageHtml(sampleChapter.url)
-      const body = extractBody(sampleHtml, sampleChapter.url, await ruleForPage(sampleChapter.url))
-      if (body.ok) sampleBody = body.body.slice(0, 800)
-      else sampleError = body.failMessage || '样本正文无法提取'
+      const sampleHtml = await loadPageHtml(candidate.url)
+      const body = extractBody(sampleHtml, candidate.url, await ruleForPage(candidate.url))
+      if (body.ok) {
+        sampleBody = body.body.slice(0, 800)
+        sampleError = undefined
+        break
+      }
+      sampleError = body.failMessage || '样本正文无法提取'
     } catch (error) {
       sampleError = error instanceof Error ? error.message : '样本正文加载失败'
     }
@@ -926,7 +997,7 @@ export async function previewCurrentSiteRule(rule: SiteRule): Promise<
 async function beginDownloadFromBootstrap(
   bs: ExtractBootstrap,
   pageUrl: string,
-): Promise<{ ok: true; bookId: string } | { ok: false; code?: FailCode; message?: string }> {
+): Promise<{ ok: true; bookId: string } | { ok: false; bookId?: string; code?: FailCode; message?: string }> {
   if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
   if (active.size > 0) {
     return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
@@ -960,6 +1031,16 @@ async function beginDownloadFromBootstrap(
     })
     book.status = 'downloading'
     await saveBook(book)
+  }
+
+  // 全书都已经下好了：入队只会首帧就显示「完成」，用户以为自己点了没反应
+  if (!book.chapters.some((c) => chapterNeedsDownload(c.status))) {
+    await refreshBookStatus(bookId)
+    return {
+      ok: false,
+      bookId,
+      message: '这本书的章节都已经下载好了，没有需要补的章。要补新章节请在书库里用「检查更新」。',
+    }
   }
 
   const dl: ActiveDownload = {
@@ -1133,23 +1214,43 @@ async function tryOcrUnlock(
 ): Promise<{ body: string; method: UnlockMethod; detail: string } | null> {
   if (rule?.ocrUnlock !== true) return null
   if (dl.cancelled) return null
+  const note = (reason: string): void => {
+    dl.lastUnlockReason = `${dl.lastUnlockReason ? `${dl.lastUnlockReason}；` : ''}${reason}`
+  }
   let payload: string
   try {
     payload = await runInPageContext(PAGE_OCR_SCRIPT)
   } catch {
+    note('OCR 引擎没能取到页面里的图片')
     return null
   }
   const { images } = parseOcrPayload(payload)
-  if (images.length === 0) return null
-  let recognized: { text: string; detail: string } | null = null
-  try {
-    recognized = await ocrImages(images, ocrTempDir())
-  } catch {
+  if (images.length === 0) {
+    note('页面里没有可认的图片正文')
     return null
   }
-  if (!recognized) return null
+  let recognized: Awaited<ReturnType<typeof ocrImages>>
+  try {
+    recognized = await ocrImages(images, ocrTempDir())
+  } catch (error) {
+    note(`OCR 失败：${error instanceof Error ? error.message : String(error)}`)
+    return null
+  }
+  if (!recognized.ok) {
+    note(
+      recognized.reason === 'no-engine'
+        ? `本机没有可用的 OCR 引擎（${recognized.detail ?? 'tesseract.js'}）`
+        : recognized.reason === 'no-image'
+          ? '页面里没有可认的图片正文'
+          : 'OCR 认了图片，但没认出可读文字（图片可能过小或字迹不清）',
+    )
+    return null
+  }
   const body = normalizeRecoveredBody(recognized.text)
-  if (!body) return null
+  if (!body) {
+    note('OCR 认出的文字经清理后不足一段，未采用')
+    return null
+  }
   return { body, method: 'ocr', detail: `OCR ${recognized.detail}` }
 }
 
@@ -1214,6 +1315,8 @@ async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownloa
 
   for (let attempt = 1; attempt <= maxTries; attempt++) {
     if (dl.cancelled) break
+    // 原因是「这一章」的：上一章的解锁原因不能带到这一章的提示里
+    if (attempt === 1) dl.lastUnlockReason = undefined
     try {
       const html = await loadPageHtml(chapterUrl)
       if (dl.cancelled) break
@@ -1272,8 +1375,13 @@ async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownloa
           dl.lastUnlockReason = `${dl.lastUnlockReason ?? '页面内没有可恢复的正文'}；章节接口也没拿到正文`
         }
       }
-      // 再退一层：图片化正文 / 字形替换，按站点开关走 OCR
-      if (bodyResult.failCode === 'Paywall' || bodyResult.unlockReason) {
+      // 再退一层：图片化正文 / 字形替换 / 空占位，按站点开关走 OCR
+      if (
+        bodyResult.failCode === 'Paywall' ||
+        bodyResult.failCode === 'BodyGarbled' ||
+        bodyResult.failCode === 'BodyEmpty' ||
+        bodyResult.unlockReason
+      ) {
         const viaOcr = await tryOcrUnlock(chapterUrl, bodyRule, dl)
         if (viaOcr) {
           const ocrChapter: ChapterFile = {
@@ -1290,9 +1398,7 @@ async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownloa
           dl.done++
           return undefined
         }
-        if (bodyRule?.ocrUnlock === true && !dl.lastUnlockReason?.includes('OCR')) {
-          dl.lastUnlockReason = `${dl.lastUnlockReason ?? '页面内没有可恢复的正文'}；OCR 也没认出可读正文`
-        }
+        // OCR 为什么没成由 tryOcrUnlock 写进 dl.lastUnlockReason
       }
       lastCode = bodyResult.failCode || 'BodyEmpty'
       lastMsg = failMessage(lastCode, bodyResult.failMessage)
@@ -1411,7 +1517,7 @@ export async function resumeUnblock(bookId: string): Promise<{ ok: boolean; mess
 
 export async function checkUpdate(
   bookId: string,
-): Promise<{ ok: true; bookId: string; added: number } | { ok: false; code?: FailCode; message: string }> {
+): Promise<{ ok: true; bookId: string; added: number; changed: number } | { ok: false; code?: FailCode; message: string }> {
   if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
   if (active.size > 0) {
     return { ok: false, message: '已有下载任务在进行中，请等待完成或取消后再试' }
@@ -1439,7 +1545,7 @@ export async function checkUpdate(
       return { ok: false, code: 'CatalogNotFound', message: '目录页无法访问或内容变化' }
     }
 
-    const { added } = mergeIncomingChapters(book, chapters)
+    const { added, changed } = mergeIncomingChapters(book, chapters, { requeueChangedUrls: true })
     book.status = 'downloading'
     await saveBook(book)
 
@@ -1456,7 +1562,7 @@ export async function checkUpdate(
     const job = downloadChapters(bookId).catch(() => {})
     runningJobs.add(job)
     void job.finally(() => runningJobs.delete(job))
-    return { ok: true, bookId, added }
+    return { ok: true, bookId, added, changed }
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)
     return { ok: false, message: message || '检查更新失败' }
@@ -1517,7 +1623,7 @@ export async function checkAllUpdates(): Promise<CheckAllResult> {
       checked++
       if (res.ok) {
         if (res.added > 0) booksWithUpdates++
-        results.push({ ok: true, bookId: res.bookId, title: b.title, added: res.added })
+        results.push({ ok: true, bookId: res.bookId, title: b.title, added: res.added, changed: res.changed })
         try {
           await waitForIdle()
         } catch {

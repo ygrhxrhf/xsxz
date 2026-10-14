@@ -9,7 +9,7 @@ import { JSDOM } from 'jsdom'
 import type { CatalogChapter, ExtractBootstrap, FailCode, PageKind, SiteRule, UnlockMethod } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 import { canonicalizeUrl, isPathLikeHash } from '../shared/urlHash'
-import { bodyText, cleanBodyText, effectiveLength, linkDensity, visibleText } from './bodyText'
+import { bodyText, cleanBodyText, effectiveLength, linkDensity, looksGarbled, visibleText } from './bodyText'
 import { unlockAllowed, unlockPaywalledBody } from './paywallUnlock'
 
 // ---------------------------------------------------------------------------
@@ -206,7 +206,8 @@ function tryCatalogFromDoc(doc: Document, pageUrl: string): CatalogHit | null {
 
   let best: { container: Element; links: HTMLAnchorElement[] } | null = null
   for (const [container, links] of containers) {
-    if (links.length < 5) continue
+    // 短篇 / 试读站的目录只有几章：门槛放到 2，靠下面的「像不像目录」兜住误判
+    if (links.length < 2) continue
     if (!best || links.length > best.links.length) {
       best = { container, links }
     }
@@ -226,13 +227,53 @@ function tryCatalogFromDoc(doc: Document, pageUrl: string): CatalogHit | null {
     chapters.push({ title: visibleText(a), url, index })
   }
 
-  if (chapters.length < 5) return null
+  if (chapters.length < 2) return null
+
+  // 章节多的容器已经足够可信；只有短目录才要求它「长得像目录」，
+  // 否则章节页侧栏的「最新更新 / 推荐阅读」散链会被当成整本书的目录。
+  if (chapters.length < 5) {
+    if (chapterTitleRatio(chapters) < 0.6) return null
+    if (siblingPathRatio(chapters.map((c) => c.url)) < 0.6) return null
+  }
 
   return {
     bookTitle: extractBookTitle(doc),
     author: extractAuthor(doc),
     chapters,
   }
+}
+
+/** 章节标题的常见写法：给「短目录」判定用，避免把侧栏推荐当目录。 */
+const CHAPTER_TITLE_HINT_RE =
+  /^\s*(?:第\s*[0-9一二三四五六七八九十百千万零〇两]+\s*[章节回]|正文|楔子|序章|序言|前言|番外|外传|后记|尾声|终章|\d{1,4}\s*[.、:：)）]?\s*\S)/
+
+function chapterTitleRatio(chapters: Array<{ title: string }>): number {
+  if (chapters.length === 0) return 0
+  const hits = chapters.filter((c) => CHAPTER_TITLE_HINT_RE.test(c.title)).length
+  return hits / chapters.length
+}
+
+/** 同一目录下的兄弟链接占比：目录页的链接地址几乎都长在同一个父路径下。 */
+function siblingPathRatio(urls: string[]): number {
+  if (urls.length < 2) return 0
+  const parentOf = (u: string): string => {
+    try {
+      const parsed = new URL(u)
+      // hash 路由的目录页（#/book/65/1.html）父路径在 hash 里，不能只看 pathname
+      const path = `${parsed.pathname}${parsed.hash}`
+      return path.slice(0, path.lastIndexOf('/'))
+    } catch {
+      return ''
+    }
+  }
+  const counts = new Map<string, number>()
+  for (const u of urls) {
+    const key = parentOf(u)
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  let max = 0
+  for (const n of counts.values()) if (n > max) max = n
+  return max / urls.length
 }
 
 // ---------------------------------------------------------------------------
@@ -291,21 +332,76 @@ const AD_PARAGRAPHS = [
   /^(?:最新网址|最新地址|本站网址|本书地址|小说最新地址).{0,100}(?:https?:\/\/|www\.|\.(?:com|net|cn|cc|org)|请收藏|搜索)/i,
   /^(?:请|记得)(?:先)?(?:收藏|关注)(?:本站|本书|本网站|我们的)?(?:网址|地址|域名|微信公众号|公众号|QQ群).{0,100}$/,
   /^(?:广告|推广|友情提示)[:：]\s*.{5,120}(?:点击|下载|关注|访问|网址|公众号|扫码|注册)/,
+  // 站点声明：正文没删干净时每章末尾都挂着，阅读时极其扎眼
+  /^(?:本书|本站|本网站)?[^\n]{0,30}(?:所有小说|所有章节|本站内容|本书内容)[^\n]{0,20}(?:转载|网友上传|来自互联网|收集整理|仅供)[^\n]{0,90}$/,
+  /^[^\n]{0,40}(?:均为网友上传|由网友上传|仅为宣传本书|只为大家能|请支持正版|如有侵权请)[^\n]{0,70}$/,
 ]
 
-function cleanAdParagraphs(raw: string): string {
-  let removed = 0
-  const kept = raw.split(/\n{2,}/).filter((paragraph) => {
+/** 章内导航噪音：整段就是站点按钮或提示时删掉，正文段落不受影响。 */
+const NAV_PARAGRAPHS = [
+  /^(?:上一[章节回]|下一[章节回]|返回目录|回目录|章节目录|目录|书页|加入书架|加入书签|投推荐票|投月票|推荐本书|手机阅读|电脑阅读|字体大小|背景颜色|护眼模式|自动滚屏|本章未完|未完待续|点击下一页|翻页|下载本书)(?:\s*[（(【\[].{0,40}[）)】\]])?$/,
+  /^(?:本站|小说网|顶点小说|笔趣|全文阅读|无弹窗|免费阅读|请记住本书首发域名)[^\n]{0,60}(?:https?:\/\/|www\.|\.[a-z]{2,6}\b|收藏|域名|地址)/i,
+  /^(?:相关推荐|推荐阅读|猜你喜欢|热门推荐|其它作品|作者其他作品|喜欢本站|友情链接|精彩推荐)[:：]?$/,
+  /^(?:章节错误|内容有误|举报本章|报错|意见反馈|商务合作|广告投放)[:：]?\s*.{0,40}$/,
+]
+
+/** 完全相同的长段落只留一次：站点把正文连发两遍时清掉重复。 */
+const REPEAT_PARAGRAPH_MIN_LENGTH = 12
+const BODY_CLEAN_LINE_LIMIT = 200
+const BODY_CLEAN_MAX_LINES = 20
+
+/** 站点规则里的正文噪音正则：每行一条，非法行与超限行忽略，不抛错。 */
+export function parseBodyCleanPatterns(value: string | undefined): RegExp[] {
+  if (typeof value !== 'string' || !value.trim()) return []
+  const patterns: RegExp[] = []
+  for (const line of value.split('\n')) {
+    const text = line.trim()
+    if (!text || text.length > BODY_CLEAN_LINE_LIMIT) continue
+    try { patterns.push(new RegExp(text, 'i')) } catch { /* 非法正则只忽略这一行 */ }
+    if (patterns.length >= BODY_CLEAN_MAX_LINES) break
+  }
+  return patterns
+}
+
+/** 章内噪音与重复段清理：噪音删太多时整体放弃，避免把正文一起删掉。 */
+function cleanAdParagraphs(raw: string, rule?: SiteRule): string {
+  const extra = parseBodyCleanPatterns(rule?.bodyCleanPatterns)
+  const isNoise = (text: string): boolean => {
+    if (!text) return false
+    if (text.length <= 160 && [...AD_PARAGRAPHS, ...NAV_PARAGRAPHS].some((pattern) => pattern.test(text))) return true
+    return extra.length > 0 && extra.some((pattern) => pattern.test(text))
+  }
+
+  const paragraphs = raw.split(/\n{2,}/)
+  let noiseRemoved = 0
+  const noiseKept = paragraphs.filter((paragraph) => {
     const text = paragraph.trim()
-    if (!text || text.length > 160 || !AD_PARAGRAPHS.some((pattern) => pattern.test(text))) return true
-    removed++
+    if (!text || !isNoise(text)) return true
+    noiseRemoved++
     return false
   })
-  if (!removed) return raw
-  const cleaned = kept.join('\n\n').trim()
-  const rawLength = effectiveLength(raw)
-  const cleanedLength = effectiveLength(cleaned)
-  return cleanedLength >= 80 && cleanedLength >= rawLength * 0.7 ? cleaned : raw
+
+  let base = raw
+  if (noiseRemoved) {
+    const candidate = noiseKept.join('\n\n').trim()
+    const rawLength = effectiveLength(raw)
+    const candidateLength = effectiveLength(candidate)
+    if (candidateLength >= 80 && candidateLength >= rawLength * 0.7) base = candidate
+  }
+
+  // 站点把同一段正文连发两遍时只留一次；去重可靠，不参与上面的回退判定。
+  const seen = new Set<string>()
+  const deduped = base.split(/\n{2,}/).filter((paragraph) => {
+    const text = paragraph.trim()
+    if (!text || text.length < REPEAT_PARAGRAPH_MIN_LENGTH) return true
+    if (seen.has(text)) return false
+    seen.add(text)
+    return true
+  })
+  if (deduped.length === paragraphs.length) return base
+  if (deduped.length === base.split(/\n{2,}/).length) return base
+  const cleaned = deduped.join('\n\n').trim()
+  return effectiveLength(cleaned) >= 80 ? cleaned : base
 }
 
 /** 文本从哪来的：正文容器里的截断章文才能用弱档付费词。 */
@@ -316,14 +412,17 @@ function tryExtractBody(doc: Document): {
   ok: boolean
   partialText: string
   source: BodySource
+  /** 抽到的候选是乱码 / 字形替换：调用方据此报 BodyGarbled 而不是 BodyEmpty。 */
+  garbled: boolean
 } {
   // 1. Common selectors
   for (const sel of BODY_SELECTORS) {
     const el = doc.querySelector(sel)
     if (!el) continue
     const text = cleanBodyText(bodyText(el))
-    if (effectiveLength(text) >= 80) return { body: text, ok: true, partialText: text, source: 'container' }
-    if (text.length > 0) return { body: '', ok: false, partialText: text, source: 'container' }
+    const garbled = looksGarbled(text)
+    if (effectiveLength(text) >= 80 && !garbled) return { body: text, ok: true, partialText: text, source: 'container', garbled: false }
+    if (text.length > 0) return { body: '', ok: false, partialText: text, source: 'container', garbled }
   }
 
   // 2. Readability
@@ -333,27 +432,35 @@ function tryExtractBody(doc: Document): {
       const articleDoc = doc.createElement('div')
       articleDoc.innerHTML = article.content ?? ''
       const text = cleanBodyText(bodyText(articleDoc))
-      if (effectiveLength(text) >= 80) return { body: text, ok: true, partialText: text, source: 'fallback' }
-      if (text.length > 0) return { body: '', ok: false, partialText: text, source: 'fallback' }
+      const garbled = looksGarbled(text)
+      if (effectiveLength(text) >= 80 && !garbled) return { body: text, ok: true, partialText: text, source: 'fallback', garbled: false }
+      if (text.length > 0) return { body: '', ok: false, partialText: text, source: 'fallback', garbled }
     }
   } catch { /* skip */ }
 
   // 3. Largest text block
   const blocks = doc.querySelectorAll('div, section, article')
   let best: { el: Element; len: number } | null = null
+  let sawGarbledBlock = false
   for (const el of blocks) {
     if (linkDensity(el) > 0.35) continue
-    const len = effectiveLength(bodyText(el))
+    const text = bodyText(el)
+    // 乱码块不能当候选：它的尺寸通常更大，选它等于把乱码写进书库
+    if (looksGarbled(text)) {
+      if (effectiveLength(text) >= 80) sawGarbledBlock = true
+      continue
+    }
+    const len = effectiveLength(text)
     if (len >= 80 && (!best || len > best.len)) {
       best = { el, len }
     }
   }
   if (best) {
     const text = cleanBodyText(bodyText(best.el))
-    return { body: text, ok: true, partialText: text, source: 'fallback' }
+    return { body: text, ok: true, partialText: text, source: 'fallback', garbled: false }
   }
 
-  return { body: '', ok: false, partialText: '', source: 'none' }
+  return { body: '', ok: false, partialText: '', source: 'none', garbled: sawGarbledBlock }
 }
 
 function isLoginWall(doc: Document, bodyText: string): boolean {
@@ -409,11 +516,21 @@ function isPaywall(doc: Document, bodyText: string, fromContainer: boolean): boo
 const INTERCEPT_TITLE = ['安全验证', '人机验证', 'Access Denied', 'Just a moment', 'Attention Required']
 const INTERCEPT_TEXT = ['请完成人机验证', '检测到异常访问', '点击按钮继续', 'Cloudflare', 'Access Denied']
 
-function isInterceptedPage(doc: Document, bodyText: string): boolean {
-  if (isLoginWall(doc, bodyText)) return false
+/**
+ * 正文长到这个程度就当真：页面里再冒出拦截话术，也只是站点脚本 / 页脚的噪音。
+ * 真正的验证页没有正文，长度天然上不去。
+ */
+const INTERCEPT_TRUST_MIN_EFFECTIVE = 400
+
+function isInterceptedPage(doc: Document, body: string): boolean {
+  if (isLoginWall(doc, body)) return false
   const title = doc.title || ''
+  // 硬信号：标题本身就是验证页标题
   if (INTERCEPT_TITLE.some((w) => title.includes(w))) return true
-  const pageText = `${bodyText} ${doc.body ? visibleText(doc.body) : ''}`
+  // 正文已经抽全：不再根据别处的关键词把这一章判成拦截页
+  if (effectiveLength(body) >= INTERCEPT_TRUST_MIN_EFFECTIVE) return false
+  // 软信号：只扫跳过 script / style 的页面文本，`<script>var x='Access Denied'` 不算证据
+  const pageText = doc.body ? bodyText(doc.body) : ''
   return INTERCEPT_TEXT.some((w) => pageText.includes(w))
 }
 
@@ -475,7 +592,7 @@ function tryUnlockPaywall(
     return null
   }
   return {
-    body: cleanAdParagraphs(attempt.hit.body),
+    body: cleanAdParagraphs(attempt.hit.body, rule),
     meta: {
       unlockedBy: attempt.hit.method,
       unlockDetail: attempt.hit.detail,
@@ -581,7 +698,7 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
   }
 
   // Try body extraction (likely a chapter page)
-  const { body, ok: bodyOk, partialText, source } = tryExtractBody(doc)
+  const { body, ok: bodyOk, partialText, source, garbled } = tryExtractBody(doc)
   const fromContainer = source === 'container'
   if (bodyOk) {
     const wall = classifyWall(doc, body, fromContainer)
@@ -623,6 +740,7 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
       }
     }
     if (wall) return wallFail(wall, 'unknown')
+    if (garbled) return { ok: false, pageKind: 'unknown', failCode: 'BodyGarbled', failMessage: FAIL_CODE_ZH.BodyGarbled }
     return { ok: false, pageKind: 'unknown', failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
 
@@ -642,6 +760,7 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
   }
   if (wall) return wallFail(wall, 'unknown')
 
+  if (garbled) return { ok: false, pageKind: 'unknown', failCode: 'BodyGarbled', failMessage: FAIL_CODE_ZH.BodyGarbled }
   return { ok: false, pageKind: 'unknown', failCode: 'UnknownPage', failMessage: '无法识别为书' }
 }
 
@@ -682,9 +801,9 @@ export function extractBody(html: string, pageUrl: string, rule?: SiteRule): Ext
       if (unlocked) return { body: unlocked.body, bodyRaw: unlocked.body, ok: true, ...unlocked.meta }
     }
     if (wall) return bodyWallFail(wall, unlockOut.reason)
-    return { body: cleanAdParagraphs(ruledBody), bodyRaw: ruledBody, ok: true }
+    return { body: cleanAdParagraphs(ruledBody, rule), bodyRaw: ruledBody, ok: true }
   }
-  const { body, ok, partialText, source } = tryExtractBody(doc)
+  const { body, ok, partialText, source, garbled } = tryExtractBody(doc)
   const fromContainer = source === 'container'
   if (!ok) {
     const wall = classifyWall(doc, partialText, fromContainer)
@@ -693,6 +812,7 @@ export function extractBody(html: string, pageUrl: string, rule?: SiteRule): Ext
       if (unlocked) return { body: unlocked.body, bodyRaw: unlocked.body, ok: true, ...unlocked.meta }
     }
     if (wall) return bodyWallFail(wall, unlockOut.reason)
+    if (garbled) return { body: '', ok: false, failCode: 'BodyGarbled', failMessage: FAIL_CODE_ZH.BodyGarbled }
     return { body: '', ok: false, failCode: 'BodyEmpty', failMessage: '正文为空或过短' }
   }
   const wall = classifyWall(doc, body, fromContainer)
@@ -701,5 +821,5 @@ export function extractBody(html: string, pageUrl: string, rule?: SiteRule): Ext
     if (unlocked) return { body: unlocked.body, bodyRaw: unlocked.body, ok: true, ...unlocked.meta }
   }
   if (wall) return bodyWallFail(wall, unlockOut.reason)
-  return { body: cleanAdParagraphs(body), bodyRaw: body, ok: true }
+  return { body: cleanAdParagraphs(body, rule), bodyRaw: body, ok: true }
 }

@@ -22,7 +22,7 @@ describe('importTxt', () => {
     await writeFile(src, '前言\n第一章 起\n正文甲\n第二章 承\n正文乙\n', 'utf-8')
     const first = await importTxt(src)
     const book = await loadBook(first.bookId)
-    expect(book.chapters.map((c) => c.title)).toEqual(['正文', '第一章 起', '第二章 承'])
+    expect(book.chapters.map((c) => c.title)).toEqual(['第一章 起', '第二章 承'])
     expect(book.importType).toBe('txt')
     const origin = await readFile(join(dir, first.bookId, 'origin', 'sample.txt'), 'utf-8')
     expect(origin).toContain('第一章 起')
@@ -52,8 +52,29 @@ describe('importTxt', () => {
     expect(file.status).toBe('ready')
   })
 
-  it('gives a different i_ id for different bytes', async () => {
-    const a = join(dir, 'a.txt')
+  it('keeps paragraph breaks for CRLF files (Windows 记事本导出)', async () => {
+    const src = join(dir, 'crlf.txt')
+    await writeFile(src, '第一章 起\r\n\r\n第一段。\r\n\r\n第二段。\r\n', 'utf-8')
+    const { bookId } = await importTxt(src)
+    const book = await loadBook(bookId)
+    const file = JSON.parse(await readFile(join(dir, bookId, book.chapters[0].file), 'utf-8'))
+    expect(file.body).not.toContain('\r')
+    expect(file.body.split(/\n{2,}/).map((p: string) => p.trim())).toEqual(['第一段。', '第二段。'])
+  })
+
+  it('recognizes 楔子 / 番外 / 带空格的章节号, and 卷 is not a chapter', async () => {
+    const src = join(dir, 'titles.txt')
+    await writeFile(src, '楔子\n开场。\n第 1 章 起\n正文甲\n第一卷 风起\n正文乙\n番外一\n后续。\n', 'utf-8')
+    const { bookId } = await importTxt(src)
+    const book = await loadBook(bookId)
+    expect(book.chapters.map((c) => c.title)).toEqual(['楔子', '第 1 章 起', '番外一'])
+    // 「第一卷」不是章节标题：它连同后面的正文一起归进上一章
+    const second = JSON.parse(await readFile(join(dir, bookId, book.chapters[1].file), 'utf-8'))
+    expect(second.body).toContain('第一卷 风起')
+    expect(second.body).not.toContain('番外一')
+  })
+
+  it('gives a different i_ id for different bytes', async () => {    const a = join(dir, 'a.txt')
     const b = join(dir, 'b.txt')
     await writeFile(a, '第一章 甲\n正文甲\n', 'utf-8')
     await writeFile(b, '第一章 乙\n正文乙\n', 'utf-8')

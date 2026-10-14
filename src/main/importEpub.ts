@@ -1,27 +1,41 @@
-import { readFile } from 'node:fs/promises'
-import { basename, extname } from 'node:path'
+import { readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { basename, extname, join } from 'node:path'
 import JSZip from 'jszip'
 import {
   bookExists,
   bookIdFromBytes,
   copyOriginFile,
   createBookFromBootstrap,
-  markChapterStatus,
   refreshBookStatus,
-  writeChapterFile,
+  setCover,
+  writeChaptersBatch,
 } from './library'
 import type { ChapterFile } from '../shared/types'
 
-function stripXhtml(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, '\n')
+/** 段落级结束标签换成空行：直接按标签切会把每段切成一行，正文结构全丢。 */
+const EPUB_BLOCK_END_RE = /<\/(?:p|div|h[1-6]|li|blockquote|section|article|tr|td|dd|dt)\s*>|<br\s*\/?>/gi
+
+function decodeEntities(text: string): string {
+  return text
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
     .replace(/&amp;/g, '&')
-    .replace(/&#?\w+;/g, ' ')
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(parseInt(code, 16)))
+}
+
+function stripXhtml(html: string): string {
+  const withBreaks = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(EPUB_BLOCK_END_RE, '\n\n')
+    .replace(/<[^>]+>/g, '')
+  return decodeEntities(withBreaks)
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
@@ -34,6 +48,12 @@ function xmlAttr(xml: string, tag: string, attr: string): string[] {
     out.push(m[1])
   }
   return out
+}
+
+/** 从一个标签串里取属性值：`<item id="x" href="y">` 这类要按整标签解析。 */
+function attrOf(tag: string, name: string): string | null {
+  const m = new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, 'i').exec(tag)
+  return m ? m[1] : null
 }
 
 function xmlTagText(xml: string, tag: string): string | null {
@@ -56,17 +76,40 @@ async function findOpfPath(zip: JSZip): Promise<string> {
   throw new Error('无法解析 epub：找不到 OPF')
 }
 
-function parseOpf(opf: string): { manifest: Record<string, string>; spine: string[]; title: string; creator: string } {
-  const items = xmlAttr(opf, 'item', 'href')
-  const ids = xmlAttr(opf, 'item', 'id')
+function parseOpf(opf: string): {
+  manifest: Record<string, string>
+  spine: string[]
+  title: string
+  creator: string
+  coverHref: string | null
+} {
+  // 按整标签解析：分别抓 id 列表和 href 列表时，只要有一个 item 缺属性，
+  // 后面所有 id 就会和错误的 href 对上。
   const manifest: Record<string, string> = {}
-  for (let i = 0; i < ids.length; i++) {
-    manifest[ids[i]] = items[i] || ''
+  const itemRe = /<item\b[^>]*>/gi
+  let m: RegExpExecArray | null
+  while ((m = itemRe.exec(opf)) !== null) {
+    const tag = m[0]
+    const id = attrOf(tag, 'id')
+    const href = attrOf(tag, 'href')
+    if (id && href) manifest[id] = href
   }
   const idrefs = xmlAttr(opf, 'itemref', 'idref')
   const title = xmlTagText(opf, 'dc:title') || xmlTagText(opf, 'title') || ''
   const creator = xmlTagText(opf, 'dc:creator') || xmlTagText(opf, 'creator') || ''
-  return { manifest, spine: idrefs, title, creator }
+
+  // 封面：epub2 用 <meta name="cover" content="id">，epub3 用 properties="cover-image"
+  let coverHref: string | null = null
+  const metaCover =
+    /<meta\b[^>]*name\s*=\s*["']cover["'][^>]*>/i.exec(opf)?.[0] ??
+    /<meta\b[^>]*content\s*=\s*["'][^"']+["'][^>]*name\s*=\s*["']cover["'][^>]*>/i.exec(opf)?.[0]
+  const coverId = metaCover ? attrOf(metaCover, 'content') : null
+  if (coverId && manifest[coverId]) coverHref = manifest[coverId]
+  if (!coverHref) {
+    const propItem = /<item\b[^>]*properties\s*=\s*["'][^"']*cover-image[^"']*["'][^>]*>/i.exec(opf)?.[0]
+    if (propItem) coverHref = attrOf(propItem, 'href')
+  }
+  return { manifest, spine: idrefs, title, creator, coverHref }
 }
 
 function parseTocTitles(tocText: string): Map<string, string> {
@@ -107,7 +150,7 @@ export async function importEpub(filePath: string): Promise<{ bookId: string }> 
   const opfPath = await findOpfPath(zip)
   const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : ''
   const opfXml = (await zip.file(opfPath)?.async('text')) || ''
-  const { manifest, spine, title, creator } = parseOpf(opfXml)
+  const { manifest, spine, title, creator, coverHref } = parseOpf(opfXml)
 
   const byHref = new Map<string, string>()
   for (const href of Object.values(manifest)) {
@@ -121,6 +164,7 @@ export async function importEpub(filePath: string): Promise<{ bookId: string }> 
   }
 
   const chapters: ChapterFile[] = []
+  let chapterNo = 0
   for (let i = 0; i < spine.length; i++) {
     const href = manifest[spine[i]]
     if (!href) continue
@@ -129,9 +173,18 @@ export async function importEpub(filePath: string): Promise<{ bookId: string }> 
     if (!file) continue
     const xhtml = await file.async('text')
     const body = stripXhtml(xhtml)
-    if (body.length < 10) continue
+    // 章号按「已生成的章节数」走，不用 spine 下标：跳过的插图页/空页会让章号断号
+    const fallbackTitle = `第${chapterNo + 1}章`
+    if (body.length < 10) {
+      // 整页插图的章节以前被直接丢掉，导致正文跳号、插图消失：留一个占位
+      if (!/<img\b/i.test(xhtml)) continue
+      chapterNo++
+      chapters.push({ title: titleForHref(byHref, href, fallbackTitle), body: '[插图]', status: 'ready' })
+      continue
+    }
+    chapterNo++
     chapters.push({
-      title: titleForHref(byHref, href, `第${i + 1}章`),
+      title: titleForHref(byHref, href, fallbackTitle),
       body,
       status: 'ready',
     })
@@ -147,11 +200,37 @@ export async function importEpub(filePath: string): Promise<{ bookId: string }> 
     chapterTitles: chapters.map((c) => c.title),
   })
   await copyOriginFile(bookId, filePath)
-  for (let i = 0; i < chapters.length; i++) {
-    const ch = book.chapters[i]
-    await writeChapterFile(bookId, ch.id, chapters[i])
-    await markChapterStatus(bookId, ch.id, 'ready')
-  }
+  // 一次性批量落盘：逐章写会把同一份 book.json 反复读写
+  await writeChaptersBatch(
+    bookId,
+    book.chapters.map((ch, i) => ({ chapterId: ch.id, file: chapters[i] as ChapterFile })),
+  )
   await refreshBookStatus(bookId)
+  await importEpubCover(zip, opfDir, coverHref, bookId)
   return { bookId }
+}
+
+/** epub 自带封面：解到临时文件再走既有的 setCover（书库页显示的封面来源）。 */
+async function importEpubCover(
+  zip: JSZip,
+  opfDir: string,
+  coverHref: string | null,
+  bookId: string,
+): Promise<void> {
+  if (!coverHref) return
+  const ext = (coverHref.match(/\.(jpe?g|png|webp)$/i) || [])[1]?.toLowerCase()
+  if (!ext) return
+  let tmp: string | null = null
+  try {
+    const file = zip.file(opfDir + coverHref) || zip.file(coverHref)
+    const data = file ? await file.async('nodebuffer') : null
+    if (!data || data.length === 0) return
+    tmp = join(tmpdir(), `spbf-epub-cover-${Date.now()}.${ext === 'jpeg' ? 'jpg' : ext}`)
+    await writeFile(tmp, data)
+    await setCover({ bookId, sourcePath: tmp })
+  } catch {
+    /* 封面拿不到不影响导入 */
+  } finally {
+    if (tmp) await rm(tmp, { force: true }).catch(() => {})
+  }
 }

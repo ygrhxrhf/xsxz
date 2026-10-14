@@ -168,12 +168,23 @@ describe('hydrate ready predicates', () => {
     expect(isHydratedHtml(shortChapterHtml(), HASH_CHAPTER)).toBe(false)
   })
 
-  it('catalog heuristic ≥5 hash links is ready; rule ≥2 is ready', () => {
+  it('catalog heuristic: ≥5 hash links ready; 2 条也算目录（短篇站）', () => {
     expect(isHydratedHtml(hashCatalogHtml(5), HASH_CATALOG)).toBe(true)
-    expect(isHydratedHtml(hashCatalogHtml(2), HASH_CATALOG)).toBe(false)
+    // 短目录（1–4 章）也认：靠「链接文本像章节标题 + 同一父路径」兜住误判
+    expect(isHydratedHtml(hashCatalogHtml(2), HASH_CATALOG)).toBe(true)
     expect(
       isHydratedHtml(hashCatalogHtml(2), HASH_CATALOG, { host: 'www.bqg858.cc', catalog: '#list' }),
     ).toBe(true)
+  })
+
+  it('侧栏的「最新章节」散链不算目录', () => {
+    const sidebar = `<!DOCTYPE html><html><head><title>某本书</title></head><body>
+      <div class="sidebar"><h3>最新更新</h3><ul>
+        <li><a href="/book/11/1.html">斗破苍穹</a></li>
+        <li><a href="/book/22/1.html">完美世界</a></li>
+        <li><a href="/book/33/1.html">凡人修仙传</a></li>
+      </ul></div></body></html>`
+    expect(isHydratedHtml(sidebar, HASH_CATALOG)).toBe(false)
   })
 
   it('body rule / #chaptercontent effective length ≥80 is ready', () => {

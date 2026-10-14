@@ -10,7 +10,7 @@
  * 语言包优先用仓库自带的 `chi_sim.traineddata` / `eng.traineddata`，离线可用。
  * 这条路默认关闭，按站点在「站点规则」里开。
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -240,28 +240,50 @@ async function writeTempPng(dataUrl: string, targetDir: string, index: number): 
   }
 }
 
+/** OCR 认不出来的原因：分清楚是「没引擎」「页面没图」还是「认了但没认出字」。 */
+export type OcrFailureReason = 'no-engine' | 'no-image' | 'all-failed'
+
+export type OcrImagesResult =
+  | { ok: true; text: string; detail: string; failed: number }
+  | { ok: false; reason: OcrFailureReason; detail?: string }
+
 /**
  * 认一组图，按顺序拼接。单张失败只跳过它——OCR 是兜底，不该把整章判死。
+ * 临时图认完就删：以前会一直堆在 %TEMP%\spbf-ocr。
  */
-export async function ocrImages(images: OcrImage[], tempDir: string): Promise<OcrText | null> {
-  if (images.length === 0) return null
+export async function ocrImages(images: OcrImage[], tempDir: string): Promise<OcrImagesResult> {
+  if (images.length === 0) return { ok: false, reason: 'no-image' }
   const worker = await getWorker()
-  if (!worker) return null
+  if (!worker) return { ok: false, reason: 'no-engine', detail: engineUnavailableReason ?? undefined }
   const parts: string[] = []
-  for (let index = 0; index < images.length; index++) {
-    const image = images[index]
-    const file = await writeTempPng(image.dataUrl, tempDir, index)
-    if (!file) continue
-    try {
-      const result = await worker.recognize(file)
-      const text = cleanOcrText(result?.data?.text ?? '')
-      if (text.length >= 2) parts.push(text)
-    } catch {
-      /* 单张失败跳过 */
+  const written: string[] = []
+  let failed = 0
+  try {
+    for (let index = 0; index < images.length; index++) {
+      const image = images[index]
+      const file = await writeTempPng(image.dataUrl, tempDir, index)
+      if (!file) {
+        failed++
+        continue
+      }
+      written.push(file)
+      try {
+        const result = await worker.recognize(file)
+        const text = cleanOcrText(result?.data?.text ?? '')
+        if (text.length >= 2) parts.push(text)
+        else failed++
+      } catch {
+        failed++
+      }
     }
+  } finally {
+    await Promise.all(written.map((file) => rm(file, { force: true }).catch(() => {})))
   }
-  if (parts.length === 0) return null
-  return { text: parts.join('\n\n'), detail: images[0]?.detail ?? 'OCR' }
+  if (parts.length === 0) {
+    const detail = engineUnavailableReason ?? undefined
+    return { ok: false, reason: failed > 0 ? 'all-failed' : 'no-image', detail }
+  }
+  return { ok: true, text: parts.join('\n\n'), detail: images[0]?.detail ?? 'OCR', failed }
 }
 
 export async function shutdownOcrEngine(): Promise<void> {
