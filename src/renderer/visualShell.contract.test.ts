@@ -47,7 +47,11 @@ describe('shared visual shell contract', () => {
   })
 
   it('keeps the book brand and four visible inline SVG navigation items', async () => {
-    const [app, styles] = await Promise.all([readRendererSource('App.vue'), readRendererSource('styles.css')])
+    const [app, styles, settings] = await Promise.all([
+      readRendererSource('App.vue'),
+      readRendererSource('styles.css'),
+      readFile(new URL('./pages/Settings.vue', import.meta.url), 'utf-8'),
+    ])
     for (const entry of [
       "id: 'browse',\n    label: '浏览'",
       "id: 'library',\n    label: '书库'",
@@ -64,7 +68,7 @@ describe('shared visual shell contract', () => {
     expect(app).toContain('>取消</button>')
     expect(app).toContain(':aria-current="tab === item.id ? \'page\' : undefined"')
     expect(app).not.toMatch(/[🧭📚📖⚙️📘🌸]/u)
-    expect(app).toContain('class="theme-toggle"')
+    expect(settings).toContain('class="theme-toggle"')
     expect(styles).toContain('.nav-btn.active::after')
   })
 

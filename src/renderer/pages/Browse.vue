@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NProgress, NTag, useMessage } from 'naive-ui'
-import { DEFAULT_READER_PREFS } from '@shared/types'
-import type { BrowseState, BrowseReadingPage, BrowseFindResult, DownloadPreview, DownloadProgress, ReaderPrefs } from '@shared/types'
+import { DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS, DEFAULT_WEB_READING_PREFS } from '@shared/types'
+import type { BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, PreviewPageKind, ReaderPrefs, WebReadingPrefs, WebShelfChapter } from '@shared/types'
+import { adjacentVisualPage, scrollTopForVisualPage, visualPageCount, visualPageIndex, visualPageLabel } from './readerPager'
+import { clampRatio, paragraphIndexAtViewportCenter, readerScrollBehavior, shouldAutoHideReaderTools, wheelPageDirection } from './readerHelpers'
+import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
+import { useTts } from './useTts'
 
 const props = defineProps<{
   active?: boolean
   prefillUrl?: string
   prefillNonce?: number
+  /** 网页书架续读：预填地址后直接进阅读模式。 */
+  prefillReading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -29,6 +35,36 @@ const toolbarCollapsed = ref(false)
 const readingPage = ref<BrowseReadingPage | null>(null)
 const readingBusy = ref(false)
 const readerPrefs = ref<ReaderPrefs>(DEFAULT_READER_PREFS)
+const webReading = ref<WebReadingPrefs>(DEFAULT_WEB_READING_PREFS)
+const readingPanel = ref(false)
+const readingStage = ref<HTMLElement | null>(null)
+const readingViewport = ref<HTMLElement | null>(null)
+const readingPageIndex = ref(0)
+const readingPageCount = ref(1)
+const readingRatio = ref(0)
+const readingCenterParagraph = ref(-1)
+const readingChapterTitle = ref('')
+const readingToolsVisible = ref(true)
+const catalogOpen = ref(false)
+const catalogChapters = ref<WebShelfChapter[]>([])
+const catalogIndex = ref(-1)
+const catalogBusy = ref(false)
+const catalogListEl = ref<HTMLElement | null>(null)
+const autoScrolling = ref(false)
+const shelfSaving = ref(false)
+const ttsRate = ref(DEFAULT_TTS_PREFS.rate)
+const ttsAutoNext = ref(DEFAULT_TTS_PREFS.autoNextChapter)
+const ttsSource = ref<'system' | 'online'>(DEFAULT_TTS_PREFS.source)
+const ttsVoiceURI = ref(DEFAULT_TTS_PREFS.systemVoiceURI)
+let readingHideTimer: ReturnType<typeof setTimeout> | null = null
+let readingToolsLocked = false
+let lastToolActivityAt = Date.now()
+let readingSaveTimer: ReturnType<typeof setTimeout> | null = null
+let readingParagraphIndex = 0
+/** 位置恢复期间不写回，避免把恢复动作当成用户滚动。 */
+let readingRestoring = false
+let autoScrollRaf: number | null = null
+let lastAutoTickAt = 0
 const findOpen = ref(false)
 const findQuery = ref('')
 const findInput = ref<HTMLInputElement | null>(null)
@@ -36,6 +72,7 @@ const findResult = ref<BrowseFindResult>({ matches: 0, activeMatch: 0 })
 const hidePicking = ref(false)
 const hiddenCount = ref(0)
 let resumeAttempted = false
+const resumeError = ref('')
 let browseUrlForHide = ''
 let hideCountTimer: ReturnType<typeof setInterval> | null = null
 const themeColors = {
@@ -60,6 +97,19 @@ const readingStyle = computed(() => {
   }
 })
 const readingParagraphs = computed(() => readingPage.value?.body.split(/\n\s*\n/).filter(Boolean) ?? [])
+const readingPaged = computed(() => readerPrefs.value.readingMode === 'screen')
+const readingChapter = computed(() => readingPage.value?.chapter ?? null)
+/** 上一章 / 下一章：阅读页上下文优先，找不到时退回可见网页识别到的链接。 */
+const canPrevChapter = computed(() => Boolean(readingChapter.value?.previous || state.value.previousChapter))
+const canNextChapter = computed(() => Boolean(readingChapter.value?.next || state.value.nextChapter))
+const readingChapterLabel = computed(() => readingChapterTitle.value || readingPage.value?.title || '')
+const autoScrollSpeed = computed(() => autoScrollSpeedPx(webReading.value.autoSpeed))
+const readingProgressLabel = computed(() => {
+  const chapter = readingChapter.value
+  const position = chapter && chapter.index != null && chapter.total ? `第 ${chapter.index + 1}/${chapter.total} 章` : ''
+  if (readingPaged.value) return [position, visualPageLabel(readingPageIndex.value, readingPageCount.value)].filter(Boolean).join(' · ')
+  return [position, `${Math.round(readingRatio.value * 100)}%`].filter(Boolean).join(' · ')
+})
 watch(findOpen, (open) => { if (open) void nextTick(() => findInput.value?.focus()) })
 const slot = ref<HTMLElement | null>(null)
 let ro: ResizeObserver | null = null
@@ -73,6 +123,7 @@ const showProgress = ref(false)
 const showPreview = ref(false)
 const previewing = ref(false)
 const downloadPreview = ref<DownloadPreview | null>(null)
+const previewFailure = ref<{ message: string; pageKind: PreviewPageKind } | null>(null)
 const adFilterEnabled = ref(true)
 const adFilterBusy = ref(false)
 let lastAdHost = ''
@@ -165,6 +216,12 @@ function restoreProgressDrawer() {
   if (downloadProgress.value) showProgress.value = true
 }
 
+/** 窗口尺寸变化：网页视图重算边界，阅读模式重算页码。 */
+function onWindowResize() {
+  reportBounds()
+  if (readingPage.value) syncReadingPage()
+}
+
 function reportBounds() {
   const el = slot.value
   if (!el) return
@@ -198,23 +255,36 @@ watch(
   () => {
     if (!props.prefillUrl) return
     address.value = props.prefillUrl
-    void go()
+    void go({ reading: props.prefillReading })
   },
 )
 
-async function go() {
+async function go(options: { reading?: boolean } = {}) {
   if (readingPage.value) await exitReadingMode()
-  const res = await window.api.browse.load(address.value)
+  const target = address.value
+  const res = await window.api.browse.load(target)
   if (!res.ok) {
     message.error(res.message)
+    return
   }
+  // 网页书架续读：直接用这一章地址进阅读模式，不等可见网页渲染完。
+  if (options.reading) await enterReadingMode(target)
 }
 
 async function resumeBrowse() {
   if (resumeAttempted || !props.active || props.prefillUrl) return
   resumeAttempted = true
   const res = await window.api.browse.resume()
-  if (!res.ok) message.warning(res.message || '上次网页恢复失败')
+  if (!res.ok) {
+    address.value = ''
+    resumeError.value = res.message || '上次网页无法打开，请检查网络或网址'
+  }
+}
+
+function retryResume() {
+  resumeAttempted = false
+  resumeError.value = ''
+  void resumeBrowse()
 }
 
 async function setZoom(delta: number | 'reset') {
@@ -223,30 +293,470 @@ async function setZoom(delta: number | 'reset') {
   if (!res.ok) message.warning(res.message || '缩放失败')
 }
 
-async function enterReadingMode() {
+function clearReadingHideTimer() {
+  if (readingHideTimer) { clearTimeout(readingHideTimer); readingHideTimer = null }
+}
+
+/** 工具条自动隐藏：锁常显或有浮层时不藏。 */
+function revealReadingTools(locked = readingToolsLocked) {
+  readingToolsVisible.value = true
+  lastToolActivityAt = Date.now()
+  clearReadingHideTimer()
+  if (locked || readingPanel.value || catalogOpen.value) return
+  readingHideTimer = setTimeout(() => {
+    readingHideTimer = null
+    const idleMs = Date.now() - lastToolActivityAt
+    if (shouldAutoHideReaderTools({ idleMs, overlayOpen: readingPanel.value || catalogOpen.value, selectionOpen: false, pointerInToolbar: false })) {
+      readingToolsVisible.value = false
+    } else {
+      revealReadingTools()
+    }
+  }, Math.max(0, 2600 - (Date.now() - lastToolActivityAt)))
+}
+
+function scheduleReadingTools() {
+  if (readingToolsLocked) { readingToolsVisible.value = true; return }
+  revealReadingTools()
+}
+
+function toggleReadingToolsLock() {
+  readingToolsLocked = !readingToolsLocked
+  readingToolsVisible.value = true
+  lastToolActivityAt = Date.now()
+  if (readingToolsLocked) clearReadingHideTimer()
+  else scheduleReadingTools()
+}
+
+function readingViewportEl(): HTMLElement | null {
+  return readingViewport.value
+}
+
+/** 页码、滚动比例都从真实滚动容器读，不用位移模拟。 */
+function syncReadingPage() {
+  const el = readingViewportEl()
+  if (!el) { readingPageIndex.value = 0; readingPageCount.value = 1; readingRatio.value = 0; return }
+  readingPageCount.value = visualPageCount(el.scrollHeight, el.clientHeight)
+  readingPageIndex.value = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
+  readingRatio.value = clampRatio(el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0)
+}
+
+/** 视口中心最近的段落下标，作为位置记忆的锚点。 */
+function resolveParagraphAnchor(): number {
+  const el = readingViewportEl()
+  const total = readingParagraphs.value.length
+  if (!el || total === 0) return 0
+  const article = el.querySelector('.web-reading-article')
+  if (!article) return Math.round(readingRatio.value * Math.max(0, total - 1))
+  const containerTop = el.getBoundingClientRect().top
+  const centers = [...article.querySelectorAll('p')].map((node) => {
+    const rect = (node as HTMLElement).getBoundingClientRect()
+    return rect.top + rect.height / 2 - containerTop
+  })
+  const index = paragraphIndexAtViewportCenter({ viewportCenter: el.clientHeight / 2, paragraphCenters: centers })
+  readingCenterParagraph.value = index
+  return index >= 0 ? index : Math.round(readingRatio.value * Math.max(0, total - 1))
+}
+
+/** 恢复上次读到的段落；没有段落锚点时按滚动比例粗略还原。 */
+function restoreReadingPosition(position: { paragraphIndex: number; scrollRatio: number }) {
+  const el = readingViewportEl()
+  if (!el) { readingRestoring = false; return }
+  readingRestoring = true
+  const article = el.querySelector('.web-reading-article')
+  const paragraphs = article ? [...article.querySelectorAll('p')] : []
+  const target = paragraphs[position.paragraphIndex] as HTMLElement | undefined
+  if (target) {
+    const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - el.clientHeight * 0.28
+    el.scrollTop = Math.max(0, top)
+  } else if (position.scrollRatio > 0) {
+    el.scrollTop = position.scrollRatio * Math.max(0, el.scrollHeight - el.clientHeight)
+  }
+  readingCenterParagraph.value = position.paragraphIndex
+  readingParagraphIndex = position.paragraphIndex
+  syncReadingPage()
+  setTimeout(() => { readingRestoring = false }, 400)
+}
+
+/** 位置保存节流 800ms；退出、翻章时立即写一次。 */
+function saveReadingPosition(force = false) {
+  const page = readingPage.value
+  if (!page || readingRestoring) return
+  if (readingSaveTimer) { clearTimeout(readingSaveTimer); readingSaveTimer = null }
+  const write = () => {
+    readingSaveTimer = null
+    if (!readingPage.value || readingPage.value.url !== page.url) return
+    try {
+      void window.api.browse.saveReadingPos({
+        url: page.url,
+        title: readingChapterTitle.value || page.title,
+        paragraphIndex: resolveParagraphAnchor(),
+        scrollRatio: readingRatio.value,
+      }).catch(() => { /* 位置保存失败不打断阅读 */ })
+    } catch { /* 同上 */ }
+  }
+  if (force) write()
+  else readingSaveTimer = setTimeout(write, 800)
+}
+
+function pageByScreen(direction: 1 | -1) {
+  const el = readingViewportEl()
+  if (!el) return
+  const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
+  if (readingPaged.value) {
+    const count = visualPageCount(el.scrollHeight, el.clientHeight)
+    const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
+    const next = adjacentVisualPage(current, direction, count)
+    el.scrollTo({ top: scrollTopForVisualPage(next, el.scrollHeight, el.clientHeight), behavior })
+    readingPageIndex.value = next
+    return
+  }
+  el.scrollBy({ top: direction * el.clientHeight * 0.9, behavior })
+}
+
+/** 翻页；到本章头尾接着翻章。滚动模式与翻页模式都走真实滚动容器。 */
+function turnReadingPage(delta: number) {
+  const el = readingViewportEl()
+  if (!el) return
+  stopAutoScroll()
+  if (readingPaged.value) {
+    const count = visualPageCount(el.scrollHeight, el.clientHeight)
+    const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
+    const next = current + delta
+    if (next < 0) { void changeChapter('previous'); return }
+    if (next > count - 1) { void changeChapter('next'); return }
+  } else {
+    const atTop = el.scrollTop <= 2
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2
+    if (delta < 0 && atTop) { void changeChapter('previous'); return }
+    if (delta > 0 && atBottom) { void changeChapter('next'); return }
+  }
+  pageByScreen(delta > 0 ? 1 : -1)
+}
+
+function onReadingWheel(event: WheelEvent) {
+  if (!readingPaged.value || event.ctrlKey || event.metaKey) return
+  const direction = wheelPageDirection(event.deltaY)
+  if (!direction) return
+  event.preventDefault()
+  stopAutoScroll()
+  turnReadingPage(direction)
+}
+
+function onReadingScroll() {
+  syncReadingPage()
+  saveReadingPosition()
+}
+
+// ---------------------------------------------------------------------------
+// 自动滚动
+// ---------------------------------------------------------------------------
+
+const autoScroll = createAutoScroll(
+  {
+    scrollTop: () => readingViewportEl()?.scrollTop ?? 0,
+    scrollHeight: () => readingViewportEl()?.scrollHeight ?? 0,
+    viewportHeight: () => readingViewportEl()?.clientHeight ?? 0,
+    setScrollTop: (value) => {
+      const el = readingViewportEl()
+      if (el) el.scrollTop = value
+    },
+    onTick: () => syncReadingPage(),
+    onReachEnd: () => {
+      // 到底：开了自动翻页且还有下一章就续章，否则停下
+      if (!webReading.value.autoPage || !readingChapter.value?.next) return false
+      void changeChapter('next', { keepAutoScroll: true })
+      return true
+    },
+  },
+  { speedPx: () => autoScrollSpeed.value },
+)
+
+function autoScrollStep(timestamp: number) {
+  if (!autoScrolling.value) return
+  const elapsed = lastAutoTickAt ? timestamp - lastAutoTickAt : 16
+  lastAutoTickAt = timestamp
+  if (!autoScroll.tick(elapsed)) {
+    autoScrolling.value = false
+    lastAutoTickAt = 0
+    return
+  }
+  saveReadingPosition()
+  autoScrollRaf = requestAnimationFrame(autoScrollStep)
+}
+
+function startAutoScroll() {
+  if (!readingPage.value || autoScrolling.value) return
+  autoScrolling.value = true
+  lastAutoTickAt = 0
+  autoScroll.start()
+  autoScrollRaf = requestAnimationFrame(autoScrollStep)
+}
+
+function stopAutoScroll() {
+  if (!autoScrolling.value && autoScrollRaf == null) return
+  autoScrolling.value = false
+  autoScroll.stop()
+  if (autoScrollRaf != null) { cancelAnimationFrame(autoScrollRaf); autoScrollRaf = null }
+  lastAutoTickAt = 0
+}
+
+function toggleAutoScroll() {
+  if (autoScrolling.value) {
+    stopAutoScroll()
+    message.info('已暂停自动滚动')
+    return
+  }
+  startAutoScroll()
+  if (autoScrolling.value) message.info(`自动滚动中（${autoScrollSpeed.value} px/秒，速度 ${webReading.value.autoSpeed}）`)
+}
+
+// ---------------------------------------------------------------------------
+// 听书
+// ---------------------------------------------------------------------------
+
+function scrollToParagraph(index: number) {
+  const el = readingViewportEl()
+  const article = el?.querySelector('.web-reading-article')
+  const paragraphs = article ? [...article.querySelectorAll('p')] : []
+  const target = paragraphs[index] as HTMLElement | undefined
+  if (!el || !target) return
+  const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - el.clientHeight * 0.4
+  el.scrollTo({ top: Math.max(0, top), behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true) })
+}
+
+const tts = useTts({
+  paragraphs: () => readingParagraphs.value,
+  rate: () => ttsRate.value,
+  autoNext: () => ttsAutoNext.value,
+  onChapterEnd: () => continueTtsChapter(),
+  source: () => ttsSource.value,
+  voiceURI: () => ttsVoiceURI.value,
+  synthesize: (requestId, text) => window.api.tts.synthesize(requestId, text),
+  cancelSynthesis: (requestId) => { void window.api.tts.cancel(requestId) },
+  onParagraphStart: (index) => scrollToParagraph(index),
+})
+
+async function continueTtsChapter() {
+  const next = readingChapter.value?.next
+  if (!next) { message.info('已经是最后一章'); return }
+  await switchReadingChapter(next.url)
+  if (readingPage.value) tts.start(0, true)
+}
+
+function toggleTts() {
+  if (tts.speaking.value) { tts.stop(); return }
+  stopAutoScroll()
+  if (readingParagraphs.value.length === 0) { message.info('这一章没有可朗读的正文'); return }
+  tts.start(Math.max(0, Math.min(readingParagraphIndex, readingParagraphs.value.length - 1)))
+}
+
+function stopTts() {
+  if (tts.speaking.value || tts.paused.value) tts.stop()
+}
+
+/** 模板里用的听书状态（嵌套 ref 在模板中不解包，这里显式取）。 */
+const ttsSpeaking = computed(() => tts.speaking.value)
+const ttsSpokenPara = computed(() => tts.spokenPara.value)
+
+// ---------------------------------------------------------------------------
+// 进入 / 退出 / 翻章
+// ---------------------------------------------------------------------------
+
+function openReadingPage(page: BrowseReadingPage) {
+  readingPage.value = page
+  readingChapterTitle.value = page.chapter?.title || page.title
+  readingPageIndex.value = 0
+  readingRatio.value = 0
+  readingCenterParagraph.value = -1
+  readingParagraphIndex = 0
+}
+
+function prefetchNeighborChapter() {
+  const next = readingPage.value?.chapter?.next
+  if (next?.url) void window.api.browse.prefetchChapter(next.url)
+}
+
+/** 进阅读模式；带 url 时直接取该章（续读 / 目录跳章），不带时取当前可见网页。 */
+async function enterReadingMode(url?: string) {
   if (readingBusy.value || readingPage.value) return
   readingBusy.value = true
   try {
-    const res = await window.api.browse.readingPage()
+    const res = url ? await window.api.browse.readingPage(url) : await window.api.browse.readingPage()
     if (!res.ok) { message.warning(res.message); return }
-    readerPrefs.value = (await window.api.settings.get()).reader
-    readingPage.value = res.page
+    const settings = await window.api.settings.get()
+    readerPrefs.value = settings.reader
+    webReading.value = settings.webReading ?? DEFAULT_WEB_READING_PREFS
+    ttsRate.value = settings.tts.rate
+    ttsAutoNext.value = settings.tts.autoNextChapter
+    ttsSource.value = settings.tts.source
+    ttsVoiceURI.value = settings.tts.systemVoiceURI
+    readingPanel.value = false
+    catalogOpen.value = false
+    catalogChapters.value = []
+    readingToolsVisible.value = true
+    readingToolsLocked = false
+    clearReadingHideTimer()
+    openReadingPage(res.page)
     await window.api.browse.setReadingMode(true)
+    await nextTick()
+    syncReadingPage()
+    const saved = await window.api.browse.getReadingPos(res.page.url)
+    if (saved.ok && saved.position && (saved.position.paragraphIndex > 0 || saved.position.scrollRatio > 0)) {
+      restoreReadingPosition(saved.position)
+      message.info(`已回到上次读到的地方（第 ${saved.position.paragraphIndex + 1} 段）`)
+    } else {
+      readingRestoring = false
+    }
+    scheduleReadingTools()
+    prefetchNeighborChapter()
   } catch { message.error('无法开启网页阅读模式') }
   finally { readingBusy.value = false }
 }
 
 async function exitReadingMode() {
+  stopAutoScroll()
+  stopTts()
+  saveReadingPosition(true)
   readingPage.value = null
+  readingPanel.value = false
+  catalogOpen.value = false
+  catalogChapters.value = []
+  readingPageIndex.value = 0
+  readingRatio.value = 0
+  readingCenterParagraph.value = -1
+  readingChapterTitle.value = ''
+  readingRestoring = false
+  clearReadingHideTimer()
+  if (readingSaveTimer) { clearTimeout(readingSaveTimer); readingSaveTimer = null }
   await window.api.browse.setReadingMode(false)
   await nextTick()
   reportBounds()
 }
 
-async function changeChapter(direction: 'previous' | 'next') {
-  if (readingPage.value) await exitReadingMode()
+let readingSeq = 0
+
+/** 阅读模式内换章：走阅读会话，不进原网页；非阅读模式仍驱动可见网页。 */
+async function changeChapter(direction: 'previous' | 'next', options: { keepAutoScroll?: boolean } = {}) {
+  if (readingPage.value) {
+    const link = direction === 'previous' ? readingChapter.value?.previous : readingChapter.value?.next
+    const fallback = direction === 'previous' ? state.value.previousChapter?.url : state.value.nextChapter?.url
+    const target = link?.url || fallback
+    if (!target) { message.info(direction === 'previous' ? '已经是第一章' : '已经是最后一章'); return }
+    await switchReadingChapter(target, { keepAutoScroll: options.keepAutoScroll })
+    return
+  }
   const res = await window.api.browse.chapter(direction)
   if (!res.ok) message.warning(res.message || '章节打开失败')
+}
+
+async function switchReadingChapter(url: string, options: { keepAutoScroll?: boolean } = {}) {
+  if (readingBusy.value) return
+  const previous = readingPage.value
+  if (previous?.url === url) return
+  const seq = ++readingSeq
+  readingBusy.value = true
+  const resumeAuto = options.keepAutoScroll || autoScrolling.value
+  stopAutoScroll()
+  try {
+    saveReadingPosition(true)
+    const res = await window.api.browse.readingPage(url)
+    if (seq !== readingSeq) return
+    if (!res.ok) { message.warning(res.message || '这一章打不开'); return }
+    openReadingPage(res.page)
+    readingPanel.value = false
+    scheduleReadingTools()
+    await nextTick()
+    const el = readingViewportEl()
+    if (el) el.scrollTop = 0
+    syncReadingPage()
+    readingRestoring = false
+    const saved = await window.api.browse.getReadingPos(url)
+    if (seq !== readingSeq) return
+    if (saved.ok && saved.position && saved.position.paragraphIndex > 0) restoreReadingPosition(saved.position)
+    if (resumeAuto) startAutoScroll()
+    prefetchNeighborChapter()
+  } catch { message.error('章节加载失败') }
+  finally {
+    if (seq === readingSeq) readingBusy.value = false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 目录 / 书架 / 排版
+// ---------------------------------------------------------------------------
+
+async function openCatalog() {
+  if (catalogOpen.value) { catalogOpen.value = false; return }
+  catalogOpen.value = true
+  catalogBusy.value = true
+  clearReadingHideTimer()
+  try {
+    const res = await window.api.browse.chapterCatalog({ catalogUrl: '', url: readingPage.value?.url })
+    if (!res.ok) {
+      catalogChapters.value = []
+      catalogIndex.value = -1
+      message.warning(res.message || '没有识别到目录，可用上一章 / 下一章')
+      return
+    }
+    catalogChapters.value = res.chapters
+    catalogIndex.value = res.currentIndex
+    await nextTick()
+    catalogListEl.value?.querySelector('.catalog-item.current')?.scrollIntoView({ block: 'center' })
+  } catch { message.warning('目录加载失败') }
+  finally { catalogBusy.value = false }
+}
+
+async function jumpToCatalogChapter(index: number) {
+  const chapter = catalogChapters.value[index]
+  if (!chapter) return
+  catalogOpen.value = false
+  await switchReadingChapter(chapter.url)
+}
+
+function catalogIsCurrent(index: number): boolean {
+  const chapter = catalogChapters.value[index]
+  if (!chapter) return false
+  if (readingPage.value?.url === chapter.url) return true
+  return index === catalogIndex.value
+}
+
+async function addCurrentToShelf() {
+  const url = readingPage.value?.url || state.value.url
+  if (!url || shelfSaving.value) return
+  shelfSaving.value = true
+  try {
+    const res = await window.api.shelf.add(url)
+    if (!res.ok) { message.warning(res.message || '加入书架失败'); return }
+    const count = res.book.chapters.length
+    message.success(`已加入网页书架：${res.book.title}${count ? `（${count} 章）` : '（目录待识别）'}`)
+  } catch { message.error('加入书架失败') }
+  finally { shelfSaving.value = false }
+}
+
+function setReaderPref<K extends keyof ReaderPrefs>(key: K, value: ReaderPrefs[K]) {
+  readerPrefs.value = { ...readerPrefs.value, [key]: value }
+  void window.api.settings.set({ reader: { [key]: value } })
+  void nextTick(() => {
+    syncReadingPage()
+    const el = readingViewportEl()
+    if (el && readingPaged.value) el.scrollTop = scrollTopForVisualPage(readingPageIndex.value, el.scrollHeight, el.clientHeight)
+  })
+  saveReadingPosition()
+}
+
+function setWebReading<K extends keyof WebReadingPrefs>(key: K, value: WebReadingPrefs[K]) {
+  webReading.value = { ...webReading.value, [key]: value }
+  void window.api.settings.set({ webReading: { [key]: value } })
+  if (key === 'autoSpeed' && autoScrolling.value) message.info(`自动滚动速度 ${value}`)
+}
+
+/** 聚焦模式：朗读中跟朗读段，否则跟视口中心段。 */
+function focusedParagraph(index: number): boolean {
+  if (readerPrefs.value.focusMode === 'off') return false
+  if (tts.speaking.value && tts.spokenPara.value >= 0) return index === tts.spokenPara.value
+  if (readingCenterParagraph.value < 0) return false
+  const span = readerPrefs.value.focusMode === 'one' ? 0 : readerPrefs.value.focusMode === 'three' ? 1 : 2
+  return Math.abs(index - readingCenterParagraph.value) <= span
 }
 
 function runFind(forward = true, findNext = false) {
@@ -274,14 +784,40 @@ function onKeydown(event: KeyboardEvent) {
   if (event.ctrlKey && event.key.toLowerCase() === 'f') {
     event.preventDefault()
     if (!readingPage.value) findOpen.value = true
-  } else if (event.altKey && event.key === 'ArrowUp') {
-    event.preventDefault(); void changeChapter('previous')
-  } else if (event.altKey && event.key === 'ArrowDown') {
-    event.preventDefault(); void changeChapter('next')
-  } else if (event.key === 'Escape') {
-    if (findOpen.value) closeFind()
-    else if (hidePicking.value) void hideAction('stop')
+    return
   }
+  if (event.altKey && event.key === 'ArrowUp') {
+    event.preventDefault(); scheduleReadingTools(); void changeChapter('previous'); return
+  }
+  if (event.altKey && event.key === 'ArrowDown') {
+    event.preventDefault(); scheduleReadingTools(); void changeChapter('next'); return
+  }
+  const key = event.key
+  if (key === 'Escape') {
+    if (catalogOpen.value) { catalogOpen.value = false; return }
+    if (readingPanel.value) { readingPanel.value = false; return }
+    if (readingPage.value && autoScrolling.value) { stopAutoScroll(); return }
+    if (readingPage.value && tts.speaking.value) { stopTts(); return }
+    if (readingPage.value) { void exitReadingMode(); return }
+    if (findOpen.value) { closeFind(); return }
+    if (hidePicking.value) { void hideAction('stop'); return }
+    return
+  }
+  if (!readingPage.value) return
+  if (key === 'ArrowLeft' || key === 'PageUp') {
+    event.preventDefault(); scheduleReadingTools(); turnReadingPage(-1); return
+  }
+  if (key === 'ArrowRight' || key === 'PageDown' || key === ' ') {
+    event.preventDefault(); scheduleReadingTools(); turnReadingPage(1); return
+  }
+  if (key === 'ArrowUp' || key === 'ArrowDown') {
+    stopAutoScroll()
+    scheduleReadingTools()
+    return
+  }
+  if (key === 'm' || key === 'M') { event.preventDefault(); toggleReadingToolsLock(); return }
+  if (key === 't' || key === 'T') { event.preventDefault(); void openCatalog(); return }
+  if (key === 'a' || key === 'A') { event.preventDefault(); toggleAutoScroll(); return }
 }
 
 async function back() {
@@ -306,9 +842,19 @@ function stop() {
 async function startDownload() {
   if (previewing.value || downloading.value) return
   previewing.value = true
+  previewFailure.value = null
   try {
     const res = await window.api.download.preview()
-    if (!res.ok) { message.error(res.message); return }
+    if (!res.ok) {
+      // 目录页和章节页的失败要留在页面上，附下一步；其余仍用浮层提示。
+      const pageKind = res.pageKind ?? 'unknown'
+      if (pageKind === 'catalog' || pageKind === 'chapter') {
+        previewFailure.value = { message: res.message, pageKind }
+      } else {
+        message.error(res.message)
+      }
+      return
+    }
     downloadPreview.value = res.preview
     showPreview.value = true
   } catch (error) {
@@ -367,13 +913,13 @@ onMounted(async () => {
   reportBounds()
   ro = new ResizeObserver(() => reportBounds())
   if (slot.value) ro.observe(slot.value)
-  window.addEventListener('resize', reportBounds)
+  window.addEventListener('resize', onWindowResize)
   window.addEventListener('keydown', onKeydown)
   void resumeBrowse()
   unsubs.push(window.api.browse.onState((s) => {
     state.value = s
     if (s.loading) { hidePicking.value = false; hiddenCount.value = 0 }
-    if (readingPage.value && s.url !== readingPage.value.url) void exitReadingMode()
+    // 阅读模式与可见网页解耦：站内跳转不再把读者踢出阅读模式。
     if (s.url !== browseUrlForHide) {
       browseUrlForHide = s.url
       hidePicking.value = false
@@ -391,9 +937,17 @@ onMounted(async () => {
     if (url && url !== 'about:blank') address.value = url
   }))
   unsubs.push(window.api.browse.onFindResult((result) => { findResult.value = result }))
+  unsubs.push(window.api.browse.onReadingChapter((chapter) => {
+    if (!readingPage.value) return
+    readingChapterTitle.value = chapter.title || readingPage.value.title
+    readingPage.value = { ...readingPage.value, chapter }
+  }))
   unsubs.push(window.api.browse.onShortcut((shortcut) => {
     if (shortcut.find && !readingPage.value) findOpen.value = true
-    if (shortcut.direction) void changeChapter(shortcut.direction)
+    if (shortcut.direction) {
+      scheduleReadingTools()
+      void changeChapter(shortcut.direction)
+    }
   }))
   hideCountTimer = setInterval(() => {
     if (!hidePicking.value) return
@@ -412,9 +966,13 @@ onMounted(async () => {
 
 onUnmounted(() => {
   ro?.disconnect()
-  window.removeEventListener('resize', reportBounds)
+  window.removeEventListener('resize', onWindowResize)
   window.removeEventListener('keydown', onKeydown)
   if (hideCountTimer) clearInterval(hideCountTimer)
+  clearReadingHideTimer()
+  if (readingSaveTimer) clearTimeout(readingSaveTimer)
+  stopAutoScroll()
+  stopTts()
   if (readingPage.value) void window.api.browse.setReadingMode(false)
   unsubs.forEach((u) => u())
 })
@@ -422,7 +980,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page browse-page">
-    <form v-show="!toolbarCollapsed" class="browse-toolbar" @submit="onSubmit">
+    <form v-show="!toolbarCollapsed && !readingPage" class="browse-toolbar" @submit="onSubmit">
       <div class="browser-nav-row">
         <button class="browser-icon-button" type="button" title="后退" aria-label="后退" :disabled="!state.canGoBack" @click="back">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
@@ -467,6 +1025,12 @@ onUnmounted(() => {
               <n-button size="small" secondary :disabled="!currentHost()" :loading="adFilterBusy" @click.prevent="toggleAdFilter">
                 {{ adFilterEnabled ? '关闭去广告' : '开启去广告' }}
               </n-button>
+              <button type="button" aria-label="缩小网页" @click.prevent="setZoom(-0.1)">－</button>
+              <button type="button" title="恢复默认缩放" @click.prevent="setZoom('reset')">{{ Math.round(state.zoom * 100) }}%</button>
+              <button type="button" aria-label="放大网页" @click.prevent="setZoom(0.1)">＋</button>
+              <button type="button" @click.prevent="findOpen ? closeFind() : findOpen = true">{{ findOpen ? '关闭查找' : '网页查找' }}</button>
+              <button type="button" @click.prevent="hideAction(hidePicking ? 'stop' : 'start')">{{ hidePicking ? '退出点选' : '点选隐藏' }}</button>
+              <button type="button" :disabled="hiddenCount === 0" @click.prevent="hideAction('undo')">撤销隐藏{{ hiddenCount ? `（${hiddenCount}）` : '' }}</button>
               <n-button
                 v-if="downloadProgress && !showProgress"
                 size="small"
@@ -480,7 +1044,7 @@ onUnmounted(() => {
         </div>
       </div>
     </form>
-    <div class="web-reading-controls">
+    <div v-if="!readingPage" class="web-reading-controls">
       <button type="button" @click="toolbarCollapsed = !toolbarCollapsed">{{ toolbarCollapsed ? '展开工具栏' : '收起工具栏' }}</button>
       <template v-if="toolbarCollapsed">
         <button type="button" :disabled="!state.canGoBack" @click="back">后退</button>
@@ -491,18 +1055,7 @@ onUnmounted(() => {
       <button type="button" :disabled="!state.previousChapter" :title="state.previousChapter?.title || '未识别到上一章'" @click="changeChapter('previous')">上一章</button>
       <button type="button" :disabled="!state.nextChapter" :title="state.nextChapter?.title || '未识别到下一章'" @click="changeChapter('next')">下一章</button>
       <button type="button" :disabled="!state.url || readingBusy" @click="readingPage ? exitReadingMode() : enterReadingMode()">{{ readingPage ? '返回原网页' : '阅读模式' }}</button>
-      <details v-if="!readingPage" class="web-more">
-        <summary>网页工具</summary>
-        <div class="web-more-content">
-          <button type="button" aria-label="缩小网页" @click="setZoom(-0.1)">−</button>
-          <button type="button" title="恢复默认缩放" @click="setZoom('reset')">{{ Math.round(state.zoom * 100) }}%</button>
-          <button type="button" aria-label="放大网页" @click="setZoom(0.1)">＋</button>
-          <button type="button" @click="findOpen ? closeFind() : findOpen = true">{{ findOpen ? '关闭查找' : '网页查找' }}</button>
-          <button type="button" @click="hideAction(hidePicking ? 'stop' : 'start')">{{ hidePicking ? '退出点选' : '点选隐藏' }}</button>
-          <button type="button" :disabled="hiddenCount === 0" @click="hideAction('undo')">撤销隐藏{{ hiddenCount ? `（${hiddenCount}）` : '' }}</button>
-          <span class="web-shortcut-hint">Alt＋↑ / Alt＋↓ 翻章</span>
-        </div>
-      </details>
+      <span class="web-shortcut-hint">Alt＋↑ / Alt＋↓ 翻章</span>
     </div>
     <div v-if="findOpen && !readingPage" class="web-find-row">
       <input ref="findInput" v-model="findQuery" aria-label="查找网页文字" placeholder="查找当前网页" @input="runFind()" @keydown.enter.prevent="runFind(true, true)" />
@@ -511,12 +1064,134 @@ onUnmounted(() => {
       <button type="button" @click="runFind(true, true)">下一处</button>
       <button type="button" @click="closeFind">关闭</button>
     </div>
+    <div v-if="!readingPage && (resumeError || previewFailure)" class="browse-notice" role="alert">
+      <p>{{ resumeError || previewFailure?.message }}</p>
+      <button v-if="resumeError" type="button" @click="retryResume">重试</button>
+      <button v-else-if="previewFailure?.pageKind === 'chapter'" type="button" @click="editCurrentSiteRule">配置本站规则</button>
+      <button type="button" @click="resumeError ? resumeError = '' : previewFailure = null">关闭</button>
+    </div>
     <div ref="slot" v-show="!readingPage" class="browse-slot" />
-    <div v-if="readingPage" class="web-reading-stage" :style="readingStyle">
-      <article class="web-reading-article">
-        <h1>{{ readingPage.title }}</h1>
-        <p v-for="(paragraph, i) in readingParagraphs" :key="i">{{ paragraph }}</p>
-      </article>
+    <div
+      v-if="readingPage"
+      ref="readingStage"
+      class="web-reading-stage"
+      :class="{ paged: readingPaged, 'tools-hidden': !readingToolsVisible, 'catalog-open': catalogOpen }"
+      :style="readingStyle"
+      @mousemove="scheduleReadingTools"
+      @click.self="readingToolsVisible = !readingToolsVisible"
+    >
+      <header
+        v-show="readingToolsVisible || readingToolsLocked"
+        class="web-reading-chrome top"
+        @mouseenter="clearReadingHideTimer"
+      >
+        <button type="button" title="返回原网页（Esc）" @click="exitReadingMode">← 返回</button>
+        <span class="web-reading-title" :title="readingChapterLabel">{{ readingChapterLabel }}</span>
+        <div class="web-chrome-actions">
+          <button type="button" @click="openCatalog">目录</button>
+          <button type="button" :class="{ active: autoScrolling }" @click="toggleAutoScroll">{{ autoScrolling ? '暂停' : '自动' }}</button>
+          <button type="button" :class="{ active: ttsSpeaking }" @click="toggleTts">{{ ttsSpeaking ? '停止' : '听书' }}</button>
+          <button type="button" :disabled="shelfSaving" @click="addCurrentToShelf">加书架</button>
+          <button type="button" :class="{ active: readingPanel }" @click="readingPanel = !readingPanel">排版</button>
+        </div>
+      </header>
+
+      <aside v-if="catalogOpen" class="web-reading-catalog" role="dialog" aria-label="章节目录">
+        <div class="catalog-head">
+          <strong :title="readingPage.title">{{ readingPage.title }}</strong>
+          <button type="button" @click="catalogOpen = false">关闭</button>
+        </div>
+        <div v-if="catalogBusy" class="catalog-empty">正在读取目录…</div>
+        <div v-else-if="catalogChapters.length === 0" class="catalog-empty">
+          这个站没有识别出目录，用底部「上一章 / 下一章」也能一直读下去。
+        </div>
+        <ol v-else ref="catalogListEl" class="catalog-list">
+          <li v-for="(chapter, index) in catalogChapters" :key="chapter.url">
+            <button
+              type="button"
+              class="catalog-item"
+              :class="{ current: catalogIsCurrent(index) }"
+              :title="chapter.title"
+              @click="jumpToCatalogChapter(index)"
+            >{{ chapter.title }}</button>
+          </li>
+        </ol>
+      </aside>
+
+      <div v-if="readingPanel" class="web-reading-panel" role="dialog" aria-label="阅读排版">
+        <div class="web-panel-row">
+          <span>背景</span>
+          <button type="button" :class="{ active: readerPrefs.theme === 'paper' }" @click="setReaderPref('theme', 'paper')">纸白</button>
+          <button type="button" :class="{ active: readerPrefs.theme === 'sepia' }" @click="setReaderPref('theme', 'sepia')">暖黄</button>
+          <button type="button" :class="{ active: readerPrefs.theme === 'gray' }" @click="setReaderPref('theme', 'gray')">柔灰</button>
+          <button type="button" :class="{ active: readerPrefs.theme === 'night' }" @click="setReaderPref('theme', 'night')">夜间</button>
+        </div>
+        <div class="web-panel-row">
+          <span>字号</span>
+          <button type="button" @click="setReaderPref('fontSize', Math.max(12, readerPrefs.fontSize - 1))">A−</button>
+          <strong>{{ readerPrefs.fontSize }}</strong>
+          <button type="button" @click="setReaderPref('fontSize', Math.min(36, readerPrefs.fontSize + 1))">A＋</button>
+          <button type="button" :class="{ active: readingPaged }" @click="setReaderPref('readingMode', readingPaged ? 'scroll' : 'screen')">
+            {{ readingPaged ? '翻页模式' : '滚动模式' }}
+          </button>
+        </div>
+        <div class="web-panel-row">
+          <span>版心</span>
+          <button type="button" :class="{ active: readerPrefs.contentWidth === 'narrow' }" @click="setReaderPref('contentWidth', 'narrow')">窄</button>
+          <button type="button" :class="{ active: readerPrefs.contentWidth === 'medium' }" @click="setReaderPref('contentWidth', 'medium')">中</button>
+          <button type="button" :class="{ active: readerPrefs.contentWidth === 'wide' }" @click="setReaderPref('contentWidth', 'wide')">宽</button>
+          <button type="button" :class="{ active: readerPrefs.fontFamily === 'serif' }" @click="setReaderPref('fontFamily', 'serif')">宋体</button>
+          <button type="button" :class="{ active: readerPrefs.fontFamily === 'system' }" @click="setReaderPref('fontFamily', 'system')">黑体</button>
+        </div>
+        <div class="web-panel-row">
+          <span>自动</span>
+          <button type="button" :class="{ active: webReading.autoPage }" @click="setWebReading('autoPage', !webReading.autoPage)">
+            自动续章{{ webReading.autoPage ? '开' : '关' }}
+          </button>
+          <button
+            v-for="level in [1, 2, 3, 4, 5]"
+            :key="level"
+            type="button"
+            :class="{ active: webReading.autoSpeed === level }"
+            @click="setWebReading('autoSpeed', level)"
+          >{{ level }}</button>
+        </div>
+        <p class="web-panel-hint">← → 翻页 · Alt＋↑↓ 换章 · A 自动滚动 · T 目录 · M 锁工具条 · Esc 退出</p>
+      </div>
+
+      <div
+        ref="readingViewport"
+        class="web-reading-viewport"
+        @scroll.passive="onReadingScroll"
+        @wheel="onReadingWheel"
+        @touchstart.passive="stopAutoScroll"
+      >
+        <article class="web-reading-article">
+          <h1>{{ readingPage.title }}</h1>
+          <p
+            v-for="(paragraph, i) in readingParagraphs"
+            :key="i"
+            :class="{ focused: focusedParagraph(i), speaking: ttsSpeaking && ttsSpokenPara === i }"
+          >{{ paragraph }}</p>
+          <div class="web-reading-end">
+            <span>{{ autoScrolling ? '自动滚动中…' : '本章完' }}</span>
+            <button v-if="canNextChapter" type="button" :disabled="readingBusy" @click="changeChapter('next')">
+              {{ readingChapter?.next?.title ? `下一章 · ${readingChapter.next.title}` : '下一章' }}
+            </button>
+            <span v-else>已经是最后一章</span>
+          </div>
+        </article>
+      </div>
+
+      <footer
+        v-show="readingToolsVisible || readingToolsLocked"
+        class="web-reading-chrome bottom"
+        @mouseenter="clearReadingHideTimer"
+      >
+        <button type="button" :disabled="readingBusy || !canPrevChapter" @click="changeChapter('previous')">上一章</button>
+        <button type="button" class="web-reading-progress" :title="readingProgressLabel" @click="openCatalog">{{ readingProgressLabel }}</button>
+        <button type="button" :disabled="readingBusy || !canNextChapter" @click="changeChapter('next')">下一章</button>
+      </footer>
     </div>
 
     <n-drawer v-model:show="showPreview" placement="bottom" :height="430">
@@ -649,10 +1324,69 @@ onUnmounted(() => {
 .web-shortcut-hint { color: var(--text-muted); font-size: 12px; }
 .web-find-row input { min-width: 160px; flex: 1; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--input-bg); color: var(--text-primary); }
 .web-find-row span { min-width: 70px; text-align: center; }
-.web-reading-stage { flex: 1; min-height: 0; overflow: auto; background: var(--web-outer); color: var(--web-ink); }
-.web-reading-article { box-sizing: border-box; width: min(100%, var(--web-width)); margin: 24px auto; min-height: calc(100% - 48px); padding: 56px clamp(30px, 6vw, 72px) 96px; border-radius: var(--radius-card); box-shadow: var(--shadow-card); background: var(--web-paper); color: var(--web-ink); font: var(--web-size)/var(--web-line) var(--web-font); white-space: pre-wrap; overflow-wrap: anywhere; }
-.web-reading-article h1 { font-size: 1.25em; line-height: 1.5; text-align: center; margin: 0 0 2em; }
+/* 阅读模式是沉浸层：正文自己滚，工具条浮在上面，不占正文高度。 */
+.web-reading-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--web-outer); color: var(--web-ink); }
+.web-reading-viewport {
+  position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+  background: var(--web-outer); scrollbar-width: none; overscroll-behavior: contain;
+}
+.web-reading-viewport::-webkit-scrollbar { width: 0; height: 0; }
+.web-reading-chrome {
+  position: absolute; left: 0; right: 0; z-index: 4;
+  display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 14px;
+  color: var(--web-ink); background: color-mix(in srgb, var(--web-paper) 94%, transparent);
+  backdrop-filter: blur(6px); transition: opacity 160ms ease, transform 160ms ease;
+}
+.web-reading-chrome.top { top: 0; border-bottom: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent); }
+.web-reading-chrome.bottom { bottom: 0; justify-content: center; border-top: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent); }
+.web-reading-stage.tools-hidden .web-reading-chrome { opacity: 0; pointer-events: none; }
+.web-reading-stage.tools-hidden .web-reading-chrome.top { transform: translateY(-100%); }
+.web-reading-stage.tools-hidden .web-reading-chrome.bottom { transform: translateY(100%); }
+.web-reading-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.web-chrome-actions { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.web-reading-chrome button, .web-reading-panel button, .catalog-head button {
+  border: 0; border-radius: 999px; background: transparent; color: inherit;
+  padding: 6px 10px; font-size: 13px; cursor: pointer;
+}
+.web-reading-chrome button:hover:not(:disabled), .web-reading-panel button:hover, .catalog-head button:hover { background: color-mix(in srgb, var(--web-ink) 10%, transparent); }
+.web-reading-chrome button.active, .web-reading-panel button.active { background: color-mix(in srgb, var(--web-ink) 18%, transparent); font-weight: 600; }
+.web-reading-chrome button:disabled { opacity: 0.4; cursor: default; }
+.web-reading-progress { font-variant-numeric: tabular-nums; }
+.web-reading-panel {
+  position: absolute; z-index: 5; top: 52px; right: 14px; display: grid; gap: 8px;
+  width: min(460px, calc(100% - 28px)); padding: 14px;
+  border-radius: 14px; background: var(--web-paper); color: var(--web-ink); box-shadow: var(--shadow-card);
+}
+.web-panel-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.web-panel-row span { width: 36px; font-size: 12px; opacity: 0.7; }
+.web-panel-hint { margin: 0; font-size: 12px; opacity: 0.6; }
+
+/* 章节目录：从右侧滑出，当前章高亮并自动滚到可见处 */
+.web-reading-catalog {
+  position: absolute; z-index: 5; top: 0; bottom: 0; right: 0; width: min(360px, 86%);
+  display: flex; flex-direction: column; background: var(--web-paper); color: var(--web-ink);
+  box-shadow: -8px 0 24px rgb(0 0 0 / 14%);
+}
+.catalog-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; border-bottom: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent); }
+.catalog-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 6px 0; list-style: none; }
+.catalog-item { display: block; width: 100%; text-align: left; padding: 8px 14px; border: 0; background: transparent; color: inherit; font-size: 13px; cursor: pointer; }
+.catalog-item:hover { background: color-mix(in srgb, var(--web-ink) 8%, transparent); }
+.catalog-item.current { background: color-mix(in srgb, var(--web-ink) 15%, transparent); font-weight: 600; }
+.catalog-empty { padding: 16px 14px; font-size: 13px; opacity: 0.75; }
+
+.web-reading-article {
+  box-sizing: border-box; width: min(100%, var(--web-width)); margin: 0 auto;
+  min-height: 100%; padding: 56px clamp(28px, 6vw, 72px) 72px;
+  background: var(--web-paper); color: var(--web-ink);
+  font: var(--web-size)/var(--web-line) var(--web-font); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.web-reading-article h1 { font-size: 1.35em; font-weight: 600; line-height: 1.5; text-align: center; margin: 0.6em 0 1.6em; }
 .web-reading-article p { margin: 0 0 var(--web-spacing); text-indent: var(--web-indent); }
+.web-reading-article p.focused { background: color-mix(in srgb, var(--web-ink) 7%, transparent); border-radius: 4px; }
+.web-reading-article p.speaking { background: color-mix(in srgb, var(--web-ink) 13%, transparent); border-radius: 4px; }
+.web-reading-end { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 32px; padding-top: 18px; font-size: 13px; opacity: 0.8; border-top: 1px solid color-mix(in srgb, var(--web-ink) 14%, transparent); }
+.web-reading-end button { border: 0; border-radius: 999px; padding: 6px 14px; background: color-mix(in srgb, var(--web-ink) 12%, transparent); color: inherit; font-size: 13px; cursor: pointer; }
 
 .browse-toolbar {
   position: relative;

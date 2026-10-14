@@ -24,10 +24,10 @@ describe('Library comfortable card contract', () => {
     expect(source).toContain('v-if="initialLoading"')
     expect(source).toContain('v-for="index in 6"')
     expect(source).toContain('aria-label="正在加载书库"')
-    expect(source).toContain('!books.length && !hasActiveFilter')
+    expect(source).toContain('!books.length && !webBooks.length && !hasActiveFilter')
     expect(source).toContain('还没有书')
     expect(source).toContain("@click=\"emit('go-browse')\">去浏览</n-button>")
-    expect(source).toContain('!visibleBooks.length')
+    expect(source).toContain('!visibleBooks.length && !webBooks.length')
     expect(source).toContain('没有匹配的书')
     expect(source).not.toContain('书库还是空的')
     expect(source).not.toContain('去浏览找书')
@@ -36,20 +36,36 @@ describe('Library comfortable card contract', () => {
     expect(source).not.toContain('清除筛选')
     expect(source).not.toContain('v-html')
     const emptyTrue = source.slice(
-      source.indexOf('v-else-if="!books.length && !hasActiveFilter"'),
-      source.indexOf('v-else-if="!visibleBooks.length"'),
+      source.indexOf('v-else-if="!books.length && !webBooks.length && !hasActiveFilter"'),
+      source.indexOf('v-else-if="!visibleBooks.length && !webBooks.length"'),
     )
     expect(emptyTrue).toContain('还没有书')
     expect(emptyTrue).toContain("@click=\"emit('go-browse')\">去浏览</n-button>")
     expect(emptyTrue).not.toContain('没有匹配的书')
     const shelfStart = source.indexOf('<template v-else>')
     const emptyFiltered = source.slice(
-      source.indexOf('v-else-if="!visibleBooks.length"'),
+      source.indexOf('v-else-if="!visibleBooks.length && !webBooks.length"'),
       shelfStart === -1 ? source.indexOf('v-else class="book-grid"') : shelfStart,
     )
     expect(emptyFiltered).toContain('没有匹配的书')
     expect(emptyFiltered).not.toContain('n-button')
     expect(emptyFiltered).not.toContain('去浏览')
+  })
+
+  it('keeps the web shelf section wired to the shelf channels', async () => {
+    const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
+    expect(source).toContain('class="web-shelf"')
+    expect(source).toContain('网页书架')
+    expect(source).toContain('emit(\'open-web-book\', book.lastChapter.url || book.catalogUrl)')
+    expect(source).toContain('window.api.shelf.list()')
+    expect(source).toContain('window.api.shelf.refresh(book.id)')
+    expect(source).toContain('window.api.shelf.refreshAll()')
+    expect(source).toContain('window.api.shelf.remove(book.id)')
+    expect(source).toContain('window.api.shelf.onChanged')
+    expect(source).toContain('全部刷新目录')
+    expect(source).toContain('web-update-badge')
+    // 网页书不用 v-html，封面缺图时退回首字
+    expect(source).toContain('libraryCoverText(book.title)')
   })
 
   it('keeps title, author, status, progress, and running result text visible', async () => {

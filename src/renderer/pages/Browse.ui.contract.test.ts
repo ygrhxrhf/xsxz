@@ -14,7 +14,6 @@ describe('Browse toolbar and drawer contract', () => {
     expect(source).toContain('type="primary"')
     expect(source).toContain('size="small" secondary')
     expect(source).toContain('class="browser-more"')
-    expect(source).toContain('class="web-more"')
     expect(source).toContain('tertiary')
     expect(source).toContain('下载本书')
     expect(source).toContain('配置本站规则')

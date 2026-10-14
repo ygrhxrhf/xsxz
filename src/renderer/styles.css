@@ -742,6 +742,35 @@ body,
   min-height: 0;
 }
 
+/* 放在原生网页视图之外，失败提示不会被页面盖住。 */
+.browse-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 var(--space-4) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--warning-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.browse-notice p { flex: 1; min-width: 0; margin: 0; line-height: 1.5; }
+
+.browse-notice button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .placeholder h2 {
   margin: 0 0 var(--space-2);
   font-size: 20px;
