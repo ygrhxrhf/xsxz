@@ -1,8 +1,9 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
+/** 本机检出为 CRLF：断言里写的是 \n，读进来先归一，免得契约被行尾绊倒。 */
 async function readRendererSource(name: 'App.vue' | 'styles.css'): Promise<string> {
-  return readFile(new URL(`./${name}`, import.meta.url), 'utf-8')
+  return (await readFile(new URL(`./${name}`, import.meta.url), 'utf-8')).replace(/\r\n/g, '\n')
 }
 
 describe('shared visual shell contract', () => {
@@ -50,7 +51,7 @@ describe('shared visual shell contract', () => {
     const [app, styles, settings] = await Promise.all([
       readRendererSource('App.vue'),
       readRendererSource('styles.css'),
-      readFile(new URL('./pages/Settings.vue', import.meta.url), 'utf-8'),
+      readFile(new URL('./pages/Settings.vue', import.meta.url), 'utf-8').then((s) => s.replace(/\r\n/g, '\n')),
     ])
     for (const entry of [
       "id: 'browse',\n    label: '浏览'",

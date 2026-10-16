@@ -24,7 +24,7 @@ describe('assistant budget transparency IPC contract', () => {
   it('exposes a typed additive event and renders the fixed range copy', async () => {
     const [preload, reader, types] = await Promise.all([
       readFile(new URL('../preload/index.ts', import.meta.url), 'utf-8'),
-      readFile(new URL('../renderer/pages/Reader.vue', import.meta.url), 'utf-8'),
+      readFile(new URL('../renderer/pages/Reader.vue', import.meta.url), 'utf-8').then((s) => s.replace(/\r\n/g, '\n')),
       readFile(new URL('../shared/types.ts', import.meta.url), 'utf-8'),
     ])
     expect(types).toContain('export interface AiBudgetEvent')

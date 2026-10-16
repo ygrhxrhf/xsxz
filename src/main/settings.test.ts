@@ -117,7 +117,8 @@ describe('settings atomic persistence', () => {
     await updateSettings({ model: 'old-model' })
     const before = await readFile(SETTINGS_FILE, 'utf-8')
     setAtomicWriteBeforeCommitForTests((path) => {
-      if (path === SETTINGS_FILE) throw new Error('disk full')
+      // win32 下 path.join 给的是反斜杠，而 SETTINGS_FILE 用正斜杠：比较前统一分隔符。
+      if (path.replace(/\\/g, '/') === SETTINGS_FILE) throw new Error('disk full')
     })
     try {
       await expect(updateSettings({ model: 'new-model' })).rejects.toThrow('disk full')

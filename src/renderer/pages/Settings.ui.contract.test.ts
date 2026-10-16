@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 describe('Settings section framework contract', () => {
   it('keeps seven session-only keyboard-native sections in the fixed order', async () => {
-    const source = await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')
+    const source = (await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')).replace(/\r\n/g, '\n')
     expect(source).toContain("type SettingsSection = 'appearance' | 'library' | 'tts' | 'ai' | 'siteRules' | 'backup' | 'about'")
     expect(source).toContain("const activeSection = ref<SettingsSection>('appearance')")
     expect(source).toContain("{ id: 'appearance', label: '外观' }")
@@ -19,7 +19,7 @@ describe('Settings section framework contract', () => {
   })
 
   it('keeps each panel mounted and source prefill locates site rules', async () => {
-    const source = await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')
+    const source = (await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')).replace(/\r\n/g, '\n')
     for (const id of ['appearance', 'library', 'tts', 'ai', 'siteRules', 'backup', 'about']) {
       expect(source).toContain(`v-show="activeSection === '${id}'"`)
     }
@@ -29,7 +29,7 @@ describe('Settings section framework contract', () => {
   })
 
   it('keeps the responsive shell and semantic first-load feedback', async () => {
-    const source = await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')
+    const source = (await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')).replace(/\r\n/g, '\n')
     expect(source).toContain('max-width: 1240px')
     expect(source).toContain('grid-template-columns: 200px minmax(0, 1fr);\n  gap: var(--space-8)')
     expect(source).toContain('grid-template-columns: 160px minmax(0, 1fr);\n    gap: var(--space-4)')

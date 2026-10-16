@@ -15,7 +15,7 @@ function names(source: string, pattern: RegExp): string[] {
 function preloadShape(source: string): Record<string, string[]> {
   const groups: Record<string, string[]> = {}
   let current: string | null = null
-  for (const line of source.split('\n')) {
+  for (const line of source.replace(/\r\n/g, '\n').split('\n')) {
     const opened = /^  (\w+): \{$/.exec(line)
     if (opened) {
       current = opened[1]
@@ -35,7 +35,8 @@ function preloadShape(source: string): Record<string, string[]> {
 
 /** 文档「preload 白名单形状」代码块里的 `group: { a, b }` 列表。 */
 function docShape(source: string): Record<string, string[]> {
-  const block = /## preload 白名单形状[\s\S]*?```ts\n([\s\S]*?)```/.exec(source)
+  // 本机检出为 CRLF：围栏后是 \r\n，先把行尾归一，再匹配 ```ts 代码块。
+  const block = /## preload 白名单形状[\s\S]*?```ts\n([\s\S]*?)```/.exec(source.replace(/\r\n/g, '\n'))
   expect(block, 'ipc-contract.md 缺少 preload 白名单形状代码块').not.toBeNull()
   const groups: Record<string, string[]> = {}
   for (const line of block![1].split('\n')) {
