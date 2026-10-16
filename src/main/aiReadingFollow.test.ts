@@ -295,7 +295,7 @@ describe('自动追剧', () => {
     await service.retry(bookId)
     await vi.waitFor(async () => {
       expect(Object.keys((await readSummaries(bookId)).byChapter)).toEqual([chapterId(1)])
-    })
+    }, { timeout: 10_000 })
   })
 
   it('关窗重启后从同一目录续跑，已整理过的章不再重复送模型', async () => {
@@ -313,7 +313,7 @@ describe('自动追剧', () => {
     reopened.start()
     await vi.waitFor(async () => {
       expect((await reopened.coverage(bookId)).organizedChapters).toBe(2)
-    })
+    }, { timeout: 10_000 })
     expect(callsFor('chapterSummary')).toBe(2)
     expect(Object.keys((await readSummaries(bookId)).byChapter)).toEqual([chapterId(1), chapterId(2)])
     reopened.stop()

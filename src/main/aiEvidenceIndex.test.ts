@@ -322,8 +322,12 @@ describe('按章布隆证据索引', () => {
     await seed(chapterBodies(6), 'c0002')
     wakeEvidenceIndex(BOOK)
     wakeEvidenceIndex(BOOK)
-    await vi.waitFor(async () => expect(await indexFiles()).toContain('c0002.json'), { timeout: 8_000 })
-    expect(sidecars(await indexFiles()).sort(), '进度之后的章不在唤醒范围内').toEqual(['c0001.json', 'c0002.json'])
+    // 唤醒是后台异步的，sidecar 又走原子写（同目录临时文件 + rename）。只等 c0002.json
+    // 出现就断言集合，会采到还在写的中途状态；等到目录稳定成预期集合再断言。
+    // 契约不变：真多出进度之后的章，这里照样超时失败。
+    await vi.waitFor(async () => {
+      expect(sidecars(await indexFiles()).sort(), '进度之后的章不在唤醒范围内').toEqual(['c0001.json', 'c0002.json'])
+    }, { timeout: 8_000 })
   })
 })
 

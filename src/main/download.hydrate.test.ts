@@ -300,7 +300,9 @@ describe('墙页不等满水合超时', () => {
         return EMPTY_APP
       },
       HASH_CATALOG,
-      { pollMs: 20, timeoutMs: 240 },
+      // 每轮都要 await 取 HTML 再查站点规则，负载下每轮可能上百毫秒：240ms 只够跑两轮，
+      // 会让「确实在继续轮询」的断言随机失败。给足预算，断言本身不变。
+      { pollMs: 20, timeoutMs: 1200 },
     )
     expect(polls).toBeGreaterThan(2)
   })

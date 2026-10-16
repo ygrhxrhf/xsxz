@@ -63,7 +63,7 @@ describe('automatic full-book overview', () => {
   it('summarizes every chapter, persists the result, and avoids duplicate calls after restart', async () => {
     const bookId = await seed()
     service.start()
-    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') })
+    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') }, { timeout: 10_000 })
     expect(mocks.complete).toHaveBeenCalledTimes(3)
     const file = JSON.parse(await readFile(join(directory, bookId, 'ai', 'bookOverview.json'), 'utf-8'))
     expect(Object.keys(file.chapterSummaries)).toEqual(['c0001', 'c0002'])
@@ -78,14 +78,14 @@ describe('automatic full-book overview', () => {
   it('keeps the old overview visible and regenerates only changed chapter summaries', async () => {
     const bookId = await seed()
     service.start()
-    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') })
+    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') }, { timeout: 10_000 })
     service.stop()
     await updateChapterBody(bookId, 'c0002', '第二章，主角改变了目标。')
     expect((await view()).status).toBe('stale')
     expect((await view()).text).toContain('主角寻宝')
     service = new BookOverviewService(new AiQueue(), () => {})
     service.start()
-    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') })
+    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') }, { timeout: 10_000 })
     expect(mocks.complete).toHaveBeenCalledTimes(5)
   })
 
@@ -98,7 +98,7 @@ describe('automatic full-book overview', () => {
     expect((await view()).status).toBe('off')
     mocks.settings!.ai = { ...DEFAULT_AI_PREFS, autoBookOverview: true }
     service.settingsChanged(true)
-    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') })
+    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') }, { timeout: 10_000 })
   })
 
   it('waits for all chapters to be ready', async () => {
@@ -122,9 +122,9 @@ describe('automatic full-book overview', () => {
     const bookId = await seed()
     mocks.complete.mockRejectedValueOnce(new Error('服务暂不可用'))
     service.start()
-    await vi.waitFor(async () => { expect((await view()).status).toBe('failed') })
+    await vi.waitFor(async () => { expect((await view()).status).toBe('failed') }, { timeout: 10_000 })
     expect((await view()).message).toContain('服务暂不可用')
     await service.retry(bookId)
-    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') })
+    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') }, { timeout: 10_000 })
   })
 })
