@@ -7,3 +7,8 @@
 
 # 例外：这个夹具就是拿来手工验「导入 CRLF 版 txt」的，字节本身是被测对象，必须保持 CRLF。
 fixtures/ux/crlf-novel.txt text eol=crlf
+
+# 二进制一律不参与行尾转换：被误判成文本会让资源或夹具被改坏。
+*.png binary
+*.epub binary
+*.gz binary
