@@ -64,6 +64,7 @@ import { searchInBook } from './search'
 import { auditBook } from './quality'
 import { createBackup, restoreBackup, runAutoBackupIfDue } from './backup'
 import { migrateLibrary } from './libraryMigration'
+import { ensureLibraryPathAtStartup } from './startupGuard'
 import { browseUserAgent } from './userAgent'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
 import type { AiExclusiveResult, AiJobPolicy } from './aiScheduler'
@@ -2156,63 +2157,23 @@ function registerIpc(): void {
 
 app.setName('spbf')
 
-/**
- * 书库盘不存在或不可写时不能静默失败——进程活着却没有窗口，用户只会以为软件坏了。
- * 这里说明原因，并让用户当场挑一个可用目录；挑成功就继续启动。
- */
-async function recoverFromLibraryPathFailure(initialPath: string, cause: unknown): Promise<boolean> {
-  let currentPath = initialPath
-  let reason = cause instanceof Error ? cause.message : String(cause)
-  for (;;) {
-    const { response } = await dialog.showMessageBox({
-      type: 'error',
-      title: '小说浏览器无法启动',
-      message: '书库目录不可用，应用没能启动。',
-      detail: `当前书库目录：${currentPath}\n\n原因：${reason}\n\n请选择一个可用的目录作为书库；也可以先退出，自己创建好该目录后重新打开。`,
-      buttons: ['选择新目录…', '退出'],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    })
-    if (response !== 0) return false
-    const picked = await dialog.showOpenDialog({
-      title: '选择书库目录',
-      properties: ['openDirectory', 'createDirectory'],
-    })
-    const dest = picked.filePaths?.[0]
-    if (!dest) continue
-    try {
-      // setLibraryPath 失败会回滚到原路径，所以这里重试是安全的。
-      await setLibraryPath(dest)
-      await updateSettings({ libraryPath: dest })
-      console.info(`书库目录已切换到 ${dest}`)
-      return true
-    } catch (error) {
-      currentPath = dest
-      reason = error instanceof Error ? error.message : String(error)
-    }
-  }
-}
-
 /** 启动入口：书库就绪后修正中断状态、装广告过滤、注册 IPC、再开窗口。 */
 
 app.whenReady().then(async () => {
-  try {
-    const settings = await getSettings()
-    await setLibraryPath(settings.libraryPath)
-  } catch (error) {
-    // 书库盘不在或不可写：不能静默失败，让用户当场换目录。
-    console.error('书库目录不可用，启动中断：', error)
-    const fallback = await getSettings().catch(() => null)
-    const recovered = await recoverFromLibraryPathFailure(fallback?.libraryPath ?? '', error).catch(() => false)
-    if (!recovered) {
-      dialog.showErrorBox(
-        '小说浏览器无法启动',
-        '书库目录不可用，应用已退出。\n\n请确认磁盘可用，或手动编辑 %APPDATA%\\spbf\\settings.json 里的 libraryPath 后重新打开。',
-      )
-      app.quit()
-      return
-    }
+  // 书库盘不在或不可写时不能静默失败：说明原因并让用户当场换目录（逻辑见 startupGuard.ts）。
+  const libraryGuard = await ensureLibraryPathAtStartup({
+    getSettings,
+    setLibraryPath,
+    updateSettings,
+    showMessageBox: (options) => dialog.showMessageBox(options),
+    showOpenDialog: (options) => dialog.showOpenDialog(options),
+    onUnavailable: (error) => console.error('书库目录不可用，启动中断：', error),
+    onPathSwitched: (path) => console.info(`书库目录已切换到 ${path}`),
+  })
+  if (!libraryGuard.ok) {
+    dialog.showErrorBox('小说浏览器无法启动', libraryGuard.failureDetail ?? '')
+    app.quit()
+    return
   }
   // 上次退出或崩溃会把在跑的书留在「下载中」：先按实际章节状态修正，再开窗口
   const repaired = await recoverInterruptedStatus()
