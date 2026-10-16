@@ -1,0 +1,9 @@
+# 行尾统一：仓库里的文本文件一律以 LF 存储、也以 LF 检出。
+#
+# 本机 core.autocrlf=true 会把工作区检出成 CRLF，于是「读源码文件再断言其中 \n」的契约测试
+# 会与产品行为无关地红掉（修过的见 e074654、f484a7b 那一族）。eol 属性优先于 core.autocrlf，
+# 所以这两行能压住它，任何人的检出都得到 LF。
+* text=auto eol=lf
+
+# 例外：这个夹具就是拿来手工验「导入 CRLF 版 txt」的，字节本身是被测对象，必须保持 CRLF。
+fixtures/ux/crlf-novel.txt text eol=crlf
