@@ -197,4 +197,32 @@ describe('backup（书库备份/恢复）', () => {
       setAtomicWriteBeforeCommitForTests(null)
     }
   })
+
+  it('备份目录不可用时给出可执行的下一步，而不是甩系统错误码', async () => {
+    await seedBook('d_hint', '提示书')
+    // 用文件占住路径中间一段：Windows 下 mkdir 抛 ENOTDIR
+    const blocker = join(tmpdir(), 'spbf-backup-blocker')
+    await writeFile(blocker, 'x')
+    try {
+      const res = await createBackup(join(blocker, 'sub'))
+      expect(res.ok).toBe(false)
+      if (res.ok) return
+      expect(res.message).toContain('无法写入备份目录')
+      expect(res.message).toContain('文件夹')
+      // 不能把原始错误码甩给用户
+      expect(res.message).not.toContain('ENOTDIR')
+    } finally {
+      await rm(blocker, { force: true })
+    }
+  })
+
+  it('目标盘不存在时提示先去创建目录', async () => {
+    await seedBook('d_hint2', '提示书二')
+    const res = await createBackup('Q:/spbf-no-such-drive/out')
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.message).toContain('无法写入备份目录')
+    expect(res.message).toContain('创建该目录')
+    expect(res.message).not.toContain('ENOENT')
+  })
 })

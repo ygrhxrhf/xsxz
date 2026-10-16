@@ -642,6 +642,13 @@ export function extractPage(html: string, pageUrl: string, catalogHint?: string,
   const dom = new JSDOM(html, { url: pageUrl })
   const doc = dom.window.document
 
+  // 页面整体已经明显是乱码时，优先报告编码问题；否则目录页会被误报成「没有目录」。
+  // bodyText 会跳过 script/style，避免把站点脚本里的编码样例当成页面正文。
+  const pageText = doc.body ? bodyText(doc.body) : ''
+  if (looksGarbled(pageText)) {
+    return { ok: false, pageKind: 'unknown', failCode: 'BodyGarbled', failMessage: FAIL_CODE_ZH.BodyGarbled }
+  }
+
   const ruledCatalog = tryCatalogFromRule(doc, pageUrl, rule)
   if (ruledCatalog && ruledCatalog.chapters.length >= 2) {
     return {
@@ -795,6 +802,7 @@ export function extractBody(html: string, pageUrl: string, rule?: SiteRule): Ext
   const unlockOut: { reason?: string } = {}
   const ruledBody = tryBodyFromRule(doc, rule)
   if (ruledBody) {
+    if (looksGarbled(ruledBody)) return { body: '', ok: false, failCode: 'BodyGarbled', failMessage: FAIL_CODE_ZH.BodyGarbled }
     const wall = classifyWall(doc, ruledBody, true)
     if (wall === 'Paywall') {
       const unlocked = tryUnlockPaywall(html, pageUrl, rule, ruledBody, doc, unlockOut)

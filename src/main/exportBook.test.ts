@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import JSZip from 'jszip'
@@ -97,5 +97,33 @@ describe('exportBook', () => {
     })
     const res = await exportBook(book.id, 'txt', dest)
     expect(res).toEqual({ ok: false, message: '没有可导出的章节' })
+  })
+
+  it('导出目录不可用时给出可执行的下一步，而不是甩系统错误码', async () => {
+    const book = await createBookFromBootstrap({
+      bookId: 'i_exporthint0001',
+      title: '提示书',
+      author: '',
+      importType: 'txt',
+      chapterTitles: ['第一章'],
+    })
+    await writeChapterFile(book.id, book.chapters[0].id, {
+      title: '第一章',
+      body: '正文内容',
+      status: 'ready',
+    })
+    // 用文件占住路径中间一段：Windows 下 mkdir 抛 ENOTDIR
+    const blocker = join(tmpdir(), 'spbf-export-blocker')
+    await writeFile(blocker, 'x')
+    try {
+      const res = await exportBook(book.id, 'txt', join(blocker, 'sub'))
+      expect(res.ok).toBe(false)
+      if (res.ok) return
+      expect(res.message).toContain('无法写入导出目录')
+      expect(res.message).toContain('文件夹')
+      expect(res.message).not.toContain('ENOTDIR')
+    } finally {
+      await rm(blocker, { force: true })
+    }
   })
 })

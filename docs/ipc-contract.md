@@ -24,10 +24,10 @@
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
 | `dialog.openFile` | invoke | 无 | `{ filePaths: string[] }` |
-| `dialog.openDirectory` | invoke | 无 | `{ filePaths: string[] }` |
+| `dialog.openDirectory` | invoke | `{ title?: string }` | `{ filePaths: string[] }` |
 | `dialog.openZip` | invoke | 无 | `{ filePaths: string[] }` |
 
-`openFile` 用于导入 txt / epub。`openDirectory` 用于选择书库根目录，也用于本机导出 txt / epub 与书库备份的目标目录。`openZip` 用于选择书库备份文件（zip 过滤）。主进程打开原生对话框。
+`openFile` 用于导入 txt / epub。`openDirectory` 用于选择书库根目录，也用于本机导出 txt / epub 与书库备份的目标目录；调用方通过 `title` 说明用途（如「选择导出目录」「选择备份目录」「选择书库目录」），主进程校验为非空字符串后回退默认标题。`openZip` 用于选择书库备份文件（zip 过滤）。主进程打开原生对话框。
 
 ---
 

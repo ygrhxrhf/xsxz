@@ -57,8 +57,22 @@ export async function createBackup(
   }
   const buf = await zip.generateAsync({ type: 'nodebuffer' })
 
+  // 目录不存在就建；建不了要给可执行的下一步，而不是把 ENOENT/EACCES 直接甩给用户。
   try {
     await mkdir(dir, { recursive: true })
+  } catch (e: unknown) {
+    const code = e && typeof e === 'object' && 'code' in e ? String((e as { code?: unknown }).code) : ''
+    const hint = code === 'ENOENT'
+      ? '目标盘或上级目录不存在，请先在文件管理器里创建该目录'
+      : code === 'ENOTDIR'
+        ? '路径中间有一段是文件而不是文件夹，请改选一个目录'
+        : code === 'EACCES' || code === 'EPERM'
+          ? '没有写入权限，请换一个有权限的目录（如「文档」或桌面）'
+          : '请检查该目录是否可用'
+    return { ok: false, message: `无法写入备份目录：${hint}。` }
+  }
+
+  try {
     const dest = join(dir, backupFileName(new Date(), automatic))
     const staged = `${dest}.${randomUUID()}.tmp`
     try {

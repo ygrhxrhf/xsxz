@@ -91,6 +91,22 @@ describe('extractPage — chapter page', () => {
     expect(result.failCode).toBe('BodyEmpty')
   })
 
+  it('returns BodyGarbled when the page text is an encoding mojibake payload', () => {
+    const mojibake = 'æµ‹è¯•æ–‡æœ¬锟斤拷'.repeat(12)
+    const html = `<html><head><title>目录页</title></head><body><div id="content">${mojibake}</div></body></html>`
+    const result = extractPage(html, 'https://example.com/book/index.html')
+    expect(result.ok).toBe(false)
+    expect(result.failCode).toBe('BodyGarbled')
+    expect(result.failMessage).toBe('正文疑似乱码或字形替换，未入库')
+  })
+
+  it('does not classify normal CJK catalog text as garbled', () => {
+    const html = `<html><body><ul>${Array.from({ length: 6 }, (_, i) => `<li><a href="${i + 1}.html">第${i + 1}章 夜行</a></li>`).join('')}</ul></body></html>`
+    const result = extractPage(html, 'https://example.com/book/index.html')
+    expect(result.ok).toBe(true)
+    expect(result.pageKind).toBe('catalog')
+  })
+
   it('returns Intercepted for a long captcha-like page, not NeedLogin or BodyEmpty', () => {
     const html = fixture('intercepted.html')
     const result = extractPage(html, 'https://example.com/book/7.html')

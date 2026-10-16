@@ -628,7 +628,7 @@ async function handleCheckUpdate(bookId: string) {
 
 async function handleExport(bookId: string, format: 'txt' | 'epub') {
   if (hasTask(exportingIds.value, bookId)) return
-  const { filePaths } = await window.api.dialog.openDirectory()
+  const { filePaths } = await window.api.dialog.openDirectory('选择导出目录')
   const dest = filePaths?.[0]
   if (!dest) return
   startTask(exportingIds, bookId)

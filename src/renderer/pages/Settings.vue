@@ -89,12 +89,13 @@ const promptUndo = ref<Partial<Record<AiPromptKind, { mode: AiPromptMode; text?:
 const libraryPath = ref('')
 const downloadPace = ref<DownloadPace>('standard')
 const saving = ref(false)
+const libraryMoving = ref(false)
 /** 本机 OCR 兜底引擎是否可用：null = 还在检查。 */
 const ocrStatus = ref<{ ready: boolean; reason?: string } | null>(null)
 const ocrStatusText = computed(() => {
   if (!ocrStatus.value) return '正在检查本机 OCR 引擎…'
   if (ocrStatus.value.ready) return '本机 OCR 引擎可用（tesseract.js，离线识别）。'
-  return `本机没有可用的 OCR 引擎：${ocrStatus.value.reason || '未安装 tesseract.js'}。开关可以先打开，但引擎就绪前不会生效。`
+  return `本机 OCR 引擎当前不可用：${ocrStatus.value.reason || '未安装 tesseract.js'}。开关可以先打开，但引擎就绪前不会生效。`
 })
 /** 输入框里的路径和已生效的路径不一致时，界面要说清「还没生效」。 */
 const libraryPathDirty = computed(() => libraryPath.value.trim() !== (settings.value?.libraryPath || '').trim())
@@ -264,7 +265,7 @@ async function testTts() {
 }
 
 async function pickLibrary() {
-  const { filePaths } = await window.api.dialog.openDirectory()
+  const { filePaths } = await window.api.dialog.openDirectory('选择书库目录')
   if (filePaths?.[0]) libraryPath.value = filePaths[0]
 }
 
@@ -323,13 +324,33 @@ async function setDownloadPace(next: DownloadPace) {
   }
 }
 
-async function saveLibrary() {
+async function saveLibraryPath() {
   const target = libraryPath.value.trim()
   const original = settings.value?.libraryPath || ''
-  if (target === original) return
-  if (!window.confirm(`将书库复制到新目录并校验，成功后切换；原目录会保留。\n\n目标：${target}\n\n确定开始？`)) return
+  if (!target || target === original) return
   saving.value = true
   msg.value = ''
+  try {
+    settings.value = await window.api.settings.set({ libraryPath: target })
+    libraryPath.value = settings.value.libraryPath
+    msg.value = `已保存新的书库路径：${settings.value.libraryPath}。原书库仍保留在 ${original}，不会自动复制。`
+    msgType.value = 'success'
+  } catch (e: unknown) {
+    msg.value = e instanceof Error ? e.message : String(e)
+    msgType.value = 'error'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function migrateLibrary() {
+  const target = libraryPath.value.trim()
+  const original = settings.value?.libraryPath || ''
+  if (!target || target === original) return
+  if (!window.confirm(`将书库复制到新目录并校验，成功后切换；原目录会保留。\n\n目标：${target}\n\n确定开始？`)) return
+  saving.value = true
+  libraryMoving.value = true
+  msg.value = '正在复制并校验书库文件，请勿关闭应用…'
   try {
     const result = await window.api.library.migrate(target)
     if (result.ok) {
@@ -347,6 +368,7 @@ async function saveLibrary() {
     msgType.value = 'error'
   } finally {
     saving.value = false
+    libraryMoving.value = false
   }
 }
 
@@ -630,7 +652,7 @@ const restoring = ref(false)
 const configuringAutoBackup = ref(false)
 
 async function enableAutoBackup() {
-  const { filePaths } = await window.api.dialog.openDirectory()
+  const { filePaths } = await window.api.dialog.openDirectory('选择自动备份目录')
   const destDir = filePaths?.[0]
   if (!destDir) return
   configuringAutoBackup.value = true
@@ -651,7 +673,7 @@ async function disableAutoBackup() {
 }
 
 async function handleBackup() {
-  const { filePaths } = await window.api.dialog.openDirectory()
+  const { filePaths } = await window.api.dialog.openDirectory('选择备份目录')
   const dest = filePaths?.[0]
   if (!dest) return
   backingUp.value = true
@@ -798,13 +820,20 @@ onMounted(async () => {
           <n-button @click="pickLibrary">选择目录</n-button>
         </n-input-group>
         <p style="color:var(--text-muted);font-size:13px;margin:0">
-          搬迁仅接受空目录；复制并校验成功后切换，旧目录仍保留。
+          当前生效路径：<code>{{ settings?.libraryPath || '正在读取…' }}</code>。
+          “保存路径”只切换以后新写入的位置，不复制已有书库；“搬迁书库”会复制并校验已有内容，成功后再切换。
         </p>
         <p v-if="libraryPathDirty" class="field-warn">
-          路径已改，但还没生效：现在读写的仍是
-          <code>{{ settings?.libraryPath || '本机默认目录' }}</code>。点下面的「搬迁书库」才会真正切换。
+          待处理路径：<code>{{ libraryPath }}</code>；当前生效路径仍是
+          <code>{{ settings?.libraryPath || '本机默认目录' }}</code>。
         </p>
-        <n-button type="primary" :loading="saving" @click="saveLibrary">搬迁书库</n-button>
+        <n-alert v-if="libraryMoving" type="info" :show-icon="false">
+          正在搬迁书库：复制文件并进行完整性校验，请勿关闭应用。搬迁完成后会显示文件数量和新路径。
+        </n-alert>
+        <n-space>
+          <n-button :disabled="!libraryPathDirty || !libraryPath.trim()" :loading="saving" @click="saveLibraryPath">保存路径</n-button>
+          <n-button type="primary" :disabled="!libraryPathDirty || !libraryPath.trim()" :loading="saving" @click="migrateLibrary">搬迁书库</n-button>
+        </n-space>
         <div class="pace-row">
           <div>
             <div class="field-label">下载速度</div>

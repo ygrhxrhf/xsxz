@@ -2,8 +2,23 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { importTxt } from './importTxt'
+import { importTxt, decodeTxtBuffer } from './importTxt'
 import { loadBook, setLibraryPath } from './library'
+
+
+describe('decodeTxtBuffer', () => {
+  it('detects UTF-8 without a BOM', () => {
+    const result = decodeTxtBuffer(Buffer.from('第一章 测试\n正文内容', 'utf8'))
+    expect(result.encoding).toBe('utf-8')
+    expect(result.text).toContain('第一章 测试')
+  })
+
+  it('detects GBK bytes without a BOM', () => {
+    const result = decodeTxtBuffer(Buffer.from([0xb5, 0xda, 0xd2, 0xbb, 0xd5, 0xc2, 0x20, 0xb2, 0xe2, 0xca, 0xd4]))
+    expect(result.encoding).toBe('gbk')
+    expect(result.text).toBe('第一章 测试')
+  })
+})
 
 describe('importTxt', () => {
   let dir: string

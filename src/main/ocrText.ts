@@ -12,6 +12,7 @@
  */
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 export interface OcrImage {
@@ -171,12 +172,27 @@ export function langPathCandidates(): string[] {
   return roots.filter((root) => root && hasLangPack(root))
 }
 
-/** 目录里有没有可用的中文语言包（`resources/` 下放的是 gzip 版，引擎直接吃）。 */
-function hasLangPack(root: string): boolean {
+/**
+ * 引擎实际加载的语言。必须与 `getWorker()` 里传给 `createWorker` 的串一致：
+ * 少一个语言，tesseract.js 就会为它回退到 CDN 在线下载，离线环境等于不可用。
+ */
+export const OCR_LANGS = ['chi_sim', 'eng'] as const
+
+function hasOneLang(root: string, lang: string): boolean {
   return (
-    existsSync(join(root, 'chi_sim.traineddata.gz')) ||
-    existsSync(join(root, 'chi_sim.traineddata'))
+    existsSync(join(root, `${lang}.traineddata.gz`)) ||
+    existsSync(join(root, `${lang}.traineddata`))
   )
+}
+
+/** 这个目录里缺哪些语言包（空数组 = 齐全）。`resources/` 下放的是 gzip 版，引擎直接吃。 */
+export function missingLangPacks(root: string): string[] {
+  return OCR_LANGS.filter((lang) => !hasOneLang(root, lang))
+}
+
+/** 目录里的语言包是否够引擎离线跑完 `chi_sim+eng`。 */
+export function hasLangPack(root: string): boolean {
+  return missingLangPacks(root).length === 0
 }
 
 async function getWorker(): Promise<OcrWorkerLike | null> {
@@ -189,7 +205,14 @@ async function getWorker(): Promise<OcrWorkerLike | null> {
       createWorker: (langs: string, oem?: number, opts?: Record<string, unknown>) => Promise<OcrWorkerLike>
     }
     const langPath = langPathCandidates()[0]
-    const worker = await mod.createWorker('chi_sim+eng', undefined, langPath ? { langPath } : undefined)
+    // tesseract.js 默认把 cachePath 当成 `.`，会把解压后的语言包写进当前工作目录
+    // （打包版就是安装目录）。显式指到临时目录，别污染安装位置。
+    const cachePath = join(tmpdir(), 'spbf-ocr-cache')
+    await mkdir(cachePath, { recursive: true }).catch(() => {})
+    const worker = await mod.createWorker(OCR_LANGS.join('+'), undefined, {
+      cachePath,
+      ...(langPath ? { langPath } : {}),
+    })
     cachedWorker = worker
     return worker
   } catch (e) {
@@ -198,8 +221,29 @@ async function getWorker(): Promise<OcrWorkerLike | null> {
   }
 }
 
+/**
+ * 语言包是否齐备。`ocrEngineReady()` 与设置页文案共用这一个判断，
+ * 避免出现「界面说可用、引擎其实要联网」这类两边说法不一致。
+ */
+export function langPackStatus(roots: string[] = langPathCandidates()): { ok: true } | { ok: false; reason: string } {
+  const dir = roots[0]
+  if (!dir) {
+    return { ok: false, reason: `没找到离线语言包（${OCR_LANGS.join(' / ')}），请确认安装包完整后重新安装` }
+  }
+  const missing = missingLangPacks(dir)
+  if (missing.length > 0) {
+    return { ok: false, reason: `语言包不完整：${dir} 缺少 ${missing.join('、')}，OCR 会尝试联网下载` }
+  }
+  return { ok: true }
+}
+
 /** 引擎可用性：设置页与失败提示都用这一个判断。 */
 export async function ocrEngineReady(): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // 离线语言包是 OCR 能跑的前提。tesseract.js 在语言加载失败时**不抛错**，
+  // 会静默回退到在线下载——离线环境里就等于不可用，所以必须自己先查语言包，
+  // 否则界面会一直宣称「引擎可用」。
+  const packs = langPackStatus()
+  if (!packs.ok) return packs
   const worker = await getWorker()
   if (worker) return { ok: true }
   return { ok: false, reason: engineUnavailableReason ?? '没装 OCR 引擎（tesseract.js）' }

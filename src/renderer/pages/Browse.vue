@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NProgress, NTag, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS, DEFAULT_WEB_READING_PREFS } from '@shared/types'
-import type { BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, PreviewPageKind, ReaderPrefs, WebReadingPrefs, WebShelfChapter } from '@shared/types'
+import type { BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, PreviewPageKind, ReaderPrefs, WebReadingPrefs, WebShelfChapter } from '@shared/types'
 import { adjacentVisualPage, scrollTopForVisualPage, visualPageCount, visualPageIndex, visualPageLabel } from './readerPager'
 import { clampRatio, paragraphIndexAtViewportCenter, readerScrollBehavior, shouldAutoHideReaderTools, wheelPageDirection } from './readerHelpers'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
@@ -123,7 +123,7 @@ const showProgress = ref(false)
 const showPreview = ref(false)
 const previewing = ref(false)
 const downloadPreview = ref<DownloadPreview | null>(null)
-const previewFailure = ref<{ message: string; pageKind: PreviewPageKind } | null>(null)
+const previewFailure = ref<{ message: string; pageKind: PreviewPageKind; code?: FailCode } | null>(null)
 const adFilterEnabled = ref(true)
 const adFilterBusy = ref(false)
 let lastAdHost = ''
@@ -848,8 +848,12 @@ async function startDownload() {
     if (!res.ok) {
       // 目录页和章节页的失败要留在页面上，附下一步；其余仍用浮层提示。
       const pageKind = res.pageKind ?? 'unknown'
-      if (pageKind === 'catalog' || pageKind === 'chapter') {
-        previewFailure.value = { message: res.message, pageKind }
+      const code = res.code
+      if (pageKind === 'catalog' || pageKind === 'chapter' || code === 'BodyGarbled') {
+        const messageText = code === 'BodyGarbled'
+          ? '页面编码可能不正确，正文疑似乱码，未开始下载。请先刷新页面；如果仍异常，请检查站点规则或使用浏览器确认页面显示正常。'
+          : res.message
+        previewFailure.value = { message: messageText, pageKind, code }
       } else {
         message.error(res.message)
       }
@@ -1023,7 +1027,7 @@ onUnmounted(() => {
                 配置本站规则
               </n-button>
               <n-button size="small" secondary :disabled="!currentHost()" :loading="adFilterBusy" @click.prevent="toggleAdFilter">
-                {{ adFilterEnabled ? '关闭去广告' : '开启去广告' }}
+                {{ adFilterEnabled ? '去广告：已开启' : '去广告：已关闭' }}
               </n-button>
               <button type="button" aria-label="缩小网页" @click.prevent="setZoom(-0.1)">－</button>
               <button type="button" title="恢复默认缩放" @click.prevent="setZoom('reset')">{{ Math.round(state.zoom * 100) }}%</button>
@@ -1067,6 +1071,7 @@ onUnmounted(() => {
     <div v-if="!readingPage && (resumeError || previewFailure)" class="browse-notice" role="alert">
       <p>{{ resumeError || previewFailure?.message }}</p>
       <button v-if="resumeError" type="button" @click="retryResume">重试</button>
+      <button v-else-if="previewFailure?.code === 'BodyGarbled'" type="button" @click="previewFailure = null; reload()">刷新页面</button>
       <button v-else-if="previewFailure?.pageKind === 'chapter'" type="button" @click="editCurrentSiteRule">配置本站规则</button>
       <button type="button" @click="resumeError ? resumeError = '' : previewFailure = null">关闭</button>
     </div>
@@ -1276,6 +1281,7 @@ onUnmounted(() => {
             >
               打开这本书
             </n-button>
+            <n-button size="small" secondary @click="showProgress = false">关闭</n-button>
           </div>
         </div>
         <div v-else class="dl-waiting">等待下载开始…</div>

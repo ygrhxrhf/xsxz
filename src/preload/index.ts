@@ -56,7 +56,7 @@ function on<T>(channel: string, handler: (payload: T) => void): Unsub {
 const api = {
   dialog: {
     openFile: () => ipcRenderer.invoke('dialog.openFile') as Promise<{ filePaths: string[] }>,
-    openDirectory: () => ipcRenderer.invoke('dialog.openDirectory') as Promise<{ filePaths: string[] }>,
+    openDirectory: (title?: string) => ipcRenderer.invoke('dialog.openDirectory', { title }) as Promise<{ filePaths: string[] }>,
     openZip: () => ipcRenderer.invoke('dialog.openZip') as Promise<{ filePaths: string[] }>,
   },
   tts: {

@@ -66,7 +66,21 @@ export async function exportBook(
   }
   if (chunks.length === 0) return { ok: false, message: '没有可导出的章节' }
 
-  await mkdir(dir, { recursive: true })
+  // 目录不存在就建；建不了（盘不在、无权限、路径被占）要给可执行的下一步，
+  // 而不是把 ENOENT/EACCES 这种系统错误直接甩给用户。
+  try {
+    await mkdir(dir, { recursive: true })
+  } catch (e: unknown) {
+    const code = e && typeof e === 'object' && 'code' in e ? String((e as { code?: unknown }).code) : ''
+    const hint = code === 'ENOENT'
+      ? '目标盘或上级目录不存在，请先在文件管理器里创建该目录'
+      : code === 'ENOTDIR'
+        ? '路径中间有一段是文件而不是文件夹，请改选一个目录'
+        : code === 'EACCES' || code === 'EPERM'
+          ? '没有写入权限，请换一个有权限的目录（如「文档」或桌面）'
+          : '请检查该目录是否可用'
+    return { ok: false, message: `无法写入导出目录：${hint}。` }
+  }
   const base = sanitizeExportName(book.title)
   if (format === 'txt') {
     const parts = [`《${book.title}》`, book.author ? `作者：${book.author}` : '', '']
@@ -74,7 +88,11 @@ export async function exportBook(
       parts.push(`## ${ch.title}`, '', ch.body.trim(), '')
     }
     const dest = join(dir, `${base}.txt`)
-    await writeFile(dest, parts.join('\n'), 'utf-8')
+    try {
+      await writeFile(dest, parts.join('\n'), 'utf-8')
+    } catch {
+      return { ok: false, message: '导出文件写入失败，请确认目标目录可写后重试' }
+    }
     return { ok: true, path: dest }
   }
 

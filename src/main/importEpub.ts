@@ -30,6 +30,8 @@ function decodeEntities(text: string): string {
 
 function stripXhtml(html: string): string {
   const withBreaks = html
+    // <head> 里的 <title> 是普通文本，不剥掉就会混进正文，跟章内 <h2> 撞成重复标题。
+    .replace(/<head[\s\S]*?<\/head>/gi, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(EPUB_BLOCK_END_RE, '\n\n')

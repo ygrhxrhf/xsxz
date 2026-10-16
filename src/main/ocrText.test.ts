@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   MAX_OCR_IMAGES,
+  OCR_LANGS,
   PAGE_OCR_SCRIPT,
   __setOcrEngineForTests,
+  hasLangPack,
+  langPackStatus,
   langPathCandidates,
+  missingLangPacks,
   ocrEngineReady,
   cleanOcrText,
   ocrImages,
@@ -143,10 +147,82 @@ describe('OCR 认字', () => {
     expect(await ocrEngineReady()).toEqual({ ok: true })
   })
 
+  it('语言包不齐时 ocrEngineReady 如实报出缺哪个语言，而不是宣称可用', async () => {
+    // 空目录：一个语言包都没有
+    const dir = await mkdtemp(join(tmpdir(), 'spbf-ocr-reason-'))
+    try {
+      const none = langPackStatus([dir])
+      expect(none.ok).toBe(false)
+      if (!none.ok) expect(none.reason).toContain('chi_sim')
+
+      // 只补 eng：仍不够（引擎要 chi_sim+eng），原因要指名 chi_sim
+      await writeFile(join(dir, 'eng.traineddata.gz'), 'x')
+      const partial = langPackStatus([dir])
+      expect(partial.ok).toBe(false)
+      if (!partial.ok) {
+        expect(partial.reason).toContain('chi_sim')
+        expect(partial.reason).toContain('联网下载')
+      }
+
+      // 两个都齐：可用
+      await writeFile(join(dir, 'chi_sim.traineddata.gz'), 'x')
+      expect(langPackStatus([dir])).toEqual({ ok: true })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('一个语言包目录都没有时，原因指向安装包完整性', () => {
+    const status = langPackStatus([])
+    expect(status.ok).toBe(false)
+    if (!status.ok) expect(status.reason).toContain('重新安装')
+  })
+
   it('语言包目录能认到仓库自带的那份', () => {
     const found = langPathCandidates()
     expect(found.length).toBeGreaterThan(0)
     expect(found.some((dir) => dir.includes('xsxz') || dir === process.cwd())).toBe(true)
+  })
+
+  it('hasLangPack 要求引擎真正要用的两个语言包都在，且认 .gz 与解压两种形态', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spbf-ocr-lang-'))
+    try {
+      expect(hasLangPack(dir)).toBe(false)
+      await writeFile(join(dir, 'chi_sim.traineddata.gz'), 'x')
+      // 只有 chi_sim：引擎要的是 chi_sim+eng，缺一个就够不上离线可用
+      expect(hasLangPack(dir)).toBe(false)
+      await writeFile(join(dir, 'eng.traineddata.gz'), 'x')
+      expect(hasLangPack(dir)).toBe(true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+
+    const dir2 = await mkdtemp(join(tmpdir(), 'spbf-ocr-lang-'))
+    try {
+      // 解压后的 .traineddata 同样认
+      await writeFile(join(dir2, 'chi_sim.traineddata'), 'x')
+      await writeFile(join(dir2, 'eng.traineddata'), 'x')
+      expect(hasLangPack(dir2)).toBe(true)
+      expect(missingLangPacks(dir2)).toEqual([])
+    } finally {
+      await rm(dir2, { recursive: true, force: true })
+    }
+  })
+
+  it('missingLangPacks 说清缺哪一个语言包', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spbf-ocr-missing-'))
+    try {
+      expect(missingLangPacks(dir)).toEqual(['chi_sim', 'eng'])
+      await writeFile(join(dir, 'eng.traineddata.gz'), 'x')
+      expect(missingLangPacks(dir)).toEqual(['chi_sim'])
+      expect(hasLangPack(dir)).toBe(false)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('OCR_LANGS 与引擎实际加载的语言一致', () => {
+    expect([...OCR_LANGS]).toEqual(['chi_sim', 'eng'])
   })
 
   it('一章最多认这么多张图', () => {
