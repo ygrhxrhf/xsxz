@@ -19,6 +19,34 @@ export function setAtomicWriteBeforeCommitForTests(hook: typeof beforeCommitForT
   beforeCommitForTests = hook
 }
 
+/** Windows 上 rename 撞到占用时给的错误码：目标或源正被别的句柄打开（杀软/索引服务扫描刚写的临时文件）。 */
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'EEXIST'])
+
+/**
+ * 改名重试：Windows 上刚写完的临时文件常被杀毒或索引服务短暂占用，rename 会抛 EPERM，
+ * 于是「原子写」偶发失败——书库索引、章节、标记都可能因此丢一次保存。这类占用是瞬时的，
+ * 退避几毫秒重试即可；非瞬时错误（路径不存在等）立刻抛出，不掩盖真问题。
+ *
+ * `renameFn` 只为测试注入。
+ */
+export async function renameWithRetry(
+  source: string,
+  destination: string,
+  renameFn: (from: string, to: string) => Promise<void> = rename,
+  attempts = 5,
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await renameFn(source, destination)
+      return
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException | null)?.code ?? ''
+      if (attempt >= attempts || !TRANSIENT_RENAME_CODES.has(code)) throw error
+      await new Promise((resolve) => setTimeout(resolve, 15 * attempt))
+    }
+  }
+}
+
 export async function atomicWriteText(
   filePath: string,
   content: string,
@@ -36,7 +64,8 @@ export async function atomicWriteText(
       await options.hooks?.beforeCommit?.()
       await beforeCommitForTests?.(filePath)
       if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-      await (options.hooks?.rename ?? rename)(temporaryPath, filePath)
+      if (options.hooks?.rename) await options.hooks.rename(temporaryPath, filePath)
+      else await renameWithRetry(temporaryPath, filePath)
     } catch (error: unknown) {
       await handle?.close().catch(() => {})
       await rm(temporaryPath, { force: true }).catch(() => {})
