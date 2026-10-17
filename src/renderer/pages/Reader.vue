@@ -60,7 +60,8 @@ import {
 } from './readerPager'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { ttsBodyHash, validTtsPosition } from './ttsPosition'
-import { decorateText, relocateRange } from '@shared/paragraphSearch'
+import { decorateText } from '@shared/paragraphSearch'
+import { useReaderMarks } from './readerMarks'
 import type { Annotation, BookSearchHit } from '@shared/types'
 import { libraryCoverSrc, libraryCoverText } from './libraryCard'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
@@ -442,10 +443,39 @@ const searching = ref(false)
 const searchHits = ref<BookSearchHit[]>([])
 let pendingScrollPara = -1
 
-// 书签 / 划线笔记
-const annotations = ref<Annotation[]>([])
-const lostHighlightIds = ref<Set<string>>(new Set())
-const showMarks = ref(false)
+// 书签 / 划线笔记：整块逻辑搬到了 readerMarks.ts，这里只接线（名字保持原样，模板与调用点都不用改）
+const marks = useReaderMarks({
+  bookId: () => book.value?.id,
+  currentChapterId: () => currentChapter.value?.id,
+  normalizedBody: () => normalizedBody.value,
+  chapterOrder: () => new Map(chapters.value.map((chapter, index) => [chapter.id, index])),
+  memoryCharacters: () => memoryData.value?.characters ?? [],
+  notify: (kind, text) => {
+    if (kind === 'error') message.error(text)
+    else if (kind === 'info') message.info(text)
+    else message.success(text)
+  },
+})
+const {
+  annotations,
+  lostHighlightIds,
+  showMarks,
+  editingNoteId,
+  noteDraft,
+  currentHighlightRanges,
+  chapterBookmark,
+  sortedMarks,
+  wordbookHighlights,
+  wordbookTerms,
+  wordbookTrimmed,
+  wordbookPeople,
+  reload: reloadAnnotations,
+  resolveCurrentChapter: resolveCurrentAnnotations,
+  toggleBookmark,
+  saveNote,
+  remove: deleteAnnotation,
+  deleteConfirmText,
+} = marks
 const selPopupX = ref(0)
 const selPopupY = ref(0)
 const lastSelRect = ref({ top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 })
@@ -464,8 +494,6 @@ const selectedRange = ref<{ start: number; end: number; text: string } | null>(n
 const showDirectNote = ref(false)
 const directNoteDraft = ref('')
 const restoringChat = ref(false)
-const editingNoteId = ref('')
-const noteDraft = ref('')
 
 /** 规范化正文（段落用 \n\n 连接）——笔记坐标的空间 */
 const normalizedBody = computed(() => paras.value.join('\n\n'))
@@ -477,14 +505,6 @@ const paraNormStarts = computed(() => {
     offset += p.length + 2
   }
   return starts
-})
-
-const currentHighlightRanges = computed(() => {
-  const cid = currentChapter.value?.id
-  if (!cid) return []
-  return annotations.value.filter(
-    (a) => a.chapterId === cid && a.kind === 'highlight' && !lostHighlightIds.value.has(a.id),
-  )
 })
 
 /** 当前章各段的渲染切片：叠加搜索命中与划线 */
@@ -509,33 +529,6 @@ const renderedParas = computed(() => {
   })
 })
 const visibleParas = computed(() => renderedParas.value.slice(0, renderedCount.value))
-
-async function reloadAnnotations() {
-  if (!book.value) return
-  const res = await window.api.annotations.list(book.value.id)
-  if (res.ok) annotations.value = res.items
-}
-
-/** 章节打开后校正本章划线：偏移漂移时按摘录重定位，找不到则标记丢失 */
-function resolveCurrentAnnotations() {
-  const cid = currentChapter.value?.id
-  if (!cid || !book.value) return
-  const body = normalizedBody.value
-  for (const a of annotations.value) {
-    if (a.chapterId !== cid || a.kind !== 'highlight') continue
-    const fixed = relocateRange(body, a.start, a.end, a.excerpt)
-    if (!fixed) {
-      lostHighlightIds.value.add(a.id)
-      continue
-    }
-    if (lostHighlightIds.value.has(a.id)) lostHighlightIds.value = new Set([...lostHighlightIds.value].filter((x) => x !== a.id))
-    if (fixed.start !== a.start || fixed.end !== a.end) {
-      void window.api.annotations.update(book.value.id, a.id, { start: fixed.start, end: fixed.end })
-      a.start = fixed.start
-      a.end = fixed.end
-    }
-  }
-}
 
 /** 把渲染层选区换算成规范化正文里的字符区间 */
 function selectionOffsets(): { start: number; end: number; text: string } | null {
@@ -627,45 +620,14 @@ function openDirectNote() {
 
 async function saveDirectNote() {
   const selection = selectedRange.value
-  const note = directNoteDraft.value.trim()
-  if (!selection || !note || !book.value || !currentChapter.value) return
-  const res = await window.api.annotations.add({
-    bookId: book.value.id,
-    chapterId: currentChapter.value.id,
-    kind: 'highlight',
-    start: selection.start,
-    end: selection.end,
-    excerpt: selection.text,
-    note,
-  })
-  if (res.ok) {
-    annotations.value.push(res.item)
-    message.success('备注已保存')
-    closeSelectionTools()
-  } else {
-    message.error(res.message || '保存失败')
-  }
+  if (!selection) return
+  if (await marks.addNote(selection, directNoteDraft.value)) closeSelectionTools()
 }
 
 async function addHighlight() {
   const sel = selectedRange.value ?? selectionOffsets()
   showSelPopup.value = false
-  if (!sel || !book.value || !currentChapter.value) return
-  const res = await window.api.annotations.add({
-    bookId: book.value.id,
-    chapterId: currentChapter.value.id,
-    kind: 'highlight',
-    start: sel.start,
-    end: sel.end,
-    excerpt: sel.text,
-  })
-  if (res.ok) {
-    annotations.value.push(res.item)
-    message.success('已划线')
-  } else {
-    message.error(res.message || '划线失败')
-  }
-  closeSelectionTools()
+  if (await marks.addHighlight(sel)) closeSelectionTools()
 }
 
 async function askSelectedText(kind: 'explain' | 'person' | 'backstory' = 'explain') {
@@ -722,23 +684,12 @@ async function saveAnswerAsSelectionNote(reply: AiEvidenceChatMessage) {
   }
   selectionNoteSaving.value = true
   try {
-    const res = await window.api.annotations.add({
-      bookId: book.value.id,
-      chapterId: currentChapter.value.id,
-      kind: 'highlight',
-      start: target.start,
-      end: target.end,
-      excerpt: target.text,
-      note,
-      noteSource: 'ai',
+    const saved = await marks.addNote(target, note, {
+      source: 'ai',
+      successText: '解释已存为这段的批注',
+      failureText: '保存批注失败',
     })
-    if (!res.ok) {
-      message.error(res.message || '保存批注失败')
-      return
-    }
-    annotations.value.push(res.item)
-    selectionNoteTarget.value = null
-    message.success('解释已存为这段的批注')
+    if (saved) selectionNoteTarget.value = null
   } finally {
     selectionNoteSaving.value = false
   }
@@ -751,64 +702,9 @@ function canSaveSelectionNote(reply: AiEvidenceChatMessage, index: number): bool
   return note.length > 0 && !note.startsWith('错误：')
 }
 
-const chapterBookmark = computed(
-  () =>
-    annotations.value.find(
-      (a) => a.kind === 'bookmark' && a.chapterId === currentChapter.value?.id,
-    ) ?? null,
-)
-
-async function toggleBookmark() {
-  if (!book.value || !currentChapter.value) return
-  const existing = chapterBookmark.value
-  if (existing) {
-    const res = await window.api.annotations.remove(book.value.id, existing.id)
-    if (res.ok) {
-      annotations.value = annotations.value.filter((a) => a.id !== existing.id)
-      message.info('已移除书签')
-    } else {
-      message.error(res.message || '移除失败')
-    }
-    return
-  }
-  const res = await window.api.annotations.add({
-    bookId: book.value.id,
-    chapterId: currentChapter.value.id,
-    kind: 'bookmark',
-    start: 0,
-    end: 0,
-    excerpt: '',
-  })
-  if (res.ok) {
-    annotations.value.push(res.item)
-    message.success('已加书签')
-  } else {
-    message.error(res.message || '加书签失败')
-  }
-}
-
-const sortedMarks = computed(() => {
-  const order = new Map(chapters.value.map((c, i) => [c.id, i]))
-  return [...annotations.value].sort(
-    (a, b) => (order.get(a.chapterId) ?? 1e9) - (order.get(b.chapterId) ?? 1e9) || a.start - b.start,
-  )
-})
-
 /**
  * 生词本是纯视图：读者划过的词句（含他自己的批注）加上记忆里已核实的人物，
  * 全部来自已有数据，不另建存储、不加 IPC，删不掉也改不坏原始标记。
- */
-const WORDBOOK_TERM_LIMIT = 60
-const wordbookHighlights = computed(() => annotations.value
-  .filter((item) => item.kind === 'highlight' && item.excerpt.trim()))
-const wordbookTerms = computed(() => wordbookHighlights.value.slice(0, WORDBOOK_TERM_LIMIT))
-const wordbookTrimmed = computed(() => wordbookHighlights.value.length > wordbookTerms.value.length)
-const wordbookPeople = computed(() => (memoryData.value?.characters ?? [])
-  .filter((item) => item.accuracy === 'normal'))
-
-/**
- * 记忆搜索完全在本地完成：已有 AI 记忆可能很长，先让读者能按名字、别名、关系和事件找到东西，
- * 不为一次筛选再调用模型，也不会接触未读正文。
  */
 const normalizedMemoryQuery = computed(() => memoryQuery.value.trim().toLocaleLowerCase())
 function memoryMatches(parts: Array<string | undefined>): boolean {
@@ -844,36 +740,6 @@ async function jumpToAnnotation(a: Annotation) {
   }
   await openChapter(ch, a.kind === 'highlight' ? 0 : 0)
   if (pendingScrollPara === -1) scrollToRatio(0)
-}
-
-async function saveNote(a: Annotation) {
-  if (!book.value) return
-  const res = await window.api.annotations.update(book.value.id, a.id, { note: noteDraft.value })
-  if (res.ok) {
-    a.note = res.item.note
-    // 读者改写过的备注就不再是 AI 的话，标识跟着落盘结果走。
-    a.noteSource = res.item.noteSource
-    message.success('备注已保存')
-  } else {
-    message.error(res.message || '保存失败')
-  }
-  editingNoteId.value = ''
-}
-
-function deleteConfirmText(annotation: Annotation): string {
-  if (annotation.kind === 'bookmark') return '删除这条书签？删除后无法恢复。'
-  if (annotation.note) return '删除这条划线与备注？删除后无法恢复。'
-  return '删除这条划线？删除后无法恢复。'
-}
-
-async function deleteAnnotation(a: Annotation) {
-  if (!book.value) return
-  const res = await window.api.annotations.remove(book.value.id, a.id)
-  if (res.ok) {
-    annotations.value = annotations.value.filter((x) => x.id !== a.id)
-  } else {
-    message.error(res.message || '删除失败')
-  }
 }
 
 function openSearch() {

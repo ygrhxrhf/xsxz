@@ -48,20 +48,24 @@ describe('Reader unified AI assistant shell', () => {
 
   it('生词本只是已有标记的视图，不开新频道', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    // 视图与接线仍在 Reader.vue
     expect(source).toContain('<strong>生词本</strong>')
     expect(source).toContain('这里只汇总你自己的划线和已核实的记忆，不另外存一份。')
-    const start = source.indexOf('const WORDBOOK_TERM_LIMIT')
+    expect(source).toContain('memoryData.value?.characters ?? []')
+    expect(source).toContain('@click="jumpToAnnotation(term)"')
+    expect(source).toContain(`noteSource === 'ai'`)
+
+    // 标记域（含生词本这几个纯视图 computed）搬到了 readerMarks.ts：不变量不变——
+    // 这一层只读已有数据，不新开频道、不碰 IPC。
+    const marks = await readFile(new URL('./readerMarks.ts', import.meta.url), 'utf-8')
+    const start = marks.indexOf('const WORDBOOK_TERM_LIMIT')
     expect(start).toBeGreaterThanOrEqual(0)
-    const block = source.slice(start, source.indexOf('async function jumpToAnnotation', start))
+    const block = marks.slice(start, marks.indexOf('async function reload', start))
     expect(block).toContain('WORDBOOK_TERM_LIMIT = 60')
     expect(block).toContain("item.kind === 'highlight' && item.excerpt.trim()")
     expect(block).toContain("item.accuracy === 'normal'")
     expect(block).toContain('wordbookHighlights.value.slice(0, WORDBOOK_TERM_LIMIT)')
-    expect(block).toContain('memoryData.value?.characters ?? []')
     expect(block, '纯视图不该碰 IPC').not.toContain('window.api')
-    // 跳回原处复用标记面板那条路径，不再写第二份滚动逻辑
-    expect(source).toContain('@click="jumpToAnnotation(term)"')
-    expect(source).toContain(`noteSource === 'ai'`)
 
     const preload = await readFile(new URL('../../preload/index.ts', import.meta.url), 'utf-8')
     expect(preload).not.toContain('wordbook')
