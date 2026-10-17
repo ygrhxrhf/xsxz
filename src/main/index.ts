@@ -64,7 +64,7 @@ import { searchInBook } from './search'
 import { auditBook } from './quality'
 import { createBackup, restoreBackup, runAutoBackupIfDue } from './backup'
 import { migrateLibrary } from './libraryMigration'
-import { ensureLibraryPathAtStartup } from './startupGuard'
+import { ensureLibraryPathAtStartup, scriptedStartupDialogs } from './startupGuard'
 import { browseUserAgent } from './userAgent'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
 import type { AiExclusiveResult, AiJobPolicy } from './aiScheduler'
@@ -2161,12 +2161,15 @@ app.setName('spbf')
 
 app.whenReady().then(async () => {
   // 书库盘不在或不可写时不能静默失败：说明原因并让用户当场换目录（逻辑见 startupGuard.ts）。
+  // 设了 SPBF_STARTUP_DIALOG_SCRIPT 就用脚本化弹窗替代原生窗——仅测试用，见
+  // scripts/startup-fallback-e2e.mjs；生产环境没有这个变量，走真实 dialog。
+  const scriptedDialogs = scriptedStartupDialogs(process.env)
   const libraryGuard = await ensureLibraryPathAtStartup({
     getSettings,
     setLibraryPath,
     updateSettings,
-    showMessageBox: (options) => dialog.showMessageBox(options),
-    showOpenDialog: (options) => dialog.showOpenDialog(options),
+    showMessageBox: scriptedDialogs?.showMessageBox ?? ((options) => dialog.showMessageBox(options)),
+    showOpenDialog: scriptedDialogs?.showOpenDialog ?? ((options) => dialog.showOpenDialog(options)),
     onUnavailable: (error) => console.error('书库目录不可用，启动中断：', error),
     onPathSwitched: (path) => console.info(`书库目录已切换到 ${path}`),
   })

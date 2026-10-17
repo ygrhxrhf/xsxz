@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { MessageBoxOptions, OpenDialogOptions } from 'electron'
-import { LIBRARY_PATH_UNAVAILABLE_DETAIL, ensureLibraryPathAtStartup } from './startupGuard'
+import { LIBRARY_PATH_UNAVAILABLE_DETAIL, ensureLibraryPathAtStartup, scriptedStartupDialogs } from './startupGuard'
 import type { StartupGuardDeps } from './startupGuard'
 
 const INITIAL = 'D:\\spbf\\library'
@@ -147,5 +150,53 @@ describe('ensureLibraryPathAtStartup', () => {
     expect(result.ok).toBe(false)
     expect(messageBoxes).toHaveLength(1)
     expect(messageBoxes[0].detail).toContain('原因：settings.json 读取失败')
+  })
+})
+
+describe('scriptedStartupDialogs（仅测试用）', () => {
+  let dir = ''
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-dialog-script-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('没设环境变量时返回 null，生产走真实原生弹窗', () => {
+    expect(scriptedStartupDialogs({})).toBeNull()
+    expect(scriptedStartupDialogs({ SPBF_STARTUP_DIALOG_SCRIPT: '   ' })).toBeNull()
+  })
+
+  it('脚本不是合法 JSON 时返回 null，不把启动流程带崩', () => {
+    expect(scriptedStartupDialogs({ SPBF_STARTUP_DIALOG_SCRIPT: '{oops' })).toBeNull()
+    expect(scriptedStartupDialogs({ SPBF_STARTUP_DIALOG_SCRIPT: '[]' })).not.toBeNull()
+  })
+
+  it('按次序给出按钮与目录，用尽后沿用最后一项，并把弹窗文案记进日志', async () => {
+    const log = join(dir, 'dialog.jsonl')
+    const dialogs = scriptedStartupDialogs({
+      SPBF_STARTUP_DIALOG_SCRIPT: JSON.stringify({ messageBox: [0, 1], openDialog: [null, dir], log }),
+    })
+    expect(dialogs).not.toBeNull()
+
+    const box = (title: string) => dialogs!.showMessageBox({ type: 'error', title, message: 'M', detail: 'D', buttons: ['选择新目录…', '退出'] })
+    const openDialog = (title: string) => dialogs!.showOpenDialog({ title, properties: ['openDirectory', 'createDirectory'] })
+
+    expect(await box('第一次')).toEqual({ response: 0 })
+    expect(await openDialog('选目录')).toEqual({ filePaths: [] })   // 脚本里的 null = 用户取消
+    expect(await box('第二次')).toEqual({ response: 1 })
+    expect(await openDialog('再选')).toEqual({ filePaths: [dir] })
+    expect(await box('第三次')).toEqual({ response: 1 })            // 用尽后沿用最后一项
+    expect(await openDialog('又选')).toEqual({ filePaths: [dir] })
+
+    const lines = (await readFile(log, 'utf-8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(lines.map((line) => line.kind)).toEqual([
+      'messageBox', 'openDialog', 'messageBox', 'openDialog', 'messageBox', 'openDialog',
+    ])
+    expect(lines[0]).toMatchObject({ title: '第一次', detail: 'D', buttons: ['选择新目录…', '退出'], response: 0 })
+    expect(lines[1]).toMatchObject({ title: '选目录', properties: ['openDirectory', 'createDirectory'], pick: null })
+    expect(lines[3]).toMatchObject({ pick: dir })
   })
 })
