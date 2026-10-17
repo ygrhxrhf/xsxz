@@ -2266,6 +2266,52 @@ describe('checkAllUpdates（全部检查更新）', () => {
   })
 })
 
+describe('terminal progress ordering', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-dl-order-'))
+    await setLibraryPath(dir)
+    resetDownloadStateForTests()
+  })
+
+  afterEach(async () => {
+    resetDownloadStateForTests()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('persists the book status before sending a terminal done event', async () => {
+    const events: DownloadProgress[] = []
+    const statusAtTerminal: string[] = []
+    setOwnerWindow({
+      contentView: { addChildView(): void {}, removeChildView(): void {} },
+      webContents: {
+        send(channel: string, payload: unknown): void {
+          if (channel !== 'download.progress') return
+          const progress = payload as DownloadProgress
+          events.push(progress)
+          if (progress.status !== 'done' && progress.status !== 'error') return
+          const bookPath = join(dir, progress.bookId, 'book.json')
+          statusAtTerminal.push(String(JSON.parse(readFileSync(bookPath, 'utf-8')).status))
+        },
+      },
+    } as never)
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+
+    expect(events.some((progress) => progress.status === 'done')).toBe(true)
+    expect(statusAtTerminal.length).toBeGreaterThan(0)
+    expect(statusAtTerminal.every((status) => status === 'ready' || status === 'partial')).toBe(true)
+  })
+})
+
 describe('failedChapters on terminal progress', () => {
   let dir: string
 

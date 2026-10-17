@@ -120,6 +120,8 @@ interface ActiveDownload {
   lastUnlockReason?: string
   /** 同一章被「我已处理好」重排过几次：超过上限就不再自动重排，避免死循环。 */
   wallRequeues?: Map<string, number>
+  /** 终态进度等 book.json 落盘后再发，避免界面收到 done 却刷新到 downloading。 */
+  deferTerminal?: boolean
 }
 
 type HtmlLoader = (url: string) => Promise<string>
@@ -345,11 +347,12 @@ async function emitProgress(bookId: string): Promise<void> {
   const dl = active.get(bookId)
   if (!dl || !ownerWindow) return
   const finished = dl.cancelled || dl.stopped || dl.done + dl.failed >= dl.total
+  const holdTerminal = finished && dl.deferTerminal === true && !dl.cancelled && !dl.pausedForHuman
   const status: DownloadProgress['status'] = dl.cancelled
     ? 'cancelled'
     : dl.pausedForHuman
       ? 'awaitingHuman'
-      : !finished
+      : !finished || holdTerminal
         ? 'running'
         : dl.failed > 0
           ? 'error'
@@ -1050,6 +1053,7 @@ async function beginDownloadFromBootstrap(
     done: book.chapters.filter((c) => c.status === 'ready').length,
     failed: 0,
     cancelled: false,
+    deferTerminal: true,
   }
   active.set(bookId, dl)
   void emitProgress(bookId)
@@ -1075,6 +1079,7 @@ export async function downloadChapters(bookId: string): Promise<void> {
       } else {
         await refreshBookStatus(bookId)
       }
+      dl.deferTerminal = false
       await emitProgress(bookId)
     } finally {
       active.delete(bookId)
@@ -1556,6 +1561,7 @@ export async function checkUpdate(
       done: book.chapters.filter((c) => c.status === 'ready').length,
       failed: 0,
       cancelled: false,
+      deferTerminal: true,
     }
     active.set(bookId, dl)
     void emitProgress(bookId)
@@ -1682,6 +1688,7 @@ export async function retryFailed(bookId: string): Promise<{ ok: boolean; messag
       done: book.chapters.filter((c) => c.status === 'ready').length,
       failed: 0,
       cancelled: false,
+      deferTerminal: true,
     }
     active.set(bookId, dl)
     void emitProgress(bookId)
