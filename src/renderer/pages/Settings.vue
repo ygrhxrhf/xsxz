@@ -869,6 +869,9 @@ onMounted(async () => {
       <n-alert v-if="settings?.apiKeyConfigured" type="success" style="margin-bottom:12px">
         API Key 已配置（安全存储）
       </n-alert>
+      <n-alert v-else-if="settings?.apiKeyUnreadable" type="warning" style="margin-bottom:12px">
+        已保存的 API Key 在本机无法解密（通常是换了机器或系统密钥库被重置）。请重新填写并保存。
+      </n-alert>
       <n-alert v-else type="warning" style="margin-bottom:12px">
         未配置 API Key，AI 功能不可用
       </n-alert>

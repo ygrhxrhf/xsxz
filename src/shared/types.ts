@@ -527,6 +527,11 @@ export interface Settings {
   model: string
   /** 渲染进程只拿是否已配置，不回传明文 */
   apiKeyConfigured: boolean
+  /**
+   * 有密文但本机解不开（换了机器、系统密钥库被重置）。此时 apiKeyConfigured 仍是 false，
+   * 但界面要提示「重新填写」而不是「未配置」——否则用户会以为自己从没填过。
+   */
+  apiKeyUnreadable?: boolean
   /** 主进程始终补齐；可选仅为旧调用方与测试兼容。 */
   embedding?: { baseUrl: string; model: string; keyConfigured: boolean }
   /** TierSense API Key 是否已配置；渲染进程只拿布尔值。 */

@@ -209,6 +209,8 @@
 
 `apiKey` 仅在 `settings.set` 时由渲染提交；落盘经 `safeStorage`。`settings.get` 只给 `apiKeyConfigured: boolean`。站点规则**不**经 `settings.*`，也**不**写入 `settings.json`。
 
+`settings.get` 另附带可选的 `apiKeyUnreadable?: boolean`（追加字段）：有密文但本机解不开（换了机器、系统密钥库被重置）时为 `true`，此时 `apiKeyConfigured` 仍为 `false`。界面据此提示「重新填写」而不是「未配置」——否则用户会以为自己从没填过。`settings.set` 不接受该字段。
+
 在线听书配置仍经 `settings.get/set`：`tts.source` 为 `system | online`，并包含系统音色 URI、在线完整接口地址、模型、音色、语速和自动下一章。`SettingsUpdate.ttsApiKey` 单独设置在线语音密钥，空串清除；主进程加密保存，`settings.get` 仅返回 `tts.onlineKeyConfigured`，绝不返回明文。在线接口按 OpenAI 兼容的 `POST` 语音生成协议发送 `model`、`voice`、`input`、`response_format: mp3`。
 
 | 频道 | 方向 | 请求 | 响应 |

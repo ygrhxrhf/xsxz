@@ -278,6 +278,11 @@ function hasUsableEncryptedKey(ciphertext: unknown): boolean {
   }
 }
 
+/** 存过密文没有（不代表解不开）。用来把「从没填过」和「填过但本机解不开」分开告诉用户。 */
+function hasEncryptedKey(ciphertext: unknown): boolean {
+  return typeof ciphertext === 'string' && ciphertext.length > 0
+}
+
 export async function getApiKey(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.apiKeyEnc !== 'string' || !raw.apiKeyEnc) return ''
@@ -308,6 +313,7 @@ export async function getSettings(): Promise<Settings> {
     baseUrl: typeof raw.baseUrl === 'string' ? raw.baseUrl : DEFAULT_AI_PLACEHOLDER.baseUrl,
     model: typeof raw.model === 'string' ? raw.model : DEFAULT_AI_PLACEHOLDER.model,
     apiKeyConfigured: hasUsableEncryptedKey(raw.apiKeyEnc),
+    apiKeyUnreadable: hasEncryptedKey(raw.apiKeyEnc) && !hasUsableEncryptedKey(raw.apiKeyEnc),
     embedding: {
       baseUrl: typeof readRecord(raw.embedding).baseUrl === 'string' ? String(readRecord(raw.embedding).baseUrl).trim() : '',
       model: typeof readRecord(raw.embedding).model === 'string' ? String(readRecord(raw.embedding).model).trim() : '',

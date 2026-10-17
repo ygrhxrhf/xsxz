@@ -73,10 +73,20 @@ describe('settings atomic persistence', () => {
   it('reports an undecryptable stored key as unconfigured instead of silently empty', async () => {
     await updateSettings({ apiKey: 'sk-on-another-machine' })
     expect((await getSettings()).apiKeyConfigured).toBe(true)
+    expect((await getSettings()).apiKeyUnreadable).toBe(false)
     ss.decryptFails = true
     resetSettingsCacheForTests()
-    expect((await getSettings()).apiKeyConfigured).toBe(false)
+    const migrated = await getSettings()
+    expect(migrated.apiKeyConfigured).toBe(false)
+    // 「填过但本机解不开」要和「从没填过」分开：界面据此提示重新填写，而不是说未配置
+    expect(migrated.apiKeyUnreadable).toBe(true)
     expect(await getApiKey()).toBe('')
+  })
+
+  it('没存过 Key 时不报「解不开」', async () => {
+    const settings = await getSettings()
+    expect(settings.apiKeyConfigured).toBe(false)
+    expect(settings.apiKeyUnreadable).toBe(false)
   })
 
   it('re-resolves the library default instead of baking one into settings.json', async () => {
