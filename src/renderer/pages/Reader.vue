@@ -62,8 +62,9 @@ import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { ttsBodyHash, validTtsPosition } from './ttsPosition'
 import { decorateText } from '@shared/paragraphSearch'
 import { useReaderMarks } from './readerMarks'
+import { useReaderSelection } from './readerSelection'
 import { useReaderAssistant } from './readerAssistant'
-import { selectionRangeOffsets } from './readerSelection'
+import { selectionRangeOffsets } from './selectionOffsets'
 import type { Annotation, BookSearchHit } from '@shared/types'
 import { libraryCoverSrc, libraryCoverText } from './libraryCard'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
@@ -323,23 +324,6 @@ const {
   remove: deleteAnnotation,
   deleteConfirmText,
 } = marks
-const selPopupX = ref(0)
-const selPopupY = ref(0)
-const lastSelRect = ref({ top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 })
-function applySelPopupPosition(popup: { width: number; height: number }) {
-  const pos = selectionPopupPosition({
-    range: lastSelRect.value,
-    viewport: { width: window.innerWidth, height: window.innerHeight },
-    popup,
-  })
-  selPopupX.value = pos.x
-  selPopupY.value = pos.y
-}
-const showSelPopup = ref(false)
-const selectedExcerpt = ref('')
-const selectedRange = ref<{ start: number; end: number; text: string } | null>(null)
-const showDirectNote = ref(false)
-const directNoteDraft = ref('')
 const restoringChat = ref(false)
 
 /** 规范化正文（段落用 \n\n 连接）——笔记坐标的空间 */
@@ -353,6 +337,35 @@ const paraNormStarts = computed(() => {
   }
   return starts
 })
+
+// 选区工具条：状态与动作在 readerSelection.ts，这里只接线（名字保持原样，模板不用改）。
+// 落点有讲究：必须在 paragraphStarts/normalizedBody 之后（实参不能 TDZ），
+// 又在引用选区状态的那些 watch 之前（watch 源是立即求值的）。
+const selection = useReaderSelection({
+  paragraphStarts: () => paraNormStarts.value,
+  normalizedBody: () => normalizedBody.value,
+  hasContent: () => Boolean(contentRef.value),
+  message,
+  marks,
+})
+const {
+  selPopupX,
+  selPopupY,
+  lastSelRect,
+  applySelPopupPosition,
+  showSelPopup,
+  selectedExcerpt,
+  selectedRange,
+  showDirectNote,
+  directNoteDraft,
+  selectionOffsets,
+  onContentMouseup,
+  closeSelectionTools,
+  copySelectedText,
+  openDirectNote,
+  saveDirectNote,
+  addHighlight,
+} = selection
 
 /** 当前章各段的渲染切片：叠加搜索命中与划线 */
 const plainDecoratedParas = computed(() => paras.value.map((text) => decorateText(text, '', [])))
@@ -378,73 +391,6 @@ const renderedParas = computed(() => {
 const visibleParas = computed(() => renderedParas.value.slice(0, renderedCount.value))
 
 /** 把渲染层选区换算成规范化正文里的字符区间 */
-function selectionOffsets(): { start: number; end: number; text: string } | null {
-  if (!contentRef.value) return null
-  // 算法本身在 readerSelection.ts（纯函数，单独有 jsdom 单测）：这里只喂当前选区与下标表
-  return selectionRangeOffsets(window.getSelection(), paraNormStarts.value, normalizedBody.value)
-}
-
-function onContentMouseup(_e: MouseEvent) {
-  setTimeout(() => {
-    const sel = selectionOffsets()
-    if (!sel) {
-      showSelPopup.value = false
-      selectedExcerpt.value = ''
-      selectedRange.value = null
-      return
-    }
-    selectedRange.value = sel
-    selectedExcerpt.value = sel.text.trim()
-    const range = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0) : null
-    const rect = range?.getBoundingClientRect()
-    lastSelRect.value = rect
-      ? { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height }
-      : { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 }
-    applySelPopupPosition({ width: 360, height: 88 })
-    showSelPopup.value = true
-  }, 0)
-}
-
-function closeSelectionTools(clearBrowserSelection = true) {
-  showSelPopup.value = false
-  showDirectNote.value = false
-  directNoteDraft.value = ''
-  selectedExcerpt.value = ''
-  selectedRange.value = null
-  if (clearBrowserSelection) window.getSelection()?.removeAllRanges()
-}
-
-async function copySelectedText() {
-  const excerpt = selectedExcerpt.value
-  if (!excerpt) return
-  try {
-    await navigator.clipboard.writeText(excerpt)
-    message.success('已复制')
-    closeSelectionTools()
-  } catch {
-    message.error('复制失败，请重试')
-  }
-}
-
-function openDirectNote() {
-  if (!selectedRange.value) return
-  showSelPopup.value = false
-  showDirectNote.value = true
-  directNoteDraft.value = ''
-  applySelPopupPosition({ width: 340, height: 220 })
-}
-
-async function saveDirectNote() {
-  const selection = selectedRange.value
-  if (!selection) return
-  if (await marks.addNote(selection, directNoteDraft.value)) closeSelectionTools()
-}
-
-async function addHighlight() {
-  const sel = selectedRange.value ?? selectionOffsets()
-  showSelPopup.value = false
-  if (await marks.addHighlight(sel)) closeSelectionTools()
-}
 
 async function askSelectedText(kind: 'explain' | 'person' | 'backstory' = 'explain') {
   const excerpt = selectedExcerpt.value || getSelectedText()

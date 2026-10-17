@@ -1,58 +1,136 @@
+import { ref } from 'vue'
+import { selectionRangeOffsets } from './selectionOffsets'
+import { selectionPopupPosition } from './readerHelpers'
+
 /**
- * 阅读器选区 → 规范化正文坐标的换算。
+ * 阅读器的「选区工具条」域：选中正文后浮出的那条工具条，以及选区 → 规范化坐标的接线。
  *
- * 抽成纯函数有两个原因：一是这是整条选区链路里唯一有算法的一段（DOM 遍历 + 段落下标表），
- * 二是它在组件里没法测——选区是在 `setTimeout` 里才被读的，而 jsdom 里组件一重渲染就把选区
- * 折叠了，挂载级测试永远等不到工具条。这里只吃 DOM 事实（选区 + 段落下标表 + 规范化正文），
- * 不碰任何组件状态，于是可以直接在 jsdom 里测。
+ * 从 Reader.vue 搬出来便于单独维护。坐标换算本身是纯函数（见 selectionOffsets.ts，
+ * 有独立单测），这里只管状态与点击动作；依赖（段落下标表、规范化正文、提示、划线接口）
+ * 由 Reader.vue 注入，模板沿用同名变量。
+ * 注意：AI 相关的三个动作（问 AI / 存回批注）留在阅读器里调用助手域，不在这个模块内。
  */
-export interface SelectionOffsets {
-  start: number
-  end: number
-  /** 选中区间在规范化正文里的原文（含跨段的 `\n\n`），用于划线摘录与漂移校正 */
-  text: string
+export interface ReaderSelectionDeps {
+  /** 每段在规范化正文里的起始下标 */
+  paragraphStarts: () => number[]
+  /** 规范化正文（段落以空行连接） */
+  normalizedBody: () => string
+  /** 正文容器是否就绪：没就绪就不认选区 */
+  hasContent: () => boolean
+  /** naive-ui 的 message API：同形注入，搬来的代码不用改调用姿势 */
+  message: { error: (text: string) => void; success: (text: string) => void; warning: (text: string) => void; info: (text: string) => void }
+  /** 标记域（同形注入：被搬代码里的 marks.addHighlight / marks.addNote 原样可用） */
+  marks: {
+    addHighlight: (range: { start: number; end: number; text: string } | null) => Promise<boolean>
+    addNote: (range: { start: number; end: number; text: string } | null, note: string) => Promise<boolean>
+  }
 }
 
-/**
- * @param selection 当前 DOM 选区
- * @param paragraphStarts 每段在规范化正文里的起始下标（第 i 段 = paragraphStarts[i]）
- * @param normalizedBody 规范化正文（段落以空行连接）
- */
-export function selectionRangeOffsets(
-  selection: Selection | null,
-  paragraphStarts: number[],
-  normalizedBody: string,
-): SelectionOffsets | null {
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null
-  const range = selection.getRangeAt(0)
-  const locateEl = (node: Node): Element | null => {
-    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element)
-    return el?.closest('[data-p]') ?? null
-  }
-  const startP = locateEl(range.startContainer)
-  const endP = locateEl(range.endContainer)
-  if (!startP || !endP) return null
+export function useReaderSelection(deps: ReaderSelectionDeps) {
+  const { paragraphStarts, normalizedBody, hasContent, message, marks } = deps
 
-  const localOffsetIn = (p: Element, container: Node, off: number): number | null => {
-    let acc = 0
-    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT)
-    while (walker.nextNode()) {
-      const n = walker.currentNode
-      if (n === container) return acc + off
-      acc += n.textContent?.length ?? 0
+const selPopupX = ref(0)
+const selPopupY = ref(0)
+const lastSelRect = ref({ top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 })
+function applySelPopupPosition(popup: { width: number; height: number }) {
+  const pos = selectionPopupPosition({
+    range: lastSelRect.value,
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    popup,
+  })
+  selPopupX.value = pos.x
+  selPopupY.value = pos.y
+}
+const showSelPopup = ref(false)
+const selectedExcerpt = ref('')
+const selectedRange = ref<{ start: number; end: number; text: string } | null>(null)
+const showDirectNote = ref(false)
+const directNoteDraft = ref('')
+
+function selectionOffsets(): { start: number; end: number; text: string } | null {
+  if (!hasContent()) return null
+  // 算法本身在 readerSelection.ts（纯函数，单独有 jsdom 单测）：这里只喂当前选区与下标表
+  return selectionRangeOffsets(window.getSelection(), paragraphStarts(), normalizedBody())
+}
+
+function onContentMouseup(_e: MouseEvent) {
+  setTimeout(() => {
+    const sel = selectionOffsets()
+    if (!sel) {
+      showSelPopup.value = false
+      selectedExcerpt.value = ''
+      selectedRange.value = null
+      return
     }
-    return null
-  }
-  const l0 = localOffsetIn(startP, range.startContainer, range.startOffset)
-  const l1 = localOffsetIn(endP, range.endContainer, range.endOffset)
-  if (l0 === null || l1 === null) return null
+    selectedRange.value = sel
+    selectedExcerpt.value = sel.text.trim()
+    const range = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0) : null
+    const rect = range?.getBoundingClientRect()
+    lastSelRect.value = rect
+      ? { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height }
+      : { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 }
+    applySelPopupPosition({ width: 360, height: 88 })
+    showSelPopup.value = true
+  }, 0)
+}
 
-  const i0 = Number(startP.getAttribute('data-p'))
-  const i1 = Number(endP.getAttribute('data-p'))
-  const start = (paragraphStarts[i0] ?? 0) + l0
-  const end = (paragraphStarts[i1] ?? 0) + l1
-  if (end <= start) return null
-  const text = normalizedBody.slice(start, end)
-  if (!text.trim()) return null
-  return { start, end, text }
+function closeSelectionTools(clearBrowserSelection = true) {
+  showSelPopup.value = false
+  showDirectNote.value = false
+  directNoteDraft.value = ''
+  selectedExcerpt.value = ''
+  selectedRange.value = null
+  if (clearBrowserSelection) window.getSelection()?.removeAllRanges()
+}
+
+async function copySelectedText() {
+  const excerpt = selectedExcerpt.value
+  if (!excerpt) return
+  try {
+    await navigator.clipboard.writeText(excerpt)
+    message.success('已复制')
+    closeSelectionTools()
+  } catch {
+    message.error('复制失败，请重试')
+  }
+}
+
+function openDirectNote() {
+  if (!selectedRange.value) return
+  showSelPopup.value = false
+  showDirectNote.value = true
+  directNoteDraft.value = ''
+  applySelPopupPosition({ width: 340, height: 220 })
+}
+
+async function saveDirectNote() {
+  const selection = selectedRange.value
+  if (!selection) return
+  if (await marks.addNote(selection, directNoteDraft.value)) closeSelectionTools()
+}
+
+async function addHighlight() {
+  const sel = selectedRange.value ?? selectionOffsets()
+  showSelPopup.value = false
+  if (await marks.addHighlight(sel)) closeSelectionTools()
+}
+
+  return {
+    selPopupX,
+    selPopupY,
+    lastSelRect,
+    applySelPopupPosition,
+    showSelPopup,
+    selectedExcerpt,
+    selectedRange,
+    showDirectNote,
+    directNoteDraft,
+    selectionOffsets,
+    onContentMouseup,
+    closeSelectionTools,
+    copySelectedText,
+    openDirectNote,
+    saveDirectNote,
+    addHighlight,
+  }
 }

@@ -1,9 +1,19 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
+/** 选区工具条的状态与动作搬去了 readerSelection.ts：断言看的是「实现里有没有这条」，
+ *  所以把 Reader.vue 与该模块拼起来看（模板与接线仍在 Reader.vue 里断言）。 */
+async function readReaderSurface(): Promise<string> {
+  const [reader, selection] = await Promise.all([
+    readFile(new URL('./Reader.vue', import.meta.url), 'utf-8'),
+    readFile(new URL('./readerSelection.ts', import.meta.url), 'utf-8'),
+  ])
+  return reader + selection
+}
+
 describe('Reader selection toolbar contract', () => {
   it('positions from Range via selectionPopupPosition, not mouse client coordinates', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     expect(source).toContain('selectionPopupPosition')
     expect(source).toContain('applySelPopupPosition({ width: 360, height: 88 })')
     expect(source).toContain('applySelPopupPosition({ width: 340, height: 220 })')
