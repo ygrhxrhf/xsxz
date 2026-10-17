@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ReaderFocusMode } from '@shared/types'
 import {
   approximateBookRatio,
+  approximateBookRatioFromIndex,
   catalogChapterBadge,
   chapterScrollRatio,
   failAdvice,
@@ -57,6 +58,23 @@ describe('reader progress helpers', () => {
     expect(remainingChapterCount(chapters, 'c1')).toBe(2)
     expect(remainingChapterCount(chapters, 'c3')).toBe(0)
     expect(remainingChapterCount(chapters, 'missing')).toBe(3)
+  })
+
+  // 网页阅读模式没有 chapterId，只有目录序号，所以它走按序号的那条；两条必须同公式
+  it('gives the same whole-book ratio by index as by chapter id', () => {
+    expect(approximateBookRatioFromIndex(0, 3, 0)).toBe(approximateBookRatio(chapters, 'c1', 0))
+    expect(approximateBookRatioFromIndex(1, 3, 0.5)).toBe(approximateBookRatio(chapters, 'c2', 0.5))
+    expect(approximateBookRatioFromIndex(2, 3, 1)).toBe(approximateBookRatio(chapters, 'c3', 1))
+  })
+
+  it('refuses to guess a whole-book ratio without a known chapter count', () => {
+    expect(approximateBookRatioFromIndex(3, 0, 0.5)).toBe(0)
+    expect(approximateBookRatioFromIndex(3, Number.NaN, 0.5)).toBe(0)
+    expect(approximateBookRatioFromIndex(3, -2, 0.5)).toBe(0)
+    // 越界的序号与比例都夹紧，不吐出超过 1 的进度
+    expect(approximateBookRatioFromIndex(99, 4, 2)).toBe(1)
+    expect(approximateBookRatioFromIndex(-5, 4, -1)).toBe(0)
+    expect(approximateBookRatioFromIndex(Number.NaN, 4, 0.25)).toBeCloseTo(0.0625)
   })
 })
 

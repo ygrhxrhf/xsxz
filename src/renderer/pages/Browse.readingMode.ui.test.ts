@@ -67,4 +67,67 @@ describe('Browse web reading mode contract', () => {
     expect(source).toContain('if (options.reading) await enterReadingMode(target)')
     expect(source).toContain('const res = url ? await window.api.browse.readingPage(url) : await window.api.browse.readingPage()')
   })
+
+  it('takes its paper colours from the shared theme source, not a local copy', async () => {
+    const source = await browseSource()
+    expect(source).toContain("import { READER_THEME_COLORS } from '@shared/readerTheme'")
+    expect(source).toContain('const colors = READER_THEME_COLORS[p.theme]')
+    // 不再自带一份色表：否则同一个「纸白」会和书库阅读器渲出两种颜色
+    expect(source).not.toMatch(/const themeColors\s*=\s*\{/)
+  })
+
+  it('exposes the full typographic set in the reading-mode panel', async () => {
+    const source = await browseSource()
+    const panel = source.slice(source.indexOf('v-if="readingPanel"'), source.indexOf('v-if="webAiPanelOpen"'))
+    // 与书库阅读器同一份 ReaderPrefs：行距 / 段间距 / 首行缩进 / 行焦点都要能就地调
+    expect(panel).toContain("setReaderPref('lineHeight'")
+    expect(panel).toContain("setReaderPref('paragraphSpacing'")
+    expect(panel).toContain("setReaderPref('paragraphIndent'")
+    expect(panel).toContain("setReaderPref('focusMode'")
+  })
+
+  it('persists reading-mode marks by canonical chapter url', async () => {
+    const source = await browseSource()
+    expect(source).toContain("import { selectionRangeOffsets } from './selectionOffsets'")
+    expect(source).toContain('import { decorateText } from \'@shared/paragraphSearch\'')
+    expect(source).toContain('window.api.webAnnotations.add({')
+    expect(source).toContain('window.api.webAnnotations.list(url)')
+    expect(source).toContain('window.api.webAnnotations.update(')
+    expect(source).toContain('window.api.webAnnotations.remove(')
+    // 换章作废旧选区并重拉本章标注，避免把上一章的坐标当本章用
+    const open = source.slice(source.indexOf('function openReadingPage'), source.indexOf('function prefetchNeighborChapter'))
+    expect(open).toContain('closeSelectionTools(false)')
+    expect(open).toContain('void reloadWebMarks()')
+  })
+
+  it('reports whole-book progress from the catalog, sharing the library formula', async () => {
+    const source = await browseSource()
+    // 目录后台侧取：不能挡住进阅读模式，拿不到就安静退回本章比例
+    expect(source).toContain('async function ensureReadingCatalog()')
+    const open = source.slice(source.indexOf('function openReadingPage'), source.indexOf('function prefetchNeighborChapter'))
+    expect(open).toContain('void ensureReadingCatalog()')
+    expect(open).toContain('void reloadWebMarks()')
+    // 全书比例复用 readerHelpers 的同一公式，不再各写一份
+    expect(source).toContain("import { approximateBookRatioFromIndex")
+    expect(source).toContain('approximateBookRatioFromIndex(index, total, readingRatio.value)')
+    // 目录没拿到时不猜百分比
+    expect(source).toContain('if (index < 0 || !total) return null')
+    expect(source).toContain('全书 ${Math.round(readingBookRatio.value * 100)}%')
+  })
+
+  it('routes cross-chapter AI to the existing download flow instead of half-implementing it', async () => {
+    const source = await browseSource()
+    expect(source).toContain('v-if="webAiPanelOpen"')
+    // 已下载判定复用同一 id 空间：网页书架 id 与下载书 id 都由 canonicalBookId 派生
+    expect(source).toContain('readingChapter.value?.shelfBookId')
+    expect(source).toContain('res.books?.some((book) => book.id === shelfId)')
+    expect(source).toContain('emit(\'open-book\', id)')
+    // 就地只给不依赖书库的选区级 AI
+    expect(source).toContain("askWebAi('translate')")
+    expect(source).toContain("askWebAi('explain')")
+    expect(source).toContain('window.api.ai.explainText(')
+    // 不给网页阅读模式造第二套跨章 AI
+    expect(source).not.toContain('window.api.ai.storySoFar(')
+    expect(source).not.toContain('window.api.ai.updateMemory(')
+  })
 })

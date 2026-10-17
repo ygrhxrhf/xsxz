@@ -2,10 +2,14 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NProgress, NTag, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS, DEFAULT_WEB_READING_PREFS } from '@shared/types'
-import type { BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, PreviewPageKind, ReaderPrefs, WebReadingPrefs, WebShelfChapter } from '@shared/types'
+import { READER_THEME_COLORS } from '@shared/readerTheme'
+import type { BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, PreviewPageKind, ReaderPrefs, WebAnnotation, WebReadingPrefs, WebShelfChapter } from '@shared/types'
 import { adjacentVisualPage, scrollTopForVisualPage, visualPageCount, visualPageIndex, visualPageLabel } from './readerPager'
-import { clampRatio, paragraphIndexAtViewportCenter, readerScrollBehavior, shouldAutoHideReaderTools, wheelPageDirection } from './readerHelpers'
+import { approximateBookRatioFromIndex, clampRatio, paragraphIndexAtViewportCenter, readerScrollBehavior, selectionPopupPosition, shouldAutoHideReaderTools, wheelPageDirection } from './readerHelpers'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
+import { selectionRangeOffsets } from './selectionOffsets'
+import { decorateText } from '@shared/paragraphSearch'
+import { relocateRange } from '@shared/paragraphSearch'
 import { useTts } from './useTts'
 
 const props = defineProps<{
@@ -44,6 +48,33 @@ const readingPageCount = ref(1)
 const readingRatio = ref(0)
 const readingCenterParagraph = ref(-1)
 const readingChapterTitle = ref('')
+/** 网页阅读模式的标注（划线/书签/备注）：归属键是当前章的规范化地址。 */
+const webMarks = ref<WebAnnotation[]>([])
+const webMarkLostIds = ref<Set<string>>(new Set())
+const marksOpen = ref(false)
+const markNoteEditingId = ref('')
+const markNoteDraft = ref('')
+/** 选区工具条：选中正文后浮出，提供 复制/划线/备注/翻译/问 AI。 */
+const selPopup = ref<{ x: number; y: number; excerpt: string; range: { start: number; end: number; text: string } } | null>(null)
+const noteEditorOpen = ref(false)
+const noteEditorDraft = ref('')
+/** 书内搜索：在当前章正文里找，命中高亮并可上下跳。 */
+const inBookFindOpen = ref(false)
+const inBookFindQuery = ref('')
+const inBookFindIndex = ref(0)
+/** AI 选区结果（翻译/解释）：只在网页阅读模式里用，不落盘。 */
+const webAiResult = ref('')
+const webAiTitle = ref('')
+const webAiLoading = ref(false)
+let webAiJobId = ''
+/** 网页阅读模式的「AI」面板：说明就地可用什么、跨章 AI 要怎么拿到。 */
+const webAiPanelOpen = ref(false)
+/**
+ * 当前网页书是否已在书库里。网页书架 id 与下载书 id 都由 `canonicalBookId(host, catalogUrl)`
+ * 派生，同一本书两条路径得到同一个 id，所以直接拿书库列表比对即可，不必为此加 IPC。
+ */
+const webBookDownloadedId = ref<string | null>(null)
+const webBookDownloadChecked = ref(false)
 const readingToolsVisible = ref(true)
 const catalogOpen = ref(false)
 const catalogChapters = ref<WebShelfChapter[]>([])
@@ -75,17 +106,11 @@ let resumeAttempted = false
 const resumeError = ref('')
 let browseUrlForHide = ''
 let hideCountTimer: ReturnType<typeof setInterval> | null = null
-const themeColors = {
-  paper: { bg: '#F7F3E8', text: '#2F2A24', outer: '#E9E3D7' },
-  sepia: { bg: '#F3E2B8', text: '#3A2F22', outer: '#E6D2A4' },
-  gray: { bg: '#E5E7E6', text: '#252A2D', outer: '#D6D9D8' },
-  night: { bg: '#1B1D20', text: '#D8D2C7', outer: '#111316' },
-}
 const readingStyle = computed(() => {
   const p = readerPrefs.value
-  const colors = themeColors[p.theme]
+  const colors = READER_THEME_COLORS[p.theme]
   return {
-    '--web-paper': colors.bg,
+    '--web-paper': colors.paper,
     '--web-ink': colors.text,
     '--web-outer': colors.outer,
     '--web-font': p.fontFamily === 'serif' ? '"STSong", "Songti SC", "SimSun", serif' : p.fontFamily === 'mono' ? '"Cascadia Mono", "Consolas", monospace' : '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
@@ -97,6 +122,53 @@ const readingStyle = computed(() => {
   }
 })
 const readingParagraphs = computed(() => readingPage.value?.body.split(/\n\s*\n/).filter(Boolean) ?? [])
+/** 规范化正文（段落以空行连接）：标注坐标与选区换算的坐标空间，与本地阅读器一致。 */
+const readingNormalizedBody = computed(() => readingParagraphs.value.join('\n\n'))
+/** 每段在规范化正文里的起始下标。 */
+const readingParagraphStarts = computed(() => {
+  const starts: number[] = []
+  let acc = 0
+  for (const paragraph of readingParagraphs.value) {
+    starts.push(acc)
+    acc += paragraph.length + 2
+  }
+  return starts
+})
+/** 当前章的标注键（规范化地址）；没有阅读页时为空串。 */
+const currentMarkUrl = computed(() => readingPage.value?.url ?? '')
+/** 本章有效的划线区间（漂移校正后仍找不到的会标记为丢失）。 */
+const currentWebHighlights = computed(() => {
+  if (!currentMarkUrl.value) return []
+  const body = readingNormalizedBody.value
+  const out: Array<{ start: number; end: number }> = []
+  for (const item of webMarks.value) {
+    if (item.kind !== 'highlight' || webMarkLostIds.value.has(item.id)) continue
+    const relocated = relocateRange(body, item.start, item.end, item.excerpt)
+    if (relocated) out.push(relocated)
+    else webMarkLostIds.value.add(item.id)
+  }
+  return out
+})
+/** 每段内的划线区间（段内坐标），供 decorateText 叠加高亮。 */
+function paragraphHighlightRanges(index: number): Array<{ start: number; end: number }> {
+  const start = readingParagraphStarts.value[index] ?? 0
+  const len = readingParagraphs.value[index]?.length ?? 0
+  return currentWebHighlights.value
+    .map((r) => ({ start: Math.max(0, r.start - start), end: Math.min(len, r.end - start) }))
+    .filter((r) => r.end > r.start)
+}
+/** 段落渲染切片：叠加书内搜索命中与划线。 */
+function readingParagraphSegments(index: number) {
+  return decorateText(readingParagraphs.value[index] ?? '', inBookFindQuery.value, paragraphHighlightRanges(index))
+}
+/** 书内搜索命中段（用于上下跳）。 */
+const inBookFindHits = computed(() => {
+  const q = inBookFindQuery.value.trim().toLowerCase()
+  if (!q) return [] as number[]
+  return readingParagraphs.value
+    .map((paragraph, index) => (paragraph.toLowerCase().includes(q) ? index : -1))
+    .filter((index) => index >= 0)
+})
 const readingPaged = computed(() => readerPrefs.value.readingMode === 'screen')
 const readingChapter = computed(() => readingPage.value?.chapter ?? null)
 /** 上一章 / 下一章：阅读页上下文优先，找不到时退回可见网页识别到的链接。 */
@@ -104,11 +176,27 @@ const canPrevChapter = computed(() => Boolean(readingChapter.value?.previous || 
 const canNextChapter = computed(() => Boolean(readingChapter.value?.next || state.value.nextChapter))
 const readingChapterLabel = computed(() => readingChapterTitle.value || readingPage.value?.title || '')
 const autoScrollSpeed = computed(() => autoScrollSpeedPx(webReading.value.autoSpeed))
+/**
+ * 全书比例（章节等权估算），与本地阅读器同一个公式。
+ *
+ * 目录没拿到时返回 null：宁可不显示，也不拿「不知道总共几章」猜一个百分比给读者。
+ */
+const readingBookRatio = computed(() => {
+  const chapter = readingChapter.value
+  const total = chapter?.total ?? catalogChapters.value.length
+  const index = chapter?.index ?? catalogIndex.value
+  if (index < 0 || !total) return null
+  return approximateBookRatioFromIndex(index, total, readingRatio.value)
+})
 const readingProgressLabel = computed(() => {
   const chapter = readingChapter.value
-  const position = chapter && chapter.index != null && chapter.total ? `第 ${chapter.index + 1}/${chapter.total} 章` : ''
-  if (readingPaged.value) return [position, visualPageLabel(readingPageIndex.value, readingPageCount.value)].filter(Boolean).join(' · ')
-  return [position, `${Math.round(readingRatio.value * 100)}%`].filter(Boolean).join(' · ')
+  // 章节序号优先用主进程从网页书架快照算出的，拿不到时退回后台目录的定位结果
+  const total = chapter?.total ?? catalogChapters.value.length
+  const index = chapter?.index ?? catalogIndex.value
+  const position = index >= 0 && total ? `第 ${index + 1}/${total} 章` : ''
+  const book = readingBookRatio.value === null ? '' : `全书 ${Math.round(readingBookRatio.value * 100)}%`
+  if (readingPaged.value) return [position, visualPageLabel(readingPageIndex.value, readingPageCount.value), book].filter(Boolean).join(' · ')
+  return [position, `本章 ${Math.round(readingRatio.value * 100)}%`, book].filter(Boolean).join(' · ')
 })
 watch(findOpen, (open) => { if (open) void nextTick(() => findInput.value?.focus()) })
 const slot = ref<HTMLElement | null>(null)
@@ -445,7 +533,253 @@ function onReadingWheel(event: WheelEvent) {
 function onReadingScroll() {
   syncReadingPage()
   saveReadingPosition()
+  if (selPopup.value) closeSelectionTools()
 }
+
+// ---------------------------------------------------------------------------
+// 网页阅读模式：标注（划线 / 书签 / 备注）
+// ---------------------------------------------------------------------------
+
+async function reloadWebMarks() {
+  const url = currentMarkUrl.value
+  webMarkLostIds.value = new Set()
+  if (!url) { webMarks.value = []; return }
+  const res = await window.api.webAnnotations.list(url)
+  webMarks.value = res.ok ? res.items : []
+  // 触发一次重算，把找不到的划线标为丢失
+  void currentWebHighlights.value
+}
+
+function markExcerpt(paragraphIndex: number, range: { start: number; end: number }): string {
+  const start = readingParagraphStarts.value[paragraphIndex] ?? 0
+  return readingNormalizedBody.value.slice(start + range.start, start + range.end)
+}
+
+function selectionOffsets(): { start: number; end: number; text: string } | null {
+  return selectionRangeOffsets(window.getSelection(), readingParagraphStarts.value, readingNormalizedBody.value)
+}
+
+function onReadingMouseup(event: MouseEvent) {
+  if (!readingPage.value) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('button, input, textarea')) return
+  setTimeout(() => {
+    const range = selectionOffsets()
+    const selection = window.getSelection()
+    if (!range || !selection?.rangeCount) { closeSelectionTools(); return }
+    const rect = selection.getRangeAt(0).getBoundingClientRect()
+    const pos = selectionPopupPosition({
+      range: { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      popup: { width: 320, height: 44 },
+    })
+    selPopup.value = { x: pos.x, y: pos.y, excerpt: range.text.trim(), range }
+  }, 0)
+}
+
+function closeSelectionTools(clear = true) {
+  selPopup.value = null
+  noteEditorOpen.value = false
+  noteEditorDraft.value = ''
+  if (clear) window.getSelection()?.removeAllRanges()
+}
+
+async function copySelectedText() {
+  const excerpt = selPopup.value?.excerpt
+  if (!excerpt) return
+  try { await navigator.clipboard.writeText(excerpt); message.success('已复制'); closeSelectionTools() }
+  catch { message.error('复制失败，请重试') }
+}
+
+async function addWebHighlight() {
+  const sel = selPopup.value?.range ?? selectionOffsets()
+  if (!sel || !currentMarkUrl.value) return
+  const res = await window.api.webAnnotations.add({
+    url: currentMarkUrl.value, kind: 'highlight', start: sel.start, end: sel.end, excerpt: sel.text,
+  })
+  if (res.ok) { webMarks.value = [...webMarks.value, res.item]; message.success('已划线') }
+  else message.error(res.message || '划线失败')
+  closeSelectionTools()
+}
+
+function openWebNoteEditor() {
+  if (!selPopup.value) return
+  noteEditorOpen.value = true
+  noteEditorDraft.value = ''
+}
+
+async function saveWebNote() {
+  const sel = selPopup.value?.range
+  if (!sel || !currentMarkUrl.value) return
+  const text = noteEditorDraft.value.trim()
+  if (!text) return
+  const res = await window.api.webAnnotations.add({
+    url: currentMarkUrl.value, kind: 'highlight', start: sel.start, end: sel.end, excerpt: sel.text, note: text, noteSource: 'user',
+  })
+  if (res.ok) { webMarks.value = [...webMarks.value, res.item]; message.success('已保存备注') }
+  else message.error(res.message || '保存失败')
+  closeSelectionTools()
+}
+
+async function toggleWebBookmark() {
+  if (!currentMarkUrl.value) return
+  const existing = webMarks.value.find((item) => item.kind === 'bookmark')
+  if (existing) {
+    const res = await window.api.webAnnotations.remove(currentMarkUrl.value, existing.id)
+    if (res.ok) { webMarks.value = webMarks.value.filter((item) => item.id !== existing.id); message.success('已取消书签') }
+    else message.error(res.message || '操作失败')
+    return
+  }
+  const anchor = readingParagraphIndex
+  const res = await window.api.webAnnotations.add({
+    url: currentMarkUrl.value, kind: 'bookmark', start: readingParagraphStarts.value[anchor] ?? 0, end: readingParagraphStarts.value[anchor] ?? 0, excerpt: '',
+  })
+  if (res.ok) { webMarks.value = [...webMarks.value, res.item]; message.success('已加书签') }
+  else message.error(res.message || '操作失败')
+}
+
+const webChapterBookmark = computed(() => webMarks.value.find((item) => item.kind === 'bookmark') ?? null)
+const webSortedMarks = computed(() => [...webMarks.value].sort((a, b) => a.start - b.start))
+
+async function saveMarkNote(item: WebAnnotation) {
+  const text = markNoteDraft.value.trim()
+  const res = await window.api.webAnnotations.update(currentMarkUrl.value, item.id, { note: text, noteSource: 'user' })
+  if (res.ok) {
+    webMarks.value = webMarks.value.map((mark) => (mark.id === item.id ? res.item : mark))
+    markNoteEditingId.value = ''
+    markNoteDraft.value = ''
+    message.success('备注已更新')
+  } else message.error(res.message || '更新失败')
+}
+
+async function removeWebMark(item: WebAnnotation) {
+  const res = await window.api.webAnnotations.remove(currentMarkUrl.value, item.id)
+  if (res.ok) {
+    webMarks.value = webMarks.value.filter((mark) => mark.id !== item.id)
+    message.success('已删除')
+  } else message.error(res.message || '删除失败')
+}
+
+function jumpToWebMark(item: WebAnnotation) {
+  const index = readingParagraphStarts.value.findIndex((start, i) => {
+    const end = start + (readingParagraphs.value[i]?.length ?? 0)
+    return item.start >= start && item.start <= end
+  })
+  if (index < 0) { message.info('这一段在当前章里找不到了'); return }
+  const el = readingViewport.value?.querySelectorAll('p')[index] as HTMLElement | undefined
+  if (el) el.scrollIntoView({ block: 'center' })
+  marksOpen.value = false
+}
+
+// ---------------------------------------------------------------------------
+// 网页阅读模式：书内搜索
+// ---------------------------------------------------------------------------
+
+function openInBookFind() {
+  inBookFindOpen.value = true
+  void nextTick(() => {
+    const input = document.querySelector<HTMLInputElement>('.web-find-input')
+    input?.focus()
+  })
+}
+
+function closeInBookFind() {
+  inBookFindOpen.value = false
+  inBookFindQuery.value = ''
+  inBookFindIndex.value = 0
+}
+
+function jumpInBookFind(delta: number) {
+  const hits = inBookFindHits.value
+  if (!hits.length) return
+  inBookFindIndex.value = (inBookFindIndex.value + delta + hits.length) % hits.length
+  const el = readingViewport.value?.querySelectorAll('p')[hits[inBookFindIndex.value]!] as HTMLElement | undefined
+  if (el) el.scrollIntoView({ block: 'center' })
+}
+
+// ---------------------------------------------------------------------------
+// 网页阅读模式：选区问 AI（无书库条目，只做翻译与解释）
+// ---------------------------------------------------------------------------
+
+function stopWebAi() {
+  if (webAiJobId) void window.api.ai.cancel()
+  webAiJobId = ''
+  webAiLoading.value = false
+}
+
+async function askWebAi(kind: 'translate' | 'explain') {
+  const excerpt = selPopup.value?.excerpt
+  if (!excerpt) return
+  const title = kind === 'translate' ? '翻译选中文字' : '解释这段'
+  webAiTitle.value = title
+  webAiResult.value = ''
+  webAiLoading.value = true
+  closeSelectionTools()
+  const res = kind === 'translate'
+    ? await window.api.ai.translateStream(excerpt)
+    : await window.api.ai.explainText(excerpt)
+  if (!res.ok) { webAiLoading.value = false; webAiResult.value = `错误：${res.message}`; return }
+  webAiJobId = res.jobId
+}
+
+/** 把 AI 解释存回读者当初选中的同一区间（noteSource: 'ai'）。 */
+async function saveWebAiAsNote() {
+  const sel = selPopup.value?.range
+  const text = webAiResult.value.trim()
+  if (!sel || !text || !currentMarkUrl.value) { message.info('没有可存回的解释'); return }
+  const res = await window.api.webAnnotations.add({
+    url: currentMarkUrl.value, kind: 'highlight', start: sel.start, end: sel.end, excerpt: sel.text, note: text, noteSource: 'ai',
+  })
+  if (res.ok) { webMarks.value = [...webMarks.value, res.item]; message.success('已存回备注'); webAiResult.value = ''; webAiTitle.value = '' }
+  else message.error(res.message || '保存失败')
+}
+
+// ---------------------------------------------------------------------------
+// 网页阅读模式：AI 面板（跨章 AI 走「下载本书」这条既有路）
+// ---------------------------------------------------------------------------
+
+/**
+ * 判当前网页书有没有下到书库。书不在网页书架时拿不到 `shelfBookId`，按未下载处理——
+ * 面板仍给「下载本书」，只是少一句「已下载」的确认。
+ */
+async function resolveWebBookDownloaded() {
+  const shelfId = readingChapter.value?.shelfBookId
+  webBookDownloadChecked.value = false
+  webBookDownloadedId.value = null
+  if (!shelfId) return
+  try {
+    const res = await window.api.library.list()
+    webBookDownloadedId.value = res.books?.some((book) => book.id === shelfId) ? shelfId : null
+  } catch { /* 判不出来就按未下载处理，不打扰阅读 */ }
+  webBookDownloadChecked.value = true
+}
+
+function toggleWebAiPanel() {
+  webAiPanelOpen.value = !webAiPanelOpen.value
+  if (webAiPanelOpen.value) {
+    readingPanel.value = false
+    void resolveWebBookDownloaded()
+  }
+}
+
+/** 从阅读模式直接开下载预览：主进程读的是可见网页，阅读层是覆盖层，不冲突。 */
+function downloadFromReadingMode() {
+  webAiPanelOpen.value = false
+  void startDownload()
+}
+
+function openDownloadedBook() {
+  const id = webBookDownloadedId.value ?? downloadProgress.value?.bookId
+  if (!id) return
+  webAiPanelOpen.value = false
+  emit('open-book', id)
+}
+
+/** 下载跑完就把「是否已下载」重新判一次，面板当场从「下载本书」翻成「去书库读这本」。 */
+watch(downloadProgress, (progress) => {
+  if (!readingPage.value || !progress) return
+  if (progress.status === 'done' || progress.status === 'error') void resolveWebBookDownloaded()
+})
 
 // ---------------------------------------------------------------------------
 // 自动滚动
@@ -569,6 +903,15 @@ function openReadingPage(page: BrowseReadingPage) {
   readingRatio.value = 0
   readingCenterParagraph.value = -1
   readingParagraphIndex = 0
+  // 换章：旧章的选区工具条与搜索状态作废，再拉本章标注
+  closeSelectionTools(false)
+  closeInBookFind()
+  webAiTitle.value = ''
+  webAiResult.value = ''
+  webAiPanelOpen.value = false
+  void reloadWebMarks()
+  void resolveWebBookDownloaded()
+  void ensureReadingCatalog()
 }
 
 function prefetchNeighborChapter() {
@@ -685,6 +1028,23 @@ async function switchReadingChapter(url: string, options: { keepAutoScroll?: boo
 // 目录 / 书架 / 排版
 // ---------------------------------------------------------------------------
 
+/**
+ * 后台取一次目录：底栏的「第 X/Y 章」和全书比例都要靠章节序号。
+ *
+ * 不能拿它挡住进阅读模式——所以只在后台跑，失败就安静留着，底栏退回只显示本章比例。
+ * 主进程对目录有内存缓存，逐章调用命中缓存，不会每翻一章打站点。
+ */
+async function ensureReadingCatalog() {
+  const url = readingPage.value?.url
+  if (!url) return
+  try {
+    const res = await window.api.browse.chapterCatalog({ catalogUrl: '', url })
+    if (!res.ok) return
+    catalogChapters.value = res.chapters
+    catalogIndex.value = res.currentIndex
+  } catch { /* 拿不到目录就不显示全书比例 */ }
+}
+
 async function openCatalog() {
   if (catalogOpen.value) { catalogOpen.value = false; return }
   catalogOpen.value = true
@@ -796,6 +1156,10 @@ function onKeydown(event: KeyboardEvent) {
   if (key === 'Escape') {
     if (catalogOpen.value) { catalogOpen.value = false; return }
     if (readingPanel.value) { readingPanel.value = false; return }
+    if (webAiPanelOpen.value) { webAiPanelOpen.value = false; return }
+    if (inBookFindOpen.value) { closeInBookFind(); return }
+    if (marksOpen.value) { marksOpen.value = false; return }
+    if (noteEditorOpen.value || selPopup.value) { closeSelectionTools(); return }
     if (readingPage.value && autoScrolling.value) { stopAutoScroll(); return }
     if (readingPage.value && tts.speaking.value) { stopTts(); return }
     if (readingPage.value) { void exitReadingMode(); return }
@@ -818,6 +1182,8 @@ function onKeydown(event: KeyboardEvent) {
   if (key === 'm' || key === 'M') { event.preventDefault(); toggleReadingToolsLock(); return }
   if (key === 't' || key === 'T') { event.preventDefault(); void openCatalog(); return }
   if (key === 'a' || key === 'A') { event.preventDefault(); toggleAutoScroll(); return }
+  if (key === 'f' || key === 'F') { event.preventDefault(); openInBookFind(); return }
+  if (key === 'b' || key === 'B') { event.preventDefault(); void toggleWebBookmark(); return }
 }
 
 async function back() {
@@ -952,6 +1318,16 @@ onMounted(async () => {
       scheduleReadingTools()
       void changeChapter(shortcut.direction)
     }
+  }))
+  // 网页阅读模式的 AI 流式结果：只认当前 job，避免与书库 AI 串流
+  unsubs.push(window.api.ai.onChunk(({ jobId, delta }) => {
+    if (jobId === webAiJobId) webAiResult.value += delta
+  }))
+  unsubs.push(window.api.ai.onDone((event) => {
+    if (event.jobId !== webAiJobId) return
+    webAiJobId = ''
+    webAiLoading.value = false
+    if (!event.ok) webAiResult.value = webAiResult.value || `错误：${event.message || '生成失败'}`
   }))
   hideCountTimer = setInterval(() => {
     if (!hidePicking.value) return
@@ -1094,10 +1470,13 @@ onUnmounted(() => {
         <span class="web-reading-title" :title="readingChapterLabel">{{ readingChapterLabel }}</span>
         <div class="web-chrome-actions">
           <button type="button" @click="openCatalog">目录</button>
+          <button type="button" @click="openInBookFind">搜索</button>
+          <button type="button" @click="marksOpen = true">标记</button>
           <button type="button" :class="{ active: autoScrolling }" @click="toggleAutoScroll">{{ autoScrolling ? '暂停' : '自动' }}</button>
           <button type="button" :class="{ active: ttsSpeaking }" @click="toggleTts">{{ ttsSpeaking ? '停止' : '听书' }}</button>
+          <button type="button" :class="{ active: webAiPanelOpen }" @click="toggleWebAiPanel">AI</button>
           <button type="button" :disabled="shelfSaving" @click="addCurrentToShelf">加书架</button>
-          <button type="button" :class="{ active: readingPanel }" @click="readingPanel = !readingPanel">排版</button>
+          <button type="button" :class="{ active: readingPanel }" @click="readingPanel = !readingPanel; webAiPanelOpen = false">排版</button>
         </div>
       </header>
 
@@ -1149,6 +1528,28 @@ onUnmounted(() => {
           <button type="button" :class="{ active: readerPrefs.fontFamily === 'system' }" @click="setReaderPref('fontFamily', 'system')">黑体</button>
         </div>
         <div class="web-panel-row">
+          <span>行距</span>
+          <button type="button" @click="setReaderPref('lineHeight', Math.max(1.2, Math.round((readerPrefs.lineHeight - 0.1) * 10) / 10))">－</button>
+          <strong>{{ readerPrefs.lineHeight.toFixed(1) }}</strong>
+          <button type="button" @click="setReaderPref('lineHeight', Math.min(3, Math.round((readerPrefs.lineHeight + 0.1) * 10) / 10))">＋</button>
+        </div>
+        <div class="web-panel-row">
+          <span>段间距</span>
+          <button type="button" :class="{ active: readerPrefs.paragraphSpacing === 'compact' }" @click="setReaderPref('paragraphSpacing', 'compact')">紧凑</button>
+          <button type="button" :class="{ active: readerPrefs.paragraphSpacing === 'normal' }" @click="setReaderPref('paragraphSpacing', 'normal')">标准</button>
+          <button type="button" :class="{ active: readerPrefs.paragraphSpacing === 'relaxed' }" @click="setReaderPref('paragraphSpacing', 'relaxed')">宽松</button>
+          <button type="button" :class="{ active: readerPrefs.paragraphIndent }" @click="setReaderPref('paragraphIndent', !readerPrefs.paragraphIndent)">
+            首行缩进{{ readerPrefs.paragraphIndent ? '开' : '关' }}
+          </button>
+        </div>
+        <div class="web-panel-row">
+          <span>行焦点</span>
+          <button type="button" :class="{ active: readerPrefs.focusMode === 'off' }" @click="setReaderPref('focusMode', 'off')">关</button>
+          <button type="button" :class="{ active: readerPrefs.focusMode === 'one' }" @click="setReaderPref('focusMode', 'one')">1 段</button>
+          <button type="button" :class="{ active: readerPrefs.focusMode === 'three' }" @click="setReaderPref('focusMode', 'three')">3 段</button>
+          <button type="button" :class="{ active: readerPrefs.focusMode === 'five' }" @click="setReaderPref('focusMode', 'five')">5 段</button>
+        </div>
+        <div class="web-panel-row">
           <span>自动</span>
           <button type="button" :class="{ active: webReading.autoPage }" @click="setWebReading('autoPage', !webReading.autoPage)">
             自动续章{{ webReading.autoPage ? '开' : '关' }}
@@ -1161,7 +1562,35 @@ onUnmounted(() => {
             @click="setWebReading('autoSpeed', level)"
           >{{ level }}</button>
         </div>
-        <p class="web-panel-hint">← → 翻页 · Alt＋↑↓ 换章 · A 自动滚动 · T 目录 · M 锁工具条 · Esc 退出</p>
+        <p class="web-panel-hint">← → 翻页 · Alt＋↑↓ 换章 · A 自动滚动 · T 目录 · F 搜索 · B 书签 · M 锁工具条 · Esc 退出</p>
+      </div>
+
+      <!-- AI 面板：说清就地可用什么，跨章 AI 给「下载本书」的入口 -->
+      <div v-if="webAiPanelOpen" class="web-reading-panel web-ai-guide" role="dialog" aria-label="这本书的 AI">
+        <strong>这本书的 AI</strong>
+        <p class="web-guide-line">就地可用：选中正文后浮出的工具条里有<strong>翻译</strong>与<strong>解释这段</strong>，只处理你选中的文字，不需要书库。</p>
+        <p class="web-guide-line">跨章 AI（前情提要、人物与伏笔记忆、带依据问答、读完一章自动整理）要能回头重读已读章节，正文得留在本机。网页阅读模式刻意不存正文，所以这里给的是入口，不做半成品。</p>
+        <div class="web-panel-row">
+          <template v-if="webBookDownloadedId">
+            <span>已下载到书库</span>
+            <button type="button" class="primary" @click="openDownloadedBook">去书库读这本</button>
+          </template>
+          <template v-else-if="downloadProgress?.status === 'running' && downloadProgress.bookId">
+            <span>正在下载 {{ downloadProgress.done }} / {{ downloadProgress.total }} 章</span>
+            <button type="button" @click="showProgress = true">看进度</button>
+          </template>
+          <template v-else>
+            <span>{{ webBookDownloadChecked ? '这本书还没下载到书库' : '未确认下载状态' }}</span>
+            <button
+              type="button"
+              class="primary"
+              :disabled="previewing || downloading"
+              :loading="previewing || downloading"
+              @click="downloadFromReadingMode"
+            >下载本书</button>
+          </template>
+        </div>
+        <p class="web-panel-hint">下载完在书库里打开，就是与本地阅读器同一套 AI；网页阅读模式继续当「不落地也能读」的那一面。</p>
       </div>
 
       <div
@@ -1169,6 +1598,7 @@ onUnmounted(() => {
         class="web-reading-viewport"
         @scroll.passive="onReadingScroll"
         @wheel="onReadingWheel"
+        @mouseup="onReadingMouseup"
         @touchstart.passive="stopAutoScroll"
       >
         <article class="web-reading-article">
@@ -1176,8 +1606,9 @@ onUnmounted(() => {
           <p
             v-for="(paragraph, i) in readingParagraphs"
             :key="i"
+            :data-p="i"
             :class="{ focused: focusedParagraph(i), speaking: ttsSpeaking && ttsSpokenPara === i }"
-          >{{ paragraph }}</p>
+          ><template v-for="(seg, j) in readingParagraphSegments(i)" :key="j"><mark v-if="seg.hit" class="web-hit">{{ seg.text }}</mark><mark v-else-if="seg.hl" class="web-hl">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></p>
           <div class="web-reading-end">
             <span>{{ autoScrolling ? '自动滚动中…' : '本章完' }}</span>
             <button v-if="canNextChapter" type="button" :disabled="readingBusy" @click="changeChapter('next')">
@@ -1187,6 +1618,78 @@ onUnmounted(() => {
           </div>
         </article>
       </div>
+
+      <!-- 选区工具条：复制 / 划线 / 备注 / 翻译 / 解释 -->
+      <div
+        v-if="selPopup"
+        class="web-sel-popup"
+        :style="{ left: selPopup.x + 'px', top: selPopup.y + 'px' }"
+      >
+        <button type="button" @click="copySelectedText">复制</button>
+        <button type="button" @click="addWebHighlight">划线</button>
+        <button type="button" @click="openWebNoteEditor">备注</button>
+        <button type="button" @click="askWebAi('translate')">翻译</button>
+        <button type="button" @click="askWebAi('explain')">解释这段</button>
+      </div>
+
+      <div v-if="noteEditorOpen" class="web-note-editor" :style="{ left: (selPopup?.x ?? 0) + 'px', top: (selPopup?.y ?? 0) + 'px' }">
+        <strong>添加备注</strong>
+        <div class="web-note-excerpt">{{ selPopup?.excerpt }}</div>
+        <textarea v-model="noteEditorDraft" rows="3" placeholder="写下对这段文字的备注…"></textarea>
+        <div class="web-note-actions">
+          <button type="button" @click="closeSelectionTools()">取消</button>
+          <button type="button" class="primary" :disabled="!noteEditorDraft.trim()" @click="saveWebNote">保存</button>
+        </div>
+      </div>
+
+      <!-- AI 结果（翻译 / 解释）：只在网页阅读模式内使用，不落盘 -->
+      <div v-if="webAiTitle" class="web-ai-panel" role="dialog" aria-label="AI 结果">
+        <div class="web-ai-head">
+          <strong>{{ webAiTitle }}</strong>
+          <button type="button" @click="stopWebAi(); webAiTitle = ''; webAiResult = ''">关闭</button>
+        </div>
+        <div class="web-ai-body">{{ webAiResult || (webAiLoading ? '正在生成…' : '') }}</div>
+        <div v-if="webAiResult && !webAiLoading" class="web-ai-actions">
+          <button type="button" @click="saveWebAiAsNote">存回备注</button>
+        </div>
+      </div>
+
+      <!-- 书内搜索：只在当前章正文里找 -->
+      <div v-if="inBookFindOpen" class="web-find-bar" role="dialog" aria-label="书内搜索">
+        <input v-model="inBookFindQuery" class="web-find-input" placeholder="在本章正文里查找" @keydown.enter.prevent="jumpInBookFind(1)" />
+        <span class="web-find-count">{{ inBookFindHits.length ? `${inBookFindIndex + 1}/${inBookFindHits.length}` : '无命中' }}</span>
+        <button type="button" :disabled="!inBookFindHits.length" @click="jumpInBookFind(-1)">上一个</button>
+        <button type="button" :disabled="!inBookFindHits.length" @click="jumpInBookFind(1)">下一个</button>
+        <button type="button" @click="closeInBookFind">关闭</button>
+      </div>
+
+      <!-- 标记抽屉：划线 / 书签 / 备注 -->
+      <aside v-if="marksOpen" class="web-marks-drawer" role="dialog" aria-label="本章标记">
+        <div class="web-marks-head">
+          <strong>本章标记</strong>
+          <button type="button" @click="marksOpen = false">关闭</button>
+        </div>
+        <div v-if="!webSortedMarks.length" class="web-marks-empty">还没有划线和备注。选中正文即可划线或写备注。</div>
+        <ul v-else class="web-marks-list">
+          <li v-for="item in webSortedMarks" :key="item.id" class="web-mark-row">
+            <button type="button" class="web-mark-main" @click="jumpToWebMark(item)">
+              <span class="web-mark-icon">{{ item.kind === 'bookmark' ? '书签' : '划线' }}</span>
+              <span class="web-mark-excerpt">{{ item.excerpt || '（本章位置）' }}</span>
+            </button>
+            <p v-if="item.note" class="web-mark-note">
+              <span v-if="item.noteSource === 'ai'" class="web-mark-source">AI 解释</span>{{ item.note }}
+            </p>
+            <div class="web-mark-actions">
+              <button type="button" @click="markNoteEditingId = item.id; markNoteDraft = item.note || ''">编辑备注</button>
+              <button type="button" @click="removeWebMark(item)">删除</button>
+            </div>
+            <div v-if="markNoteEditingId === item.id" class="web-mark-note-edit">
+              <textarea v-model="markNoteDraft" rows="2" placeholder="写下备注…"></textarea>
+              <button type="button" @click="saveMarkNote(item)">保存备注</button>
+            </div>
+          </li>
+        </ul>
+      </aside>
 
       <footer
         v-show="readingToolsVisible || readingToolsLocked"
@@ -1366,6 +1869,11 @@ onUnmounted(() => {
 .web-panel-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .web-panel-row span { width: 36px; font-size: 12px; opacity: 0.7; }
 .web-panel-hint { margin: 0; font-size: 12px; opacity: 0.6; }
+/* AI 面板：文字说明 + 一个主行动，排版沿用 .web-reading-panel 的浮层样式 */
+.web-ai-guide { width: min(460px, calc(100% - 28px)); }
+.web-guide-line { margin: 0; font-size: 13px; line-height: 1.7; opacity: 0.85; }
+.web-panel-row button.primary { background: color-mix(in srgb, var(--web-ink) 26%, transparent); font-weight: 600; }
+.web-panel-row button:disabled { opacity: 0.45; cursor: default; }
 
 /* 章节目录：从右侧滑出，当前章高亮并自动滚到可见处 */
 .web-reading-catalog {
@@ -1393,6 +1901,76 @@ onUnmounted(() => {
 .web-reading-article p.speaking { background: color-mix(in srgb, var(--web-ink) 13%, transparent); border-radius: 4px; }
 .web-reading-end { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 32px; padding-top: 18px; font-size: 13px; opacity: 0.8; border-top: 1px solid color-mix(in srgb, var(--web-ink) 14%, transparent); }
 .web-reading-end button { border: 0; border-radius: 999px; padding: 6px 14px; background: color-mix(in srgb, var(--web-ink) 12%, transparent); color: inherit; font-size: 13px; cursor: pointer; }
+
+/* 书内搜索命中与划线：与本地阅读器同观感 */
+.web-reading-article mark.web-hit { background: color-mix(in srgb, #ffb300 55%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.web-reading-article mark.web-hl { background: color-mix(in srgb, #ffd078 60%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+
+/* 选区工具条：贴选区浮出，工具条本体在正文层之上 */
+.web-sel-popup {
+  position: fixed; z-index: 20; display: flex; flex-wrap: wrap; gap: 4px;
+  width: min(320px, calc(100vw - 16px)); padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--web-ink) 18%, transparent);
+  border-radius: 12px; background: var(--web-paper); color: var(--web-ink);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+.web-sel-popup button, .web-note-actions button, .web-ai-actions button, .web-mark-actions button, .web-mark-note-edit button, .web-find-bar button, .web-marks-head button, .web-ai-head button {
+  border: 0; border-radius: 8px; padding: 5px 10px; background: color-mix(in srgb, var(--web-ink) 10%, transparent);
+  color: inherit; font: inherit; font-size: 13px; cursor: pointer;
+}
+.web-sel-popup button:hover, .web-note-actions button:hover, .web-ai-actions button:hover, .web-mark-actions button:hover, .web-find-bar button:hover, .web-marks-head button:hover, .web-ai-head button:hover { background: color-mix(in srgb, var(--web-ink) 18%, transparent); }
+.web-note-actions button.primary { background: color-mix(in srgb, var(--web-ink) 26%, transparent); font-weight: 600; }
+.web-sel-popup button:disabled, .web-note-actions button:disabled, .web-find-bar button:disabled { opacity: 0.45; cursor: default; }
+
+.web-note-editor {
+  position: fixed; z-index: 21; width: min(340px, calc(100vw - 16px));
+  display: flex; flex-direction: column; gap: 8px; padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--web-ink) 18%, transparent);
+  border-radius: 12px; background: var(--web-paper); color: var(--web-ink);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
+}
+.web-note-editor textarea, .web-mark-note-edit textarea { width: 100%; resize: vertical; padding: 8px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--web-ink) 20%, transparent); background: color-mix(in srgb, var(--web-ink) 4%, transparent); color: inherit; font: inherit; font-size: 13px; }
+.web-note-excerpt { max-height: 72px; overflow: auto; padding: 8px; border-radius: 8px; background: color-mix(in srgb, var(--web-ink) 7%, transparent); font-size: 12px; line-height: 1.5; opacity: 0.85; }
+.web-note-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+.web-ai-panel {
+  position: absolute; z-index: 22; right: 14px; bottom: 64px; width: min(420px, calc(100% - 28px));
+  max-height: 50vh; display: flex; flex-direction: column; gap: 8px; padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--web-ink) 18%, transparent);
+  border-radius: 14px; background: var(--web-paper); color: var(--web-ink);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.22);
+}
+.web-ai-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.web-ai-body { overflow: auto; white-space: pre-wrap; font-size: 14px; line-height: 1.7; }
+.web-ai-actions { display: flex; justify-content: flex-end; }
+
+.web-find-bar {
+  position: absolute; z-index: 22; top: 52px; right: 14px; display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--web-ink) 18%, transparent);
+  border-radius: 12px; background: var(--web-paper); color: var(--web-ink);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.web-find-input { width: 180px; padding: 6px 8px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--web-ink) 20%, transparent); background: color-mix(in srgb, var(--web-ink) 4%, transparent); color: inherit; font: inherit; font-size: 13px; }
+.web-find-count { font-size: 12px; opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+.web-marks-drawer {
+  position: absolute; z-index: 22; top: 0; bottom: 0; right: 0; width: min(360px, 86%);
+  display: flex; flex-direction: column; gap: 10px; padding: 16px;
+  background: var(--web-paper); color: var(--web-ink);
+  border-left: 1px solid color-mix(in srgb, var(--web-ink) 14%, transparent);
+  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.16); overflow-y: auto;
+}
+.web-marks-head { display: flex; align-items: center; justify-content: space-between; }
+.web-marks-empty { font-size: 13px; opacity: 0.7; line-height: 1.6; }
+.web-marks-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.web-mark-row { border: 1px solid color-mix(in srgb, var(--web-ink) 14%, transparent); border-radius: 10px; padding: 8px 10px; }
+.web-mark-main { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.web-mark-icon { flex: 0 0 auto; font-size: 11px; opacity: 0.7; }
+.web-mark-excerpt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.web-mark-note { margin: 6px 0 0; font-size: 12px; line-height: 1.6; opacity: 0.85; }
+.web-mark-source { display: inline-block; margin-right: 4px; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; font-size: 10px; opacity: 0.7; }
+.web-mark-actions { display: flex; gap: 6px; margin-top: 6px; }
+.web-mark-note-edit { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 
 .browse-toolbar {
   position: relative;

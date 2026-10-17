@@ -31,6 +31,22 @@ export function scrollTopFromRatio(ratio: number, scrollHeight: number, clientHe
   return clampRatio(ratio) * scrollableDistance(scrollHeight, clientHeight)
 }
 
+/**
+ * 全书比例：章节等权估算。已知章节序号时走这条，本地阅读器与网页阅读模式共用同一公式。
+ *
+ * 它表示的是「读到第几章的位置」，不等于已读文字占比——章节长短差异大时两者差很多，
+ * 界面上要按「估算」呈现。
+ */
+export function approximateBookRatioFromIndex(
+  chapterIndex: number,
+  totalChapters: number,
+  chapterRatio = 0,
+): number {
+  if (!Number.isFinite(totalChapters) || totalChapters <= 0) return 0
+  const index = Number.isFinite(chapterIndex) ? Math.max(0, chapterIndex) : 0
+  return clampRatio((index + clampRatio(chapterRatio)) / totalChapters)
+}
+
 export function approximateBookRatio(
   chapters: Array<Pick<ChapterMeta, 'id'>>,
   chapterId?: string | null,
@@ -38,7 +54,7 @@ export function approximateBookRatio(
 ): number {
   if (chapters.length === 0) return 0
   const chapterIndex = Math.max(0, chapterIndexOf(chapters, chapterId))
-  return clampRatio((chapterIndex + clampRatio(chapterRatio)) / chapters.length)
+  return approximateBookRatioFromIndex(chapterIndex, chapters.length, chapterRatio)
 }
 
 export function remainingChapterCount(
