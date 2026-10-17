@@ -29,17 +29,32 @@ export function visualPageIndex(scrollTop: number, scrollHeight: number, clientH
   if (!isFiniteNumber(scrollTop) || !isFiniteNumber(scrollHeight) || !isFiniteNumber(clientHeight)) return 0
   const count = visualPageCount(scrollHeight, clientHeight)
   if (count <= 1) return 0
-  let best = 0
-  let bestDist = Number.POSITIVE_INFINITY
-  for (let i = 0; i < count; i++) {
-    const top = scrollTopForVisualPage(i, scrollHeight, clientHeight)
-    const dist = Math.abs(scrollTop - top)
-    if (dist <= bestDist) {
-      bestDist = dist
-      best = i
+  
+  // O(1) calculation: find the page whose start is closest to scrollTop
+  // Each page i starts at i * clientHeight, except the last page which starts at maxScrollTop
+  const maxScrollTop = scrollHeight - clientHeight
+  const clampedScrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop))
+  
+  // Calculate candidate page index
+  const pageIndex = Math.floor(clampedScrollTop / clientHeight)
+  
+  // Clamp to valid range
+  const currentIndex = Math.max(0, Math.min(pageIndex, count - 1))
+  
+  // Check if next page is closer or equidistant (handles short last page case)
+  if (currentIndex < count - 1) {
+    const currentStart = currentIndex * clientHeight
+    const nextStart = Math.min((currentIndex + 1) * clientHeight, maxScrollTop)
+    const distToCurrent = Math.abs(clampedScrollTop - currentStart)
+    const distToNext = Math.abs(clampedScrollTop - nextStart)
+    
+    // Use <= to prefer next page when equidistant (matches original behavior)
+    if (distToNext <= distToCurrent) {
+      return currentIndex + 1
     }
   }
-  return best
+  
+  return currentIndex
 }
 
 /** 进度比例对应的可视页；复用 clampRatio，不复制滚动进度公式。 */

@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPopconfirm, NRadioButton, NRadioGroup, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
+import { READER_THEME_COLORS } from '@shared/readerTheme'
 import type {
   AiBookUsage,
   AiBudgetEstimate,
@@ -142,6 +143,7 @@ const retryingChapter = ref(false)
 // 沉浸工具层
 const immersiveMode = ref<ReaderImmersiveMode>('normal')
 const toolsVisible = ref(true)
+const chapterFadeIn = ref(false)
 const temporaryToolReveal = ref(false)
 const pointerInToolbar = ref(false)
 const activeToolPanel = ref<'tts' | 'ai' | 'shortcuts' | null>(null)
@@ -700,7 +702,13 @@ function snapToVisualPage() {
   const el = contentRef.value
   if (!el || readingMode.value !== 'screen') return
   const index = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
-  el.scrollTop = scrollTopForVisualPage(index, el.scrollHeight, el.clientHeight)
+  const targetTop = scrollTopForVisualPage(index, el.scrollHeight, el.clientHeight)
+  
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true
+  el.scrollTo({ 
+    top: targetTop, 
+    behavior: reduceMotion ? 'auto' : 'smooth' 
+  })
   syncVisualPage()
 }
 
@@ -726,12 +734,23 @@ function pageByScreen(direction: 1 | -1) {
   })
 }
 
+let wheelCooldownUntil = 0
+
 function onContentWheel(e: WheelEvent) {
   if (readingMode.value !== 'screen') return
   if (e.ctrlKey || e.metaKey) return
+  
+  const now = Date.now()
+  if (now < wheelCooldownUntil) {
+    e.preventDefault()
+    return
+  }
+  
   const dir = wheelPageDirection(e.deltaY)
   if (!dir) return
   e.preventDefault()
+  
+  wheelCooldownUntil = now + 250
   pageByScreen(dir)
 }
 
@@ -842,12 +861,8 @@ let unsubAiStage: (() => void) | null = null
 let unsubAiBudget: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
 
-const themeTokens: Record<ReaderTheme, { paper: string; text: string }> = {
-  paper: { paper: '#FFFFFF', text: '#25272B' },
-  sepia: { paper: '#F3E2B8', text: '#3A2F22' },
-  gray: { paper: '#E5E7E6', text: '#252A2D' },
-  night: { paper: '#1B1D20', text: '#D8D2C7' },
-}
+// 纸色真源在 @shared/readerTheme：与网页阅读模式共用，避免同一主题两处渲染出不同颜色。
+// 外圈画布仍跟随应用浅/深色皮肤（--app-bg），那是界面外观、不是阅读主题。
 const fontStacks: Record<ReaderFontFamily, string> = {
   serif: '"STSong", "Songti SC", "SimSun", serif',
   system: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
@@ -856,8 +871,8 @@ const fontStacks: Record<ReaderFontFamily, string> = {
 const widthValues: Record<ReaderContentWidth, string> = { narrow: '32em', medium: '38em', wide: '46em' }
 const spacingValues: Record<ReaderParagraphSpacing, string> = { compact: '0.2em', normal: '0.45em', relaxed: '0.8em' }
 const readerThemeStyle = computed(() => ({
-  '--reader-paper': themeTokens[theme.value].paper,
-  '--reader-paper-text': themeTokens[theme.value].text,
+  '--reader-paper': READER_THEME_COLORS[theme.value].paper,
+  '--reader-paper-text': READER_THEME_COLORS[theme.value].text,
   '--reader-outer': 'var(--app-bg)',
 }))
 const contentStyle = computed(() => ({
@@ -993,6 +1008,13 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
       currentChapter.value = { ...ch, status: res.chapter.status, failCode: res.chapter.failCode }
       chapterBody.value = res.chapter.body || ''
       hasBodyRaw.value = Boolean(res.chapter.bodyRaw) && res.chapter.bodyRaw !== res.chapter.body
+      
+      // Trigger fade-in animation by toggling class
+      chapterFadeIn.value = false
+      requestAnimationFrame(() => {
+        chapterFadeIn.value = true
+      })
+      
       const failText = res.chapter.failCode ? FAIL_CODE_ZH[res.chapter.failCode] : ''
       if (res.chapter.status !== 'ready' || !res.chapter.body) {
         chapterError.value = failText || (res.chapter.status === 'pending' ? '这一章还没下载' : '这一章没有正文')
@@ -1942,7 +1964,7 @@ onUnmounted(() => {
         </button>
         <div class="reader-body">
         <button class="chapter-hotzone left" :disabled="!previousChapter" :title="previousChapter ? `上一章：${previousChapter.title}` : '已经是第一章'" aria-label="上一章" @click="prevChapter"><span>‹</span></button>
-        <div class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000 }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup" @wheel="onContentWheel">
+        <div class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup" @wheel="onContentWheel">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>
@@ -1984,41 +2006,43 @@ onUnmounted(() => {
         <button class="bottom-button" type="button" aria-label="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')">进度</button>
         <button class="bottom-button" type="button" aria-label="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')">背景</button>
         <button class="bottom-button" type="button" aria-label="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')">字体</button>
-        <div v-if="activeBottomPanel && activeBottomPanel !== 'catalog'" class="bottom-panel" @click.stop>
-          <template v-if="activeBottomPanel === 'progress'">
-            <strong>进度</strong>
-            <div class="control-label">{{ bookProgressDetail }}</div>
-            <div class="control-label">全书约 {{ bookPercent }}%（按章节估算）</div>
-            <div class="reader-progress-row panel" aria-hidden="true"><div class="reader-progress-fill book" :style="{ width: `${bookPercent}%` }"></div></div>
-            <div class="control-label">本章 {{ chapterPercent }}%</div>
-            <div class="reader-progress-row panel" aria-hidden="true"><div class="reader-progress-fill chapter" :style="{ width: `${chapterPercent}%` }"></div></div>
-          </template>
-          <template v-else-if="activeBottomPanel === 'background'">
-            <strong>背景</strong>
-            <div class="option-grid four"><button v-for="item in [{v:'paper',l:'纸白'},{v:'sepia',l:'暖黄'},{v:'gray',l:'柔灰'},{v:'night',l:'夜间'}]" :key="item.v" :class="{ active: theme === item.v }" @click="theme = item.v as ReaderTheme">{{ item.l }}</button></div>
-          </template>
-          <template v-else>
-            <strong>字体</strong>
-            <div class="control-label">字体</div>
-            <div class="option-grid"><button v-for="item in [{v:'serif',l:'宋体阅读'},{v:'system',l:'系统黑体'},{v:'mono',l:'等宽'}]" :key="item.v" :class="{ active: fontFamily === item.v }" @click="fontFamily = item.v as ReaderFontFamily">{{ item.l }}</button></div>
-            <div class="control-label">字号 {{ fontSize }}</div><n-slider v-model:value="fontSize" :min="12" :max="36" :step="1" />
-            <div class="control-label">行距 {{ lineHeight.toFixed(1) }}</div><n-slider v-model:value="lineHeight" :min="1.2" :max="3" :step="0.1" />
-            <div class="control-label">列宽</div>
-            <div class="option-grid"><button v-for="item in [{v:'narrow',l:'窄'},{v:'medium',l:'中'},{v:'wide',l:'宽'}]" :key="item.v" :class="{ active: contentWidth === item.v }" @click="contentWidth = item.v as ReaderContentWidth">{{ item.l }}</button></div>
-            <div class="control-label">段间距</div>
-            <div class="option-grid"><button v-for="item in [{v:'compact',l:'紧凑'},{v:'normal',l:'标准'},{v:'relaxed',l:'宽松'}]" :key="item.v" :class="{ active: paragraphSpacing === item.v }" @click="paragraphSpacing = item.v as ReaderParagraphSpacing">{{ item.l }}</button></div>
-            <div class="control-label"><n-switch v-model:value="paragraphIndent" /> 首行缩进</div>
-            <div class="control-label">行焦点</div>
-            <div class="option-grid four">
-              <button v-for="item in [{v:'off',l:'关'},{v:'one',l:'1 段'},{v:'three',l:'3 段'},{v:'five',l:'5 段'}]" :key="item.v" :class="{ active: focusMode === item.v }" @click="focusMode = item.v as ReaderFocusMode">{{ item.l }}</button>
-            </div>
-            <div class="control-label">阅读方式</div>
-            <div class="option-grid">
-              <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
-            </div>
-            <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
-          </template>
-        </div>
+        <Transition name="panel-slide">
+          <div v-if="activeBottomPanel && activeBottomPanel !== 'catalog'" class="bottom-panel" @click.stop>
+            <template v-if="activeBottomPanel === 'progress'">
+              <strong>进度</strong>
+              <div class="control-label">{{ bookProgressDetail }}</div>
+              <div class="control-label">全书约 {{ bookPercent }}%（按章节估算）</div>
+              <div class="reader-progress-row panel" aria-hidden="true"><div class="reader-progress-fill book" :style="{ width: `${bookPercent}%` }"></div></div>
+              <div class="control-label">本章 {{ chapterPercent }}%</div>
+              <div class="reader-progress-row panel" aria-hidden="true"><div class="reader-progress-fill chapter" :style="{ width: `${chapterPercent}%` }"></div></div>
+            </template>
+            <template v-else-if="activeBottomPanel === 'background'">
+              <strong>背景</strong>
+              <div class="option-grid four"><button v-for="item in [{v:'paper',l:'纸白'},{v:'sepia',l:'暖黄'},{v:'gray',l:'柔灰'},{v:'night',l:'夜间'}]" :key="item.v" :class="{ active: theme === item.v }" @click="theme = item.v as ReaderTheme">{{ item.l }}</button></div>
+            </template>
+            <template v-else>
+              <strong>字体</strong>
+              <div class="control-label">字体</div>
+              <div class="option-grid"><button v-for="item in [{v:'serif',l:'宋体阅读'},{v:'system',l:'系统黑体'},{v:'mono',l:'等宽'}]" :key="item.v" :class="{ active: fontFamily === item.v }" @click="fontFamily = item.v as ReaderFontFamily">{{ item.l }}</button></div>
+              <div class="control-label">字号 {{ fontSize }}</div><n-slider v-model:value="fontSize" :min="12" :max="36" :step="1" />
+              <div class="control-label">行距 {{ lineHeight.toFixed(1) }}</div><n-slider v-model:value="lineHeight" :min="1.2" :max="3" :step="0.1" />
+              <div class="control-label">列宽</div>
+              <div class="option-grid"><button v-for="item in [{v:'narrow',l:'窄'},{v:'medium',l:'中'},{v:'wide',l:'宽'}]" :key="item.v" :class="{ active: contentWidth === item.v }" @click="contentWidth = item.v as ReaderContentWidth">{{ item.l }}</button></div>
+              <div class="control-label">段间距</div>
+              <div class="option-grid"><button v-for="item in [{v:'compact',l:'紧凑'},{v:'normal',l:'标准'},{v:'relaxed',l:'宽松'}]" :key="item.v" :class="{ active: paragraphSpacing === item.v }" @click="paragraphSpacing = item.v as ReaderParagraphSpacing">{{ item.l }}</button></div>
+              <div class="control-label"><n-switch v-model:value="paragraphIndent" /> 首行缩进</div>
+              <div class="control-label">行焦点</div>
+              <div class="option-grid four">
+                <button v-for="item in [{v:'off',l:'关'},{v:'one',l:'1 段'},{v:'three',l:'3 段'},{v:'five',l:'5 段'}]" :key="item.v" :class="{ active: focusMode === item.v }" @click="focusMode = item.v as ReaderFocusMode">{{ item.l }}</button>
+              </div>
+              <div class="control-label">阅读方式</div>
+              <div class="option-grid">
+                <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
+              </div>
+              <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
+            </template>
+          </div>
+        </Transition>
       </div>
 
       <div class="reader-progress-track" :title="bookProgressDetail" :aria-label="bookProgressDetail">
@@ -2465,19 +2489,21 @@ onUnmounted(() => {
       </n-drawer>
 
       <!-- Selection popup -->
-      <div
-        v-if="showSelPopup"
-        class="sel-popup"
-        :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }"
-      >
-        <n-button size="tiny" @click="copySelectedText">复制</n-button>
-        <n-button size="tiny" type="primary" @click="addHighlight">划线</n-button>
-        <n-button size="tiny" @click="openDirectNote">备注</n-button>
-        <n-button size="tiny" @click="translateSelectedText">翻译</n-button>
-        <n-button size="tiny" @click="askSelectedText('explain')">问 AI · 解释这段</n-button>
-        <n-button size="tiny" @click="askSelectedText('person')">这个人物是谁</n-button>
-        <n-button size="tiny" @click="askSelectedText('backstory')">这件事之前发生了什么</n-button>
-      </div>
+      <Transition name="popup-scale">
+        <div
+          v-if="showSelPopup"
+          class="sel-popup"
+          :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }"
+        >
+          <n-button size="tiny" @click="copySelectedText">复制</n-button>
+          <n-button size="tiny" type="primary" @click="addHighlight">划线</n-button>
+          <n-button size="tiny" @click="openDirectNote">备注</n-button>
+          <n-button size="tiny" @click="translateSelectedText">翻译</n-button>
+          <n-button size="tiny" @click="askSelectedText('explain')">问 AI · 解释这段</n-button>
+          <n-button size="tiny" @click="askSelectedText('person')">这个人物是谁</n-button>
+          <n-button size="tiny" @click="askSelectedText('backstory')">这件事之前发生了什么</n-button>
+        </div>
+      </Transition>
 
       <div v-if="showDirectNote" class="direct-note-editor" :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }">
         <strong>添加备注</strong>
@@ -2712,6 +2738,24 @@ onUnmounted(() => {
   border-radius: var(--radius-overlay);
   padding: 6px 8px;
   box-shadow: var(--shadow-overlay), var(--popover-ring);
+}
+
+.popup-scale-enter-active,
+.popup-scale-leave-active {
+  transition: opacity 0.15s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.popup-scale-enter-from,
+.popup-scale-leave-to {
+  opacity: 0;
+  transform: scale(0.95);
+}
+
+.popup-scale-enter-to,
+.popup-scale-leave-from {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .direct-note-editor {
@@ -3189,15 +3233,32 @@ onUnmounted(() => {
   opacity: 1;
   pointer-events: auto;
 }
-.reader-toolbar.reader-tools-hidden,
+.reader-toolbar {
+  transform: translateY(0);
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              visibility 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.reader-bottombar {
+  transform: translateY(-50%);
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              visibility 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.reader-toolbar.reader-tools-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-8px);
+}
+
 .reader-bottombar.reader-tools-hidden {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-}
-.reader-toolbar,
-.reader-bottombar {
-  transition: opacity .2s ease, visibility .2s ease;
+  transform: translateY(-50%) translateY(8px);
 }
 .toolbar-gap { flex: 1 1 auto; min-width: 8px; }
 .tool-button.tool-text { width: auto; flex-basis: auto; padding: 0 10px; font: inherit; font-size: 13px; }
@@ -3302,6 +3363,25 @@ onUnmounted(() => {
   flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--r-line);
   border-radius: var(--radius-overlay); background: var(--popover-bg); box-shadow: var(--shadow-overlay);
 }
+
+.panel-slide-enter-active,
+.panel-slide-leave-active {
+  transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.panel-slide-enter-from,
+.panel-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-50%) translateX(8px);
+}
+
+.panel-slide-enter-to,
+.panel-slide-leave-from {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
 .reader-progress-row.panel { height: 6px; overflow: hidden; background: var(--r-surface); }
 
 .reader-content {
@@ -3314,6 +3394,22 @@ onUnmounted(() => {
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
 }
+
+.reader-content.chapter-fade-in {
+  animation: chapterFadeIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes chapterFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-content.chapter-fade-in {
+    animation: none;
+  }
+}
+
 .reader-page-indicator {
   position: absolute;
   right: 16px;
@@ -3333,8 +3429,17 @@ onUnmounted(() => {
   flex-direction: column;
   height: 4px;
   background: var(--r-surface);
-  pointer-events: none;
+  pointer-events: auto;
+  opacity: 0.6;
+  transition: height 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+.reader-progress-track:hover {
+  height: 6px;
+  opacity: 1;
+}
+
 .reader-progress-row { height: 2px; }
 .reader-progress-fill {
   height: 100%;

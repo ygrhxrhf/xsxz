@@ -34,4 +34,14 @@ describe('Reader visual surface contract', () => {
     expect(source).toContain('.reader-toolbar .reader-book-title { min-width: 0; }')
     expect(source).toContain('readerScrollBehavior(window.matchMedia?.(\'(prefers-reduced-motion: reduce)\')?.matches === true)')
   })
+
+  it('takes reading paper colours from the shared theme source', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    expect(source).toContain("import { READER_THEME_COLORS } from '@shared/readerTheme'")
+    expect(source).toContain("READER_THEME_COLORS[theme.value].paper")
+    expect(source).toContain("READER_THEME_COLORS[theme.value].text")
+    // 本地不再抄一份色表：抄一份就会和网页阅读模式在同一主题下渲出两种纸色
+    expect(source).not.toMatch(/const themeTokens\s*:\s*Record<ReaderTheme/)
+    expect(source).not.toContain("paper: { paper: '#FFFFFF'")
+  })
 })
