@@ -1,8 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createBookFromBootstrap, setLibraryPath } from './library'
+import { setAtomicWriteBeforeCommitForTests } from './atomicFile'
+import { bookDir, createBookFromBootstrap, setLibraryPath } from './library'
 import {
   addAnnotation,
   listAnnotations,
@@ -172,5 +173,41 @@ describe('annotations（书签/划线存储）', () => {
         excerpt: '',
       }),
     ).rejects.toThrow('摘录')
+  })
+
+  it('落盘走原子写：提交失败时旧标记一字不丢，也不留临时文件', async () => {
+    await addAnnotation({
+      bookId: 'd_anno',
+      chapterId: 'c0001',
+      kind: 'bookmark',
+      start: 0,
+      end: 0,
+      excerpt: '',
+    })
+    const file = join(bookDir('d_anno'), 'annotations.json')
+    const before = await readFile(file, 'utf-8')
+
+    setAtomicWriteBeforeCommitForTests((path) => {
+      if (path.endsWith('annotations.json')) throw new Error('disk full')
+    })
+    try {
+      await expect(
+        addAnnotation({
+          bookId: 'd_anno',
+          chapterId: 'c0002',
+          kind: 'bookmark',
+          start: 0,
+          end: 0,
+          excerpt: '',
+        }),
+      ).rejects.toThrow('disk full')
+    } finally {
+      setAtomicWriteBeforeCommitForTests(null)
+    }
+
+    expect(await readFile(file, 'utf-8')).toBe(before)
+    const leftovers = (await readdir(bookDir('d_anno'))).filter((name) => name.endsWith('.tmp'))
+    expect(leftovers).toEqual([])
+    expect(await listAnnotations('d_anno')).toHaveLength(1)
   })
 })

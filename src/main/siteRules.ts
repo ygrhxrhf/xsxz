@@ -1,7 +1,8 @@
 import { app } from 'electron'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { SiteRule } from '../shared/types'
+import { atomicWriteText } from './atomicFile'
 
 const FILE_VERSION = 1
 
@@ -144,7 +145,8 @@ async function loadFile(): Promise<SiteRulesFile> {
 
 async function saveFile(data: SiteRulesFile): Promise<void> {
   await mkdir(join(rulesPath(), '..'), { recursive: true }).catch(() => {})
-  await writeFile(rulesPath(), JSON.stringify(data, null, 2), 'utf-8')
+  // 原子写：站点规则是用户手填的，崩溃/断电时不能只剩半截 JSON 把规则全丢掉
+  await atomicWriteText(rulesPath(), JSON.stringify(data, null, 2))
 }
 
 export async function listSiteRules(): Promise<SiteRule[]> {

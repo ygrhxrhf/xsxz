@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { atomicWriteText } from './atomicFile'
 import { bookDir, loadBook, withBookLock } from './library'
 import type { Annotation, AnnotationNoteSource, AnnotationUpdate } from '../shared/types'
 
@@ -32,7 +33,9 @@ async function readAll(bookId: string): Promise<AnnotationsFile> {
 
 async function writeAll(bookId: string, data: AnnotationsFile): Promise<void> {
   await mkdir(bookDir(bookId), { recursive: true })
-  await writeFile(fileFor(bookId), JSON.stringify(data, null, 2), 'utf-8')
+  // 走原子写（临时文件 + fsync + rename）：标记是读者手工产出，崩溃或断电时不能只剩半截
+  // JSON 把所有书签划线一起带走。书库里的其它落盘也都是这条路。
+  await atomicWriteText(fileFor(bookId), JSON.stringify(data, null, 2))
 }
 
 export async function listAnnotations(bookId: string): Promise<Annotation[]> {

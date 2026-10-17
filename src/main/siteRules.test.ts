@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setAtomicWriteBeforeCommitForTests } from './atomicFile'
 
 vi.mock('electron', () => ({
   app: {
@@ -86,6 +87,25 @@ describe('findSiteRuleForUrl / persist', () => {
     expect(raw.version).toBe(1)
     expect(raw.rules).toHaveLength(1)
     expect(raw.rules[0].host).toBe('127.0.0.1')
+  })
+
+  it('落盘走原子写：提交失败时旧规则一字不丢，也不留临时文件', async () => {
+    await upsertSiteRule({ host: 'example.com', body: '#old' })
+    const file = join(dir, 'site-rules.json')
+    const before = await readFile(file, 'utf-8')
+
+    setAtomicWriteBeforeCommitForTests((path) => {
+      if (path.endsWith('site-rules.json')) throw new Error('disk full')
+    })
+    try {
+      await expect(upsertSiteRule({ host: 'example.com', body: '#new' })).rejects.toThrow('disk full')
+    } finally {
+      setAtomicWriteBeforeCommitForTests(null)
+    }
+
+    expect(await readFile(file, 'utf-8')).toBe(before)
+    expect((await listSiteRules())[0]?.body).toBe('#old')
+    expect((await readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
 
   it('persists ad display preferences alongside extraction selectors', async () => {
