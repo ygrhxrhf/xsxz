@@ -266,6 +266,37 @@
 
 ---
 
+## web-annotations.json
+
+网页阅读模式的标注，对齐 `WebAnnotation[]`（`{ version: 1, items: [...] }`）。放在 `userData` 根目录（与 `web-shelf.json`、`browse-state.json` 同级），**不进书库备份**。
+
+与 `annotations.json` 的唯一差别是归属键：本地标记挂书库 `bookId` + 章节 `chapterId`，网页阅读模式没有书库条目，改用**规范化章节地址** `url`（`canonicalizeUrl` 归一，与 `browse-state.json` 的阅读位置同键）。坐标空间、`excerpt` 漂移校正、`noteSource` 语义与 `annotations.json` 完全一致。
+
+```json
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "<uuid>",
+      "url": "https://example.com/book/1/2.html",
+      "kind": "highlight",
+      "start": 128,
+      "end": 141,
+      "excerpt": "风从山口压下来",
+      "note": "这段写得好",
+      "noteSource": "user",
+      "createdAt": "ISO 8601"
+    }
+  ]
+}
+```
+
+- 地址非法（非 http/https 或无法解析）的条目在读盘时丢弃；同一 `url` 的不同参数（`?page=`、`utm_*`）经归一后视为同一章。
+- 全文件上限 5000 条，超限时保留最新的（按 `createdAt`）；缺省或坏 JSON 视为「还没有标记」。
+- 写操作走单文件原子写（临时文件 + fsync + rename）；本文件不与书库共享锁，主进程内按串行 promise 链落盘。
+
+---
+
 ## ai/notes.json
 
 「一键本章笔记」的结果，对齐 `AiChapterNote[]`：

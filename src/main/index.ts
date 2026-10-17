@@ -67,6 +67,7 @@ import { migrateLibrary } from './libraryMigration'
 import { ensureLibraryPathAtStartup, scriptedStartupDialogs } from './startupGuard'
 import { browseUserAgent } from './userAgent'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
+import { addWebAnnotation, listWebAnnotations, removeWebAnnotation, updateWebAnnotation } from './webAnnotations'
 import type { AiExclusiveResult, AiJobPolicy } from './aiScheduler'
 import { AiQueue } from './aiScheduler'
 import {
@@ -75,6 +76,7 @@ import {
   aiCompletionDoneEvent,
   aiStoppedDoneEvent,
   buildTranslatePrompt,
+  buildExplainSelectionPrompt,
   cleanChapterBody,
   createJsonStringFieldSink,
   planChapterNoteRequest,
@@ -1021,6 +1023,41 @@ function registerIpc(): void {
     }
   })
 
+  // 网页阅读模式的标注：归属键是规范化章节地址（见 webAnnotations.ts）
+  ipcMain.handle('webAnnotations.list', async (_e, args: { url?: string }) => {
+    try {
+      return { ok: true, items: await listWebAnnotations(args?.url ?? '') }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle('webAnnotations.add', async (_e, draft: import('../shared/types').WebAnnotation) => {
+    try {
+      return { ok: true, item: await addWebAnnotation(draft) }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  ipcMain.handle(
+    'webAnnotations.update',
+    async (_e, args: { url: string; annotationId: string; patch: import('../shared/types').WebAnnotationUpdate }) => {
+      try {
+        const item = await updateWebAnnotation(args.url, args.annotationId, args.patch)
+        if (!item) return { ok: false, message: '标记不存在' }
+        return { ok: true, item }
+      } catch (e: unknown) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  )
+  ipcMain.handle('webAnnotations.remove', async (_e, args: { url: string; annotationId: string }) => {
+    try {
+      return { ok: true, removed: await removeWebAnnotation(args.url, args.annotationId) }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
   ipcMain.handle('download.preview', async () => {
     try { return await previewDownload() }
     catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
@@ -1882,8 +1919,51 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.chatStream', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
+  // 「解释这段」：网页阅读模式没有书库条目，走不了按 bookId 的证据问答，
+  // 只就选中文字本身作答；与 ai.translateStream 同形，bookId 可选、不落盘用量。
+  ipcMain.handle('ai.explainSelection', async (_e, { text, bookId }: { text: string; bookId?: string }) => {
     try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      if (!text.trim()) return { ok: false, message: '请先在正文中选中要解释的文字' }
+      if (text.length > 2000) return { ok: false, message: '选中过长，请缩短后再问' }
+      if (bookId !== undefined) await getBook(bookId)
+      return aiStart({ lane: 'interactive', cls: 'explain', bookId }, async (jobId, signal) => {
+        let partial = ''
+        sendAiStage(jobId, 'preparing')
+        try {
+          sendAiStage(jobId, 'requesting')
+          const result = await streamAiTaskCompletion(
+            trustedAiConfig(settings, apiKey),
+            [{ role: 'user', content: buildExplainSelectionPrompt(text) }],
+            signal,
+            (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
+            { task: 'translate', inputTokenEstimate: Math.ceil(text.length / 2) },
+          )
+          if (bookId) await persistAiUsage(bookId, result.usage)
+          mainWindow?.webContents.send('ai.done', aiCompletionDoneEvent(jobId, result))
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
+            return
+          }
+          mainWindow?.webContents.send('ai.done', {
+            jobId,
+            ok: false,
+            message: e instanceof Error ? e.message : String(e),
+          })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.chatStream', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {    try {
       const book = await getBook(args.bookId)
       const frontier = await getReadFrontier(args.bookId)
       const progressChapterId = book.progress?.chapterId

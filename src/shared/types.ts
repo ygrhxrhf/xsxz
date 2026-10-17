@@ -331,6 +331,34 @@ export interface AnnotationUpdate {
   end?: number
 }
 
+/**
+ * 网页阅读模式的标注：与本地阅读器的 `Annotation` 平行，但归属键是**规范化章节地址**。
+ *
+ * 网页阅读模式没有书库条目、也没有章节 id，所以不能挂 `bookId`/`chapterId`；
+ * 它沿用 `browse-state.json` 按 URL 存阅读位置的先例，坐标空间与本地一致
+ * （规范化正文：按空行切段、丢空段后以 '\n\n' 连接）。
+ */
+export interface WebAnnotation {
+  id: string
+  /** 规范化后的章节地址（canonicalizeUrl）；非法地址不接受 */
+  url: string
+  kind: 'highlight' | 'bookmark'
+  start: number
+  end: number
+  /** 原文片段，用于漂移校正；书签为空串 */
+  excerpt: string
+  note?: string
+  noteSource?: AnnotationNoteSource
+  createdAt: string
+}
+
+export interface WebAnnotationUpdate {
+  note?: string
+  noteSource?: AnnotationNoteSource
+  start?: number
+  end?: number
+}
+
 export interface CharacterEntry {
   name: string
   role?: string

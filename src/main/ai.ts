@@ -988,6 +988,19 @@ export function buildTranslatePrompt(
 ${text}`
 }
 
+/**
+ * 「解释这段」的固定提示词：网页阅读模式没有书库条目，无法走按 bookId 的证据问答，
+ * 只能就选中文字本身作答。与翻译同形——只处理选中文字，不编造小说其他内容。
+ */
+export function buildExplainSelectionPrompt(text: string): string {
+  return `用户任务要求：请用简明中文解释下方这段文字的意思，遇到生僻词、典故或方言请一并说明。
+
+固定规则：只能依据下方选中文字作答；不得编造小说其他内容或后续情节；只输出解释，不加寒暄。
+
+原文：
+${text}`
+}
+
 export async function testConnection(config: AiConfig): Promise<string> {
   return chatCompletion(config, [
     { role: 'user', content: '只回复 ok' },

@@ -230,6 +230,25 @@ const api = {
     remove: (bookId: string, annotationId: string) =>
       ipcRenderer.invoke('annotations.remove', { bookId, annotationId }) as Promise<{ ok: true } | { ok: false; message: string }>,
   },
+  /** 网页阅读模式的标注：归属键是规范化章节地址，不是书库 bookId。 */
+  webAnnotations: {
+    list: (url: string) =>
+      ipcRenderer.invoke('webAnnotations.list', { url }) as Promise<
+        { ok: true; items: import('../shared/types').WebAnnotation[] } | { ok: false; message: string }
+      >,
+    add: (draft: Omit<import('../shared/types').WebAnnotation, 'id' | 'createdAt'>) =>
+      ipcRenderer.invoke('webAnnotations.add', draft) as Promise<
+        { ok: true; item: import('../shared/types').WebAnnotation } | { ok: false; message: string }
+      >,
+    update: (url: string, annotationId: string, patch: import('../shared/types').WebAnnotationUpdate) =>
+      ipcRenderer.invoke('webAnnotations.update', { url, annotationId, patch }) as Promise<
+        { ok: true; item: import('../shared/types').WebAnnotation } | { ok: false; message: string }
+      >,
+    remove: (url: string, annotationId: string) =>
+      ipcRenderer.invoke('webAnnotations.remove', { url, annotationId }) as Promise<
+        { ok: true; removed: boolean } | { ok: false; message: string }
+      >,
+  },
   siteRules: {
     list: () => ipcRenderer.invoke('siteRules.list') as Promise<{ rules: SiteRule[] }>,
     preview: (rule: SiteRule) => ipcRenderer.invoke('siteRules.preview', rule) as Promise<
@@ -295,6 +314,9 @@ const api = {
       ipcRenderer.invoke('ai.chatStream', { bookId, chapterId, messages }) as Promise<AiJobStart>,
     translateStream: (text: string, bookId?: string) =>
       ipcRenderer.invoke('ai.translateStream', { text, bookId }) as Promise<AiJobStart>,
+    /** 「解释这段」：网页阅读模式用；与 translateStream 同形，不依赖书库条目。 */
+    explainText: (text: string, bookId?: string) =>
+      ipcRenderer.invoke('ai.explainSelection', { text, bookId }) as Promise<AiJobStart>,
     getMemory: (bookId: string) => ipcRenderer.invoke('ai.getMemory', { bookId }) as Promise<
       | { ok: true; memory: AiMemoryFile | import('../shared/types').CharacterCard | null }
       | { ok: false; message: string }

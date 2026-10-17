@@ -312,6 +312,21 @@
 
 ---
 
+## 网页阅读模式标注（按 URL）
+
+本地标记挂在书库 `bookId` 上；网页阅读模式没有书库条目，改用**规范化章节地址**做归属键，与 `browse-state.json` 的阅读位置同键（同用 `canonicalizeUrl`）。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `webAnnotations.list` | invoke | `{ url: string }` | `{ ok: true; items: WebAnnotation[] } \| { ok: false; message: string }` |
+| `webAnnotations.add` | invoke | `WebAnnotation` 草稿（无 id/createdAt） | `{ ok: true; item: WebAnnotation } \| { ok: false; message: string }` |
+| `webAnnotations.update` | invoke | `{ url: string; annotationId: string; patch: { note?; noteSource?; start?; end? } }` | `{ ok: true; item: WebAnnotation } \| { ok: false; message: string }` |
+| `webAnnotations.remove` | invoke | `{ url: string; annotationId: string }` | `{ ok: true; removed: boolean } \| { ok: false; message: string }` |
+
+落盘单文件 `<userData>/web-annotations.json`，不进书库备份。坐标空间、`excerpt` 漂移校正、`noteSource` 语义与本地 `Annotation` **完全一致**；差别只有归属键（`url` 取代 `bookId`+`chapterId`）。地址非法、坐标非法、划线无摘录都返回中文错误。`url` 一律先经 `canonicalizeUrl` 归一后再比较与存储，避免同一章不同参数（`?page=`、`utm_*`）算成两条。
+
+---
+
 ## AI
 
 | 频道 | 方向 | 请求 | 响应 |
@@ -328,6 +343,7 @@
 | `ai.getChat` | invoke | `{ bookId: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省） |
 | `ai.clearChat` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.translateStream` | invoke | `{ text: string; bookId?: string }` | `AiJobStart`；传入书籍 ID 时计入每书用量 |
+| `ai.explainSelection` | invoke | `{ text: string; bookId?: string }` | `AiJobStart`；「解释这段」，与 `ai.translateStream` 同形但提示词不同，供网页阅读模式无书场景使用 |
 | `ai.getMemory` | invoke | `{ bookId: string }` | `{ ok: true; memory: AiMemoryFile \| CharacterCard \| null } \| { ok: false; message: string }` |
 | `ai.updateMemory` | invoke | `{ bookId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.rebuildMemory` | invoke | `{ bookId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | 同 `ai.updateMemory` |
@@ -408,8 +424,9 @@ window.api = {
   backup: { create, restore, runAuto },
   ocr: { status },
   annotations: { list, add, update, remove },
+  webAnnotations: { list, add, update, remove },
   siteRules: { list, preview, upsert, remove },
-  ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, translateStream, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
+  ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
 }
 ```
 
