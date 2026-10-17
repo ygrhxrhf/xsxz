@@ -816,7 +816,7 @@ onMounted(async () => {
       <n-space vertical :size="12">
         <n-input-group>
           <n-input-group-label style="width:80px">书库路径</n-input-group-label>
-          <n-input v-model:value="libraryPath" placeholder="留空则用本机默认目录（Windows 为 D:\spbf\library）" />
+          <n-input v-model:value="libraryPath" placeholder="留空则用本机默认目录（当前用户目录下的 spbf\library）" />
           <n-button @click="pickLibrary">选择目录</n-button>
         </n-input-group>
         <p style="color:var(--text-muted);font-size:13px;margin:0">

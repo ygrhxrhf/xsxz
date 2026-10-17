@@ -921,8 +921,6 @@ export interface AiChatFileV2 {
   updatedAt: string
 }
 
-export const DEFAULT_LIBRARY_PATH = 'D:\\spbf\\library'
-
 export const DEFAULT_READER_PREFS: ReaderPrefs = {
   theme: 'paper',
   fontFamily: 'serif',

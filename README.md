@@ -24,7 +24,7 @@ npm run build
 
 ## 书库路径
 
-默认书库 Windows 在 `D:\spbf\library`、其他系统在 `~/spbf/library`。设置页可改路径，立刻生效，不会把旧书搬过去；清空该项则按当前系统回到默认目录。测试请改到临时目录，不要动用户已有书。
+默认书库在当前用户家目录下的 `spbf/library`（Windows 为 `%USERPROFILE%\spbf\library`）。设置页可改路径，立刻生效，不会把旧书搬过去；清空该项则回到默认目录。测试请改到临时目录，不要动用户已有书。
 
 ## AI
 

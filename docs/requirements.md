@@ -189,7 +189,7 @@
 - 清正文：先预览，确认后只改 `body`；撤销用 `bodyRaw` 恢复
 - AI：OpenAI 兼容协议；设置项为 `baseURL` + `model` + `apiKey`；表单 placeholder：`https://api.deepseek.com/v1` / `deepseek-chat`。不预置官方 Key
 - 窗口：顶部导航切换「浏览 / 书库 / 阅读 / 设置」；应用界面提供浅色、深色，阅读正文主题独立设置。
-- 书库默认路径：`D:\spbf\library`（设置可改）
+- 书库默认路径：当前用户家目录下的 `spbf\library`（Windows 与其它系统同一套规则；设置可改）
 
 ---
 

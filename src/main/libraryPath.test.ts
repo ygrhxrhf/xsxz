@@ -1,23 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { homedir } from 'node:os'
-import { isAbsolute } from 'node:path'
 import { defaultLibraryPath } from './libraryPath'
 
 describe('defaultLibraryPath', () => {
-  it('keeps the pinned Windows directory on win32', () => {
-    expect(defaultLibraryPath('win32', 'C:\\Users\\goot')).toBe('D:\\spbf\\library')
+  it('on Windows it lands in the home directory, not a pinned D: drive', () => {
+    expect(defaultLibraryPath('win32', 'C:\\Users\\goot')).toBe('C:\\Users\\goot\\spbf\\library')
   })
 
-  it('uses the home directory instead of a Windows path on other systems', () => {
+  it('uses the home directory on other systems too', () => {
     expect(defaultLibraryPath('linux', '/home/goot')).toBe('/home/goot/spbf/library')
     expect(defaultLibraryPath('darwin', '/Users/goot')).toBe('/Users/goot/spbf/library')
   })
 
-  it('never resolves to a path that would create a literal D:\\ dir in cwd', () => {
-    if (process.platform === 'win32') return
-    const resolved = defaultLibraryPath(process.platform, '/tmp/home')
-    expect(isAbsolute(resolved)).toBe(true)
-    expect(resolved).not.toContain('D:\\')
+  it('always lands under the given home, never on a hard-coded drive', () => {
+    const cases = [['win32', 'C:\\Users\\goot'], ['linux', '/home/goot'], ['darwin', '/Users/goot']] as const
+    for (const [platform, home] of cases) {
+      const resolved = defaultLibraryPath(platform, home)
+      expect(resolved.startsWith(home)).toBe(true)
+      // 回归线：默认值曾经钉死 D:\spbf\library，没有 D 盘的机器启动即失败。
+      expect(resolved).not.toContain('D:\\spbf')
+    }
   })
 
   it('defaults to the current platform and real home directory', () => {

@@ -2,7 +2,7 @@
 
 ## 书库根目录
 
-默认：Windows `D:\spbf\library`，其他系统 `~/spbf/library`（`Settings.libraryPath`，可改）。清空该项不会写入路径，由当前系统重新解析默认值。
+默认：当前用户家目录下的 `spbf/library`（Windows 为 `%USERPROFILE%\spbf\library`）（`Settings.libraryPath`，可改）。清空该项不会写入路径，由当前系统重新解析默认值。
 
 ```
 <libraryPath>\
