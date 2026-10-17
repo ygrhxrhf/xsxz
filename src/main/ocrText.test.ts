@@ -19,17 +19,27 @@ import {
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAwAB/AF+g6wAAAAASUVORK5CYII='
 
-function fakeEngine(textByCall: string[]): {
+/** 假引擎。给 engineFiles 时模拟引擎虚拟 FS 的内容，用来测「语言包有没有真的进引擎」。 */
+function fakeEngine(
+  textByCall: string[],
+  engineFiles?: string[],
+): {
   calls: number
   recognize: () => Promise<{ data: { text: string } }>
+  FS?: (method: string, args: unknown[], jobId?: string) => Promise<{ data: string[] }>
 } {
-  const engine = {
+  const engine: {
+    calls: number
+    recognize: () => Promise<{ data: { text: string } }>
+    FS?: (method: string, args: unknown[], jobId?: string) => Promise<{ data: string[] }>
+  } = {
     calls: 0,
     async recognize(): Promise<{ data: { text: string } }> {
       const index = engine.calls++
       return { data: { text: textByCall[index] ?? '' } }
     },
   }
+  if (engineFiles) engine.FS = async () => ({ data: engineFiles })
   return engine
 }
 
@@ -147,24 +157,31 @@ describe('OCR 认字', () => {
     expect(await ocrEngineReady()).toEqual({ ok: true })
   })
 
+  it('引擎里没把语言包吃进去时报不可用，而不是照「磁盘上有包」宣称可用', async () => {
+    // 磁盘上包是齐的（仓库自带），但引擎里只有别的语言：这就是 tesseract.js 静默失败的样子
+    __setOcrEngineForTests(fakeEngine(['x'], ['eng.traineddata']))
+    const status = await ocrEngineReady()
+    expect(status.ok).toBe(false)
+    if (!status.ok) expect(status.reason).toContain('chi_sim')
+  })
+
+  it('引擎里语言包到位时可用', async () => {
+    __setOcrEngineForTests(fakeEngine(['x'], ['chi_sim.traineddata']))
+    expect(await ocrEngineReady()).toEqual({ ok: true })
+  })
+
   it('语言包不齐时 ocrEngineReady 如实报出缺哪个语言，而不是宣称可用', async () => {
     // 空目录：一个语言包都没有
     const dir = await mkdtemp(join(tmpdir(), 'spbf-ocr-reason-'))
     try {
       const none = langPackStatus([dir])
       expect(none.ok).toBe(false)
-      if (!none.ok) expect(none.reason).toContain('chi_sim')
-
-      // 只补 eng：仍不够（引擎要 chi_sim+eng），原因要指名 chi_sim
-      await writeFile(join(dir, 'eng.traineddata.gz'), 'x')
-      const partial = langPackStatus([dir])
-      expect(partial.ok).toBe(false)
-      if (!partial.ok) {
-        expect(partial.reason).toContain('chi_sim')
-        expect(partial.reason).toContain('联网下载')
+      if (!none.ok) {
+        expect(none.reason).toContain('chi_sim')
+        expect(none.reason).toContain('联网下载')
       }
 
-      // 两个都齐：可用
+      // 补上引擎要的那一个：可用
       await writeFile(join(dir, 'chi_sim.traineddata.gz'), 'x')
       expect(langPackStatus([dir])).toEqual({ ok: true })
     } finally {
@@ -184,14 +201,14 @@ describe('OCR 认字', () => {
     expect(found.some((dir) => dir.includes('xsxz') || dir === process.cwd())).toBe(true)
   })
 
-  it('hasLangPack 要求引擎真正要用的两个语言包都在，且认 .gz 与解压两种形态', async () => {
+  it('hasLangPack 要求引擎真正要用的语言包在，且认 .gz 与解压两种形态', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'spbf-ocr-lang-'))
     try {
       expect(hasLangPack(dir)).toBe(false)
-      await writeFile(join(dir, 'chi_sim.traineddata.gz'), 'x')
-      // 只有 chi_sim：引擎要的是 chi_sim+eng，缺一个就够不上离线可用
-      expect(hasLangPack(dir)).toBe(false)
+      // 只放 eng 不够：引擎实际加载的是 chi_sim
       await writeFile(join(dir, 'eng.traineddata.gz'), 'x')
+      expect(hasLangPack(dir)).toBe(false)
+      await writeFile(join(dir, 'chi_sim.traineddata.gz'), 'x')
       expect(hasLangPack(dir)).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -201,7 +218,6 @@ describe('OCR 认字', () => {
     try {
       // 解压后的 .traineddata 同样认
       await writeFile(join(dir2, 'chi_sim.traineddata'), 'x')
-      await writeFile(join(dir2, 'eng.traineddata'), 'x')
       expect(hasLangPack(dir2)).toBe(true)
       expect(missingLangPacks(dir2)).toEqual([])
     } finally {
@@ -212,17 +228,20 @@ describe('OCR 认字', () => {
   it('missingLangPacks 说清缺哪一个语言包', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'spbf-ocr-missing-'))
     try {
-      expect(missingLangPacks(dir)).toEqual(['chi_sim', 'eng'])
+      expect(missingLangPacks(dir)).toEqual(['chi_sim'])
       await writeFile(join(dir, 'eng.traineddata.gz'), 'x')
       expect(missingLangPacks(dir)).toEqual(['chi_sim'])
       expect(hasLangPack(dir)).toBe(false)
+      await writeFile(join(dir, 'chi_sim.traineddata.gz'), 'x')
+      expect(missingLangPacks(dir)).toEqual([])
+      expect(hasLangPack(dir)).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
   })
 
-  it('OCR_LANGS 与引擎实际加载的语言一致', () => {
-    expect([...OCR_LANGS]).toEqual(['chi_sim', 'eng'])
+  it('OCR_LANGS 只留一个语言（多语言在 tesseract.js 7 上会静默失败）', () => {
+    expect([...OCR_LANGS]).toEqual(['chi_sim'])
   })
 
   it('一章最多认这么多张图', () => {

@@ -192,7 +192,7 @@
 | `backup.create` | invoke | `{ destDir: string }` | `{ ok: true; path: string; files: number } \| { ok: false; message: string }` |
 | `backup.restore` | invoke | `{ zipPath: string }` | `{ ok: true; books: number; files: number } \| { ok: false; message: string }` |
 | `backup.runAuto` | invoke | 无 | `{ status: 'disabled' \| 'notDue' \| 'created' \| 'failed'; message?: string }` |
-| `ocr.status` | invoke | 无 | `{ ok: true; ready: boolean; reason?: string }`：本机 OCR 兜底引擎（tesseract.js）是否可用；`ready=false` 时 `reason` 说明缺什么 |
+| `ocr.status` | invoke | 无 | `{ ok: true; ready: boolean; reason?: string }`：本机 OCR 兜底引擎（tesseract.js）是否可用；`ready=false` 时 `reason` 说明缺什么——**磁盘上缺语言包**，或**语言包在、但引擎没能把它加载进去**（tesseract.js 语言加载失败时不抛错，只看包在不在会谎报可用） |
 
 `backup.create` 把整个书库打包成 `spbf-backup-<日期>-<时间>.zip` 写入用户选的目录；顶层跳过 `__trash__` / `__tmp__`。空书库拒绝备份。`backup.restore` 是**整库覆盖**：先在书库同盘临时目录解压，拒绝不安全路径并校验索引、书籍元数据与已就绪章节；通过后将旧库移到临时回滚目录，再切换新库并重建索引。切换或重建失败时还原旧库；成功后清理旧库副本。下载、导入或 AI 保存进行中不启动恢复，恢复中拒绝新的书库写入。二次确认由渲染层负责。
 

@@ -26,6 +26,11 @@
 - 影响：设置 → 站点规则里写着「本机 OCR 引擎可用（tesseract.js，离线识别）」，勾选「图片/字形走 OCR」后**实际无法识别**。用户按界面文案做了决策，功能却不可用，且错误信息（`ǎ8traineddata`）对用户毫无意义。
 - 建议：修正语言包解压/路径查找逻辑；在引擎不可用时把设置页文案改为明确的不可用状态与原因，而不是静态宣称可用。
 
+> 后续变更（2026-10-16）：有了更深的发现，两处都已修。
+> 一、原来的查找逻辑根本没传 `gzip: true`，而包里是 `.traineddata.gz`，tesseract.js 按这个开关决定文件名后缀 → 它一直去找不存在的 `.traineddata`。
+> 二、更隐蔽的是：本机 tesseract.js 7 + 随包 core 一次加载**两种语言**（`chi_sim+eng`）时，核心会拿一个乱码语言名去开表（`Failed loading language '玂'`）并静默失败，而 `createWorker` 不抛错（内部 `.catch(() => {})` 吞掉了初始化异常）——所以「语言包文件存在」并不等于「引擎可用」，界面会谎报可用。现在改为**只加载 `chi_sim` 一个语言**，并让 `ocrEngineReady()` 额外核对引擎虚拟 FS 里是否真的有该语言包（磁盘上有 ≠ 引擎里吃进去了）。
+> 护栏：`src/main/ocrEngine.integration.test.ts` 真跑一次引擎；`npm run e2e:startup` 断言真实进程 stderr 里不再出现语言加载失败。
+
 ### F3【中等】导入 epub 时把 `<head><title>` 的文本混进正文，导致章节标题重复
 
 - 复现：书库 → 导入 txt / epub → 选 `fixtures/sample.epub`（该文件 `<head><title>第一章 启程</title>` 与 `<h2>第一章 启程</h2>` 同时存在）。

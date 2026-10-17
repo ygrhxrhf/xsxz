@@ -107,6 +107,13 @@ try {
   }
   const page = Array.isArray(targets) ? targets.find((target) => target.type === 'page') : undefined
   check('恢复后确实开了应用窗口（调试端点里有 page target）', Boolean(page), page?.url)
+
+  // 5) 应用启动时设置页会探测 OCR：引擎必须真的把语言包吃进去。
+  //    tesseract.js 语言加载失败时不抛错，只往 stderr 写一行，界面会谎报可用（F2 的深水区）。
+  const ocrNoise = `${stdout}\n${stderr}`
+    .split('\n')
+    .filter((line) => /Failed loading language|Error opening data file/i.test(line))
+  check('OCR 引擎没有报语言加载失败', ocrNoise.length === 0, ocrNoise.join(' | '))
 } catch (error) {
   check('E2E 跑到收尾', false, error instanceof Error ? error.message : String(error))
 } finally {

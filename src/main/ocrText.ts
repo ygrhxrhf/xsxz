@@ -154,6 +154,8 @@ export function parseOcrPayload(payload: string): { images: OcrImage[]; note: st
 
 interface OcrWorkerLike {
   recognize: (image: string) => Promise<{ data?: { text?: string } }>
+  /** 引擎的虚拟文件系统；用来确认语言包真的被引擎吃进去了（见 ocrEngineReady）。 */
+  FS?: (method: string, args: unknown[], jobId?: string) => Promise<{ data?: unknown }>
   terminate?: () => Promise<void>
 }
 
@@ -173,10 +175,15 @@ export function langPathCandidates(): string[] {
 }
 
 /**
- * 引擎实际加载的语言。必须与 `getWorker()` 里传给 `createWorker` 的串一致：
- * 少一个语言，tesseract.js 就会为它回退到 CDN 在线下载，离线环境等于不可用。
+ * 引擎实际加载的语言。必须与 `getWorker()` 里传给 `createWorker` 的串、`langPackStatus()`
+ * 检查的包、以及 `missingEngineLanguages()` 查的引擎内文件名三处一致。
+ *
+ * 只用一个语言：本机 tesseract.js 7 + 随包 core 一次加载两种语言时，核心会拿一个乱码语言名
+ * 去开表（stderr 报 `Failed loading language '玂'`）并静默失败，而 `createWorker` **不抛错**
+ * （它内部 `.catch(() => {})` 把初始化异常吞了），于是界面会谎报可用。单语言正常加载。
+ * `resources/eng.traineddata.gz` 仍留在磁盘上，将来若改成「每语言一个 worker」可以直接用。
  */
-export const OCR_LANGS = ['chi_sim', 'eng'] as const
+export const OCR_LANGS = ['chi_sim'] as const
 
 function hasOneLang(root: string, lang: string): boolean {
   return (
@@ -211,6 +218,9 @@ async function getWorker(): Promise<OcrWorkerLike | null> {
     await mkdir(cachePath, { recursive: true }).catch(() => {})
     const worker = await mod.createWorker(OCR_LANGS.join('+'), undefined, {
       cachePath,
+      // 包里是 .traineddata.gz，而 tesseract.js 用这个开关决定按哪个后缀找文件
+      // （`defaultOptions` 里没有这个键）：不传就会去找 `.traineddata`，直接找不到。
+      gzip: true,
       ...(langPath ? { langPath } : {}),
     })
     cachedWorker = worker
@@ -239,14 +249,37 @@ export function langPackStatus(roots: string[] = langPathCandidates()): { ok: tr
 
 /** 引擎可用性：设置页与失败提示都用这一个判断。 */
 export async function ocrEngineReady(): Promise<{ ok: true } | { ok: false; reason: string }> {
-  // 离线语言包是 OCR 能跑的前提。tesseract.js 在语言加载失败时**不抛错**，
-  // 会静默回退到在线下载——离线环境里就等于不可用，所以必须自己先查语言包，
-  // 否则界面会一直宣称「引擎可用」。
+  // 离线语言包是 OCR 能跑的前提。tesseract.js 在语言加载失败时**不抛错**
+  // （createWorker 内部把初始化的异常吞掉了），会静默回退到在线下载——离线环境里就等于不可用。
+  // 所以先查磁盘上的语言包，再查引擎里到底有没有把包吃进去。
   const packs = langPackStatus()
   if (!packs.ok) return packs
   const worker = await getWorker()
-  if (worker) return { ok: true }
-  return { ok: false, reason: engineUnavailableReason ?? '没装 OCR 引擎（tesseract.js）' }
+  if (!worker) return { ok: false, reason: engineUnavailableReason ?? '没装 OCR 引擎（tesseract.js）' }
+  const missing = await missingEngineLanguages(worker)
+  if (missing.length > 0) {
+    engineUnavailableReason = `引擎没能加载语言包（${missing.join('、')} 不在引擎内），OCR 不可用`
+    return { ok: false, reason: engineUnavailableReason }
+  }
+  return { ok: true }
+}
+
+/**
+ * 引擎的虚拟文件系统里有没有我们要的语言包。
+ *
+ * 磁盘上有包 ≠ 引擎加载成功：漏传 `gzip`、`langPath` 找错目录时，tesseract.js 都只是
+ * 不把包写进引擎，然后把失败咽下去。查一次引擎内文件名能把这类问题如实报成不可用。
+ * 查不到（旧版本没暴露 FS 等）就不下结论，宁可报可用——真正的失败会在识别阶段暴露。
+ */
+async function missingEngineLanguages(worker: OcrWorkerLike): Promise<string[]> {
+  if (!worker.FS) return []
+  try {
+    const listing = await worker.FS('readdir', ['.'])
+    const names = Array.isArray(listing?.data) ? listing.data.map((name) => String(name)) : []
+    return OCR_LANGS.filter((lang) => !names.includes(`${lang}.traineddata`))
+  } catch {
+    return []
+  }
 }
 
 
