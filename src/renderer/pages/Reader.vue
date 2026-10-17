@@ -63,6 +63,7 @@ import { ttsBodyHash, validTtsPosition } from './ttsPosition'
 import { decorateText } from '@shared/paragraphSearch'
 import { useReaderMarks } from './readerMarks'
 import { useReaderAssistant } from './readerAssistant'
+import { selectionRangeOffsets } from './readerSelection'
 import type { Annotation, BookSearchHit } from '@shared/types'
 import { libraryCoverSrc, libraryCoverText } from './libraryCard'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
@@ -378,40 +379,9 @@ const visibleParas = computed(() => renderedParas.value.slice(0, renderedCount.v
 
 /** 把渲染层选区换算成规范化正文里的字符区间 */
 function selectionOffsets(): { start: number; end: number; text: string } | null {
-  const sel = window.getSelection()
-  if (!sel || sel.rangeCount === 0 || sel.isCollapsed || !contentRef.value) return null
-  const range = sel.getRangeAt(0)
-  const locateEl = (node: Node): Element | null => {
-    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element)
-    return el?.closest('[data-p]') ?? null
-  }
-  const startP = locateEl(range.startContainer)
-  const endP = locateEl(range.endContainer)
-  if (!startP || !endP) return null
-
-  const localOffsetIn = (p: Element, container: Node, off: number): number | null => {
-    let acc = 0
-    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT)
-    while (walker.nextNode()) {
-      const n = walker.currentNode
-      if (n === container) return acc + off
-      acc += n.textContent?.length ?? 0
-    }
-    return null
-  }
-  const l0 = localOffsetIn(startP, range.startContainer, range.startOffset)
-  const l1 = localOffsetIn(endP, range.endContainer, range.endOffset)
-  if (l0 === null || l1 === null) return null
-
-  const i0 = Number(startP.getAttribute('data-p'))
-  const i1 = Number(endP.getAttribute('data-p'))
-  const starts = paraNormStarts.value
-  const start = (starts[i0] ?? 0) + l0
-  const end = (starts[i1] ?? 0) + l1
-  if (end <= start) return null
-  const text = normalizedBody.value.slice(start, end)
-  if (!text.trim()) return null
-  return { start, end, text }
+  if (!contentRef.value) return null
+  // 算法本身在 readerSelection.ts（纯函数，单独有 jsdom 单测）：这里只喂当前选区与下标表
+  return selectionRangeOffsets(window.getSelection(), paraNormStarts.value, normalizedBody.value)
 }
 
 function onContentMouseup(_e: MouseEvent) {
