@@ -2314,7 +2314,9 @@ app.on('before-quit', () => {
   cancelCheckAll()
   aiQueue.cancelAll()
   bookOverview.stop()
-  aiReadingFollow.stop()
+  // 不挡退出：进程马上就走，等在飞的整理写完没意义。原子写是「临时文件 + rename」，
+  // 中途被杀最多留一个 .tmp，不会写坏 follow.json；启动时的 recoverInterruptedStatus 兜底。
+  void aiReadingFollow.stop()
   stopEvidenceIndex()
   if (readingSessionIdleTimer) {
     clearTimeout(readingSessionIdleTimer)

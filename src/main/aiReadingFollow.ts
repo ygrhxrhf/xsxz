@@ -170,13 +170,23 @@ export class AiReadingFollowService {
     this.timer = setInterval(() => { if (this.pending.size > 0) void this.wake() }, 15_000)
   }
 
-  stop(): void {
+  /**
+   * 停掉自转，并等在飞的整理真正跑完再返回。
+   *
+   * 原来只清定时器就同步返回，留下一轮 drain 还在后台写 follow.json / 摘要 / 记忆。
+   * 应用退出时无所谓，但「stop 之后立刻删临时目录」的调用方（测试收尾就是这条）会撞上
+   * 正在打开的原子写临时文件，表现为偶发 ENOENT / ENOTEMPTY。`drainLoop` 每进一次
+   * `runUnit` 都先看 `stopped`，所以这里等得到头，不会挂住调用方。
+   */
+  async stop(): Promise<void> {
     this.stopped = true
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+    const running = this.drainPromise
     this.pending.clear()
     this.explicit.clear()
     this.activeBookId = ''
+    await running?.catch(() => {})
   }
 
   /** `explicit` 表示用户亲自点了「继续 / 现在整理」，这一次不受设置页总开关约束。 */
@@ -196,6 +206,9 @@ export class AiReadingFollowService {
   private async discover(): Promise<void> {
     try {
       for (const item of await listBooks()) {
+        // start() 里这是 fire-and-forget：停服可能正好落在扫库中途，
+        // 不在这里收口的话会把书重新加回 pending，绕过刚清空的队列。
+        if (this.stopped) return
         const file = await readFollow(item.id)
         if (file.mode === 'auto' && !file.paused && hasWork(file)) this.pending.add(item.id)
       }

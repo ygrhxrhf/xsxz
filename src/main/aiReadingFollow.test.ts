@@ -131,7 +131,9 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  service.stop()
+  // 必须等在飞的整理写完再删目录：stop 只清定时器的话，后台那一轮还会去写
+  // follow.json / 摘要 / 记忆，撞上 rm 就是偶发 ENOENT / ENOTEMPTY。
+  await service.stop()
   await rm(directory, { recursive: true, force: true })
 })
 
@@ -152,6 +154,36 @@ describe('自动追剧', () => {
     const coverage = await service.coverage(bookId)
     expect(coverage).toMatchObject({ mode: 'auto', organizedChapters: 1, queuedChapters: 0, paused: false })
     expect(coverage.uptoChapterTitle).toBe('第1章')
+  })
+
+  it('stop() 等在飞的那一轮整理写完，不把落盘半路截断', async () => {
+    const bookId = await seed(2, 2)
+    service.start()
+    await service.setMode(bookId, 'auto', true)
+    await service.chapterFinished(bookId, chapterId(1), 1)
+
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    mocks.complete.mockImplementationOnce(async () => {
+      await gate
+      return { text: '本章整理结果', truncated: false, usage: { inputTokens: 9, outputTokens: 4 } }
+    })
+
+    const running = service.wake(bookId)
+    await vi.waitFor(() => expect(mocks.complete).toHaveBeenCalledTimes(1), { timeout: 5_000 })
+
+    // 模型还没回来，stop 就不该放行：它一放行调用方就会去删目录 / 重开服务，
+    // 而那一轮还在写 follow.json 与摘要。
+    let stoppedSettled = false
+    const stopped = service.stop().then(() => { stoppedSettled = true })
+    await Promise.resolve()
+    expect(stoppedSettled, '模型还没回来，stop 不该先返回').toBe(false)
+
+    release()
+    await stopped
+    await running
+    expect(stoppedSettled).toBe(true)
+    expect(Object.keys((await readSummaries(bookId)).byChapter)).toEqual([chapterId(1)])
   })
 
   it('滚动比例不足的章不算读完，不入队也不花钱', async () => {
@@ -305,7 +337,8 @@ describe('自动追剧', () => {
     await service.chapterFinished(bookId, chapterId(1), 1)
     await service.wake(bookId)
     expect(callsFor('chapterSummary')).toBe(1)
-    service.stop()
+    // 这步是「关窗」：不 await 完就重开，等于让两个服务同时写同一目录
+    await service.stop()
 
     const reopened = createService()
     await reopened.chapterFinished(bookId, chapterId(2), 1)
