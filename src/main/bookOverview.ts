@@ -16,6 +16,11 @@ interface OverviewFile {
   text: string
   source: Record<string, string>
   chapterSummaries: Record<string, { hash: string; text: string }>
+  /**
+   * 归并阶段的中间结果：键是「变体 + 书名 + 指令 + 分组内容」的哈希 → 该组摘要。
+   * 没有它，改一章就要把整棵归并树重跑一遍（几百章的书是几十次模型调用）。
+   */
+  reduceCache?: Record<string, string>
   error?: string
   failedSignature?: string
   updatedAt: string
@@ -44,6 +49,16 @@ function emptyFile(): OverviewFile {
   return { version: 1, text: '', source: {}, chapterSummaries: {}, updatedAt: new Date().toISOString() }
 }
 
+/** 归并缓存只保留字符串值；损坏的条目直接丢掉（丢了只是多花一次模型调用）。 */
+function sanitizeReduceCache(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') return {}
+  const out: Record<string, string> = {}
+  for (const [key, text] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof text === 'string' && text) out[key] = text
+  }
+  return out
+}
+
 async function readOverview(bookId: string): Promise<OverviewFile> {
   try {
     const value: unknown = JSON.parse(await readFile(overviewPath(bookId), 'utf-8'))
@@ -54,6 +69,7 @@ async function readOverview(bookId: string): Promise<OverviewFile> {
         text: typeof file.text === 'string' ? file.text : '',
         source: file.source && typeof file.source === 'object' ? file.source : {},
         chapterSummaries: file.chapterSummaries && typeof file.chapterSummaries === 'object' ? file.chapterSummaries : {},
+        reduceCache: sanitizeReduceCache(file.reduceCache),
       }
     }
   } catch { /* absent or damaged file: start safely */ }
@@ -64,6 +80,23 @@ async function saveOverview(bookId: string, file: OverviewFile): Promise<void> {
   await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
   file.updatedAt = new Date().toISOString()
   await atomicWriteText(overviewPath(bookId), JSON.stringify(file, null, 2))
+}
+
+/** 归并缓存上限：只增不减会随编辑次数膨胀，留最近这些条足够覆盖下一次重新生成。 */
+const REDUCE_CACHE_LIMIT = 256
+
+/** 归并缓存键：变体（分组压缩 / 最终归并）+ 书名 + 指令 + 这一组的材料，任一变化才算不同。 */
+function reduceKey(variant: 'group' | 'final', title: string, instruction: string, items: string[]): string {
+  return hash(`${variant}\n${title}\n${instruction}\n${items.join('\n')}`)
+}
+
+function rememberReduce(file: OverviewFile, key: string, text: string): void {
+  const cache: Record<string, string> = { ...(file.reduceCache ?? {}), [key]: text }
+  const keys = Object.keys(cache)
+  if (keys.length > REDUCE_CACHE_LIMIT) {
+    for (const stale of keys.slice(0, keys.length - REDUCE_CACHE_LIMIT)) delete cache[stale]
+  }
+  file.reduceCache = cache
 }
 
 async function sourceSignature(book: Book): Promise<Record<string, string>> {
@@ -255,14 +288,14 @@ export class BookOverviewService {
           for (const segment of chunks(body, MAX_SOURCE_CHARS)) {
             parts.push(await this.complete(bookId, `只根据以下《${book.title}》章节片段，提炼发生的事件、人物变化和伏笔。不要编造，约 150–250 字，只返回纯文本。\n章节：${chapter.title}\n片段：\n${segment}`))
           }
-          summary = parts.length === 1 ? parts[0]! : await this.reduce(bookId, book.title, parts, '把同一章的片段摘要合成一份按情节顺序的章节摘要。')
+          summary = parts.length === 1 ? parts[0]! : await this.reduce(bookId, book.title, parts, '把同一章的片段摘要合成一份按情节顺序的章节摘要。', file)
           file.chapterSummaries[chapter.id] = { hash: bodyHash, text: summary }
           await saveOverview(bookId, file)
           this.changed()
         }
         summaries.push(`第 ${chapter.index} 章《${chapter.title}》：${summary}`)
       }
-      const overview = await this.reduce(bookId, book.title, summaries, '综合全书各章剧情，介绍主要人物、故事主线、关键转折与结局。可以剧透，但不能编造。控制在 300–500 字，只返回纯文本。')
+      const overview = await this.reduce(bookId, book.title, summaries, '综合全书各章剧情，介绍主要人物、故事主线、关键转折与结局。可以剧透，但不能编造。控制在 300–500 字，只返回纯文本。', file)
       const latest = await sourceSignature(await getBook(bookId))
       if (signatureKey(latest) !== signatureKey(source)) throw new Error('章节已变化，等待重新生成')
       file.text = overview
@@ -279,17 +312,41 @@ export class BookOverviewService {
     }
   }
 
-  private async reduce(bookId: string, title: string, items: string[], instruction: string): Promise<string> {
+  private async reduce(
+    bookId: string,
+    title: string,
+    items: string[],
+    instruction: string,
+    file: OverviewFile,
+  ): Promise<string> {
     let current = items
-    while (true) {
+    for (;;) {
       const groups = groupItems(current)
       if (groups.length === 1) {
-        return this.complete(bookId, `书名：《${title}》。${instruction}\n材料：\n${groups[0]!.join('\n')}`)
+        const key = reduceKey('final', title, instruction, groups[0]!)
+        const cached = file.reduceCache?.[key]
+        if (cached) return cached
+        const text = await this.complete(bookId, `书名：《${title}》。${instruction}\n材料：\n${groups[0]!.join('\n')}`)
+        rememberReduce(file, key, text)
+        await saveOverview(bookId, file)
+        return text
       }
       const next: string[] = []
+      let added = false
       for (const group of groups) {
-        next.push(await this.complete(bookId, `书名：《${title}》。按顺序压缩以下连续章节摘要，保留主线、重要转折、结局线索，不得编造。约 300–500 字，纯文本。\n${group.join('\n')}`))
+        const key = reduceKey('group', title, instruction, group)
+        const cached = file.reduceCache?.[key]
+        if (cached) {
+          next.push(cached)
+          continue
+        }
+        const text = await this.complete(bookId, `书名：《${title}》。按顺序压缩以下连续章节摘要，保留主线、重要转折、结局线索，不得编造。约 300–500 字，纯文本。\n${group.join('\n')}`)
+        rememberReduce(file, key, text)
+        added = true
+        next.push(text)
       }
+      // 一边算一边落盘：中途被打断时下次能接着复用，不必从头再来
+      if (added) await saveOverview(bookId, file)
       current = next
     }
   }

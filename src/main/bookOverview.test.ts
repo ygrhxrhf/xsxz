@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -38,7 +39,13 @@ beforeEach(async () => {
     reader: DEFAULT_READER_PREFS, tts: DEFAULT_TTS_PREFS, appearance: DEFAULT_APPEARANCE_PREFS,
     ai: { ...DEFAULT_AI_PREFS, autoBookOverview: true }, downloadPace: 'standard',
   }
-  mocks.complete.mockReset().mockResolvedValue({ text: '主角寻宝，最终归来。', truncated: false, usage: { inputTokens: 9, outputTokens: 5 } })
+  mocks.complete.mockReset().mockImplementation(async (...args: unknown[]) => {
+    // 输出跟着输入走：真模型就是这样，而这正是归并缓存能不能命中的前提——
+    // 固定返回同一段文字的话，「正文改了但摘要文本没变」会让缓存正确命中，计数就没法验了。
+    // 注意 prompt 藏在 messages 数组里，要哈希整个入参才能拿到它。
+    const tag = createHash('sha256').update(JSON.stringify(args)).digest('hex').slice(0, 8)
+    return { text: `主角寻宝，最终归来。【${tag}】`, truncated: false, usage: { inputTokens: 9, outputTokens: 5 } }
+  })
   service = new BookOverviewService(new AiQueue(), () => {})
 })
 
@@ -50,6 +57,20 @@ afterEach(async () => {
 async function seed(): Promise<string> {
   const book = await createBookFromBootstrap({
     bookId: 'i_overview', title: '测试书', author: '', importType: 'txt', chapterTitles: ['第一章', '第二章'],
+  })
+  for (const chapter of book.chapters) {
+    await writeChapterFile(book.id, chapter.id, { title: chapter.title, body: `${chapter.title}，主角出发。`, status: 'ready' })
+    await markChapterStatus(book.id, chapter.id, 'ready')
+  }
+  await refreshBookStatus(book.id)
+  return book.id
+}
+
+/** 多章夹具：用来把归并阶段逼出多个分组。 */
+async function seedMany(count: number): Promise<string> {
+  const book = await createBookFromBootstrap({
+    bookId: 'i_overview_many', title: '长书', author: '', importType: 'txt',
+    chapterTitles: Array.from({ length: count }, (_, index) => `第${index + 1}章`),
   })
   for (const chapter of book.chapters) {
     await writeChapterFile(book.id, chapter.id, { title: chapter.title, body: `${chapter.title}，主角出发。`, status: 'ready' })
@@ -87,6 +108,31 @@ describe('automatic full-book overview', () => {
     service.start()
     await vi.waitFor(async () => { expect((await view()).status).toBe('ready') }, { timeout: 10_000 })
     expect(mocks.complete).toHaveBeenCalledTimes(5)
+  })
+
+  it('改一章只重算那一章与它所在的归并组，不重跑整棵归并树', async () => {
+    // 让每章摘要长到归并阶段必须分组（一组 8000 字），才谈得上「不重跑整棵树」。
+    // 章数压到刚好分两组：这文件里每条用例都要真的写盘，夹具太大在并发下会拖累同文件的兄弟用例。
+    const longSummary = '主角在破庙里醒来，发现身边的信物不见了，于是沿官道向北，遇上一个卖炭的老人。'.repeat(30)
+    mocks.complete.mockReset().mockImplementation(async (...args: unknown[]) => {
+      const tag = createHash('sha256').update(JSON.stringify(args)).digest('hex').slice(0, 8)
+      return { text: `${longSummary}【${tag}】`, truncated: false, usage: { inputTokens: 9, outputTokens: 5 } }
+    })
+    const bookId = await seedMany(8)
+
+    service.start()
+    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') }, { timeout: 10_000 })
+    const firstRun = mocks.complete.mock.calls.length
+    expect(firstRun, '首轮应当跑完 8 章摘要 + 多组归并 + 最终归并').toBeGreaterThan(9)
+
+    await updateChapterBody(bookId, 'c0001', '第一章，主角改了目标。')
+    // 用触发式重扫（不用 stop + 新建实例）：只为验证归并缓存，别再掺进启停时序
+    service.settingsChanged(true)
+    await vi.waitFor(async () => { expect((await view()).status).toBe('ready') }, { timeout: 10_000 })
+
+    // 只有「那一章摘要 + 它所在的分组 + 最终归并」该花钱，与分了几个组无关；
+    // 没有归并缓存时至少还要把其余分组重跑一遍（≥4 次）。
+    expect(mocks.complete.mock.calls.length - firstRun).toBe(3)
   })
 
   it('does not call the model until the user enables automatic generation', async () => {
