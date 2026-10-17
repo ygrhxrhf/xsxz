@@ -44,15 +44,36 @@ export function discoverChapterLinks(html: string, pageUrl: string, rule?: SiteR
   return { previous: find('previous'), next: find('next') }
 }
 
+/** 隐藏容器里的标题不算数：站点常把「阅读记录」等弹层的 h2 留在 DOM 里。 */
+function isHidden(el: Element): boolean {
+  if (el.closest('[hidden], [aria-hidden="true"]')) return true
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const style = (node as HTMLElement).style
+    if (style && (style.display === 'none' || style.visibility === 'hidden')) return true
+  }
+  return false
+}
+
+function firstVisibleText(doc: Document, selector: string): string {
+  for (const el of doc.querySelectorAll(selector)) {
+    if (isHidden(el)) continue
+    const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim()
+    if (text) return text
+  }
+  return ''
+}
+
 export function extractBrowseReadingPage(html: string, url: string, rule?: SiteRule): { ok: true; page: BrowseReadingPage } | { ok: false; message: string } {
   const result = extractBody(html, url, rule)
   if (!result.ok) return { ok: false, message: result.failMessage ?? '当前网页未识别出章节正文' }
   const doc = new JSDOM(html, { url }).window.document
   let title = ''
   if (rule?.title) {
-    try { title = doc.querySelector(rule.title)?.textContent?.trim() ?? '' } catch { /* invalid selector */ }
+    try { title = firstVisibleText(doc, rule.title) } catch { /* invalid selector */ }
   }
-  title ||= doc.querySelector('h1, h2, .chapter-title, .read-title')?.textContent?.trim() ?? ''
+  // h1 优先于 h2：h2 常被站点弹层占用（如「阅读记录」）。
+  title ||= firstVisibleText(doc, 'h1')
+  title ||= firstVisibleText(doc, '.chapter-title, .read-title, h2')
   title ||= doc.title || '当前章节'
   return { ok: true, page: { url, title: title.replace(/\s+/g, ' ').slice(0, 160), body: result.body } }
 }

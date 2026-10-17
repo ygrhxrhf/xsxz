@@ -904,4 +904,19 @@ describe('extractBody — 正文噪音净化', () => {
     expect(result.body).toContain('越过这道垭口就是另一重天地')
     expect(result.body).toContain('心里清楚地知道今天是回不去了')
   })
+
+  it('drops the chapter-start site watermark and the page marker', () => {
+    const first = '该高端航模机构引进国外高端航模技术，制造出了一架一比一可真实还原的战机模型，它不但可以真实起飞，而且飞机里面还可以坐一个人。'
+    const second = '民间那些热火朝天的航模爱好者准备研发高仿的发动机，核心部分准备研发一款超高仿真的航模飞行器，还要给它架构民间版本的雷达与操控系统。'
+    const html = `<html><body><div id="content">
+      <p>一秒记住【笔趣阁】biquge365.net，更新快，无弹窗！</p>
+      <p>第190章 先生早晨(粤语)(第1/2页)</p>
+      <p>${first}</p><p>${second}</p></div></body></html>`
+    const result = extractBody(html, NOISY_URL)
+    expect(result.ok).toBe(true)
+    expect(result.body).not.toContain('一秒记住')
+    expect(result.body).not.toContain('(第1/2页)')
+    expect(result.body).toContain('该高端航模机构引进国外高端航模技术')
+    expect(result.body).toContain('民间那些热火朝天的航模爱好者')
+  })
 })
