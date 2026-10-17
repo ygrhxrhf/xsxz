@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test:live-ai": "node scripts/ai-live-smoke.mjs",
     "e2e:startup": "node scripts/startup-fallback-e2e.mjs",
+    "e2e:ocr": "node scripts/ocr-download-e2e.mjs",
     "pack": "npm run typecheck && electron-vite build && electron-builder --dir",
     "dist": "npm run typecheck && electron-vite build && electron-builder"
   },

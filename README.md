@@ -22,6 +22,11 @@ npm run build
 - `npm test`：跑 vitest（不 watch）
 - `npm run build`：编译主进程 / 预加载 / 渲染进程
 
+端到端（两条都会真开一次应用窗口，需先 `npm run build`）：
+
+- `npm run e2e:startup`：书库目录不可用时的启动兜底（弹窗说明 → 换目录 → 继续启动）
+- `npm run e2e:ocr`：图片化正文走 OCR 入库（起本地夹具站点，真认字，核对 `unlockedBy=ocr`）
+
 ## 书库路径
 
 默认书库在当前用户家目录下的 `spbf/library`（Windows 为 `%USERPROFILE%\spbf\library`）。设置页可改路径，立刻生效，不会把旧书搬过去；清空该项则回到默认目录。测试请改到临时目录，不要动用户已有书。
