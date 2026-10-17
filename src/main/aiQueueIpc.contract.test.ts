@@ -30,6 +30,8 @@ describe('AI 排队与索引进度的主进程接线', () => {
     const start = reader.indexOf('unsubAiStage = window.api.ai.onStage')
     const block = reader.slice(start, reader.indexOf('unsubAiBudget', start))
     expect(block).toContain('[event.jobId]: { stage: event.stage, ...(detail ? { detail } : {}) }')
-    expect(reader).toContain('const assistantStageText = computed(() => describeAssistantStage(currentAssistantStage.value))')
+    // assistantStageText 随助手面板搬到了 readerAssistant.ts，断言改指向那边
+    const assistant = await readFile(new URL('../renderer/pages/readerAssistant.ts', import.meta.url), 'utf-8')
+    expect(assistant).toContain('const assistantStageText = computed(() => describeAssistantStage(currentAssistantStage.value))')
   })
 })

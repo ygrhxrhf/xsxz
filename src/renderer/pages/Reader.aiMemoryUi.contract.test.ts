@@ -1,9 +1,19 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
+/** 助手面板的实现搬去了 readerAssistant.ts：这些契约断言看的是「实现里有没有这条」，
+ *  所以把 Reader.vue 与该模块拼起来看（模板与接线仍在 Reader.vue 里断言）。 */
+async function readReaderSurface(): Promise<string> {
+  const [reader, assistant] = await Promise.all([
+    readFile(new URL('./Reader.vue', import.meta.url), 'utf-8'),
+    readFile(new URL('./readerAssistant.ts', import.meta.url), 'utf-8'),
+  ])
+  return reader + assistant
+}
+
 describe('Reader recap and memory UI contract', () => {
   it('persists the three recap lengths and exposes their fixed labels', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     expect(source).toContain("const recapLength = ref<'short' | 'standard' | 'detailed'>('standard')")
     expect(source).toContain("recapLength.value = s.ai?.recapLength ?? 'standard'")
     expect(source).toContain('window.api.settings.set({ ai: { recapLength: value } })')
@@ -15,7 +25,7 @@ describe('Reader recap and memory UI contract', () => {
   })
 
   it('loads, updates, rebuilds, marks, and applies structured memory locally', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     expect(source).toContain('window.api.ai.getMemory(book.value.id)')
     expect(source).toContain("kind === 'update' ? window.api.ai.updateMemory : window.api.ai.rebuildMemory")
     expect(source).toContain('window.api.ai.markMemoryInaccurate(book.value.id, kind, item.id)')
@@ -31,7 +41,7 @@ describe('Reader recap and memory UI contract', () => {
   })
 
   it('renders four kinds, review states, source coordinates, and fixed empty copy', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     for (const label of ['人物', '关系', '伏笔', '关键事件', '待复核', '存疑', '标记不准确']) {
       expect(source).toContain(label)
     }

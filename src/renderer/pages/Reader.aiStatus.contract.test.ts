@@ -1,9 +1,19 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
+/** 助手面板的实现搬去了 readerAssistant.ts：这些契约断言看的是「实现里有没有这条」，
+ *  所以把 Reader.vue 与该模块拼起来看（模板与接线仍在 Reader.vue 里断言）。 */
+async function readReaderSurface(): Promise<string> {
+  const [reader, assistant] = await Promise.all([
+    readFile(new URL('./Reader.vue', import.meta.url), 'utf-8'),
+    readFile(new URL('./readerAssistant.ts', import.meta.url), 'utf-8'),
+  ])
+  return reader + assistant
+}
+
 describe('Reader AI task status contract', () => {
   it('subscribes and unsubscribes stage events with fixed Chinese copy', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     const status = await readFile(new URL('./aiAssistantStatus.ts', import.meta.url), 'utf-8')
     expect(source).toContain('window.api.ai.onStage((event) =>')
     expect(source).toContain('unsubAiStage?.()')
@@ -21,7 +31,7 @@ describe('Reader AI task status contract', () => {
   })
 
   it('captures usage, truncation, and save tokens only for assistant jobs', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     expect(source).toContain('assistantKindForJob(event.jobId, assistantJobIds.value)')
     expect(source).toContain('recap: recapJobId.value')
     expect(source).toContain('memory: memoryJobId.value')
@@ -35,7 +45,7 @@ describe('Reader AI task status contract', () => {
   })
 
   it('retries only the captured save token without restarting model work', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     const start = source.indexOf('async function retryAssistantSave')
     const end = source.indexOf('async function setRecapLength', start)
     const block = source.slice(start, end)
@@ -53,7 +63,7 @@ describe('Reader AI task status contract', () => {
   })
 
   it('blocks chat clearing, memory marking, and library recap writes during recovery', async () => {
-    const reader = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const reader = await readReaderSurface()
     const library = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
     expect(reader).toContain("item.accuracy !== 'normal' || assistantSaveRetrying.value")
     expect(reader).toContain('chatLoading.value || assistantSaveRetrying.value')

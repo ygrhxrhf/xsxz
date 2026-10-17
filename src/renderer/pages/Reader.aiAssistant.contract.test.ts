@@ -1,9 +1,19 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
+/** 助手面板的实现搬去了 readerAssistant.ts：这些契约断言看的是「实现里有没有这条」，
+ *  所以把 Reader.vue 与该模块拼起来看（模板与接线仍在 Reader.vue 里断言）。 */
+async function readReaderSurface(): Promise<string> {
+  const [reader, assistant] = await Promise.all([
+    readFile(new URL('./Reader.vue', import.meta.url), 'utf-8'),
+    readFile(new URL('./readerAssistant.ts', import.meta.url), 'utf-8'),
+  ])
+  return reader + assistant
+}
+
 describe('Reader unified AI assistant shell', () => {
   it('has one AI assistant drawer with the five fixed tabs', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     expect(source.match(/<n-drawer v-model:show="showAiAssistant"/g)).toHaveLength(1)
     expect(source).not.toContain('v-model:show="showChat"')
     expect(source).not.toContain('v-model:show="showRecap"')
@@ -28,7 +38,7 @@ describe('Reader unified AI assistant shell', () => {
   })
 
   it('opens from local data only and maps legacy entry intent to a tab', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     const start = source.indexOf('async function openAiAssistant')
     const end = source.indexOf('async function startMemoryJob', start)
     const block = source.slice(start, end)
@@ -47,7 +57,7 @@ describe('Reader unified AI assistant shell', () => {
   })
 
   it('生词本只是已有标记的视图，不开新频道', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     // 视图与接线仍在 Reader.vue
     expect(source).toContain('<strong>生词本</strong>')
     expect(source).toContain('这里只汇总你自己的划线和已核实的记忆，不另外存一份。')
@@ -72,7 +82,7 @@ describe('Reader unified AI assistant shell', () => {
   })
 
   it('忙只按任务种类接线，一类在跑不该灰掉别的 tab', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     expect(source).toContain('const assistantBusyByKind = computed<Record<AssistantJobKind, boolean>>')
     // 单一的全局 busy 会把问答输入框连带灰掉，这正是「像摆设」的观感来源。
     expect(source).not.toMatch(/const assistantBusy = computed/)
@@ -85,7 +95,7 @@ describe('Reader unified AI assistant shell', () => {
   })
 
   it('一次性结果并入输出 pane，快捷键 I/N 直连 AI 壳', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     const helpers = await readFile(new URL('./readerHelpers.ts', import.meta.url), 'utf-8')
     expect(source).toContain("aiAssistantTab.value = 'output'")
     expect(source).toContain('function showAiOutput() {')
@@ -98,7 +108,7 @@ describe('Reader unified AI assistant shell', () => {
   })
 
   it('把高频阅读任务放到工作台，快捷问题只填草稿不直接计费', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     expect(source).toContain('aria-label="AI 阅读工作台"')
     for (const label of ['接着读', '找人物与伏笔', '带依据地问', '记住本章']) {
       expect(source).toContain(label)
@@ -115,7 +125,7 @@ describe('Reader unified AI assistant shell', () => {
   })
 
   it('人物关系搜索只过滤已加载的本地记忆', async () => {
-    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    const source = await readReaderSurface()
     const start = source.indexOf('const normalizedMemoryQuery')
     const block = source.slice(start, source.indexOf('async function jumpToAnnotation', start))
     expect(block).toContain('visibleMemoryCharacters')
