@@ -175,8 +175,10 @@ function tryBodyFromRule(doc: Document, rule?: SiteRule): string | null {
 // catalog detection
 // ---------------------------------------------------------------------------
 
-const CHAPTER_RE = /第[0-9一二三四五六七八九十百千万零〇两壹贰叁肆伍陆柒捌玖拾佰仟]+[章节卷回部集]|chapter\s*\d+/i
-const SEQ_RE = /^\s*\d{1,4}\s*[.、:：\s]/u
+const CHAPTER_RE =
+  /第[0-9一二三四五六七八九十百千万零〇两壹贰叁肆伍陆柒捌玖拾佰仟]+[章节卷回部集]|chapter\s*\d+|^(?:楔子|序章|序言|前言|引子|尾声|终章|后记|番外)/i
+// 「001 背叛」「002重获新生」「3179」都算章名：数字后可以没有分隔符，也可以直接跟正文。
+const SEQ_RE = /^\s*\d{1,5}\s*(?:[.、:：\s]|$|[\u4e00-\u9fff“”"「」])/u
 
 function isChapterLink(a: HTMLAnchorElement): boolean {
   const text = visibleText(a)
@@ -214,18 +216,57 @@ function tryCatalogFromDoc(doc: Document, pageUrl: string): CatalogHit | null {
   }
   if (!best) return null
 
+  // Biquge 类站点常把「最新章节」块和正文卷放在同一个 <dl> 里：
+  // 前者是倒序的少量重复链接，后者才是完整目录。按 DT 分节后，
+  // 与主节大量重叠的小节只补主节没有的新链接，且按「最新在前」倒序放回末尾。
+  const urlOf = (a: HTMLAnchorElement): string =>
+    resolveCatalogHref((a.getAttribute('href') || '').trim(), pageUrl, a.href)
+  const keyOf = (a: HTMLAnchorElement): string => catalogSeenKey(urlOf(a))
+
+  const sections = new Map<Element, HTMLAnchorElement[]>()
+  for (const a of best.links) {
+    let heading: Element | null = null
+    if (/^DL$/i.test(best.container.tagName)) {
+      const item = a.closest('dd, dt')
+      heading = item && item.parentElement === best.container ? item : null
+      while (heading && !/^DT$/i.test(heading.tagName)) heading = heading.previousElementSibling
+    }
+    const key = heading || best.container
+    const arr = sections.get(key) || []
+    arr.push(a)
+    sections.set(key, arr)
+  }
+
+  const sectionKeys = new Map<Element, Set<string>>()
+  for (const [section, links] of sections) sectionKeys.set(section, new Set(links.map(keyOf)))
+  const main = [...sections.entries()].reduce((a, b) => (b[1].length > a[1].length ? b : a))
+  const mainKeys = sectionKeys.get(main[0])!
+
   const seen = new Set<string>()
   const chapters: CatalogChapter[] = []
   let index = 0
-  for (const a of best.links) {
-    const rawHref = (a.getAttribute('href') || '').trim()
-    const url = resolveCatalogHref(rawHref, pageUrl, a.href)
-    const href = catalogSeenKey(url)
-    if (seen.has(href)) continue
-    seen.add(href)
+  const push = (a: HTMLAnchorElement): void => {
+    const url = urlOf(a)
+    const key = catalogSeenKey(url)
+    if (seen.has(key)) return
+    seen.add(key)
     index++
     chapters.push({ title: visibleText(a), url, index })
   }
+
+  const duplicateSections: HTMLAnchorElement[][] = []
+  for (const [section, links] of sections) {
+    if (section === main[0]) {
+      for (const a of links) push(a)
+      continue
+    }
+    const keys = sectionKeys.get(section)!
+    let overlap = 0
+    for (const key of keys) if (mainKeys.has(key)) overlap++
+    if (keys.size > 0 && overlap / keys.size >= 0.5) duplicateSections.push(links)
+    else for (const a of links) push(a)
+  }
+  for (const links of duplicateSections) for (const a of [...links].reverse()) push(a)
 
   if (chapters.length < 2) return null
 

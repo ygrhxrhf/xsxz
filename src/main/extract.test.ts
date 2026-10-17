@@ -41,6 +41,47 @@ describe('extractPage — catalog page', () => {
     expect(result.bootstrap!.bookTitle).toContain('万古神帝')
     expect(result.bootstrap!.author).toBe('飞天鱼')
   })
+
+  it('drops a duplicated latest-chapters block and keeps reading order', () => {
+    const numbers = Array.from({ length: 12 }, (_, i) => i + 1)
+    const item = (n: number) => `<dd><a href="${n}.html">第${n}章 夜行</a></dd>`
+    const latest = [...numbers].reverse().slice(0, 3).map(item).join('')
+    const full = numbers.map(item).join('')
+    const html = `<html><head><title>测试书 - 某站</title></head><body><div id="list"><dl><dt>最新章节</dt>${latest}<dt>正文卷</dt>${full}</dl></div></body></html>`
+    const chapters = extractCatalog(html, 'https://example.com/book/1/')
+    expect(chapters.map((c) => c.title)).toEqual(numbers.map((n) => `第${n}章 夜行`))
+    expect(chapters.map((c) => c.index)).toEqual(numbers)
+  })
+
+  it('appends chapters that only exist in the latest block', () => {
+    const numbers = Array.from({ length: 12 }, (_, i) => i + 1)
+    const item = (n: number) => `<dd><a href="${n}.html">第${n}章 夜行</a></dd>`
+    const latest = [13, 12].map(item).join('')
+    const full = numbers.map(item).join('')
+    const html = `<html><head><title>测试书 - 某站</title></head><body><div id="list"><dl><dt>最新章节</dt>${latest}<dt>正文卷</dt>${full}</dl></div></body></html>`
+    const chapters = extractCatalog(html, 'https://example.com/book/1/')
+    expect(chapters.map((c) => c.title)).toEqual([...numbers, 13].map((n) => `第${n}章 夜行`))
+  })
+
+  it('keeps every volume when sections hold distinct chapters', () => {
+    const html = `<html><head><title>测试书 - 某站</title></head><body><div id="list"><dl><dt>第一卷</dt><dd><a href="/1.html">第1章</a></dd><dd><a href="/2.html">第2章</a></dd><dt>第二卷</dt><dd><a href="/3.html">第3章</a></dd><dd><a href="/4.html">第4章</a></dd></dl></div></body></html>`
+    const chapters = extractCatalog(html, 'https://example.com/book/')
+    expect(chapters.map((c) => c.title)).toEqual(['第1章', '第2章', '第3章', '第4章'])
+  })
+
+  it('accepts number-first titles without a separator and standalone chapter names', () => {
+    const html = `<html><head><title>测试书 - 某站</title></head><body><div id="list"><dl><dd><a href="/1.html">001 背叛</a></dd><dd><a href="/2.html">002重获新生</a></dd><dd><a href="/3.html">3179</a></dd><dd><a href="/4.html">4385“他”终于出现了（一）</a></dd><dd><a href="/5.html">楔子</a></dd><dd><a href="/6.html">番外 新春小剧场</a></dd><dd><a href="/7.html">第7章 夜行</a></dd></dl></div></body></html>`
+    const chapters = extractCatalog(html, 'https://example.com/book/')
+    expect(chapters.map((c) => c.title)).toEqual([
+      '001 背叛',
+      '002重获新生',
+      '3179',
+      '4385“他”终于出现了（一）',
+      '楔子',
+      '番外 新春小剧场',
+      '第7章 夜行',
+    ])
+  })
 })
 
 describe('extractPage — chapter page', () => {
