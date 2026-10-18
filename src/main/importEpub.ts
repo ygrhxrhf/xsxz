@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import JSZip from 'jszip'
 import {
-  bookExists,
   bookIdFromBytes,
   copyOriginFile,
   createBookFromBootstrap,
+  isBookComplete,
   refreshBookStatus,
   setCover,
   writeChaptersBatch,
@@ -144,7 +144,8 @@ export async function importEpub(filePath: string): Promise<{ bookId: string }> 
   const buf = await readFile(filePath)
   const bytes = new Uint8Array(buf)
   const bookId = bookIdFromBytes(bytes)
-  if (await bookExists(bookId)) {
+  // 只有完整入库才短路；半本书（导入中途被杀）要重跑，否则残缺章节永远修不回来。
+  if (await isBookComplete(bookId)) {
     return { bookId }
   }
 

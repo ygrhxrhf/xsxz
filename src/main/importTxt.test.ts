@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { importTxt, decodeTxtBuffer } from './importTxt'
-import { loadBook, setLibraryPath } from './library'
+import { loadBook, saveBook, setLibraryPath } from './library'
 
 
 describe('decodeTxtBuffer', () => {
@@ -50,6 +50,27 @@ describe('importTxt', () => {
     expect(second.bookId).toBe(first.bookId)
     const again = JSON.parse(await readFile(join(dir, first.bookId, 'chapters', '0002.json'), 'utf-8'))
     expect(again.body).toBe('已被用户改过')
+  })
+
+  it('半本书（目录已建、章节残缺）再次导入会重跑补齐，而不是永远短路', async () => {
+    const src = join(dir, 'half.txt')
+    await writeFile(src, '第一章 起\n\n甲。\n\n第二章 承\n\n乙。\n', 'utf-8')
+    const first = await importTxt(src)
+    // 模拟导入中途被杀：把第二章退回 pending，让它看起来「没下完」
+    const book = await loadBook(first.bookId)
+    const target = book.chapters[1]!
+    book.chapters[1]!.status = 'pending'
+    await saveBook(book)
+    await writeFile(join(dir, first.bookId, target.file), JSON.stringify({
+      title: target.title, body: '', status: 'pending',
+    }), 'utf-8')
+
+    const second = await importTxt(src)
+    expect(second.bookId).toBe(first.bookId)
+    const healed = await loadBook(first.bookId)
+    expect(healed.chapters.every((c) => c.status === 'ready')).toBe(true)
+    const chapter2 = JSON.parse(await readFile(join(dir, first.bookId, target.file), 'utf-8'))
+    expect(chapter2.body).toContain('乙')
   })
 
   it('treats unsplittable txt (no 第x章) as one ready chapter', async () => {

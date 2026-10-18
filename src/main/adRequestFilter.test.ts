@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Session } from 'electron'
@@ -99,5 +99,15 @@ describe('BrowserAdRequestFilter', () => {
     expect(filter.ready).toBe(false)
     expect(filter.shouldBlock(request())).toBe(false)
     warn.mockRestore()
+  })
+
+  it('leaves no .tmp residue in the cache dir after a successful save', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-ad-filter-'))
+    const filter = new BrowserAdRequestFilter(dir, () => browser, vi.fn(async () => new Response(FILTERS)) as typeof fetch)
+    await filter.start()
+    const names = await readdir(dir)
+    expect(names.filter((name) => name.endsWith('.tmp'))).toEqual([])
+    expect(names).toContain('adguard-network.bin')
+    expect(names).toContain('adguard-network.json')
   })
 })

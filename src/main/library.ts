@@ -56,8 +56,19 @@ export async function setLibraryPath(next: string): Promise<void> {
   })
 }
 
+/** 书 id 只允许 [A-Za-z0-9_]：真实 id 形如 d_<hex>/i_<hex>，回收站条目名同形。
+ *  收紧在路径拼装的唯一出口，既挡住 IPC 传来的 `../` 穿越，也挡住内部误传。 */
+const BOOK_ID_RE = /^[A-Za-z0-9_]+$/
+
+export function assertBookId(bookId: string): string {
+  if (typeof bookId !== 'string' || !BOOK_ID_RE.test(bookId)) {
+    throw new Error(`非法的书籍编号：${String(bookId)}`)
+  }
+  return bookId
+}
+
 export function bookDir(bookId: string): string {
-  return join(getLibraryPath(), bookId)
+  return join(getLibraryPath(), assertBookId(bookId))
 }
 
 function chapterPath(bookId: string, file: string): string {
@@ -524,6 +535,20 @@ export async function bookExists(bookId: string): Promise<boolean> {
   }
 }
 
+/**
+ * 书是否已完整入库：book.json 存在且每章都落到 ready/empty。
+ * 导入中途被杀会留下「目录已建、章节残缺」的半本书；只看 bookExists 会让再次导入永远短路，
+ * 半本书再也不会被修复。调用方用这个判据决定要不要重跑导入。
+ */
+export async function isBookComplete(bookId: string): Promise<boolean> {
+  try {
+    const book = await loadBookUnlocked(bookId)
+    return book.chapters.length > 0 && book.chapters.every((chapter) => chapter.status === 'ready' || chapter.status === 'empty')
+  } catch {
+    return false
+  }
+}
+
 export async function loadBook(bookId: string): Promise<Book> {
   return loadBookUnlocked(bookId)
 }
@@ -855,11 +880,15 @@ export async function writeChapterSummary(
   text: string,
   options: AtomicWriteOptions = {},
 ): Promise<void> {
-  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
-  const data = await readSummaries(bookId)
-  data.byChapter[chapterId] = text
-  data.updatedAt = now()
-  await atomicWriteText(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), options)
+  // summaries.json 是整文件读改写：前情提要（storySoFar）与自动追剧（本章摘要）会写同一份文件，
+  // 无锁并发会互相覆盖。加 per-book 锁与其它书库写串行。
+  await withBookLock(bookId, async () => {
+    await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+    const data = await readSummaries(bookId)
+    data.byChapter[chapterId] = text
+    data.updatedAt = now()
+    await atomicWriteText(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), options)
+  })
 }
 
 export async function writeStorySoFar(
@@ -868,12 +897,14 @@ export async function writeStorySoFar(
   text: string,
   options: AtomicWriteOptions = {},
 ): Promise<void> {
-  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
-  const data = await readSummaries(bookId)
-  const updatedAt = now()
-  data.storySoFar = { uptoChapterId, text, updatedAt }
-  data.updatedAt = updatedAt
-  await atomicWriteText(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), options)
+  await withBookLock(bookId, async () => {
+    await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+    const data = await readSummaries(bookId)
+    const updatedAt = now()
+    data.storySoFar = { uptoChapterId, text, updatedAt }
+    data.updatedAt = updatedAt
+    await atomicWriteText(join(bookDir(bookId), 'ai', 'summaries.json'), JSON.stringify(data, null, 2), options)
+  })
 }
 
 function trimChatPairs(messages: readonly AiEvidenceChatMessage[], limit = 40): AiEvidenceChatMessage[] {
@@ -1295,6 +1326,7 @@ export async function writeChapterFile(bookId: string, chapterId: string, data: 
     if (nextStatus && meta.status !== nextStatus) {
       applyChapterStatus(meta, nextStatus, {
         failCode: toWrite.failCode,
+        failMessage: toWrite.failMessage,
         url: toWrite.url,
         unlockedBy: toWrite.unlockedBy,
       })
@@ -1311,6 +1343,11 @@ export async function writeChapterFile(bookId: string, chapterId: string, data: 
       }
       if (nextStatus === 'ready' && (meta.failCode || meta.failMessage)) {
         applyChapterStatus(meta, 'ready')
+        dirty = true
+      }
+      // 已失败再失败（重试换了个失败码/说明）：跟上新原因，别停在旧值上
+      if (nextStatus === 'failed' && (meta.failCode !== toWrite.failCode || meta.failMessage !== toWrite.failMessage)) {
+        applyChapterStatus(meta, 'failed', { failCode: toWrite.failCode, failMessage: toWrite.failMessage })
         dirty = true
       }
     }

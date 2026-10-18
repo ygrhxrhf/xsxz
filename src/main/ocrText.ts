@@ -355,6 +355,8 @@ export async function ocrImages(images: OcrImage[], tempDir: string): Promise<Oc
     }
   } finally {
     await Promise.all(written.map((file) => rm(file, { force: true }).catch(() => {})))
+    // 临时目录本身也删掉：以前只删图，%TEMP%\spbf-ocr 会一直堆着空目录。下载任务串行，无并发。
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {})
   }
   if (parts.length === 0) {
     const detail = engineUnavailableReason ?? undefined

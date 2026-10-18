@@ -168,6 +168,12 @@ export class BookOverviewService {
 
   async retry(bookId: string): Promise<void> {
     const book = await getBook(bookId)
+    // 正在为这本书生成时不要动文件：generate 手里握着一份启动时的 file 快照，
+    // 这里的读改写会被它随后的 saveOverview 用旧快照覆盖，反而把失败标记和缓存弄乱。
+    if (this.runningBookId === bookId) {
+      this.wake()
+      return
+    }
     const file = await readOverview(book.id)
     delete file.error
     delete file.failedSignature
@@ -259,6 +265,11 @@ export class BookOverviewService {
           await recordAiUsage(bookId, response.usage).catch(() => {})
           if (response.truncated || !response.text.trim()) throw new Error('模型输出不完整')
           return response.text.trim()
+        } catch (error) {
+          // runAiTaskCompletion 会把中止包装成「AI 请求超时」；这里按 signal 还原成 AbortError，
+          // 否则用户点「停止」会被当成真实失败写进 failed 标记、锁死界面。
+          if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+          throw error
         } finally {
           if (reservation && !settled) await reservation.settle().catch(() => {})
           this.aiJobId = ''
@@ -305,7 +316,14 @@ export class BookOverviewService {
       await saveOverview(bookId, file)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (message === '自动生成已关闭' || message === '自动生成已停止' || message === '书库正在恢复' || message === '章节已变化，等待重新生成' || message.includes('本月自动 AI 额度') || !(await getSettings()).ai?.autoBookOverview) return
+      // 取消/停止不是失败：不能写成 failed 锁死，否则用户点「停止」会看到「AI 请求超时」。
+      const cancelled = error instanceof Error && error.name === 'AbortError'
+      if (
+        cancelled ||
+        message === '自动生成已关闭' || message === '自动生成已停止' || message === '书库正在恢复' ||
+        message === '章节已变化，等待重新生成' || message.includes('本月自动 AI 额度') ||
+        !(await getSettings()).ai?.autoBookOverview
+      ) return
       file.error = message
       if (source) file.failedSignature = signatureKey(source)
       await saveOverview(bookId, file).catch(() => {})

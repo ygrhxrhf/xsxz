@@ -121,8 +121,11 @@ async function writeManifest(bookId: string, manifest: IndexManifest): Promise<v
 
 async function chapterSignature(bookId: string, file: string): Promise<string> {
   try {
-    const info = await stat(join(bookDir(bookId), file))
-    return `${info.size}:${info.mtimeMs}`
+    // 用纳秒级 mtime/ctime + 大小：ms 级 mtime 在同尺寸改写（保时间戳恢复/同秒内替换）时可能判「没变」，
+    // 从而复用旧布隆位图、把含新词的章误判为「一定不含」而漏读。纳秒精度把窗口压到可忽略，
+    // 且仍只读元数据、不读正文（读正文会毁掉索引「避免读盘」的意义）。
+    const info = await stat(join(bookDir(bookId), file), { bigint: true })
+    return `${info.size}:${info.mtimeNs}:${info.ctimeNs}`
   } catch {
     return MISSING_SIGNATURE
   }

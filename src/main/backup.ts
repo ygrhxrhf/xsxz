@@ -178,6 +178,55 @@ export async function validateStagedLibrary(root: string, allowEmpty = false): P
   return directories.length
 }
 
+const PREVIOUS_PREFIX = '.spbf-previous-'
+
+/**
+ * 启动兜底：恢复流程在 `move(lib, previous)` 之后、`move(staged, lib)` 之前崩溃时，
+ * 书库目录整体消失，只剩一个 `.spbf-previous-*` 兄弟目录——进程内 catch 拦不住断电/被杀。
+ * 此时把残留的上一份书库移回原位；只在「当前书库缺失」时才动手，绝不覆盖已有书库。
+ * 返回被恢复的目录名，没恢复则返回 null。
+ */
+export async function recoverInterruptedRestore(libPath = getLibraryPath()): Promise<string | null> {
+  const parent = dirname(libPath)
+  let leftovers: string[]
+  try {
+    leftovers = (await readdir(parent, { withFileTypes: true }))
+      .filter((ent) => ent.isDirectory() && ent.name.startsWith(PREVIOUS_PREFIX))
+      .map((ent) => ent.name)
+  } catch {
+    return null
+  }
+  if (leftovers.length === 0) return null
+  // 崩溃只可能发生在「移走旧库」与「移入新库」之间，所以判定很简单：
+  // 书库目录还在且有内容 = 完好（可能是崩溃前的旧库，也可能是已移入的新库）→ 只清残留；
+  // 目录缺失或空 = 卡在中间态 → 把残留还原回原位。
+  // 本函数在 startupGuard 建空壳之前调用，所以「空目录」只可能是真的丢了库。
+  const libEntries = await readdir(libPath).catch(() => null)
+  if (libEntries && libEntries.length > 0) {
+    for (const name of leftovers) {
+      await rm(join(parent, name), { recursive: true, force: true }).catch(() => {})
+    }
+    return null
+  }
+  // 目录缺失，或只剩一个空壳（ensureLibrary 先 mkdir 出来的）：清掉空壳再还原。
+  if (libEntries !== null) {
+    await rm(libPath, { recursive: true, force: true }).catch(() => {})
+  }
+  leftovers.sort()
+  const chosen = leftovers[leftovers.length - 1]!
+  try {
+    await rename(join(parent, chosen), libPath)
+  } catch (error) {
+    console.warn('恢复上次中断的书库还原失败：', error)
+    return null
+  }
+  for (const name of leftovers) {
+    if (name === chosen) continue
+    await rm(join(parent, name), { recursive: true, force: true }).catch(() => {})
+  }
+  return chosen
+}
+
 export async function restoreBackup(
   zipPath: string,
   options: RestoreOptions = {},

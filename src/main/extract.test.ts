@@ -920,3 +920,42 @@ describe('extractBody — 正文噪音净化', () => {
     expect(result.body).toContain('民间那些热火朝天的航模爱好者')
   })
 })
+
+describe('extractPage — 书名清洗与目录链接过滤', () => {
+  it('strips the site suffix from og:title, h1, and <title>', () => {
+    const story = '风从山口压下来，把整片草场按出一道长长的波纹。她记得父亲说过，越过这道垭口就是另一重天地。'.repeat(4)
+    const html = `<html><head>
+      <meta property="og:title" content="万古神帝 - 笔趣阁">
+      <title>万古神帝_笔趣阁</title>
+    </head><body><div id="content"><p>${story}</p></div></body></html>`
+    const result = extractPage(html, 'https://example.com/book/1.html')
+    expect(result.ok).toBe(true)
+    expect(result.bootstrap!.bookTitle).toBe('万古神帝')
+  })
+
+  it('falls back to h1 for the title when og:title is absent, still stripping the suffix', () => {
+    const story = '风从山口压下来，把整片草场按出一道长长的波纹。她记得父亲说过，越过这道垭口就是另一重天地。'.repeat(4)
+    const html = `<html><head><title>某小说网</title></head><body>
+      <h1>万古神帝 - 某小说网</h1>
+      <div id="list"><dl><dd><a href="/1.html">第一章</a></dd><dd><a href="/2.html">第二章</a></dd></dl></div>
+      <div id="content"><p>${story}</p></div>
+    </body></html>`
+    const result = extractPage(html, 'https://example.com/book/index.html')
+    expect(result.ok).toBe(true)
+    expect(result.bootstrap!.bookTitle).toBe('万古神帝')
+  })
+
+  it('skips javascript:, bare in-page anchors, and cross-domain chapter links in the catalog', () => {
+    const html = `<html><head><title>测试书 - 某站</title></head><body><div id="list"><dl>
+      <dd><a href="javascript:void(0)">收藏</a></dd>
+      <dd><a href="#top">顶部</a></dd>
+      <dd><a href="#content">正文</a></dd>
+      <dd><a href="https://other.example.net/book/9.html">第九章 外链</a></dd>
+      <dd><a href="/1.html">第一章 归来</a></dd>
+      <dd><a href="/2.html">第二章 苏醒</a></dd>
+    </dl></div></body></html>`
+    const chapters = extractCatalog(html, 'https://example.com/book/index.html')
+    expect(chapters.map((c) => c.title)).toEqual(['第一章 归来', '第二章 苏醒'])
+    expect(chapters.map((c) => c.url)).toEqual(['https://example.com/1.html', 'https://example.com/2.html'])
+  })
+})

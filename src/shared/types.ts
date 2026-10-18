@@ -103,6 +103,8 @@ export interface ChapterFile {
   bodyRaw?: string
   status: ChapterStatus
   failCode?: FailCode
+  /** 失败原因的可读说明；与 `ChapterMeta.failMessage` 保持一致。 */
+  failMessage?: string
   /** 本章正文是付费墙自动恢复来的；缺省表示正常抓取。见 `UNLOCK_METHOD_ZH`。 */
   unlockedBy?: UnlockMethod
 }
@@ -476,6 +478,10 @@ export interface ReaderPrefs {
   paragraphIndent: boolean
   focusMode: ReaderFocusMode
   readingMode: ReaderReadingMode
+  /** 自动滚屏速度档，1–5（越界夹紧）；缺省按 DEFAULT_READER_PREFS。 */
+  autoScrollSpeed?: number
+  /** 连续滚动到章末时自动接下一章；缺省按 DEFAULT_READER_PREFS。 */
+  autoNextChapter?: boolean
 }
 
 /** 网页阅读模式（内置浏览器的阅读模式）偏好；与本地阅读器 ReaderPrefs 分开。 */
@@ -964,6 +970,8 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   paragraphIndent: true,
   focusMode: 'off',
   readingMode: 'scroll',
+  autoScrollSpeed: 3,
+  autoNextChapter: false,
 }
 
 export const DEFAULT_WEB_READING_PREFS: WebReadingPrefs = {

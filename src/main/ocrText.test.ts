@@ -140,13 +140,13 @@ describe('OCR 认字', () => {
     }
   })
 
-  it('认完就把临时图删掉，不留在 %TEMP%', async () => {
+  it('认完就把临时图和临时目录一起删掉，不留在 %TEMP%', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'spbf-ocr-'))
     try {
       __setOcrEngineForTests(fakeEngine(['认出来的字']))
       const result = await ocrImages([{ dataUrl: PNG, detail: '图片正文' }], dir)
       expect(result.ok).toBe(true)
-      expect(await readdir(dir)).toEqual([])
+      await expect(readdir(dir)).rejects.toThrow()
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

@@ -120,6 +120,7 @@
 - 阅读器只读 `body`。
 - 下载成功时：`bodyRaw` 保留抽取原文；若高置信度广告段落被自动清理，`body` 为清理结果，否则两者相同。只对新下载和重试章应用自动清理，不批量改旧章。
 - `unlockedBy` 可选，缺省表示正常抓取。本章正文是付费墙自动恢复来的才携带，取值 `rule` \| `hiddenDom` \| `embeddedJson` \| `encoded` \| `paged` \| `api` \| `ocr`（中文见 `UNLOCK_METHOD_ZH`）。`paged` = 隐藏续页拼接，`api` = 站点章节接口，`ocr` = 图片 / 字形 OCR 认出来的字（可能有错字，务必核对）。旧书没有这个字段，按正常抓取读。`book.json` 的 `chapters[].unlockedBy` 与章节文件保持一致。
+- `failCode` / `failMessage` 可选，`status` 为 `failed` 时携带失败码与可读说明；与 `book.json` 的 `chapters[].failCode` / `chapters[].failMessage` 保持一致，随章节文件一次写入。
 - 清正文确认后：只改 `body`；撤销 = `body = bodyRaw`。
 - 禁止存 HTML；禁止阅读器 `v-html`。
 

@@ -138,6 +138,7 @@ import {
 import { extractPage } from './extract'
 import { setSiteRulesDir, upsertSiteRule } from './siteRules'
 import { __setOcrEngineForTests as setOcrEngineForTests } from './ocrText'
+import { setAtomicWriteBeforeCommitForTests } from './atomicFile'
 import { FAIL_CODE_ZH, type DownloadBlocked, type DownloadProgress } from '../shared/types'
 
 const PNG_DATA_URL =
@@ -2367,5 +2368,94 @@ describe('failedChapters on terminal progress', () => {
       }))
     expect(last.failedChapters).toEqual(expected)
     if (expected.length === 0) expect(last.failedChapters).toEqual([])
+  })
+})
+
+describe('章写入只碰一次 book.json', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-dl-writecount-'))
+    await setLibraryPath(dir)
+    resetDownloadStateForTests()
+  })
+
+  afterEach(async () => {
+    setAtomicWriteBeforeCommitForTests(null)
+    resetDownloadStateForTests()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('成功下载一章只写一次 book.json，不留第二次可失败的写', async () => {
+    const writes: string[] = []
+    setAtomicWriteBeforeCommitForTests((path) => {
+      writes.push(path.slice(dir.length).replace(/\\/g, '/'))
+    })
+    setOwnerWindow(progressWindow([]) as never)
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+
+    // 每章成功路径应恰好写一次 book.json。旧代码是 writeChapterFile + markChapterStatus 两次，
+    // 第二次写失败会被 catch 收口成 failed 占位、把刚下好的正文抹掉。
+    // 统计「两个相邻章节文件写之间」的 book.json 写次数（末章后紧跟收尾刷新，不纳入）。
+    const chapterIndexes = writes
+      .map((entry, i) => (entry.includes('/chapters/') ? i : -1))
+      .filter((i) => i >= 0)
+    expect(chapterIndexes.length).toBeGreaterThanOrEqual(2)
+    const commitsPerChapter: number[] = []
+    for (let c = 0; c < chapterIndexes.length - 1; c++) {
+      const from = chapterIndexes[c]!
+      const to = chapterIndexes[c + 1]!
+      commitsPerChapter.push(writes.slice(from + 1, to).filter((entry) => entry.endsWith('/book.json')).length)
+    }
+    expect(commitsPerChapter.every((n) => n === 1), `每章提交次数应为 1，实测 ${commitsPerChapter.join(',')}`).toBe(true)
+    const book = await loadBook(started.bookId!)
+    expect(book.chapters.filter((c) => c.status === 'ready').length).toBe(6)
+  })
+
+  it('成功路径的 book.json 写失败不会把已 ready 的正文抹成占位', async () => {
+    // 只对「首章章节文件写之后的第二次 book.json 写」放行一次失败：
+    // 旧实现里这一次正是 markChapterStatus 的冗余写，失败会被 catch 收口成 failed 占位、覆盖刚下好的正文；
+    // 新实现里首章之后只有一次 book.json 写，第二次落在第二章，首章正文安然无恙。
+    let seenFirstChapterFile = false
+    let bookWritesAfterFirstChapter = 0
+    let threw = false
+    setAtomicWriteBeforeCommitForTests((path) => {
+      const rel = path.slice(dir.length).replace(/\\/g, '/')
+      if (rel.endsWith('/chapters/0001.json')) {
+        seenFirstChapterFile = true
+        return
+      }
+      if (!seenFirstChapterFile || !rel.endsWith('/book.json')) return
+      bookWritesAfterFirstChapter++
+      if (bookWritesAfterFirstChapter === 2 && !threw) {
+        threw = true
+        throw new Error('rename EPERM')
+      }
+    })
+    setOwnerWindow(progressWindow([]) as never)
+    setTestHtmlLoader(async (url) => {
+      if (url.includes('index.html') || url.endsWith('/book/')) return fixture('catalog.html')
+      return fixture('chapter.html')
+    })
+
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+
+    const book = await loadBook(started.bookId!)
+    const first = book.chapters[0]
+    expect(first.status).toBe('ready')
+    const file = await readChapter(started.bookId!, first.id)
+    expect(file.status).toBe('ready')
+    expect(file.body.length).toBeGreaterThan(0)
   })
 })

@@ -9,7 +9,7 @@ vi.mock('./settings', () => ({
 }))
 
 import { createBookFromBootstrap, getLibraryPath, listBooks, setLibraryPath, writeChapterFile } from './library'
-import { migrateLibrary } from './libraryMigration'
+import { cleanupInterruptedMigration, migrateLibrary } from './libraryMigration'
 import { updateSettings } from './settings'
 
 describe('书库搬迁', () => {
@@ -64,5 +64,25 @@ describe('书库搬迁', () => {
       ok: false, message: '目标目录不存在，请先选择空目录',
     })
     expect(getLibraryPath()).toBe(source)
+  })
+
+  it('清理中断搬迁留下的 .spbf-migrate-* 暂存目录，且不动书库', async () => {
+    // 模拟在 rmdir/rename 之间被杀：旧库里留下指向暂存目录的记录，暂存目录还在原地
+    const stage = join(target, '.spbf-migrate-abc')
+    await import('node:fs/promises').then(({ mkdir, writeFile }) =>
+      mkdir(join(source, '__tmp__'), { recursive: true })
+        .then(() => mkdir(stage, { recursive: true }))
+        .then(() => writeFile(join(source, '__tmp__', 'migration-stage.json'), JSON.stringify({ stage }))))
+    const cleaned = await cleanupInterruptedMigration(source)
+    expect(cleaned).toBe(1)
+    expect(await readdir(target)).not.toContain('.spbf-migrate-abc')
+    expect(await readdir(source)).toContain('d_move')
+    // 记录已清，第二次调用是幂等的
+    expect(await cleanupInterruptedMigration(source)).toBe(0)
+  })
+
+  it('没有搬迁记录时不做任何事', async () => {
+    expect(await cleanupInterruptedMigration(source)).toBe(0)
+    expect(await readdir(source)).toContain('d_move')
   })
 })

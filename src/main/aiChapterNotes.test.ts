@@ -102,4 +102,14 @@ describe('本章笔记落盘', () => {
     await writeChapterNote('d_note', note('c0001', 'AI 的话'))
     expect('userEdited' in (await findChapterNote('d_note', 'c0001'))!).toBe(false)
   })
+
+  it('并发写不同章的笔记互不覆盖', async () => {
+    // notes.json 是整文件读改写：AI 生成与手工保存并发时，无锁会丢笔记。
+    await Promise.all([
+      writeChapterNote('d_note', note('c0001', '第一章笔记')),
+      writeChapterNote('d_note', note('c0002', '第二章笔记')),
+      writeChapterNote('d_note', note('c0003', '第三章笔记')),
+    ])
+    expect((await listChapterNotes('d_note')).map((item) => item.chapterId)).toEqual(['c0001', 'c0002', 'c0003'])
+  })
 })

@@ -173,4 +173,18 @@ describe('automatic full-book overview', () => {
     await service.retry(bookId)
     await vi.waitFor(async () => { expect((await view()).status).toBe('ready') }, { timeout: 10_000 })
   })
+
+  it('取消不写成失败：停止时不能被谎报为「AI 请求超时」并锁死', async () => {
+    await seed()
+    // 模型调用挂住，等我们取消
+    let release!: () => void
+    mocks.complete.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ text: 'x', truncated: false, usage: {} }) }))
+    service.start()
+    await vi.waitFor(async () => { expect((await view()).status).toBe('running') }, { timeout: 10_000 })
+    service.stop()
+    release()
+    // 取消后不该留下 failed 标记
+    await new Promise((r) => setTimeout(r, 200))
+    expect((await view()).status).not.toBe('failed')
+  })
 })

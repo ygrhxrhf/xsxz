@@ -7,6 +7,7 @@ import {
   atomicWriteText,
   bookIdCandidates,
   bookIdFromUrl,
+  bookDir,
   canonicalBookId,
   deleteBook,
   findExistingBookId,
@@ -44,6 +45,7 @@ import {
   writeAiMemory,
   writeChapterFile,
   writeChapterSummary,
+  writeStorySoFar,
   writeChat,
 } from './library'
 import type { AiMemoryFile, Book, CatalogChapter } from '../shared/types'
@@ -467,6 +469,63 @@ describe('setLibraryPath + createBookFromBootstrap', () => {
     expect(JSON.parse(raw).status).toBe('ready')
   })
 
+  it('writeChapterFile with status failed persists failCode and failMessage onto both files in one write', async () => {
+    await createBookFromBootstrap({
+      bookId: 'd_fail_file',
+      title: '失败落盘',
+      author: '',
+      sourceUrl: 'https://example.com/book/',
+      sourceHost: 'example.com',
+      importType: 'download',
+      chapterTitles: ['第一章'],
+      chapterUrls: ['https://example.com/book/1.html'],
+    })
+
+    await writeChapterFile('d_fail_file', 'c0001', {
+      title: '第一章',
+      url: 'https://example.com/book/1.html',
+      body: '',
+      status: 'failed',
+      failCode: 'Paywall',
+      failMessage: '本章需要付费或会员',
+    })
+
+    const book = await loadBook('d_fail_file')
+    expect(book.chapters[0].status).toBe('failed')
+    expect(book.chapters[0].failCode).toBe('Paywall')
+    expect(book.chapters[0].failMessage).toBe('本章需要付费或会员')
+    const raw = JSON.parse(await readFile(join(dir, 'd_fail_file', 'chapters', '0001.json'), 'utf-8')) as {
+      status: string
+      failCode?: string
+      failMessage?: string
+    }
+    expect(raw.status).toBe('failed')
+    expect(raw.failCode).toBe('Paywall')
+    expect(raw.failMessage).toBe('本章需要付费或会员')
+  })
+
+  it('re-failing an already failed chapter updates failCode and failMessage on book.json', async () => {
+    await createBookFromBootstrap({
+      bookId: 'd_refail',
+      title: '重失败',
+      author: '',
+      importType: 'download',
+      chapterTitles: ['第一章'],
+      chapterUrls: ['https://example.com/book/1.html'],
+    })
+    await writeChapterFile('d_refail', 'c0001', {
+      title: '第一章', url: 'https://example.com/book/1.html', body: '', status: 'failed',
+      failCode: 'NavFailed', failMessage: '加载失败',
+    })
+    await writeChapterFile('d_refail', 'c0001', {
+      title: '第一章', url: 'https://example.com/book/1.html', body: '', status: 'failed',
+      failCode: 'RateLimited', failMessage: '站点限流',
+    })
+    const book = await loadBook('d_refail')
+    expect(book.chapters[0].failCode).toBe('RateLimited')
+    expect(book.chapters[0].failMessage).toBe('站点限流')
+  })
+
   it('readChapter treats a pending file that already has a body as ready', async () => {
     const created = await createBookFromBootstrap({
       bookId: 'd_heal',
@@ -840,6 +899,46 @@ describe('summaries v2 migration', () => {
       hooks: { rename: async () => { throw new Error('disk commit failed') } },
     })).rejects.toThrow(/disk commit failed/)
     expect(await readFile(file, 'utf-8')).toBe(previous)
+  })
+
+  it('serializes concurrent summary and storySoFar writes so neither overwrites the other', async () => {
+    await writeFile(join(dir, 'd_summary', 'ai', 'summaries.json'), JSON.stringify({ version: 2, byChapter: {} }), 'utf-8')
+    // 前情提要与自动追剧会写同一份 summaries.json：并发下必须串行，否则整文件覆盖会丢更新。
+    await Promise.all([
+      writeChapterSummary('d_summary', 'c0001', '本章摘要'),
+      writeStorySoFar('d_summary', 'c0001', '前情提要'),
+      writeChapterSummary('d_summary', 'c0002', '第二章摘要'),
+    ])
+    const saved = JSON.parse(await readFile(join(dir, 'd_summary', 'ai', 'summaries.json'), 'utf-8')) as {
+      byChapter: Record<string, string>
+      storySoFar?: { text: string }
+    }
+    expect(saved.byChapter).toEqual({ c0001: '本章摘要', c0002: '第二章摘要' })
+    expect(saved.storySoFar?.text).toBe('前情提要')
+  })
+})
+
+describe('bookDir 路径安全', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-bookid-'))
+    await setLibraryPath(dir)
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('拒绝含路径分隔或 .. 的书籍编号，挡住库外读写', () => {
+    expect(() => bookDir('../evil')).toThrow(/非法的书籍编号/)
+    expect(() => bookDir('..\\evil')).toThrow(/非法的书籍编号/)
+    expect(() => bookDir('a/b')).toThrow(/非法的书籍编号/)
+    expect(() => bookDir('')).toThrow(/非法的书籍编号/)
+    expect(() => bookDir('d_ok/../..')).toThrow(/非法的书籍编号/)
+  })
+
+  it('接受真实的 d_/i_ 编号', () => {
+    expect(bookDir('d_0123456789abcdef')).toBe(join(dir, 'd_0123456789abcdef'))
+    expect(bookDir('i_0123456789abcdef')).toBe(join(dir, 'i_0123456789abcdef'))
   })
 })
 

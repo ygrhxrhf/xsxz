@@ -140,6 +140,8 @@ export async function setSemanticEnabled(bookId: string, enabled: boolean): Prom
     await mkdir(aiPath(bookId, ''), { recursive: true })
     await atomicWriteText(aiPath(bookId, 'semantic-settings.json'), JSON.stringify({ enabled }))
   })
+  // 关掉时清掉旧错误：否则界面会一直显示「正在重新建立」这类与当前状态无关的文案。
+  if (!enabled) errors.delete(bookId)
   if (enabled) wakeSemanticIndex(bookId)
 }
 
@@ -151,7 +153,13 @@ export async function semanticStatus(bookId: string): Promise<{ enabled: boolean
   const file = await readIndex(bookId, key)
   const total = enabled ? await desiredChunks(await getBook(bookId)).then((chunks) => chunks.length).catch(() => 0) : 0
   const indexed = file.chunks.filter((chunk) => chunk.vector.length).length
-  const message = errors.get(bookId) ?? (!config?.keyConfigured ? '向量服务尚未配置' : indexed < total ? '正在建立或等待更新索引' : '语义索引已就绪')
+  // 未开启时不回报「建立中/已损坏」这类旧错误（那是上次开启留下的），但配置提示仍要给：
+  // 用户要开索引，第一步就是去配向量服务。
+  const message = !config?.keyConfigured
+    ? '向量服务尚未配置'
+    : !enabled
+      ? '语义索引未开启'
+      : errors.get(bookId) ?? (indexed < total ? '正在建立或等待更新索引' : '语义索引已就绪')
   return { enabled, indexed, total, message }
 }
 

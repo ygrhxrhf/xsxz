@@ -62,8 +62,8 @@ import { BrowserAdRequestFilter } from './adRequestFilter'
 import { exportBook } from './exportBook'
 import { searchInBook } from './search'
 import { auditBook } from './quality'
-import { createBackup, restoreBackup, runAutoBackupIfDue } from './backup'
-import { migrateLibrary } from './libraryMigration'
+import { createBackup, restoreBackup, runAutoBackupIfDue, recoverInterruptedRestore } from './backup'
+import { cleanupInterruptedMigration, migrateLibrary } from './libraryMigration'
 import { ensureLibraryPathAtStartup, scriptedStartupDialogs } from './startupGuard'
 import { browseUserAgent } from './userAgent'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
@@ -95,7 +95,7 @@ import { chapterBodyHash, findChapterNote, isChapterNoteStale, listChapterNotes,
 import { buildAiMemoryCandidates } from './aiMemory'
 import { finalizeMemoryUpdate } from './aiMemorySave'
 import { retrieveLocalEvidence } from './aiEvidenceRetrieval'
-import { stopEvidenceIndex, wakeEvidenceIndex } from './aiEvidenceIndex'
+import { clearEvidenceIndexCache, stopEvidenceIndex, wakeEvidenceIndex } from './aiEvidenceIndex'
 import { describeMaterialCoverage, preserveUserMemoryCorrections, seedMemoryBeforeChapter, selectRebuildBatches } from './aiMaterial'
 import {
   buildEvidenceAnswerMessages, buildEvidenceQueryRewriteMessages, executeEvidenceQaPipeline,
@@ -936,7 +936,17 @@ function registerIpc(): void {
 
   ipcMain.handle('backup.create', async (_e, args: { destDir: string }) => {
     try {
-      return await createBackup(args.destDir)
+      // 与 restore/runAuto/migrate 同一道闸门：否则会一边下载/导入一边重建索引、逐文件读取，
+      // 把半写的章节和半成品 index.json 压进备份，产出一个损坏且无法察觉的包。
+      if (isDownloadBusy() || aiQueue.hasInFlight() || activeImports > 0) {
+        return { ok: false, message: '书库正在下载、导入或保存 AI 内容，请等待完成后再备份' }
+      }
+      const release = beginLibraryRestore()
+      try {
+        return await runAsLibraryRestore(() => createBackup(args.destDir))
+      } finally {
+        release()
+      }
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
@@ -974,7 +984,11 @@ function registerIpc(): void {
         return { ok: false, message: '书库正在下载、导入或保存 AI 内容，请等待完成后再搬迁' }
       }
       const release = beginLibraryRestore()
-      try { return await runAsLibraryRestore(() => migrateLibrary(args.targetPath)) }
+      try {
+        const result = await runAsLibraryRestore(() => migrateLibrary(args.targetPath))
+        if (result.ok) clearEvidenceIndexCache()
+        return result
+      }
       finally { release() }
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : String(error) }
@@ -1125,6 +1139,8 @@ function registerIpc(): void {
     const next = await updateSettings(patch)
     if (typeof patch.libraryPath === 'string') {
       await setLibraryPath(next.libraryPath)
+      // 换库后旧库的布隆位图留着没用：缓存键含路径不会串库，但白占内存，顺手清掉。
+      clearEvidenceIndexCache()
     }
     bookOverview.settingsChanged(next.ai?.autoBookOverview === true)
     void aiReadingFollow.settingsChanged()
@@ -1548,7 +1564,7 @@ function registerIpc(): void {
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const tierSenseApiKey = await getTierSenseApiKey()
-      return aiStart({ lane: 'interactive', cls: 'recap', bookId: payload.bookId, dedupeKey: `recap:${payload.bookId}` }, async (jobId, signal) => {
+      return aiStart({ lane: 'interactive', cls: 'recap', bookId: payload.bookId, resource: `${payload.bookId}:write`, dedupeKey: `recap:${payload.bookId}` }, async (jobId, signal) => {
         let partial = ''
         sendAiBudget(jobId, 'recap', plan.budget)
         sendAiStage(jobId, 'preparing')
@@ -2240,6 +2256,17 @@ app.setName('spbf')
 /** 启动入口：书库就绪后修正中断状态、装广告过滤、注册 IPC、再开窗口。 */
 
 app.whenReady().then(async () => {
+  // 恢复书库若在「移走旧库」与「移入新库」之间被杀，书库目录会整体消失、只剩 .spbf-previous-*。
+  // 必须在 startupGuard 建空目录之前先还原，否则空壳会把还原挡在外面。
+  const restoredFrom = await getSettings()
+    .then((s) => recoverInterruptedRestore(s.libraryPath))
+    .catch(() => null)
+  if (restoredFrom) console.info(`已从上次中断的书库还原中恢复：${restoredFrom}`)
+  // 搬迁若在 rmdir 与 rename 之间被杀，清掉留下的 .spbf-migrate-* 暂存目录（旧库完好）。
+  await getSettings()
+    .then((s) => cleanupInterruptedMigration(s.libraryPath))
+    .then((n) => { if (n > 0) console.info(`已清理 ${n} 个中断搬迁留下的暂存目录`) })
+    .catch(() => {})
   // 书库盘不在或不可写时不能静默失败：说明原因并让用户当场换目录（逻辑见 startupGuard.ts）。
   // 设了 SPBF_STARTUP_DIALOG_SCRIPT 就用脚本化弹窗替代原生窗——仅测试用，见
   // scripts/startup-fallback-e2e.mjs；生产环境没有这个变量，走真实 dialog。

@@ -1,8 +1,9 @@
 import { FiltersEngine, Request } from '@ghostery/adblocker'
 import type { Session } from 'electron'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { SiteRule } from '../shared/types'
+import { renameWithRetry } from './atomicFile'
 
 export const ADGUARD_BASE_URL = 'https://filters.adtidy.org/extension/chromium/filters/2.txt'
 const CACHE_AGE_MS = 8 * 24 * 60 * 60 * 1000
@@ -158,10 +159,22 @@ export class BrowserAdRequestFilter {
       await mkdir(this.cacheDir, { recursive: true })
       const binaryPath = join(this.cacheDir, ENGINE_FILE)
       const metaPath = join(this.cacheDir, META_FILE)
-      await writeFile(`${binaryPath}.tmp`, updated.serialize())
-      await rename(`${binaryPath}.tmp`, binaryPath)
-      await writeFile(`${metaPath}.tmp`, JSON.stringify({ updatedAt: this.updatedAt, source: ADGUARD_BASE_URL }))
-      await rename(`${metaPath}.tmp`, metaPath)
+      const binaryTmp = `${binaryPath}.tmp`
+      const metaTmp = `${metaPath}.tmp`
+      try {
+        await writeFile(binaryTmp, updated.serialize())
+        // Windows 上刚写的临时文件常被杀软/索引服务短暂占用，裸 rename 会抛 EPERM 而静默丢更新。
+        await renameWithRetry(binaryTmp, binaryPath)
+        await writeFile(metaTmp, JSON.stringify({ updatedAt: this.updatedAt, source: ADGUARD_BASE_URL }))
+        await renameWithRetry(metaTmp, metaPath)
+      } catch (error) {
+        // 落盘失败时清掉临时文件，别在缓存目录里堆残留；上一份有效引擎仍在磁盘上。
+        await Promise.all([
+          rm(binaryTmp, { force: true }).catch(() => {}),
+          rm(metaTmp, { force: true }).catch(() => {}),
+        ])
+        throw error
+      }
     } catch (error) {
       // Keep the last valid engine; never interrupt browsing or downloads.
       console.warn('AdGuard 网络规则暂不可用：', error)

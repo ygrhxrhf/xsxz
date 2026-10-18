@@ -12,7 +12,7 @@ import {
   setLibraryPath,
   writeChapterFile,
 } from './library'
-import { backupFileName, createBackup, restoreBackup } from './backup'
+import { backupFileName, createBackup, restoreBackup, recoverInterruptedRestore } from './backup'
 import { setAtomicWriteBeforeCommitForTests } from './atomicFile'
 
 describe('backup（书库备份/恢复）', () => {
@@ -224,5 +224,83 @@ describe('backup（书库备份/恢复）', () => {
     expect(res.message).toContain('无法写入备份目录')
     expect(res.message).toContain('创建该目录')
     expect(res.message).not.toContain('ENOENT')
+  })
+})
+
+describe('recoverInterruptedRestore（恢复中途被杀后的启动兜底）', () => {
+  let parentDir: string
+  let libDir: string
+
+  beforeEach(async () => {
+    parentDir = await mkdtemp(join(tmpdir(), 'spbf-recover-'))
+    libDir = join(parentDir, 'library')
+    await setLibraryPath(libDir)
+  })
+
+  afterEach(async () => {
+    await rm(parentDir, { recursive: true, force: true })
+  })
+
+  async function seedBook(id: string, title: string): Promise<void> {
+    await createBookFromBootstrap({
+      bookId: id,
+      title,
+      author: '作者',
+      importType: 'txt',
+      chapterTitles: ['第一章'],
+    })
+    await writeChapterFile(id, 'c0001', { title: '第一章', body: '正文一', status: 'ready' })
+  }
+
+  it('把被移走的旧书库从 .spbf-previous-* 还原回原位', async () => {
+    await seedBook('d_old', '原书')
+    // 模拟崩溃后的磁盘状态：书库目录被改名成 .spbf-previous-*，原位只剩空壳（启动流程建的）
+    const previous = join(parentDir, '.spbf-previous-abc')
+    await rename(libDir, previous)
+    await mkdir(libDir, { recursive: true })
+
+    const restored = await recoverInterruptedRestore(libDir)
+    expect(restored).toBe('.spbf-previous-abc')
+    expect(await readFile(join(libDir, 'd_old', 'book.json'), 'utf-8')).toContain('原书')
+    // 残留目录被移走，不再留孤儿
+    const leftovers = (await readdir(parentDir)).filter((name) => name.startsWith('.spbf-previous-'))
+    expect(leftovers).toEqual([])
+  })
+
+  it('书库目录缺失（连空壳都没有）时也能还原', async () => {
+    await seedBook('d_old', '原书')
+    const previous = join(parentDir, '.spbf-previous-xyz')
+    await rename(libDir, previous)
+
+    const restored = await recoverInterruptedRestore(libDir)
+    expect(restored).toBe('.spbf-previous-xyz')
+    expect(await readFile(join(libDir, 'd_old', 'book.json'), 'utf-8')).toContain('原书')
+  })
+
+  it('当前书库完好时绝不用残留覆盖，只清理孤儿目录', async () => {
+    await seedBook('d_current', '当前书')
+    // 造一个残留目录：正常流程不会出现，这里模拟清理失败留下的孤儿
+    const stale = join(parentDir, '.spbf-previous-stale')
+    await mkdir(stale, { recursive: true })
+    await writeFile(join(stale, 'index.json'), '{}')
+
+    const restored = await recoverInterruptedRestore(libDir)
+    expect(restored).toBe(null)
+    expect(await readFile(join(libDir, 'd_current', 'book.json'), 'utf-8')).toContain('当前书')
+    expect((await readdir(parentDir)).filter((name) => name.startsWith('.spbf-previous-'))).toEqual([])
+  })
+
+  it('书库目录非空即视为完好：即便没有 index.json 也不用残留覆盖', async () => {
+    const stale = join(parentDir, '.spbf-previous-keep')
+    await mkdir(stale, { recursive: true })
+    await writeFile(join(stale, 'index.json'), '{}')
+    // 原位目录有内容（一本书的目录）但没有 index.json：index.json 只是缓存，不能拿它当完好判据。
+    await mkdir(join(libDir, 'd_x'), { recursive: true })
+    await writeFile(join(libDir, 'd_x', 'book.json'), '{}')
+
+    const restored = await recoverInterruptedRestore(libDir)
+    expect(restored).toBe(null)
+    expect((await readdir(parentDir)).some((name) => name === '.spbf-previous-keep')).toBe(false)
+    expect((await readdir(libDir)).includes('d_x')).toBe(true)
   })
 })

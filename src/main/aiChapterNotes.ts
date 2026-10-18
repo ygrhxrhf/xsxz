@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { atomicWriteText, bookDir } from './library'
+import { atomicWriteText, bookDir, withBookLock } from './library'
 import type { AtomicWriteOptions } from './atomicFile'
 import type { AiChapterNote } from '../shared/types'
 
@@ -57,12 +57,16 @@ export async function writeChapterNote(
   note: AiChapterNote,
   options: AtomicWriteOptions = {},
 ): Promise<AiChapterNote> {
-  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
-  const file = await readAll(bookId)
-  const notes = file.notes.filter((item) => item.chapterId !== note.chapterId)
-  notes.push(note)
-  // 按章 id 定序，重复保存不产生无意义的 diff；界面展示顺序另按目录章序排。
-  notes.sort((left, right) => (left.chapterId < right.chapterId ? -1 : left.chapterId > right.chapterId ? 1 : 0))
-  await atomicWriteText(notesPath(bookId), JSON.stringify({ version: 1, notes } satisfies NotesFile, null, 2), options)
+  // notes.json 整文件读改写：AI 生成（走队列 :write 锁）与读者手工保存（IPC 直调，不入队列）
+  // 会写同一份文件，无锁并发会丢笔记。加 per-book 锁与其它书库写串行。
+  await withBookLock(bookId, async () => {
+    await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+    const file = await readAll(bookId)
+    const notes = file.notes.filter((item) => item.chapterId !== note.chapterId)
+    notes.push(note)
+    // 按章 id 定序，重复保存不产生无意义的 diff；界面展示顺序另按目录章序排。
+    notes.sort((left, right) => (left.chapterId < right.chapterId ? -1 : left.chapterId > right.chapterId ? 1 : 0))
+    await atomicWriteText(notesPath(bookId), JSON.stringify({ version: 1, notes } satisfies NotesFile, null, 2), options)
+  })
   return note
 }

@@ -1351,9 +1351,10 @@ async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownloa
           status: 'ready',
         }
         if (unlockedBy) chapterData.unlockedBy = unlockedBy
+        // writeChapterFile 已在同一次锁内落盘 status/url/unlockedBy；再调一次 markChapterStatus
+        // 只会多一次 book.json 读改写，且那次写若失败会被 catch 收口成 failed 占位、抹掉刚写好的正文。
         await writeChapterFile(bookId, ch.id, chapterData)
         ch.status = 'ready'
-        await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl, unlockedBy })
         dl.done++
         return undefined
       }
@@ -1372,7 +1373,6 @@ async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownloa
           }
           await writeChapterFile(bookId, ch.id, apiChapter)
           ch.status = 'ready'
-          await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl, unlockedBy: api.method })
           dl.done++
           return undefined
         }
@@ -1399,7 +1399,6 @@ async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownloa
           }
           await writeChapterFile(bookId, ch.id, ocrChapter)
           ch.status = 'ready'
-          await markChapterStatus(bookId, ch.id, 'ready', { url: chapterUrl, unlockedBy: viaOcr.method })
           dl.done++
           return undefined
         }
@@ -1458,14 +1457,15 @@ async function writeFailedPlaceholder(
   failCode: FailCode,
   failMessageText: string,
 ): Promise<void> {
+  // 失败原因随章节文件一次写入（failCode + failMessage），不再另起一次 book.json 读改写。
   await writeChapterFile(bookId, chapterId, {
     title,
     url,
     body: '',
     status: 'failed',
     failCode,
+    failMessage: failMessageText,
   })
-  await markChapterStatus(bookId, chapterId, 'failed', { failCode, failMessage: failMessageText })
 }
 
 export function cancelDownload(bookId?: string): void {
@@ -1554,20 +1554,27 @@ export async function checkUpdate(
     book.status = 'downloading'
     await saveBook(book)
 
-    const dl: ActiveDownload = {
-      bookId,
-      title: book.title,
-      total: book.chapters.length,
-      done: book.chapters.filter((c) => c.status === 'ready').length,
-      failed: 0,
-      cancelled: false,
-      deferTerminal: true,
+    try {
+      const dl: ActiveDownload = {
+        bookId,
+        title: book.title,
+        total: book.chapters.length,
+        done: book.chapters.filter((c) => c.status === 'ready').length,
+        failed: 0,
+        cancelled: false,
+        deferTerminal: true,
+      }
+      active.set(bookId, dl)
+      void emitProgress(bookId)
+      const job = downloadChapters(bookId).catch(() => {})
+      runningJobs.add(job)
+      void job.finally(() => runningJobs.delete(job))
+    } catch (e: unknown) {
+      // book.json 已写成 downloading，任务却没起来：按实际章节重算，别卡在「下载中」。
+      active.delete(bookId)
+      await refreshBookStatus(bookId).catch(() => {})
+      throw e
     }
-    active.set(bookId, dl)
-    void emitProgress(bookId)
-    const job = downloadChapters(bookId).catch(() => {})
-    runningJobs.add(job)
-    void job.finally(() => runningJobs.delete(job))
     return { ok: true, bookId, added, changed }
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)
@@ -1681,20 +1688,27 @@ export async function retryFailed(bookId: string): Promise<{ ok: boolean; messag
     book.status = 'downloading'
     await saveBook(book)
 
-    const dl: ActiveDownload = {
-      bookId,
-      title: book.title,
-      total: book.chapters.length,
-      done: book.chapters.filter((c) => c.status === 'ready').length,
-      failed: 0,
-      cancelled: false,
-      deferTerminal: true,
+    try {
+      const dl: ActiveDownload = {
+        bookId,
+        title: book.title,
+        total: book.chapters.length,
+        done: book.chapters.filter((c) => c.status === 'ready').length,
+        failed: 0,
+        cancelled: false,
+        deferTerminal: true,
+      }
+      active.set(bookId, dl)
+      void emitProgress(bookId)
+      const job = downloadChapters(bookId).catch(() => {})
+      runningJobs.add(job)
+      void job.finally(() => runningJobs.delete(job))
+    } catch (e: unknown) {
+      // book.json 已写成 downloading，任务却没起来：按实际章节重算，别卡在「下载中」。
+      active.delete(bookId)
+      await refreshBookStatus(bookId).catch(() => {})
+      throw e
     }
-    active.set(bookId, dl)
-    void emitProgress(bookId)
-    const job = downloadChapters(bookId).catch(() => {})
-    runningJobs.add(job)
-    void job.finally(() => runningJobs.delete(job))
     return { ok: true }
   } catch (e: unknown) {
     return { ok: false, message: String(e) }
