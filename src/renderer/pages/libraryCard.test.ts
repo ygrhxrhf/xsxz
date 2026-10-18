@@ -257,6 +257,11 @@ describe('library check-update card helpers', () => {
     expect(filterLibraryBooks(books, { q: '万古', selectedTag: '都市' }).map((b) => b.id)).toEqual([])
     expect(filterLibraryBooks(books, { q: '导入', status: 'partial', selectedTag: '都市' }).map((b) => b.id)).toEqual(['2'])
     expect(filterLibraryBooks(books, { selectedTag: '' }).map((b) => b.id)).toEqual(['1', '2'])
+    // 多选标签按「含任一」取并集（分组浏览）
+    expect(filterLibraryBooks(books, { selectedTags: ['xuanhuan', '都市'] }).map((b) => b.id)).toEqual(['1', '2'])
+    expect(filterLibraryBooks(books, { selectedTags: ['穿越', '都市'] }).map((b) => b.id)).toEqual(['1', '2'])
+    expect(filterLibraryBooks(books, { selectedTags: ['xuanhuan', '不存在的'] }).map((b) => b.id)).toEqual(['1'])
+    expect(filterLibraryBooks(books, { selectedTags: [] }).map((b) => b.id)).toEqual(['1', '2'])
     expect(sortLibraryBooks(books, 'title').map((b) => b.id)).toEqual(['2', '1'])
   })
 

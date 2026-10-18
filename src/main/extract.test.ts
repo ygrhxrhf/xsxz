@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { JSDOM } from 'jsdom'
-import { extractPage, extractCatalog, extractBody } from './extract'
+import { extractPage, extractCatalog, extractBody, findCatalogPageUrls } from './extract'
 import { bookIdFromUrl, mergeIncomingChapters, normalizeChapterUrl } from './library'
 import { canonicalizeUrl } from '../shared/urlHash'
 import type { Book, SiteRule } from '../shared/types'
@@ -957,5 +957,43 @@ describe('extractPage — 书名清洗与目录链接过滤', () => {
     const chapters = extractCatalog(html, 'https://example.com/book/index.html')
     expect(chapters.map((c) => c.title)).toEqual(['第一章 归来', '第二章 苏醒'])
     expect(chapters.map((c) => c.url)).toEqual(['https://example.com/1.html', 'https://example.com/2.html'])
+  })
+})
+
+describe('findCatalogPageUrls — 目录分页续页候选', () => {
+  const CATALOG = 'https://example.com/book/list.html'
+
+  it('认出「下一页」与带 page 参数的目录分页链接', () => {
+    const html = `<html><body><div id="list">
+      <a href="/book/1.html">第1章</a>
+      <a href="/book/2.html">第2章</a>
+      <a href="?page=2">下一页</a>
+      <a href="/book/list_3.html">第 3 页</a>
+    </div></body></html>`
+    const urls = findCatalogPageUrls(html, CATALOG)
+    expect(urls).toContain('https://example.com/book/list.html?page=2')
+    expect(urls).toContain('https://example.com/book/list_3.html')
+  })
+
+  it('绝不把章节链接当续页：/2.html 与「第N章」都不收', () => {
+    const html = `<html><body><div id="list">
+      <a href="/book/2.html">第2章 苏醒</a>
+      <a href="/book/list_2.html">第2章 苏醒</a>
+      <a href="/book/3.html">第三章</a>
+    </div></body></html>`
+    expect(findCatalogPageUrls(html, CATALOG)).toEqual([])
+  })
+
+  it('跨域与自链接不收，最多返回 limit 条', () => {
+    const html = `<html><body><div id="list">
+      <a href="https://other.example.net/list.html?page=2">下一页</a>
+      <a href="${CATALOG}">当前页</a>
+      <a href="?page=2">下一页</a>
+      <a href="?page=3">下一页</a>
+      <a href="?page=4">下一页</a>
+    </div></body></html>`
+    const urls = findCatalogPageUrls(html, CATALOG, 2)
+    expect(urls).toHaveLength(2)
+    expect(urls.every((u) => u.startsWith('https://example.com/'))).toBe(true)
   })
 })

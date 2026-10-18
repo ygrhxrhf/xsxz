@@ -829,6 +829,61 @@ export function extractCatalog(html: string, catalogUrl: string, rule?: SiteRule
   return hit?.chapters ?? []
 }
 
+/** 目录分页链接的 URL 特征：显式 page/pg 参数、`_N.html`、`/list/2/` 这类分页路径。 */
+const CATALOG_PAGE_HREF_RE = /[?&](?:page|p|pg)=\d+|\/\d+\/?$|_\d+\.html?$/i
+/** 目录分页链接的文案特征：只要「下一页 / 第 N 页 / 末页」这类明确分页词。 */
+const CATALOG_PAGE_TEXT_RE = /^(?:下一页|下页|后一页|末页|尾页|最后一页|第\s*\d+\s*页|\d+\s*\/\s*\d+\s*页)$/
+
+/**
+ * 收集目录页的「分页续页」候选：同域、且明确像分页的链接。
+ *
+ * 与正文续页（`paywallUnlock.findContinuationUrls`）分开：目录分页更保守——
+ * 只认带 page 参数、`_N.html`、`/N/` 尾段，或文案就是分页词的链接，绝不把
+ * 「下一章」`/2.html` 这种章节链接当续页。调用方抓回后须再跑 `extractCatalog`
+ * 自校验，只有真产出章节才合并。
+ */
+export function findCatalogPageUrls(html: string, catalogUrl: string, limit = 5): string[] {
+  let doc: Document
+  try {
+    doc = new JSDOM(html, { url: catalogUrl }).window.document
+  } catch {
+    return []
+  }
+  let current: URL
+  try {
+    current = new URL(catalogUrl)
+  } catch {
+    return []
+  }
+  const out: string[] = []
+  const push = (raw: string): void => {
+    if (!raw || out.length >= limit || /^javascript:/i.test(raw)) return
+    let resolved: URL
+    try {
+      resolved = new URL(raw, catalogUrl)
+    } catch {
+      return
+    }
+    if (resolved.hostname !== current.hostname || resolved.href === current.href) return
+    // 只收「像分页」的：URL 特征或文案特征二者之一，避免把章节链接收进来。
+    if (!out.includes(resolved.href)) out.push(resolved.href)
+  }
+  const anchors = [...doc.querySelectorAll('a[href]')] as HTMLAnchorElement[]
+  for (const a of anchors) {
+    if (out.length >= limit) break
+    const raw = (a.getAttribute('href') || '').trim()
+    const text = visibleText(a).replace(/\s+/g, '')
+    const hitHref = CATALOG_PAGE_HREF_RE.test(raw)
+    const hitText = CATALOG_PAGE_TEXT_RE.test(text)
+    // 章节链接的文字常是「第N章」：只要不是明确分页词，且 URL 也不像分页，就不收。
+    if (!hitText && !hitHref) continue
+    // `_N.html` 与 `/N/` 也可能撞上章节页命名：要求文案也不是章节标题。
+    if (!hitText && CHAPTER_RE.test(text)) continue
+    push(raw)
+  }
+  return out
+}
+
 export interface ExtractBodyResult extends Partial<UnlockMeta> {
   body: string
   bodyRaw?: string

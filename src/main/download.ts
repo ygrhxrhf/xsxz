@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { JSDOM } from 'jsdom'
-import { extractPage, extractCatalog, extractBody } from './extract'
+import { extractPage, extractCatalog, extractBody, findCatalogPageUrls } from './extract'
 import { findSiteRuleForUrl, normalizeHost } from './siteRules'
 import {
   bookExists,
@@ -783,7 +783,7 @@ export async function followCatalogIfNeeded(
       const chapters =
         catPage.ok && catPage.bootstrap && catPage.bootstrap.chapters.length >= 2
           ? catPage.bootstrap.chapters
-          : extractCatalog(catHtml, bs.catalogUrl, catRule)
+          : await collectCatalogWithPages(catHtml, bs.catalogUrl, catRule, loadHtml)
       if (chapters.length < 2) {
         return { ok: false, code: 'CatalogNotFound', message: '这一章识别到了目录，但目录里没有足够的章节链接。' }
       }
@@ -807,6 +807,39 @@ export async function followCatalogIfNeeded(
     return { ok: false, code: 'CatalogNotFound', message: CHAPTER_PAGE_HINT }
   }
   return { ok: true, bootstrap: bs }
+}
+
+/**
+ * 抓目录并按分页续页补齐：站点把目录切成多页（`?page=2`、`_2.html`、`/list/2/`）时，
+ * 只取第一页会丢章。逐页抓回后续页，各自跑 `extractCatalog` 自校验，只有真产出章节才合并；
+ * 单页失败跳过。不做 URL 归一化（`?page=N` 的抹平是有意的，改了会让同一本书重复入库）。
+ */
+async function collectCatalogWithPages(
+  firstHtml: string,
+  catalogUrl: string,
+  rule: SiteRule | undefined,
+  loadHtml: HtmlLoader,
+): Promise<CatalogChapter[]> {
+  const merged = extractCatalog(firstHtml, catalogUrl, rule)
+  const seen = new Set(merged.map((chapter) => chapter.url))
+  const candidates = findCatalogPageUrls(firstHtml, catalogUrl, MAX_CONTINUATION_PAGES)
+  for (const url of candidates) {
+    try {
+      const html = await loadHtml(url)
+      const pageRule = await ruleForPage(url)
+      const extra = extractCatalog(html, url, pageRule)
+      if (extra.length === 0) continue
+      for (const chapter of extra) {
+        if (seen.has(chapter.url)) continue
+        seen.add(chapter.url)
+        merged.push(chapter)
+      }
+    } catch {
+      /* 续页抓取失败不改判：第一页的目录仍可用 */
+    }
+  }
+  // 合并后重排序号：目录顺序以「第一页在前、后续页追加」为准。
+  return merged.map((chapter, index) => ({ ...chapter, index: index + 1 }))
 }
 
 function extractLooksEmpty(result: { ok: boolean; failCode?: FailCode }): boolean {
@@ -834,6 +867,13 @@ async function startFromExtractedHtml(
 
   const followed = await followCatalogIfNeeded(result.bootstrap, loadPageHtml)
   if (!followed.ok) return followed
+  // 目录页直接入口：站点分页目录（?page=2 / _2.html / /list/2/）只取第一页会丢章，补抓续页。
+  if (followed.bootstrap.pageKind === 'catalog' && followed.bootstrap.chapters.length > 0) {
+    const merged = await collectCatalogWithPages(pageHtml, pageUrl, rule, loadPageHtml)
+    if (merged.length > followed.bootstrap.chapters.length) {
+      followed.bootstrap = { ...followed.bootstrap, chapters: merged }
+    }
+  }
   return beginDownloadFromBootstrap(followed.bootstrap, pageUrl)
 }
 
@@ -1565,7 +1605,7 @@ export async function checkUpdate(
     const chapters: CatalogChapter[] =
       page.ok && page.bootstrap && page.bootstrap.chapters.length > 0
         ? page.bootstrap.chapters
-        : extractCatalog(catHtml, sourceUrl, catRule)
+        : await collectCatalogWithPages(catHtml, sourceUrl, catRule, loadPageHtml)
     if (chapters.length === 0) {
       return { ok: false, code: 'CatalogNotFound', message: '目录页无法访问或内容变化' }
     }
@@ -1696,7 +1736,7 @@ export async function retryFailed(bookId: string): Promise<{ ok: boolean; messag
 
     const catHtml = await loadPageHtml(book.sourceUrl)
     const catRule = await ruleForPage(book.sourceUrl)
-    const chapters: CatalogChapter[] = extractCatalog(catHtml, book.sourceUrl, catRule)
+    const chapters: CatalogChapter[] = await collectCatalogWithPages(catHtml, book.sourceUrl, catRule, loadPageHtml)
     if (chapters.length === 0) {
       return { ok: false, message: '目录页无法访问或内容变化' }
     }

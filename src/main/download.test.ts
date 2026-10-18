@@ -1111,6 +1111,35 @@ describe('checkUpdate', () => {
     )
   })
 
+  it('目录分页时把后续页的章节也并进来，不再只取第一页', async () => {
+    // 第一页 6 章 + 一个「下一页」；第二页另有 2 章。旧实现只取第一页会丢章。
+    const item = (n: number) => `<dd><a href="/book/${n}.html">第${n}章</a></dd>`
+    const page1 = `<html><head><title>分页书 - 某站</title></head><body>
+      <div id="list"><dl>${[1, 2, 3, 4, 5, 6].map(item).join('')}</dl></div>
+      <a href="?page=2">下一页</a>
+    </body></html>`
+    const page2 = `<html><head><title>分页书 - 某站</title></head><body>
+      <div id="list"><dl>${[7, 8].map(item).join('')}</dl></div>
+    </body></html>`
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.includes('page=2')) return page2
+      if (url.includes('index.html') || url.endsWith('/book/')) return page1
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(page1, 'https://example.com/book/index.html')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+
+    const book = await loadBook(started.bookId!)
+    expect(book.chapters).toHaveLength(8)
+    expect(book.chapters.map((c) => c.title)).toEqual(
+      ['第1章', '第2章', '第3章', '第4章', '第5章', '第6章', '第7章', '第8章'],
+    )
+    expect(loadedUrls.some((u) => u.includes('page=2'))).toBe(true)
+  })
+
   it('retries a failed chapter without counting added (VAL-DL-003)', async () => {
     const { bookId } = await seedSixChapterBook({ failSixth: true })
     const before = await loadBook(bookId)

@@ -148,6 +148,10 @@ const api = {
       ipcRenderer.invoke('library.searchInBook', { bookId, query }) as Promise<
         { ok: true; hits: import('../shared/types').BookSearchHit[] } | { ok: false; message: string }
       >,
+    getReadingStats: (limitDays?: number) =>
+      ipcRenderer.invoke('library.getReadingStats', { limitDays }) as Promise<
+        { ok: true; stats: import('../shared/types').ReadingStatsView } | { ok: false; message: string }
+      >,
     listTrash: () =>
       ipcRenderer.invoke('library.listTrash') as Promise<
         { ok: true; items: import('../shared/types').TrashItem[] } | { ok: false; message: string }

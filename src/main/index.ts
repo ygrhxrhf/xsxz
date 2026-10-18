@@ -112,6 +112,7 @@ import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRe
 import { indexingText, queueWaitingText } from './aiStageCopy'
 import { BookOverviewService } from './bookOverview'
 import { confirmLegacyReadRange, getReadFrontier, isFullyRead, markReadFrontier, readClippedChapter, readableCitations, visibleMemory } from './readFrontier'
+import { readReadingStats } from './readingStats'
 import { configureSemanticQueue, findScenes, semanticStatus, setSemanticEnabled, wakeSemanticIndex } from './semanticSearch'
 import { monthlyBudgetStatus } from './aiMonthlyBudget'
 import { parseResumeCard, readResumeCard, resumeContext, writeResumeCard } from './aiResumeCard'
@@ -895,6 +896,12 @@ function registerIpc(): void {
   ipcMain.handle('library.confirmLegacyReadRange', async (_e, payload: { bookId: string }) => {
     try { return { ok: true, frontier: await confirmLegacyReadRange(payload.bookId) } }
     catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('library.getReadingStats', async (_e, payload?: { limitDays?: number }) => {
+    try {
+      const limit = typeof payload?.limitDays === 'number' ? payload.limitDays : 30
+      return { ok: true, stats: await readReadingStats(limit) }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
   })
   ipcMain.handle(
     'library.updateMeta',

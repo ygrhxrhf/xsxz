@@ -2,7 +2,7 @@
 import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, NForm, NFormItem, NDynamicTags, useMessage } from 'naive-ui'
 import type { DropdownOption, InputInst } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { BookListItem, ChapterMeta, DownloadBlocked, DownloadProgress, FailCode, QualityIssue, QualityReport, TrashItem, WebShelfBook } from '@shared/types'
+import type { BookListItem, ChapterMeta, DownloadBlocked, DownloadProgress, FailCode, QualityIssue, QualityReport, ReadingStatsView, TrashItem, WebShelfBook } from '@shared/types'
 import { FAIL_CODE_ZH } from '@shared/types'
 import { aiSaveRecoveryActive } from '../aiSaveRecoveryLock'
 import {
@@ -54,7 +54,8 @@ const checkErr = ref<Record<string, boolean>>({})
 const query = ref('')
 const searchInputRef = ref<InputInst | null>(null)
 const statusFilter = ref<LibraryStatusFilter>('all')
-const selectedTag = ref('')
+/** 多选标签：点多个标签看并集，像按标签分组浏览。空数组表示不筛。 */
+const selectedTags = ref<string[]>([])
 const tagsExpanded = ref(false)
 const sortKey = ref<LibrarySortKey>('updated')
 const failedOpen = ref(false)
@@ -106,7 +107,7 @@ const visibleBooks = computed(() =>
     filterLibraryBooks(books.value, {
       q: query.value,
       status: statusFilter.value,
-      selectedTag: selectedTag.value,
+      selectedTags: selectedTags.value,
     }),
     sortKey.value,
   ),
@@ -129,6 +130,13 @@ const shelfRows = computed(() => {
   })
   return rows
 })
+
+/**
+ * 书多时开「跳过屏外卡片渲染」：卡片是响应式网格 + 变高内容（卡墙横幅、展开概览），
+ * 不适合固定行高的虚拟列表；用 content-visibility 让浏览器跳过屏外卡片的布局与绘制，
+ * 首屏更快、滚动更稳，且不破坏变高卡片。阈值取一屏多一点，小书库不受影响。
+ */
+const virtualizeBooks = computed(() => visibleBooks.value.length > 60)
 
 const continueBook = computed(() => {
   const withProgress = books.value.filter((book) => book.progress?.chapterId)
@@ -227,7 +235,7 @@ function webChapterCountLabel(book: WebShelfBook): string {
 const initialLoading = computed(() => loading.value && books.value.length === 0)
 const loadError = ref('')
 const hasActiveFilter = computed(
-  () => Boolean(query.value.trim()) || statusFilter.value !== 'all' || Boolean(selectedTag.value),
+  () => Boolean(query.value.trim()) || statusFilter.value !== 'all' || selectedTags.value.length > 0,
 )
 const deleteConfirmBook = computed(() => books.value.find((book) => book.id === deleteConfirmId.value) || null)
 
@@ -455,6 +463,47 @@ async function openTrash() {
   trashOpen.value = true
   await reloadTrash()
 }
+
+// 阅读统计
+const statsOpen = ref(false)
+const statsLoading = ref(false)
+const statsView = ref<ReadingStatsView | null>(null)
+
+async function openStats() {
+  statsOpen.value = true
+  statsLoading.value = true
+  try {
+    const res = await window.api.library.getReadingStats(30)
+    statsView.value = res.ok ? res.stats : null
+    if (!res.ok) message.error(res.message || '读取阅读统计失败')
+  } catch {
+    statsView.value = null
+    message.error('读取阅读统计失败，请稍后重试')
+  } finally {
+    statsLoading.value = false
+  }
+}
+
+/** 秒 → 「X 小时 Y 分钟」/「Y 分钟」/「Z 秒」。 */
+function fmtDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  if (h > 0) return `${h} 小时 ${m} 分钟`
+  if (m > 0) return `${m} 分钟`
+  return `${total} 秒`
+}
+
+function fmtChars(chars: number): string {
+  const n = Math.max(0, Math.round(chars))
+  return n >= 10_000 ? `${(n / 10_000).toFixed(1)} 万字` : `${n} 字`
+}
+
+/** 最近 30 天里最大的一天时长：热力条按它取相对高度。 */
+const statsMaxSeconds = computed(() => {
+  const days = statsView.value?.days ?? []
+  return Math.max(1, ...days.map((d) => d.seconds))
+})
 
 async function reloadTrash() {
   trashLoading.value = true
@@ -799,11 +848,16 @@ function coverImgSrc(book: BookListItem): string | null {
 }
 
 function isSelectedLibraryTag(tag: string): boolean {
-  return Boolean(selectedTag.value) && selectedTag.value.toLowerCase() === tag.toLowerCase()
+  const key = tag.toLowerCase()
+  return selectedTags.value.some((item) => item.toLowerCase() === key)
 }
 
+/** 多选标签：点一下加入、再点移除；多个标签按「含任一」取并集。 */
 function toggleLibraryTag(tag: string) {
-  selectedTag.value = isSelectedLibraryTag(tag) ? '' : tag
+  const key = tag.toLowerCase()
+  selectedTags.value = isSelectedLibraryTag(tag)
+    ? selectedTags.value.filter((item) => item.toLowerCase() !== key)
+    : [...selectedTags.value, tag]
 }
 
 function focusLibrarySearch() {
@@ -1044,6 +1098,7 @@ onUnmounted(() => {
         <n-button v-if="checkAllLoading" class="shelf-action" size="small" @click="handleCancelCheckAll">停止</n-button>
         <n-button v-else class="shelf-action" :disabled="!books.length" @click="handleCheckAll">全部检查更新</n-button>
         <n-button v-if="duplicateGroups.length" class="shelf-action" @click="duplicateOpen = true">可能重复 {{ duplicateGroups.length }} 组</n-button>
+        <n-button class="shelf-action" @click="openStats">阅读统计</n-button>
         <n-button class="shelf-action" @click="openTrash">回收站</n-button>
         <n-button class="shelf-action" :loading="importing" :disabled="importing" @click="handleImport">
           {{ importing ? '导入中…' : '导入 txt / epub' }}
@@ -1070,6 +1125,12 @@ onUnmounted(() => {
         <button type="button" class="lib-tag-toggle" @click="tagsExpanded = !tagsExpanded">
           {{ tagsExpanded ? '收起标签' : '更多标签' }}
         </button>
+        <button
+          v-if="selectedTags.length"
+          type="button"
+          class="lib-tag-toggle"
+          @click="selectedTags = []"
+        >取消标签筛选（{{ selectedTags.length }}）</button>
       </div>
     </div>
 
@@ -1118,7 +1179,7 @@ onUnmounted(() => {
           </div>
         </button>
       </section>
-      <div v-if="visibleBooks.length" class="book-grid">
+      <div v-if="visibleBooks.length" class="book-grid" :class="{ 'book-grid-large': virtualizeBooks }">
       <section v-for="(row, rowIndex) in shelfRows" :key="rowIndex" class="shelf-row">
       <n-card v-for="b in row" :key="b.id" hoverable class="book-card">
         <button class="book-open-area" type="button" :aria-label="`打开《${b.title}》`" @click="emit('open-book', b.id)">
@@ -1152,6 +1213,16 @@ onUnmounted(() => {
             {{ cardTaskLabel(b) }}
           </div>
         </button>
+        <!-- 书库发起的下载（检查更新/重试失败章）以前在书库页没有取消入口，
+             只能靠侧栏那个「取消全部」。这里按书给一个。卡在墙上时走下面的横幅，不重复。 -->
+        <n-button
+          v-if="hasTask(activeDownloadIds, b.id) && !blockedByBook[b.id]"
+          size="tiny"
+          quaternary
+          type="error"
+          class="book-cancel-download"
+          @click="handleCancelDownload(b.id)"
+        >取消下载</n-button>
         <div v-if="blockedByBook[b.id]" class="book-blocked" role="alert">
           <p class="book-blocked-reason">{{ blockedByBook[b.id].message }}</p>
           <p class="book-blocked-chapter">卡住的那一章：{{ blockedByBook[b.id].chapterTitle }}</p>
@@ -1417,6 +1488,46 @@ onUnmounted(() => {
         </div>
       </template>
     </n-modal>
+
+    <n-modal v-model:show="statsOpen" preset="card" title="阅读统计" style="width:560px">
+      <div v-if="statsLoading" class="stats-loading">正在统计…</div>
+      <template v-else-if="statsView">
+        <div class="stats-summary">
+          <div class="stats-metric">
+            <strong>{{ statsView.streak }}</strong>
+            <span>连续阅读天数</span>
+          </div>
+          <div class="stats-metric">
+            <strong>{{ fmtDuration(statsView.totalSeconds) }}</strong>
+            <span>累计阅读时长</span>
+          </div>
+          <div class="stats-metric">
+            <strong>{{ fmtChars(statsView.totalChars) }}</strong>
+            <span>累计阅读字数</span>
+          </div>
+        </div>
+        <n-empty v-if="!statsView.days.length" description="还没有阅读记录，去读几章吧" />
+        <template v-else>
+          <div class="stats-chart" role="img" aria-label="最近 30 天每日阅读时长">
+            <div
+              v-for="day in statsView.days"
+              :key="day.date"
+              class="stats-bar"
+              :title="`${day.date}：${fmtDuration(day.seconds)}，${fmtChars(day.chars)}`"
+            >
+              <i :style="{ height: `${Math.round((day.seconds / statsMaxSeconds) * 100)}%` }" />
+            </div>
+          </div>
+          <div class="stats-hint">最近 {{ statsView.days.length }} 天每日阅读时长（悬停看当天详情）</div>
+        </template>
+      </template>
+      <n-empty v-else description="读取阅读统计失败" />
+      <template #footer>
+        <n-space justify="end">
+          <n-button size="small" @click="statsOpen = false">关闭</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -1518,6 +1629,13 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 28px;
+}
+
+/* 书多时跳过屏外卡片的布局与绘制（不改变外观，只在滚到附近时才真正排版）。
+   与 Reader.vue 大章同一套思路：内容高度会变（卡墙横幅/展开概览），不能用固定行高虚拟列表。 */
+.book-grid-large .book-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
 }
 
 /* 网页书架：和本地书同排，但角标与工具更轻，一眼能分清来源 */
@@ -1880,6 +1998,73 @@ onUnmounted(() => {
   border: 1px solid var(--warning);
   border-radius: var(--radius-control);
   background: var(--warning-surface);
+}
+
+.book-cancel-download {
+  margin-top: var(--space-2);
+}
+
+.stats-loading {
+  padding: var(--space-4) 0;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.stats-summary {
+  display: flex;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.stats-metric {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-control);
+  text-align: center;
+}
+
+.stats-metric strong {
+  font-size: 18px;
+}
+
+.stats-metric span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.stats-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 120px;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.stats-bar {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  min-width: 3px;
+}
+
+.stats-bar i {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--primary-color, #2080f0);
+}
+
+.stats-hint {
+  margin-top: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .book-blocked-reason {

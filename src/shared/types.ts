@@ -185,6 +185,25 @@ export interface FailedChapterItem {
   failCode?: FailCode
 }
 
+/** 某一天的阅读统计（reading-stats.json 里的一天）。 */
+export interface ReadingStatsDay {
+  /** 当天累计阅读秒数（按上报间隔估算，单次不超过 5 分钟）。 */
+  seconds: number
+  /** 当天累计阅读字数（按已读前沿前进的字符数估算）。 */
+  chars: number
+  /** 当天读过的书 id 列表。 */
+  books: string[]
+}
+
+/** `library.getReadingStats` 的响应；days 按日期倒序。 */
+export interface ReadingStatsView {
+  days: Array<{ date: string } & ReadingStatsDay>
+  /** 连续阅读天数（从今天或昨天往前数）。 */
+  streak: number
+  totalSeconds: number
+  totalChars: number
+}
+
 export interface DownloadProgress {
   bookId: string
   title: string

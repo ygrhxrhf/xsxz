@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { renderedParagraphs } from '../shared/aiText'
 import type { AiCitation, AiMemoryFile, ReadFrontier, ReadFrontierPosition, ReadingProgress } from '../shared/types'
 import { atomicWriteText, bookDir, getBook, readChapter, registerBodyChangeHook, withBookLock } from './library'
+import { recordReadingActivity } from './readingStats'
 
 interface FrontierFile {
   version: 1
@@ -50,6 +51,22 @@ function farther(a: ReadFrontierPosition, b: ReadFrontierPosition): boolean {
   return a.paragraphIndex > b.paragraphIndex || (a.paragraphIndex === b.paragraphIndex && a.characterOffset > b.characterOffset)
 }
 
+/**
+ * 本次上报比上次多读了多少字符：把两个「段落 + 段内偏移」都换算成正文里的全局字符位置再相减。
+ * 不同正文（hash 不同）或没前进都算 0，避免把换章/改写误记成阅读字数。
+ */
+function readCharsDelta(body: string, prior: ReadFrontierPosition | undefined, next: ReadFrontierPosition): number {
+  if (!prior || prior.bodyHash !== next.bodyHash) return 0
+  if (!farther(next, prior)) return 0
+  const paragraphs = renderedParagraphs(body)
+  const at = (p: ReadFrontierPosition): number => {
+    let sum = 0
+    for (let i = 0; i < p.paragraphIndex && i < paragraphs.length; i += 1) sum += paragraphs[i]!.length
+    return sum + p.characterOffset
+  }
+  return Math.max(0, at(next) - at(prior))
+}
+
 function recordSession(file: FrontierFile, chapterId: string, at: string): void {
   const last = file.sessions.at(-1)
   if (last && Date.parse(at) - Date.parse(last.lastActivityAt) < SESSION_GAP_MS) {
@@ -74,6 +91,9 @@ export async function markReadFrontier(bookId: string, chapterId: string, paragr
     if (!prior || prior.bodyHash !== next.bodyHash || farther(next, prior)) file.chapters[chapterId] = next
     recordSession(file, chapterId, next.updatedAt)
     await save(bookId, file)
+    // 顺手记一次阅读统计：这里已在书锁内、且拿着前进前后的位置，最适合算时长与字数。
+    const chars = readCharsDelta(chapter.body, prior, next)
+    await recordReadingActivity(bookId, chars, Date.parse(next.updatedAt)).catch(() => {})
     return file.chapters[chapterId]!
   })
 }

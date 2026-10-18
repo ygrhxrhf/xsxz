@@ -225,14 +225,21 @@ export function normalizeEditTags(tags: string[]): string[] {
 
 export function filterLibraryBooks(
   books: BookListItem[],
-  opts: { q?: string; status?: LibraryStatusFilter; selectedTag?: string },
+  opts: { q?: string; status?: LibraryStatusFilter; selectedTag?: string; selectedTags?: string[] },
 ): BookListItem[] {
   const q = (opts.q || '').trim().toLowerCase()
   const status = opts.status || 'all'
-  const selectedTag = (opts.selectedTag || '').trim().toLowerCase()
+  // 兼容单标签（selectedTag）与多标签（selectedTags）：多选按「含任一」取并集，
+  // 像按标签分组浏览——点「玄幻」和「都市」看到的是这两类的书，而不是同时属于两类的少数几本。
+  const wanted = (opts.selectedTags ?? (opts.selectedTag ? [opts.selectedTag] : []))
+    .map((tag) => tag.trim().toLowerCase())
+    .filter(Boolean)
   return books.filter((b) => {
     if (status !== 'all' && b.status !== status) return false
-    if (selectedTag && !(b.tags || []).some((tag) => tag.toLowerCase() === selectedTag)) return false
+    if (wanted.length) {
+      const tags = (b.tags || []).map((tag) => tag.toLowerCase())
+      if (!wanted.some((tag) => tags.includes(tag))) return false
+    }
     if (!q) return true
     if (b.title.toLowerCase().includes(q) || (b.author || '').toLowerCase().includes(q)) return true
     return (b.tags || []).some((tag) => tag.toLowerCase().includes(q))

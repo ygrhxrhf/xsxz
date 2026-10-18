@@ -118,8 +118,11 @@
 | `library.audit` | invoke | `{ bookId: string }` | `{ ok: true; report: QualityReport } \| { ok: false; message: string }` |
 | `library.repairChapterBody` | invoke | `{ bookId: string; chapterId: string; body: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.migrate` | invoke | `{ targetPath: string }` | `{ ok: true; oldPath: string; newPath: string; files: number } \| { ok: false; message: string }` |
+| `library.getReadingStats` | invoke | `{ limitDays?: number }` | `{ ok: true; stats: ReadingStatsView } \| { ok: false; message: string }` |
 
 `library.searchInBook` 只扫本书 `ready` 章节正文，大小写不敏感，按章节顺序返回命中（每章一条：次数、首个命中的摘录与段落下标）。纯本机操作。
+
+`library.getReadingStats` 读取书库根的 `reading-stats.json`（见 `disk-schema.md`），返回按日期倒序的最近 `limitDays`（缺省 30）天、连续阅读天数与累计时长/字数。统计在已读前沿上报时顺带累计，无独立上报 IPC。
 
 `library.audit` 只报告疑似短章、截断、重复正文/链接及广告或拦截残页，不自动改章状态。广告杂质且正文足够长时可预览 AI 清理；逐章确认才应用，原文保留在 `bodyRaw`。截断、登录墙、付费页和重复正文只引导核对、重下或手修。`library.repairChapterBody` 保存非空纯文本，首次编辑前的正文留在 `bodyRaw`，并把该章设为 ready。`library.migrate` 仅接受空目标目录，在目标同级临时目录复制并逐文件校验；切换失败仍使用原书库，成功后原目录保留。搬迁与恢复共用书库维护锁。
 
@@ -417,7 +420,7 @@ window.api = {
   tts: { getPosition, setPosition, synthesize, cancel },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, resume, zoom, readingPage, setReadingMode, chapter, prefetchChapter, chapterCatalog, saveReadingPos, getReadingPos, find, stopFind, hide, onFindResult, onShortcut, onUrl, onState, onReadingChapter },
   shelf: { list, add, remove, refresh, refreshAll, setProgress, chapters, onChanged },
-  library: { list, get, readChapter, delete, import, setProgress, getReadFrontier, markReadFrontier, confirmLegacyReadRange, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, listTrash, restoreTrash, purgeTrash },
+  library: { list, get, readChapter, delete, import, setProgress, getReadFrontier, markReadFrontier, confirmLegacyReadRange, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, getReadingStats, listTrash, restoreTrash, purgeTrash },
   bookOverview: { retry, onChanged },
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   settings: { get, set },
