@@ -73,6 +73,25 @@ describe('reading session page loading', () => {
     expect(peekCachedReadingPage(CHAPTER_URL)?.body).toContain('风从山口压下来')
   })
 
+  it('站点分页章节续抓后半章：拼上被藏起来的下一页', async () => {
+    const PAGE2 = 'https://example.com/book/65/c2.html?page=2'
+    const page2Text = '后半章的内容：林舟把灯笼搁在石阶上，蹲下去看那道刻痕。'.repeat(6)
+    setReadingHtmlLoaderForTests(async (url) => {
+      if (url === PAGE2) {
+        return `<!doctype html><html><head><title>第 2 章 起风</title></head><body><div id="content"><p>${page2Text}</p></div></body></html>`
+      }
+      return `<!doctype html><html><head><title>第 2 章 起风</title></head><body>
+        <div id="content"><p>${BODY_TEXT}</p><p>${BODY_TEXT}</p></div>
+        <a href="?page=2" style="display:none">下一页</a>
+      </body></html>`
+    })
+    const res = await loadReadingPage(CHAPTER_URL)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.page.body).toContain('风从山口压下来')
+    expect(res.page.body).toContain('林舟把灯笼搁在石阶上')
+  })
+
   it('reports a friendly failure instead of throwing', async () => {
     setReadingHtmlLoaderForTests(async () => { throw new Error('章节加载超时') })
     const res = await loadReadingPage(CHAPTER_URL)

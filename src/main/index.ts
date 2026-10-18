@@ -45,7 +45,7 @@ import { ocrEngineReady, shutdownOcrEngine } from './ocrText'
 import { browserAdCss } from './browserAds'
 import { discoverChapterLinks, extractBrowseReadingPage } from './browseReading'
 import { getBrowseZoom, getLastBrowsePosition, getReadingPos, setBrowsePosition, setBrowseZoom, setReadingPos, clampZoom } from './browseState'
-import { destroyReadingSession, loadCatalog, loadReadingPage, prefetchReadingPage } from './readingSession'
+import { appendReadingContinuations, destroyReadingSession, loadCatalog, loadReadingPage, prefetchReadingPage } from './readingSession'
 import {
   addWebShelf,
   getWebShelfChapters,
@@ -625,8 +625,11 @@ function registerIpc(): void {
       const page = extractBrowseReadingPage(html, url, rule)
       if (!page.ok) return { ok: false, message: page.message }
       const links = discoverChapterLinks(html, url, rule)
+      // 站点分页章节只给当前页 HTML：补抓续页拼上，否则正文缺后半章。
+      const body = await appendReadingContinuations(page.page.body, html, url, rule)
       const withChapter: BrowseReadingPage = {
         ...page.page,
+        body,
         chapter: { title: page.page.title, url, previous: links.previous, next: links.next },
       }
       return { ok: true, page: await attachReadingChapter(withChapter) }

@@ -893,6 +893,11 @@ function stopTts() {
 /** 模板里用的听书状态（嵌套 ref 在模板中不解包，这里显式取）。 */
 const ttsSpeaking = computed(() => tts.speaking.value)
 const ttsSpokenPara = computed(() => tts.spokenPara.value)
+const ttsSleepMinutes = computed(() => tts.sleepMinutes.value)
+function setTtsSleepMinutes(minutes: number): void {
+  tts.setSleepMinutes(minutes)
+  message.info(minutes > 0 ? `听书将在 ${minutes} 分钟后停止` : '已取消定时停止')
+}
 
 // ---------------------------------------------------------------------------
 // 进入 / 退出 / 翻章
@@ -1564,6 +1569,16 @@ onUnmounted(() => {
             :class="{ active: webReading.autoSpeed === level }"
             @click="setWebReading('autoSpeed', level)"
           >{{ level }}</button>
+        </div>
+        <div class="web-panel-row">
+          <span>听书</span>
+          <button
+            v-for="option in [{ v: 0, l: '不限时' }, { v: 10, l: '10 分' }, { v: 20, l: '20 分' }, { v: 30, l: '30 分' }, { v: 60, l: '60 分' }]"
+            :key="option.v"
+            type="button"
+            :class="{ active: ttsSleepMinutes === option.v }"
+            @click="setTtsSleepMinutes(option.v)"
+          >{{ option.l }}</button>
         </div>
         <p class="web-panel-hint">← → 翻页 · Alt＋↑↓ 换章 · A 自动滚动 · T 目录 · F 搜索 · B 书签 · M 锁工具条 · Esc 退出</p>
       </div>

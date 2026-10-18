@@ -1,7 +1,8 @@
 import { session, WebContentsView } from 'electron'
-import type { BrowseChapterLink, BrowseReadingChapter, BrowseReadingPage, WebShelfChapter } from '../shared/types'
+import type { BrowseChapterLink, BrowseReadingChapter, BrowseReadingPage, SiteRule, WebShelfChapter } from '../shared/types'
 import { discoverChapterLinks, extractBrowseReadingPage } from './browseReading'
 import { extractCatalog, extractPage } from './extract'
+import { findContinuationUrls } from './paywallUnlock'
 import { findSiteRuleForUrl } from './siteRules'
 import { DOWNLOAD_SESSION_PARTITION, HIDDEN_VIEW_BOUNDS, isDownloadBusy } from './download'
 import { canonicalizeUrl } from '../shared/urlHash'
@@ -156,19 +157,51 @@ function rememberCatalog(key: string, chapters: WebShelfChapter[]): void {
   }
 }
 
+/** 站点把一章切成多页时，最多再接这么多续页（与下载路径同一上限）。 */
+const MAX_READING_CONTINUATION_PAGES = 3
+
+/**
+ * 站点分页章节（「第1/2页」）只给当前页 HTML，正文会缺后半章。
+ * 复用付费墙那套续页候选探测，逐页抓取拼在正文后；单页失败跳过，不改判主体。
+ * 调用方须已在 enqueue 内（本函数直接用 fetchHtml，不再入队，避免自锁）。
+ */
+export async function appendReadingContinuations(body: string, html: string, url: string, rule?: SiteRule): Promise<string> {
+  let urls: string[]
+  try {
+    urls = findContinuationUrls(html, url, MAX_READING_CONTINUATION_PAGES)
+  } catch {
+    return body
+  }
+  let merged = body
+  for (const next of urls.slice(0, MAX_READING_CONTINUATION_PAGES)) {
+    try {
+      const partHtml = await fetchHtml(next)
+      const partRule = await findSiteRuleForUrl(next).catch(() => rule)
+      const part = extractBrowseReadingPage(partHtml, next, partRule)
+      if (!part.ok || !part.page.body) continue
+      if (merged.includes(part.page.body)) continue
+      merged = `${merged}\n\n${part.page.body}`
+    } catch {
+      /* 续页抓取失败不改判主体 */
+    }
+  }
+  return merged
+}
+
 async function buildReadingPage(html: string, url: string): Promise<BrowseReadingPage> {
   let rule
   try { rule = await findSiteRuleForUrl(url) } catch { rule = undefined }
   const result = extractBrowseReadingPage(html, url, rule)
   if (!result.ok) throw new Error(result.message)
   const links = discoverChapterLinks(html, url, rule)
+  const body = await appendReadingContinuations(result.page.body, html, url, rule)
   const chapter: BrowseReadingChapter = {
     title: result.page.title,
     url,
     previous: links.previous as BrowseChapterLink | undefined,
     next: links.next as BrowseChapterLink | undefined,
   }
-  return { ...result.page, chapter }
+  return { ...result.page, body, chapter }
 }
 
 /** 已缓存的章节页；命中即代表续章可以瞬时切换。 */
