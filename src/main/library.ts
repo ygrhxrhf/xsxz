@@ -296,8 +296,13 @@ async function persistChapterJson(bookId: string, relFile: string, data: Chapter
 async function reconcilePendingChapters(bookId: string): Promise<void> {
   await withBookLock(bookId, async () => {
     const book = await loadBookUnlocked(bookId)
+    // 廉价前置判据：对账只为把「文件里已有正文、但 book.json 仍标 pending/empty」的章补成 ready。
+    // 全是 ready 的书对账是纯 no-op，却要逐章读盘（1600 章 = 1600 次 readFile）。
+    // 先看 book.json 有没有待补的章，没有就直接返回，把大书的这条路径降到 O(1)。
+    if (!book.chapters.some((meta) => meta.status === 'pending' || meta.status === 'empty')) return
     let dirty = false
     for (const meta of book.chapters) {
+      if (meta.status !== 'pending' && meta.status !== 'empty') continue
       try {
         const file = JSON.parse(await readFile(chapterPath(bookId, meta.file), 'utf-8')) as ChapterFile
         if (!shouldPromoteReady(file)) continue
@@ -306,10 +311,9 @@ async function reconcilePendingChapters(bookId: string): Promise<void> {
           delete file.failCode
           await persistChapterJson(bookId, meta.file, file)
         }
-        if (meta.status !== 'ready') {
-          applyChapterStatus(meta, 'ready', { url: file.url })
-          dirty = true
-        }
+        // 走到这里 meta.status 必为 pending/empty（上面的前置过滤保证），补成 ready。
+        applyChapterStatus(meta, 'ready', { url: file.url })
+        dirty = true
       } catch {
         /* missing or corrupt chapter file */
       }
@@ -453,6 +457,17 @@ async function upsertIndexItem(book: Book): Promise<void> {
   await writeIndex({ version: 1, books, writtenAt: new Date().toISOString(), mtimes })
 }
 
+/** 从索引里删掉一本书（增量）：书被移入回收站后不必整库重扫，改一条即可。 */
+async function removeIndexItem(bookId: string): Promise<void> {
+  const cached = await readIndex()
+  if (!cached) return
+  const books = cached.books.filter((item) => item?.id !== bookId)
+  if (books.length === cached.books.length) return
+  const mtimes = { ...(cached.mtimes ?? {}) }
+  delete mtimes[bookId]
+  await writeIndex({ version: 1, books, writtenAt: new Date().toISOString(), mtimes })
+}
+
 export async function rebuildIndex(): Promise<BookListItem[]> {
   const lib = getLibraryPath()
   let entries: string[]
@@ -580,7 +595,8 @@ export async function deleteBook(bookId: string): Promise<void> {
     await mkdir(trashDir(), { recursive: true })
     const dest = join(trashDir(), `${bookId}-${Date.now()}`)
     await rename(src, dest)
-    await rebuildIndex()
+    // 增量更新索引：书已不在原目录，从索引里删一条即可，不必整库重扫（大书库省一次全量 loadBook）。
+    await removeIndexItem(bookId)
   })
 }
 

@@ -52,6 +52,15 @@ const deleteConfirmId = ref<string | null>(null)
 const checkMsg = ref<Record<string, string>>({})
 const checkErr = ref<Record<string, boolean>>({})
 const query = ref('')
+/** 防抖后的查询词：输入框每敲一下都全量 filter+sort（含 localeCompare('zh')）太贵，慢 150ms 再筛。 */
+const debouncedQuery = ref('')
+let queryDebounceTimer: ReturnType<typeof setTimeout> | null = null
+watch(query, (value) => {
+  if (queryDebounceTimer) clearTimeout(queryDebounceTimer)
+  // 清空时立即生效：用户点了 × 期望马上看到全部，不该等防抖。
+  if (!value.trim()) { debouncedQuery.value = ''; queryDebounceTimer = null; return }
+  queryDebounceTimer = setTimeout(() => { debouncedQuery.value = value; queryDebounceTimer = null }, 150)
+})
 const searchInputRef = ref<InputInst | null>(null)
 const statusFilter = ref<LibraryStatusFilter>('all')
 /** 多选标签：点多个标签看并集，像按标签分组浏览。空数组表示不筛。 */
@@ -105,7 +114,7 @@ const refreshTracker = createLibraryRefreshTracker()
 const visibleBooks = computed(() =>
   sortLibraryBooks(
     filterLibraryBooks(books.value, {
-      q: query.value,
+      q: debouncedQuery.value,
       status: statusFilter.value,
       selectedTags: selectedTags.value,
     }),
@@ -1061,6 +1070,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (queryDebounceTimer) { clearTimeout(queryDebounceTimer); queryDebounceTimer = null }
   unsubOverview?.()
   unsubShelf?.()
   window.removeEventListener('keydown', onLibraryKeydown)

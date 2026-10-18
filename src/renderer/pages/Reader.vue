@@ -380,26 +380,33 @@ const {
 
 /** 当前章各段的渲染切片：叠加搜索命中与划线 */
 const plainDecoratedParas = computed(() => paras.value.map((text) => decorateText(text, '', [])))
+// 只算「已渲染」的那一段前缀：分批渲染下可见段最多 renderedCount 段，
+// 对整章（可能上万段）做 map 会在每次滚动/标记变更时白算大半个章节。
 const renderedParas = computed(() => {
+  const count = Math.min(renderedCount.value, paras.value.length)
   const q = searchQuery.value.trim()
   const searchingNow = showSearch.value && !!q
   const highlights = currentHighlightRanges.value
-  if (!searchingNow && highlights.length === 0) return plainDecoratedParas.value
+  if (!searchingNow && highlights.length === 0) return plainDecoratedParas.value.slice(0, count)
   const starts = paraNormStarts.value
   const large = paras.value.length > 2000
-  return paras.value.map((text, i) => {
+  const out: ReturnType<typeof decorateText>[] = []
+  for (let i = 0; i < count; i += 1) {
+    const text = paras.value[i]!
     if (searchingNow && large && Math.abs(i - searchHighlightCenter.value) > 80) {
-      return plainDecoratedParas.value[i]!
+      out.push(plainDecoratedParas.value[i]!)
+      continue
     }
     const base = starts[i] ?? 0
     const localHl =
       searchingNow && q
         ? []
         : highlights.map((a) => ({ start: a.start - base, end: a.end - base }))
-    return decorateText(text, searchingNow ? q : '', localHl)
-  })
+    out.push(decorateText(text, searchingNow ? q : '', localHl))
+  }
+  return out
 })
-const visibleParas = computed(() => renderedParas.value.slice(0, renderedCount.value))
+const visibleParas = computed(() => renderedParas.value)
 
 /** 把渲染层选区换算成规范化正文里的字符区间 */
 
@@ -2147,7 +2154,7 @@ onUnmounted(() => {
               v-for="(segs, i) in visibleParas"
               :key="i"
               :data-p="i"
-              :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: renderedParas.length }) }]"
+              :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: paras.length }) }]"
             ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
             <div v-if="renderedCount < paras.length" class="loading-hint" role="status">正在排版：{{ renderedCount }} / {{ paras.length }} 段</div>
             <button v-else-if="chapterReady && followingChapter" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>

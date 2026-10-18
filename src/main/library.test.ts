@@ -565,6 +565,46 @@ describe('setLibraryPath + createBookFromBootstrap', () => {
     expect(disk.status).toBe('ready')
   })
 
+  it('getBook reconcile heals a pending chapter whose file already has a body', async () => {
+    // 前置判据（reconcilePendingChapters）只看 book.json 有无 pending/empty：
+    // 有一章 pending 就必须进循环，把「文件已有正文、book.json 仍标 pending」的章补成 ready。
+    const created = await createBookFromBootstrap({
+      bookId: 'd_reconcile',
+      title: '对账',
+      author: '',
+      sourceUrl: 'https://example.com/reconcile/',
+      sourceHost: 'example.com',
+      importType: 'download',
+      chapterTitles: ['第一章', '第二章'],
+      chapterUrls: ['https://example.com/reconcile/1.html', 'https://example.com/reconcile/2.html'],
+    })
+    created.status = 'partial'
+    await saveBook(created)
+
+    await mkdir(join(dir, 'd_reconcile', 'chapters'), { recursive: true })
+    await writeFile(
+      join(dir, 'd_reconcile', 'chapters', '0001.json'),
+      JSON.stringify({
+        title: '第一章',
+        url: 'https://example.com/reconcile/1.html',
+        body: '正文已落盘，但 book.json 仍标 pending，应由 getBook 的对账补成 ready。',
+        bodyRaw: '正文已落盘，但 book.json 仍标 pending，应由 getBook 的对账补成 ready。',
+        status: 'pending',
+      }, null, 2),
+      'utf-8',
+    )
+
+    const opened = await getBook('d_reconcile')
+    expect(opened.chapters[0].status).toBe('ready')
+    // 第二章没有正文文件，对账不应误补，保持 pending。
+    expect(opened.chapters[1].status).toBe('pending')
+
+    const disk = JSON.parse(await readFile(join(dir, 'd_reconcile', 'chapters', '0001.json'), 'utf-8')) as {
+      status: string
+    }
+    expect(disk.status).toBe('ready')
+  })
+
   it('listBooks readyCount matches book.json after ready promotion', async () => {
     await createBookFromBootstrap({
       bookId: 'd_idx',
@@ -1060,6 +1100,30 @@ describe('trash（回收站）', () => {
     expect(items[0].title).toBe('要删的书')
     expect(items[0].chapterCount).toBe(2)
     expect(new Date(items[0].trashedAt).toString()).not.toBe('Invalid Date')
+  })
+
+  it('deleteBook updates index.json incrementally (drops the id from books and mtimes)', async () => {
+    await seedBook('d_idx_keep', '留下')
+    await seedBook('d_idx_del', '删掉')
+    await listBooks() // 建全量索引，写入两本的 mtime 缓存
+
+    const before = JSON.parse(await readFile(join(dir, 'index.json'), 'utf-8')) as {
+      books: Array<{ id: string }>
+      mtimes?: Record<string, number>
+    }
+    expect(before.books.map((b) => b.id).sort()).toEqual(['d_idx_del', 'd_idx_keep'])
+    expect(Object.keys(before.mtimes ?? {}).sort()).toEqual(['d_idx_del', 'd_idx_keep'])
+
+    await deleteBook('d_idx_del')
+
+    const after = JSON.parse(await readFile(join(dir, 'index.json'), 'utf-8')) as {
+      books: Array<{ id: string }>
+      mtimes?: Record<string, number>
+    }
+    expect(after.books.map((b) => b.id)).toEqual(['d_idx_keep'])
+    expect(Object.keys(after.mtimes ?? {})).toEqual(['d_idx_keep'])
+    // 增量改一条：留下的那本 mtime 原样保留，缓存没被清空重扫。
+    expect(after.mtimes?.d_idx_keep).toBe(before.mtimes?.d_idx_keep)
   })
 
   it('restoreFromTrash puts the same book back with its data intact', async () => {
