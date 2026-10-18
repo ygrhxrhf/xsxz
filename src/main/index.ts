@@ -38,7 +38,7 @@ import {
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
-import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView } from './download'
+import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView, disposeHiddenView } from './download'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
 import { ocrEngineReady, shutdownOcrEngine } from './ocrText'
@@ -141,6 +141,8 @@ const READING_SESSION_IDLE_MS = 5 * 60 * 1000
 let readingSessionIdleTimer: ReturnType<typeof setTimeout> | null = null
 let browsePreviousChapter: BrowseChapterLink | undefined
 let browseNextChapter: BrowseChapterLink | undefined
+/** 上面两个链接属于哪个页面：同源跳转后它们就过期了，不能拿来当「下一章」。 */
+let browseLinksUrl = ''
 let browsePageSeq = 0
 let browseScrollTimer: ReturnType<typeof setInterval> | null = null
 let browseRestore: { url: string; ratio: number } | null = null
@@ -337,6 +339,7 @@ async function inspectBrowsePage(): Promise<void> {
   const seq = ++browsePageSeq
   browsePreviousChapter = undefined
   browseNextChapter = undefined
+  browseLinksUrl = ''
   emitBrowseState()
   if (!/^https?:\/\//i.test(url)) return
   try {
@@ -349,6 +352,7 @@ async function inspectBrowsePage(): Promise<void> {
     const links = discoverChapterLinks(html, url, rule)
     browsePreviousChapter = links.previous
     browseNextChapter = links.next
+    browseLinksUrl = url
     emitBrowseState()
     if (browseRestore?.url === url) {
       const ratio = browseRestore.ratio
@@ -431,7 +435,8 @@ function attachBrowseListeners(view: WebContentsView): void {
       .catch(() => {})
   })
   wc.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://') || url.startsWith('http://')) {
+    // scheme 大小写不敏感（HTTP:// 也是合法 URL）：用小写比较，别把大写 scheme 的外链静默丢掉。
+    if (/^https?:\/\//i.test(url)) {
       void wc.loadURL(url)
     }
     return { action: 'deny' }
@@ -725,7 +730,10 @@ function registerIpc(): void {
   ipcMain.handle('browse.chapter', async (_e, payload: { direction: 'previous' | 'next' }) => {
     const wc = browseView?.webContents
     const target = payload?.direction === 'previous' ? browsePreviousChapter : browseNextChapter
-    if (!wc || !target || new URL(target.url).origin !== new URL(wc.getURL()).origin) return { ok: false, message: '未识别到可靠的章节链接' }
+    if (!wc || !target) return { ok: false, message: '未识别到可靠的章节链接' }
+    // 链接是在 browseLinksUrl 那一页发现的；页面同源跳转后（或 inspect 还没跑完）它们已过期，
+    // 继续用会加载错章。要求发现链接的页面就是当前页。
+    if (browseLinksUrl !== wc.getURL()) return { ok: false, message: '页面已变化，请重新识别章节链接' }
     try { await wc.loadURL(target.url); return { ok: true } }
     catch { return { ok: false, message: '章节打开失败' } }
   })
@@ -2367,6 +2375,8 @@ app.on('before-quit', () => {
   }
   // 阅读会话的隐藏视图与正文缓存不跨进程保留
   destroyReadingSession()
+  // 下载用的隐藏视图同样释放，别把渲染进程留到进程退出
+  disposeHiddenView()
   // OCR 引擎是独立 worker，退出时收拾掉，别留残留进程
   void shutdownOcrEngine()
 })

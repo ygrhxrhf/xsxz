@@ -312,6 +312,23 @@ export function getHiddenView(): WebContentsView {
   return hiddenView
 }
 
+/**
+ * 拆掉下载用的隐藏视图：只 stop() 不够，视图从未挂窗口，渲染进程会一直占内存。
+ * close() 释放 webContents 与其渲染进程；测试替身没有 close 时退回 stop。
+ */
+export function disposeHiddenView(): void {
+  const target = hiddenView
+  hiddenView = null
+  if (!target) return
+  const wc = target.webContents
+  if (wc && !wc.isDestroyed()) {
+    try {
+      if (typeof wc.close === 'function') wc.close()
+      else wc.stop()
+    } catch { /* view already gone */ }
+  }
+}
+
 const EMPTY_CHAPTER_REASON = '正文为空或过短'
 const CATALOG_PAGE_HINT = '这是目录页，没有正文。点「下载本书」会按目录把整本下载到书库。'
 const CHAPTER_PAGE_HINT = '这一页没有目录。回到这本书的目录页再下载，或先在设置里配置本站规则。'

@@ -52,22 +52,33 @@ export function setReadingHtmlLoaderForTests(loader: ((url: string) => Promise<s
   htmlLoaderForTests = loader
 }
 
+/**
+ * 拆掉隐藏视图：只 stop() 不够——视图从未挂到窗口，stop 后渲染进程仍活着，会一直占内存。
+ * close() 释放 webContents 与其渲染进程；旧版本/测试替身没有 close 时退回 stop。
+ */
+function disposeView(target: WebContentsView | null): void {
+  if (!target) return
+  const wc = target.webContents
+  if (wc && !wc.isDestroyed()) {
+    try {
+      if (typeof wc.close === 'function') wc.close()
+      else wc.stop()
+    } catch { /* view already gone */ }
+  }
+}
+
 /** 测试钩子：清空会话状态与缓存。 */
 export function dropReadingSessionForTests(): void {
   pageCache.clear()
   catalogCache.clear()
   htmlLoaderForTests = null
-  if (view && !view.webContents.isDestroyed()) {
-    try { view.webContents.stop() } catch { /* view already gone */ }
-  }
+  disposeView(view)
   view = null
   queue = Promise.resolve()
 }
 
 export function destroyReadingSession(): void {
-  if (view && !view.webContents.isDestroyed()) {
-    try { view.webContents.stop() } catch { /* view already gone */ }
-  }
+  disposeView(view)
   view = null
   pageCache.clear()
   catalogCache.clear()

@@ -350,6 +350,8 @@ async function previewQualityClean(confirm = false) {
   const bookId = qualityReport.value?.bookId
   const issue = repairIssue.value
   if (!bookId || !issue || issue.kind !== 'suspectedAd' || repairBody.value.replace(/\s+/g, '').length < 500) return
+  // 已在跑就别再进：连点「确认生成」会并发两次 AI 调用，白花额度。
+  if (qualityCleanLoading.value) return
   qualityCleanLoading.value = true
   try {
     const result = await window.api.ai.clean(bookId, issue.chapterId, confirm)
@@ -361,6 +363,8 @@ async function previewQualityClean(confirm = false) {
     } else {
       message.error(result.message)
     }
+  } catch {
+    message.error('生成清理预览失败，请稍后重试')
   } finally { qualityCleanLoading.value = false }
 }
 
@@ -427,13 +431,17 @@ async function undoRepairBody() {
 }
 
 async function handleDelete(bookId: string) {
-  const res = await window.api.library.delete(bookId)
-  if (res && 'ok' in res && res.ok === false) {
-    message.error(res.message || '删除失败')
-    return
+  try {
+    const res = await window.api.library.delete(bookId)
+    if (res && 'ok' in res && res.ok === false) {
+      message.error(res.message || '删除失败')
+      return
+    }
+    message.success('已移入回收站')
+    await refresh()
+  } catch {
+    message.error('删除失败，请稍后重试')
   }
-  message.success('已移入回收站')
-  await refresh()
 }
 
 // 回收站
@@ -454,6 +462,8 @@ async function reloadTrash() {
     const res = await window.api.library.listTrash()
     if (res.ok) trashItems.value = res.items
     else message.error(res.message || '读取回收站失败')
+  } catch {
+    message.error('读取回收站失败，请稍后重试')
   } finally {
     trashLoading.value = false
   }
@@ -475,22 +485,30 @@ function fmtBytes(n: number): string {
 }
 
 async function handleRestore(name: string) {
-  const res = await window.api.library.restoreTrash(name)
-  if (res.ok) {
-    message.success('已还原到书库')
-    await Promise.all([reloadTrash(), refresh()])
-  } else {
-    message.error(res.message || '还原失败')
+  try {
+    const res = await window.api.library.restoreTrash(name)
+    if (res.ok) {
+      message.success('已还原到书库')
+      await Promise.all([reloadTrash(), refresh()])
+    } else {
+      message.error(res.message || '还原失败')
+    }
+  } catch {
+    message.error('还原失败，请稍后重试')
   }
 }
 
 async function handlePurge(name?: string) {
-  const res = await window.api.library.purgeTrash(name)
-  if (res.ok) {
-    message.success(name ? '已彻底清除' : `已清空回收站（${res.purged} 项）`)
-    await reloadTrash()
-  } else {
-    message.error(res.message || '清除失败')
+  try {
+    const res = await window.api.library.purgeTrash(name)
+    if (res.ok) {
+      message.success(name ? '已彻底清除' : `已清空回收站（${res.purged} 项）`)
+      await reloadTrash()
+    } else {
+      message.error(res.message || '清除失败')
+    }
+  } catch {
+    message.error('清除失败，请稍后重试')
   }
 }
 
@@ -877,6 +895,9 @@ watch(
   },
 )
 
+/** 前情提要弹窗的取数序号：await 期间又开了另一本时，旧结果不能覆盖新弹窗。 */
+let recapSeq = 0
+
 async function openRecap(item: BookListItem) {
   recapBook.value = item
   recapOpen.value = true
@@ -884,8 +905,15 @@ async function openRecap(item: BookListItem) {
     recapText.value = '还没有阅读进度，打开阅读器读几章再来。'
     return
   }
-  const res = await window.api.ai.getSummaries(item.id)
-  recapText.value = res.ok ? (res.summaries.storySoFar?.text || '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。') : res.message
+  const seq = ++recapSeq
+  try {
+    const res = await window.api.ai.getSummaries(item.id)
+    if (seq !== recapSeq) return
+    recapText.value = res.ok ? (res.summaries.storySoFar?.text || '还没有前情提要。请先「生成本章摘要」，再点「刷新看到这里」。') : res.message
+  } catch {
+    if (seq !== recapSeq) return
+    recapText.value = '读取前情提要失败，请稍后重试'
+  }
 }
 
 function stopRecap() {

@@ -144,7 +144,8 @@ watch(skin, (s) => {
   } catch {
     /* 隐私模式等写不进就只走 settings */
   }
-  void window.api.settings.set({ appearance: { skin: s } })
+  // 外观偏好落盘失败不该打断使用：吞掉 rejection，避免 unhandled rejection。
+  void window.api.settings.set({ appearance: { skin: s } }).catch(() => {})
 })
 
 const libraryActive = computed(() => tab.value === 'library')
@@ -186,11 +187,11 @@ function onDownloadProgress(p: DownloadProgress) {
 }
 
 function cancelSidebarDownload() {
-  void window.api.download.cancel()
+  void window.api.download.cancel().catch(() => {})
 }
 
 function syncBrowseVisibility() {
-  void window.api.browse.setVisible(tab.value === 'browse')
+  void window.api.browse.setVisible(tab.value === 'browse').catch(() => {})
 }
 
 watch(tab, syncBrowseVisibility)
@@ -221,7 +222,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unsubProgress?.()
-  void window.api.browse.setVisible(false)
+  void window.api.browse.setVisible(false).catch(() => {})
 })
 </script>
 
