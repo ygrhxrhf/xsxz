@@ -218,6 +218,7 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
     readingMode: readEnum(reader.readingMode, READER_READING_MODES, DEFAULT_READER_PREFS.readingMode),
     autoScrollSpeed: Math.round(readFiniteClamped(reader.autoScrollSpeed, 1, 5, DEFAULT_READER_PREFS.autoScrollSpeed!)),
     autoNextChapter: typeof reader.autoNextChapter === 'boolean' ? reader.autoNextChapter : DEFAULT_READER_PREFS.autoNextChapter!,
+    dim: Math.round(readFiniteClamped(reader.dim, 0, 70, DEFAULT_READER_PREFS.dim!)),
   }
 }
 

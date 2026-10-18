@@ -242,6 +242,7 @@
 | `paragraphIndent` | `boolean` | `true` | 非布尔值回退默认 |
 | `focusMode` | `'off' \| 'one' \| 'three' \| 'five'` | `'off'` | 缺失或非法值回退 `'off'`；合法 `'one'/'three'/'five'` 保留 |
 | `readingMode` | `'scroll' \| 'screen'` | `'scroll'` | 缺失或非法值回退 `'scroll'`；合法 `'scroll'/'screen'` 保留 |
+| `dim` | `number` | `0` | 护眼压暗百分比，有限数值四舍五入并夹紧到 0–70；缺失/非数值回退 `0`（关） |
 
 读取设置时逐字段校验，一个字段损坏不会丢弃其他合法字段。旧 `nightMode: true` 迁移为 `theme: 'night'`，`false` 迁移为 `'paper'`；未知旧字段可继续留在磁盘，但返回的正式 `ReaderPrefs` 不再包含或依赖 `nightMode`。
 

@@ -457,7 +457,8 @@
     "paragraphSpacing": "normal",
     "paragraphIndent": true,
     "focusMode": "off",
-    "readingMode": "scroll"
+    "readingMode": "scroll",
+    "dim": 0
   },
   "tts": {
     "rate": 1,
@@ -507,6 +508,7 @@
 - `appearance.skin` 取值 `light`（浅色，默认）/ `dark`（深色）。旧 `paper`、`white`、`sakura`、`minimal` 读入为 `light`，旧 `night` 读入为 `dark`；非法值回退 `light`。读取迁移不改动其他设置，下一次保存外观时写入正式值。
 - `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。
 - `reader.theme` 取值 `paper`（默认）/ `sepia` / `gray` / `night`；`reader.fontFamily` 取值 `serif`（默认）/ `system` / `mono`；`reader.contentWidth` 取值 `narrow` / `medium`（默认）/ `wide`；`reader.paragraphSpacing` 取值 `compact` / `normal`（默认）/ `relaxed`；`reader.paragraphIndent` 为布尔值，默认 `true`；`reader.focusMode` 取值 `off`（默认）/ `one` / `three` / `five`；`reader.readingMode` 取值 `scroll`（默认）/ `screen`。非法字段逐项回退，不影响其他合法设置。缺失或非法的 `focusMode` 回退 `off`。缺失或非法的 `readingMode` 回退 `scroll`。
+- `reader.dim` 为护眼压暗百分比（正文区黑色遮罩的不透明度），有限数值四舍五入并夹紧到 0–70，默认 `0`（关）；缺失/非数值回退 `0`。旧设置无此字段时按 `0` 启动，不改变其他偏好。
 - 向后兼容：有效的新 `theme` 优先；新主题缺失或非法时，旧 `nightMode: true` 迁移为 `night`、`false` 迁移为 `paper`。首次成功保存新偏好后写入新字段；未知旧字段允许继续保留，但读取逻辑不再依赖它们。设置文件整体损坏时按默认值启动，不重建书库、章节、进度或标记数据。
 
 ---

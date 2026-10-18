@@ -501,6 +501,8 @@ export interface ReaderPrefs {
   autoScrollSpeed?: number
   /** 连续滚动到章末时自动接下一章；缺省按 DEFAULT_READER_PREFS。 */
   autoNextChapter?: boolean
+  /** 护眼压暗：正文区叠一层黑色遮罩的不透明度百分比，0–70（越界夹紧）；0 = 关，缺省按 DEFAULT_READER_PREFS。 */
+  dim?: number
 }
 
 /** 网页阅读模式（内置浏览器的阅读模式）偏好；与本地阅读器 ReaderPrefs 分开。 */
@@ -991,6 +993,7 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   readingMode: 'scroll',
   autoScrollSpeed: 3,
   autoNextChapter: false,
+  dim: 0,
 }
 
 export const DEFAULT_WEB_READING_PREFS: WebReadingPrefs = {

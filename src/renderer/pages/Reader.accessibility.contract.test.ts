@@ -172,4 +172,21 @@ describe('Reader P2.4 accessibility wrap-up', () => {
     expect(source).toContain('el.clientHeight * 0.9')
     expect(source).toContain('readerScrollBehavior')
   })
+
+  it('locks the eye-care dim overlay and its z-order in source', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    expect(source).toContain('屏幕压暗')
+    expect(source).toContain('class="reader-dim"')
+    expect(source).toContain(':style="{ opacity: dim / 100 }"')
+    // 遮罩只压暗正文：z-index 必须高于正文(0)、低于翻章热区(18)与页码(26)，且不吞点击。
+    expect(source).toContain('.reader-dim {')
+    expect(source).toContain('z-index: 15;')
+    expect(source).toContain('pointer-events: none;')
+  })
+
+  it('makes resuming to the last position visible in source', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    expect(source).toContain('已回到上次读到')
+    expect(source).toContain('resumeRatio > 0.02')
+  })
 })

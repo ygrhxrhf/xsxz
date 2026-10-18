@@ -130,6 +130,7 @@ const focusMode = ref<ReaderFocusMode>(DEFAULT_READER_PREFS.focusMode)
 const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
 const autoScrollSpeed = ref(DEFAULT_READER_PREFS.autoScrollSpeed ?? 3)
 const autoNextChapter = ref(DEFAULT_READER_PREFS.autoNextChapter === true)
+const dim = ref(DEFAULT_READER_PREFS.dim ?? 0)
 const viewportCenterPara = ref(-1)
 // AI state
 const aiLoading = ref(false)
@@ -1066,7 +1067,14 @@ async function loadBook(bookId: string) {
     if (res.book.progress) {
       const ch = chapters.value.find((c) => c.id === res.book!.progress!.chapterId)
       if (ch) {
-        await openChapter(ch, res.book.progress.scrollRatio, res.book.progress)
+        const resumeRatio = res.book.progress.scrollRatio ?? 0
+        const resumeIndex = chapters.value.findIndex((c) => c.id === ch.id)
+        await openChapter(ch, resumeRatio, res.book.progress)
+        if (epoch !== navEpoch) return
+        // 续读不再是静默跳转：只有确实跳到了上次的非起点位置才提示，刚开书从头读不打扰。
+        if (resumeIndex > 0 || resumeRatio > 0.02) {
+          message.info(`已回到上次读到：第 ${resumeIndex + 1} 章 · ${ch.title}`)
+        }
         return
       }
     }
@@ -1483,6 +1491,7 @@ function currentReaderPrefs(): ReaderPrefs {
     readingMode: readingMode.value,
     autoScrollSpeed: autoScrollSpeed.value,
     autoNextChapter: autoNextChapter.value,
+    dim: dim.value,
   }
 }
 
@@ -1534,6 +1543,7 @@ function restoreDefaultReaderPrefs() {
   readingMode.value = DEFAULT_READER_PREFS.readingMode
   autoScrollSpeed.value = DEFAULT_READER_PREFS.autoScrollSpeed ?? 3
   autoNextChapter.value = DEFAULT_READER_PREFS.autoNextChapter === true
+  dim.value = DEFAULT_READER_PREFS.dim ?? 0
   message.success('已恢复默认阅读设置')
 }
 
@@ -1550,6 +1560,7 @@ async function loadPrefs() {
   readingMode.value = s.reader.readingMode
   autoScrollSpeed.value = s.reader.autoScrollSpeed ?? 3
   autoNextChapter.value = s.reader.autoNextChapter === true
+  dim.value = s.reader.dim ?? 0
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
   ttsSource.value = s.tts?.source === 'online' ? 'online' : 'system'
@@ -1808,7 +1819,7 @@ const {
 } = assistant
 
 watch(
-  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, autoScrollSpeed, autoNextChapter],
+  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, autoScrollSpeed, autoNextChapter, dim],
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()
@@ -2164,6 +2175,7 @@ onUnmounted(() => {
             </div>
           </template>
         </div>
+        <div v-if="dim > 0" class="reader-dim" :style="{ opacity: dim / 100 }" aria-hidden="true" />
         <div v-if="readingMode === 'screen'" class="reader-page-indicator">{{ visualPageLabel(visualPageIndexView, visualPageCountView) }}</div>
         <button class="chapter-hotzone right" :disabled="!followingChapter" :title="followingChapter ? `下一章：${followingChapter.title}` : '已经是最后一章'" aria-label="下一章" @click="nextChapter"><span>›</span></button>
         </div>
@@ -2187,6 +2199,9 @@ onUnmounted(() => {
             <template v-else-if="activeBottomPanel === 'background'">
               <strong>背景</strong>
               <div class="option-grid four"><button v-for="item in [{v:'paper',l:'纸白'},{v:'sepia',l:'暖黄'},{v:'gray',l:'柔灰'},{v:'night',l:'夜间'}]" :key="item.v" :class="{ active: theme === item.v }" @click="theme = item.v as ReaderTheme">{{ item.l }}</button></div>
+              <div class="control-label">屏幕压暗 {{ dim > 0 ? `${dim}%` : '关' }}</div>
+              <n-slider v-model:value="dim" :min="0" :max="70" :step="5" :format-tooltip="(v: number) => (v > 0 ? `压暗 ${v}%` : '不压暗')" />
+              <div class="control-label">夜间想更暗时拉高；只压暗正文区，导航箭头与页码不受影响</div>
             </template>
             <template v-else>
               <strong>字体</strong>
@@ -3582,6 +3597,16 @@ onUnmounted(() => {
   .reader-content.chapter-fade-in {
     animation: none;
   }
+}
+
+.reader-dim {
+  /* 护眼压暗：盖在正文上的一层纯黑遮罩，只降正文亮度，不吞掉点击。
+     z-index 15：高于正文(0)、低于翻章热区(18)与页码(26)，让箭头和页码保持清晰。 */
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  background: #000;
 }
 
 .reader-page-indicator {

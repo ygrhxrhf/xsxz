@@ -242,6 +242,16 @@ describe('normalizeReaderPrefs', () => {
     expect(normalizeReaderPrefs({ autoNextChapter: true }).autoNextChapter).toBe(true)
     expect(normalizeReaderPrefs({ autoNextChapter: 'yes' }).autoNextChapter).toBe(false)
   })
+
+  it('夹紧护眼压暗到 0–70，缺省与非数值都归 0（关）', () => {
+    expect(normalizeReaderPrefs({}).dim).toBe(0)
+    expect(normalizeReaderPrefs({ dim: 30 }).dim).toBe(30)
+    expect(normalizeReaderPrefs({ dim: -5 }).dim).toBe(0)
+    expect(normalizeReaderPrefs({ dim: 999 }).dim).toBe(70)
+    expect(normalizeReaderPrefs({ dim: 12.4 }).dim).toBe(12)
+    expect(normalizeReaderPrefs({ dim: Number.NaN }).dim).toBe(0)
+    expect(normalizeReaderPrefs({ dim: 'x' }).dim).toBe(0)
+  })
 })
 
 describe('normalizeSkin', () => {

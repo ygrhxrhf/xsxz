@@ -80,11 +80,13 @@ describe('readingStats', () => {
     expect(stats.totalChars).toBe(30)
   })
 
+  // 405 次 recordReadingActivity = 405 轮 read+atomicWrite；全量并行下 Windows rename 抖动会
+  // 把这条撑过默认 20s，给它单独的超时上限，避免被负载误判成红。
   it('天数超过上限时按最旧淘汰', async () => {
     for (let i = 0; i < MAX_STATS_DAYS + 5; i += 1) {
       await recordReadingActivity('d_a', 1, atNoon(i))
     }
     const stats = await readReadingStats(MAX_STATS_DAYS + 10, atNoon(0))
     expect(stats.days).toHaveLength(MAX_STATS_DAYS)
-  })
+  }, 60_000)
 })
