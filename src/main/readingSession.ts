@@ -132,6 +132,12 @@ async function fetchHtml(url: string): Promise<string> {
   if (htmlLoaderForTests) return htmlLoaderForTests(url)
   const wc = readingView().webContents
   await settleNavigation(wc, url)
+  // 兜底防串页：若期间有别的导航抢先完成（或站点重定向到别处），这里取到的就不是要的页，
+  // 宁可报错也不能把别章正文按本 URL 缓存。enqueue 串行已能挡住绝大多数情况，这里是最后一道。
+  const landed = wc.getURL()
+  if (landed && landed !== url && canonicalizeUrl(landed) !== canonicalizeUrl(url)) {
+    throw new Error('页面已跳转，未取到目标章节')
+  }
   const html = await wc.executeJavaScript('document.documentElement.outerHTML') as string
   if (typeof html !== 'string' || !html) throw new Error('这个页面没有取到内容')
   return html
@@ -163,9 +169,10 @@ const MAX_READING_CONTINUATION_PAGES = 3
 /**
  * 站点分页章节（「第1/2页」）只给当前页 HTML，正文会缺后半章。
  * 复用付费墙那套续页候选探测，逐页抓取拼在正文后；单页失败跳过，不改判主体。
- * 调用方须已在 enqueue 内（本函数直接用 fetchHtml，不再入队，避免自锁）。
+ * **必须已在 enqueue 内调用**（内部直接用 fetchHtml 导航共享隐藏视图）；外部入口用
+ * 下面的 `appendReadingContinuations`，它会自行排队。
  */
-export async function appendReadingContinuations(body: string, html: string, url: string, rule?: SiteRule): Promise<string> {
+async function appendReadingContinuationsInner(body: string, html: string, url: string, rule?: SiteRule): Promise<string> {
   let urls: string[]
   try {
     urls = findContinuationUrls(html, url, MAX_READING_CONTINUATION_PAGES)
@@ -188,13 +195,22 @@ export async function appendReadingContinuations(body: string, html: string, url
   return merged
 }
 
+/**
+ * 补抓续页的对外入口：自行排队，避免与其它取页任务在同一隐藏视图上并发导航。
+ * 可见页分支（browse.readingPage）不在本模块的队列里，必须走这个版本。
+ */
+export function appendReadingContinuations(body: string, html: string, url: string, rule?: SiteRule): Promise<string> {
+  return enqueue(() => appendReadingContinuationsInner(body, html, url, rule))
+}
+
 async function buildReadingPage(html: string, url: string): Promise<BrowseReadingPage> {
   let rule
   try { rule = await findSiteRuleForUrl(url) } catch { rule = undefined }
   const result = extractBrowseReadingPage(html, url, rule)
   if (!result.ok) throw new Error(result.message)
   const links = discoverChapterLinks(html, url, rule)
-  const body = await appendReadingContinuations(result.page.body, html, url, rule)
+  // buildReadingPage 已在本模块队列内，用 Inner 版避免自锁。
+  const body = await appendReadingContinuationsInner(result.page.body, html, url, rule)
   const chapter: BrowseReadingChapter = {
     title: result.page.title,
     url,

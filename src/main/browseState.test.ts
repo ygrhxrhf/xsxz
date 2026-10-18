@@ -11,6 +11,7 @@ import {
   setBrowseZoom,
   setReadingPos,
   READING_POSITION_LIMIT,
+  ZOOM_HOST_LIMIT,
 } from './browseState'
 
 let dir = ''
@@ -27,6 +28,19 @@ describe('browse state persistence', () => {
     expect(await getBrowseZoom('https://example.com/other')).toBe(1.3)
     expect((await getLastBrowsePosition())?.ratio).toBe(0.42)
     expect(JSON.parse(await readFile(join(dir, 'browse-state.json'), 'utf-8')).zoomByHost['example.com']).toBe(1.3)
+  })
+
+  it('封顶缩放偏好：访问很多站也不会让 zoomByHost 无界增长', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'spbf-browse-zoom-'))
+    setBrowseStateDirForTests(dir)
+    for (let i = 0; i < ZOOM_HOST_LIMIT + 20; i++) {
+      await setBrowseZoom(`https://host${i}.example.com/`, 1.5)
+    }
+    const saved = JSON.parse(await readFile(join(dir, 'browse-state.json'), 'utf-8')) as { zoomByHost: Record<string, number> }
+    expect(Object.keys(saved.zoomByHost)).toHaveLength(ZOOM_HOST_LIMIT)
+    // 最近用的那个还在，最旧的被淘汰
+    expect(await getBrowseZoom(`https://host${ZOOM_HOST_LIMIT + 19}.example.com/`)).toBe(1.5)
+    expect(await getBrowseZoom('https://host0.example.com/')).toBe(1)
   })
 })
 

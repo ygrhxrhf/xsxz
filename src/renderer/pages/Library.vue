@@ -286,17 +286,25 @@ async function refresh() {
 async function handleImport() {
   // 大型 txt / epub 要写几十秒盘，按钮不置灰时用户会以为没反应而反复点
   if (importing.value) return
-  const { filePaths } = await window.api.dialog.openFile()
+  let filePaths: string[] | undefined
+  try {
+    ({ filePaths } = await window.api.dialog.openFile())
+  } catch {
+    message.error('打开文件选择器失败')
+    return
+  }
   if (!filePaths?.length) return
   importing.value = true
   try {
     const res = await window.api.library.import(filePaths[0])
     if (res.ok) {
       await refresh()
-      emit('open-book', res.bookId!)
+      if (res.bookId) emit('open-book', res.bookId)
     } else {
       message.error(res.message || '导入失败')
     }
+  } catch {
+    message.error('导入失败，请确认文件可用后重试')
   } finally {
     importing.value = false
   }
@@ -317,10 +325,18 @@ async function checkQuality(bookId: string, show = true) {
 async function openRepair(issue: QualityIssue) {
   const bookId = qualityReport.value?.bookId
   if (!bookId) return
-  const [chapter, book] = await Promise.all([
-    window.api.library.readChapter(bookId, issue.chapterId),
-    window.api.library.get(bookId),
-  ])
+  let chapter: Awaited<ReturnType<typeof window.api.library.readChapter>>
+  let book: Awaited<ReturnType<typeof window.api.library.get>>
+  try {
+    [chapter, book] = await Promise.all([
+      window.api.library.readChapter(bookId, issue.chapterId),
+      window.api.library.get(bookId),
+    ])
+  } catch {
+    // 任一 IPC reject 都要给反馈，否则弹窗永不打开，用户点了「修复」像没反应。
+    message.error('打开修复面板失败，请稍后重试')
+    return
+  }
   repairIssue.value = issue
   repairBody.value = chapter.chapter?.body || ''
   qualityCleanPreview.value = ''
@@ -590,9 +606,13 @@ async function handleCancelDownload(bookId: string) {
 async function handleRetry(bookId: string) {
   if (hasTask(retryingIds.value, bookId) || hasTask(activeDownloadIds.value, bookId)) return
   startTask(retryingIds, bookId)
-  const res = await window.api.download.retryFailed(bookId)
-  if (!res.ok) {
-    message.error(res.message || '重试失败')
+  try {
+    const res = await window.api.download.retryFailed(bookId)
+    if (!res.ok) message.error(res.message || '重试失败')
+  } catch {
+    message.error('重试失败，请稍后再试')
+  } finally {
+    // IPC reject 也要收尾，否则 id 永久留在 retryingIds，卡片卡在「正在重试」且菜单永久禁用。
     endTask(retryingIds, bookId)
   }
 }

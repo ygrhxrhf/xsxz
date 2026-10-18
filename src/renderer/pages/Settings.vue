@@ -214,6 +214,9 @@ async function load() {
     libraryPath.value = settings.value.libraryPath
     downloadPace.value = settings.value.downloadPace ?? 'standard'
     await loadRules()
+  } catch {
+    // 读设置失败时页面会渲染成空壳：给一句人话，别让用户对着空白页猜。
+    message.error('读取设置失败，请稍后重试或重启应用')
   } finally {
     settingsLoading.value = false
   }

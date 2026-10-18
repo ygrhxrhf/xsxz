@@ -137,6 +137,16 @@ export function mainFrameRetryAfter(url: string): number | undefined {
   return retryAfterByUrl.get(statusKey(url))
 }
 
+/**
+ * 导航前清掉该地址的旧观察：状态码表只写不清，上一次的 429/503 会残留下来，
+ * 让下一次其实已恢复的请求被错误退避/判失败。清掉后只认本次导航的观察结果。
+ */
+export function clearMainFrameStatus(url: string): void {
+  const key = statusKey(url)
+  statusByUrl.delete(key)
+  retryAfterByUrl.delete(key)
+}
+
 /** 测试用：直接登记某地址的主框架状态码与 Retry-After，传 undefined 撤销。 */
 export function setMainFrameStatusForTests(
   url: string,

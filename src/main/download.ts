@@ -42,6 +42,7 @@ import { FAIL_CODE_ZH } from '../shared/types'
 import { isPathLikeHash } from '../shared/urlHash'
 import {
   classifyHttpStatus,
+  clearMainFrameStatus,
   HttpStatusError,
   mainFrameRetryAfter,
   mainFrameStatus,
@@ -587,6 +588,8 @@ export async function waitUntilHydrated(
 }
 
 async function waitForNavigationSettle(wc: Electron.WebContents, url: string): Promise<void> {
+  // 先清掉该地址的旧状态码观察：上一次的 429/503 残留会让本次已恢复的请求被误退避/误判失败。
+  clearMainFrameStatus(url)
   await new Promise<void>((resolve, reject) => {
     let settled = false
     const timer = setTimeout(() => {

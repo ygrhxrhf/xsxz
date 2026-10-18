@@ -25,6 +25,8 @@ interface BrowseDiskState {
 
 /** 阅读位置上限：超出按 updatedAt 淘汰最旧。 */
 export const READING_POSITION_LIMIT = 200
+/** 缩放偏好上限：按 host 记录，浏览过的站会一直累积，需要一个封顶避免无界增长。 */
+export const ZOOM_HOST_LIMIT = 200
 
 let state: BrowseDiskState | null = null
 let pending: Promise<void> = Promise.resolve()
@@ -101,7 +103,13 @@ export async function getBrowseZoom(url: string): Promise<number> {
 export async function setBrowseZoom(url: string, zoom: number): Promise<number> {
   const host = normalizeHost(url)
   const factor = clampZoom(zoom)
-  ;(await load()).zoomByHost[host] = factor
+  const state = await load()
+  // 重新插入以把它挪到 Map 末尾（最近使用），再按插入顺序淘汰最旧的。
+  state.zoomByHost[host] = factor
+  const keys = Object.keys(state.zoomByHost)
+  if (keys.length > ZOOM_HOST_LIMIT) {
+    for (const stale of keys.slice(0, keys.length - ZOOM_HOST_LIMIT)) delete state.zoomByHost[stale]
+  }
   await save()
   return factor
 }

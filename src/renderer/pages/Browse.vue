@@ -1146,6 +1146,9 @@ async function hideAction(action: 'start' | 'stop' | 'undo') {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  // 只在浏览页可见时响应：App 用 v-show 挂载，组件常驻，不加这道门控会在书库/设置页
+  // 也把 Ctrl+F、Alt+方向键吃掉，对隐藏的网页发无效 IPC。
+  if (!props.active) return
   const target = event.target as HTMLElement | null
   if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
   if (event.ctrlKey && event.key.toLowerCase() === 'f') {
@@ -1244,7 +1247,15 @@ async function confirmDownload() {
   if (!token) return
   downloading.value = true
   downloadProgress.value = null
-  const res = await window.api.download.confirm(token)
+  let res: Awaited<ReturnType<typeof window.api.download.confirm>>
+  try {
+    res = await window.api.download.confirm(token)
+  } catch {
+    // IPC reject 也要复位，否则按钮永久 loading、「下载本书」永久禁用。
+    downloading.value = false
+    message.error('下载失败，请重新预览')
+    return
+  }
   if (!res.ok) {
     downloading.value = false
     message.error(res.message || '下载失败，请重新预览')

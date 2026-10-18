@@ -144,6 +144,8 @@ let browseNextChapter: BrowseChapterLink | undefined
 let browsePageSeq = 0
 let browseScrollTimer: ReturnType<typeof setInterval> | null = null
 let browseRestore: { url: string; ratio: number } | null = null
+/** 浏览页导航序号：连续 loadURL 时用来判断自己是否已被后一次取代，避免误报失败。 */
+let browseLoadSeq = 0
 let browseLastUrl = ''
 let browseLastSavedUrl = ''
 let browseLastSavedRatio = -1
@@ -544,13 +546,20 @@ function registerIpc(): void {
   ipcMain.handle('browse.load', async (_e, payload: { url: string }) => {
     const url = normalizeUrl(payload?.url ?? '')
     if (!url || !browseView) return { ok: false, message: '无效地址' }
+    // 连点/连续导航时，后一次 loadURL 会 abort 前一次，前一次的 promise 以 ERR_ABORTED reject。
+    // 用序号判断自己是否已被取代：被取代就不报错（真正生效的是后一次），避免界面谎报「打开失败」。
+    const seq = ++browseLoadSeq
     browseRestore = null
     try {
       await browseView.webContents.loadURL(url)
+      if (seq !== browseLoadSeq) return { ok: true }
       await setBrowsePosition(url, 0).catch(() => {})
       emitBrowseState()
       return { ok: true }
-    } catch { return { ok: false, message: '网页打开失败，请检查网络或网址' } }
+    } catch {
+      if (seq !== browseLoadSeq) return { ok: true }
+      return { ok: false, message: '网页打开失败，请检查网络或网址' }
+    }
   })
   ipcMain.handle('browse.back', async () => {
     if (!browseView?.webContents.navigationHistory.canGoBack()) return { ok: false }
@@ -573,6 +582,10 @@ function registerIpc(): void {
   ipcMain.handle(
     'browse.setBounds',
     (_e, bounds: { x: number; y: number; width: number; height: number }) => {
+      // 渲染层传 NaN/缺字段会让 setBounds 抛错或把视图摆到看不见的地方：先校验形状。
+      const ok = bounds && [bounds.x, bounds.y, bounds.width, bounds.height]
+        .every((value) => typeof value === 'number' && Number.isFinite(value))
+      if (!ok) return { ok: false, message: '边界参数无效' }
       lastBounds = bounds
       applyBrowseBounds()
       return { ok: true }

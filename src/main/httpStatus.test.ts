@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   classifyHttpStatus,
+  clearMainFrameStatus,
   mainFrameRetryAfter,
   mainFrameStatus,
   observeHttpStatus,
@@ -94,6 +95,16 @@ describe('主框架状态码观察', () => {
     expect(mainFrameStatus('https://e.com/book/2.html')).toBeUndefined()
     // 非法地址不能把观察器打断
     expect(() => listener?.({ url: 'not a url', statusCode: 500 })).not.toThrow()
+    resetHttpStatusObservationForTests()
+  })
+
+  it('导航前清掉旧观察：上一次的 429 不残留到下一次已恢复的请求', () => {
+    resetHttpStatusObservationForTests()
+    setMainFrameStatusForTests('https://e.com/book/1.html', 429, 5000)
+    expect(mainFrameStatus('https://e.com/book/1.html')).toBe(429)
+    clearMainFrameStatus('https://e.com/book/1.html')
+    expect(mainFrameStatus('https://e.com/book/1.html')).toBeUndefined()
+    expect(mainFrameRetryAfter('https://e.com/book/1.html')).toBeUndefined()
     resetHttpStatusObservationForTests()
   })
 
