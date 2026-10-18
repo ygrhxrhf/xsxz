@@ -96,9 +96,12 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
         lostHighlightIds.value = new Set([...lostHighlightIds.value].filter((id) => id !== item.id))
       }
       if (fixed.start !== item.start || fixed.end !== item.end) {
-        void window.api.annotations.update(bookId, item.id, { start: fixed.start, end: fixed.end })
-        item.start = fixed.start
-        item.end = fixed.end
+        // 只在落盘成功后才改内存坐标：失败还改本地，会让内存与磁盘分叉，重载后划线位置回跳。
+        void window.api.annotations.update(bookId, item.id, { start: fixed.start, end: fixed.end }).then((res) => {
+          if (!res.ok) return
+          item.start = fixed.start
+          item.end = fixed.end
+        }).catch(() => { /* 落盘失败：保留旧坐标，下次打开再校正 */ })
       }
     }
   }

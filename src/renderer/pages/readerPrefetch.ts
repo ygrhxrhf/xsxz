@@ -73,6 +73,7 @@ export function createChapterPrefetch(options?: {
   const cache = new Map<string, ChapterFile>()
   let epoch = 0
   let activeBookId: string | null = null
+  let activeChapterId: string | null = null
   let cancelScheduled: (() => void) | null = null
 
   function cancelIdle() {
@@ -116,6 +117,10 @@ export function createChapterPrefetch(options?: {
 
   function retainTargets(targets: Array<{ bookId: string; chapterId: string }>) {
     const allowed = new Set(targets.map((target) => prefetchCacheKey(target.bookId, target.chapterId)))
+    // 当前章也要留着：它刚成为「当前章」，滚动中回到本章不该重读磁盘。
+    if (activeBookId !== null && activeChapterId !== null) {
+      allowed.add(prefetchCacheKey(activeBookId, activeChapterId))
+    }
     for (const key of [...cache.keys()]) {
       if (!allowed.has(key)) cache.delete(key)
     }
@@ -146,11 +151,13 @@ export function createChapterPrefetch(options?: {
 
   function scheduleNeighbors(input: {
     bookId: string
+    currentChapterId?: string | null
     previous: PrefetchNeighbor
     following: PrefetchNeighbor
     readChapter: PrefetchReadChapter
   }) {
     onBookChange(input.bookId)
+    activeChapterId = input.currentChapterId ?? null
     const myEpoch = beginNavigation()
     const targets = adjacentReadyTargets(input.bookId, input.previous, input.following)
     retainTargets(targets)
@@ -165,6 +172,7 @@ export function createChapterPrefetch(options?: {
     beginNavigation()
     cache.clear()
     activeBookId = null
+    activeChapterId = null
   }
 
   return {

@@ -231,6 +231,17 @@ describe('normalizeReaderPrefs', () => {
     expect(normalizeReaderPrefs({ readingMode: 'screen' }).readingMode).toBe('screen')
     expect(normalizeReaderPrefs({ readingMode: 'scroll' }).readingMode).toBe('scroll')
   })
+
+  it('夹紧自动滚屏速度并默认关闭自动续章', () => {
+    expect(normalizeReaderPrefs({}).autoScrollSpeed).toBe(DEFAULT_READER_PREFS.autoScrollSpeed)
+    expect(normalizeReaderPrefs({}).autoNextChapter).toBe(false)
+    expect(normalizeReaderPrefs({ autoScrollSpeed: 0 }).autoScrollSpeed).toBe(1)
+    expect(normalizeReaderPrefs({ autoScrollSpeed: 99 }).autoScrollSpeed).toBe(5)
+    expect(normalizeReaderPrefs({ autoScrollSpeed: 4.6 }).autoScrollSpeed).toBe(5)
+    expect(normalizeReaderPrefs({ autoScrollSpeed: Number.NaN }).autoScrollSpeed).toBe(DEFAULT_READER_PREFS.autoScrollSpeed)
+    expect(normalizeReaderPrefs({ autoNextChapter: true }).autoNextChapter).toBe(true)
+    expect(normalizeReaderPrefs({ autoNextChapter: 'yes' }).autoNextChapter).toBe(false)
+  })
 })
 
 describe('normalizeSkin', () => {

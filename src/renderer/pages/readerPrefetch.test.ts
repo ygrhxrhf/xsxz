@@ -210,4 +210,31 @@ describe('createChapterPrefetch', () => {
     expect(prefetch.get('book-2', 'n2')?.body).toBe('body-n2')
     expect(prefetch.size()).toBe(1)
   })
+
+  it('保留当前章的缓存：滚动中回到本章不该重读磁盘', async () => {
+    const idle = manualIdleHost()
+    const prefetch = createChapterPrefetch({ idleHost: idle.host })
+    // 在第一章时把第二章预取进来（following）
+    prefetch.scheduleNeighbors({
+      bookId: 'book-1',
+      currentChapterId: 'c1',
+      previous: null,
+      following: meta('c2', 'ready'),
+      readChapter: async (_bookId, chapterId) => ({ chapter: file(chapterId) }),
+    })
+    idle.flush()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(prefetch.get('book-1', 'c2')?.body).toBe('body-c2')
+
+    // 翻到第二章：相邻集变成 [c1, c3]，若不保留当前章，刚读过的 c2 会被清出缓存
+    prefetch.scheduleNeighbors({
+      bookId: 'book-1',
+      currentChapterId: 'c2',
+      previous: meta('c1', 'ready'),
+      following: meta('c3', 'ready'),
+      readChapter: async (_bookId, chapterId) => ({ chapter: file(chapterId) }),
+    })
+    expect(prefetch.get('book-1', 'c2')?.body).toBe('body-c2')
+  })
 })

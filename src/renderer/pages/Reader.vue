@@ -88,6 +88,7 @@ import {
 import { createChapterPrefetch } from './readerPrefetch'
 import { createReaderProgressWriter } from './readerProgressWriter'
 import type { CapturedProgressWrite } from './readerProgressWriter'
+import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
 
 const props = defineProps<{ bookId?: string }>()
 const emit = defineEmits<{
@@ -106,6 +107,9 @@ const chapterBody = ref('')
 const chapterError = ref('')
 const hasBodyRaw = ref(false)
 const chapterLoading = ref(false)
+// 导航代次：每次换书/换章递增。await 回来后若代次已变，说明这次加载已被更新的导航取代，
+// 必须丢弃结果，否则慢的旧响应会覆盖新章/新书（快速连点下一章、快速连开两本书）。
+let navEpoch = 0
 const contentRef = ref<HTMLElement | null>(null)
 const legacyReadProposal = ref<ReadingProgress | null>(null)
 const resumeCardView = ref<AiResumeCardView | null>(null)
@@ -124,6 +128,8 @@ const paragraphSpacing = ref<ReaderParagraphSpacing>(DEFAULT_READER_PREFS.paragr
 const paragraphIndent = ref(DEFAULT_READER_PREFS.paragraphIndent)
 const focusMode = ref<ReaderFocusMode>(DEFAULT_READER_PREFS.focusMode)
 const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
+const autoScrollSpeed = ref(DEFAULT_READER_PREFS.autoScrollSpeed ?? 3)
+const autoNextChapter = ref(DEFAULT_READER_PREFS.autoNextChapter === true)
 const viewportCenterPara = ref(-1)
 // AI state
 const aiLoading = ref(false)
@@ -170,10 +176,13 @@ function refreshTtsVoices() { ttsVoices.value = window.speechSynthesis?.getVoice
 function saveTtsParagraph(index: number) {
   if (!book.value || !currentChapter.value || index < 0) return
   const bookId = book.value.id
+  const previous = ttsSavedPosition.value
   const position: TtsPosition = { chapterId: currentChapter.value.id, paragraphIndex: index,
     bodyHash: ttsBodyHash(chapterBody.value), updatedAt: new Date().toISOString() }
   ttsSavedPosition.value = position
   ttsPositionWrite = ttsPositionWrite.then(() => window.api.tts?.setPosition?.(bookId, position)).catch(() => {
+    // 落盘失败就把乐观更新退回去，否则面板会一直显示一个其实没保存的续播位置。
+    if (ttsSavedPosition.value === position) ttsSavedPosition.value = previous
     message.warning('听书位置保存失败')
   })
 }
@@ -754,6 +763,75 @@ function onContentWheel(e: WheelEvent) {
   pageByScreen(dir)
 }
 
+// ---------------------------------------------------------------------------
+// 自动滚屏（本地阅读器）
+// 复用阅读模式那套纯计算（readingAutoScroll.ts），推进节奏由 rAF 驱动。
+// ---------------------------------------------------------------------------
+const autoScrolling = ref(false)
+let autoScrollRaf: number | null = null
+let autoScrollLastAt = 0
+const autoScroll = createAutoScroll(
+  {
+    scrollTop: () => contentRef.value?.scrollTop ?? 0,
+    scrollHeight: () => contentRef.value?.scrollHeight ?? 0,
+    viewportHeight: () => contentRef.value?.clientHeight ?? 0,
+    setScrollTop: (value) => {
+      const el = contentRef.value
+      if (el) el.scrollTop = value
+    },
+    onTick: () => { syncVisualPage() },
+    onReachEnd: () => {
+      // 到底：开了「自动续章」且还有下一章就接上，否则停下（避免无声空转）。
+      if (!autoNextChapter.value || !followingChapter.value) return false
+      // 章末还有分批渲染没排完：先等排版，别在半截正文处跳章。
+      if (renderedCount.value < paras.value.length) return false
+      void openChapter(followingChapter.value, 0, undefined, false, true)
+      return true
+    },
+  },
+  { speedPx: () => autoScrollSpeedPx(autoScrollSpeed.value) },
+)
+
+function autoScrollStep(timestamp: number) {
+  if (!autoScrolling.value) return
+  const elapsed = autoScrollLastAt ? timestamp - autoScrollLastAt : 16
+  autoScrollLastAt = timestamp
+  if (!autoScroll.tick(elapsed)) {
+    autoScrolling.value = false
+    autoScrollLastAt = 0
+    return
+  }
+  readerProgress.schedule()
+  autoScrollRaf = requestAnimationFrame(autoScrollStep)
+}
+
+function startAutoScroll() {
+  if (autoScrolling.value || !chapterReady.value) return
+  autoScrolling.value = true
+  autoScrollLastAt = 0
+  autoScroll.start()
+  autoScrollRaf = requestAnimationFrame(autoScrollStep)
+}
+
+function stopAutoScroll() {
+  if (!autoScrolling.value && autoScrollRaf == null) return
+  autoScrolling.value = false
+  autoScroll.stop()
+  if (autoScrollRaf != null) { cancelAnimationFrame(autoScrollRaf); autoScrollRaf = null }
+  autoScrollLastAt = 0
+}
+
+function toggleAutoScroll() {
+  if (autoScrolling.value) {
+    stopAutoScroll()
+    message.info('已暂停自动滚屏')
+    return
+  }
+  startAutoScroll()
+  if (autoScrolling.value) message.info(`自动滚屏中（速度 ${autoScrollSpeed.value}）`)
+  else message.warning('当前章节还不能自动滚屏')
+}
+
 function setFontSize(next: number) {
   fontSize.value = Math.max(FONT_MIN, Math.min(FONT_MAX, next))
 }
@@ -862,7 +940,8 @@ let unsubAiBudget: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
 
 // 纸色真源在 @shared/readerTheme：与网页阅读模式共用，避免同一主题两处渲染出不同颜色。
-// 外圈画布仍跟随应用浅/深色皮肤（--app-bg），那是界面外观、不是阅读主题。
+// 外圈画布跟随阅读主题（不再绑 --app-bg）：夜间纸面配浅色应用外观时，亮外圈会把整块深色阅读区
+// 包在一条亮边里，既刺眼又破坏沉浸——主题自带 outer 就是为了解决这个。
 const fontStacks: Record<ReaderFontFamily, string> = {
   serif: '"STSong", "Songti SC", "SimSun", serif',
   system: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
@@ -873,7 +952,7 @@ const spacingValues: Record<ReaderParagraphSpacing, string> = { compact: '0.2em'
 const readerThemeStyle = computed(() => ({
   '--reader-paper': READER_THEME_COLORS[theme.value].paper,
   '--reader-paper-text': READER_THEME_COLORS[theme.value].text,
-  '--reader-outer': 'var(--app-bg)',
+  '--reader-outer': READER_THEME_COLORS[theme.value].outer,
 }))
 const contentStyle = computed(() => ({
   fontSize: fontSize.value + 'px',
@@ -922,6 +1001,7 @@ const spineInitial = computed(() => libraryCoverText(book.value?.title || ''))
 
 async function loadBook(bookId: string) {
   assistantBudgets.value = {}
+  const epoch = ++navEpoch
   ttsStop()
   ttsSavedPosition.value = null
   if (book.value && book.value.id !== bookId) {
@@ -946,18 +1026,22 @@ async function loadBook(bookId: string) {
   const previousChapterId = previousBookId === bookId ? currentChapter.value?.id : undefined
   void readerProgress.writeNow()
   const res = await window.api.library.get(bookId)
+  if (epoch !== navEpoch) return
   if (res.book) {
     book.value = res.book
     const frontierResult = await window.api.library.getReadFrontier?.(bookId)
+    if (epoch !== navEpoch) return
     legacyReadProposal.value = frontierResult?.ok ? frontierResult.frontier.legacyProposal : null
     void loadResumeCard()
     ttsSavedPosition.value = await (window.api.tts?.getPosition?.(bookId) ?? Promise.resolve(null)).catch(() => null)
+    if (epoch !== navEpoch) return
     // 追剧状态是主进程的真源：开书就拉一次，界面才知道该显示哪种模式、排了几章。
     void loadAssistantMaterial()
     chapters.value = res.book.chapters
     currentChapter.value = null
     lostHighlightIds.value = new Set()
     await reloadAnnotations()
+    if (epoch !== navEpoch) return
     if (previousChapterId) {
       const retained = chapters.value.find((chapter) => chapter.id === previousChapterId)
       if (retained) {
@@ -977,8 +1061,11 @@ async function loadBook(bookId: string) {
   }
 }
 
-async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingProgress, continueListening = false) {
+async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingProgress, continueListening = false, continueScrolling = false) {
   if (!book.value) return
+  // 手动翻章/跳章时停掉自动滚屏（避免"我明明换章了它还在滚"）；自动续章传 continueScrolling=true 才保留。
+  if (!continueScrolling) stopAutoScroll()
+  const epoch = ++navEpoch
   const openingBookId = book.value.id
   // 「这一章读完了」只有渲染层判得出来（主进程拿不到滚动位置），判出来就把实测比率交给主进程排队。
   const finishedRatio = currentChapter.value && currentChapter.value.id !== ch.id &&
@@ -1004,6 +1091,8 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
     const res = cached
       ? { chapter: cached }
       : await window.api.library.readChapter(book.value.id, ch.id)
+    // 这次加载已被更新的导航取代：丢弃结果，别用旧章覆盖新章。
+    if (epoch !== navEpoch) return
     if (res.chapter) {
       currentChapter.value = { ...ch, status: res.chapter.status, failCode: res.chapter.failCode }
       chapterBody.value = res.chapter.body || ''
@@ -1035,6 +1124,7 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
       }
       chapterPrefetch.scheduleNeighbors({
         bookId: book.value.id,
+        currentChapterId: ch.id,
         previous: previousChapter.value,
         following: followingChapter.value,
         readChapter: (bookId, chapterId) => window.api.library.readChapter(bookId, chapterId),
@@ -1049,7 +1139,8 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
       chapterError.value = res.message || '无法打开这一章'
     }
   } finally {
-    chapterLoading.value = false
+    // 只有最新一次导航才能关掉加载态；被取代的旧调用不能把新章的 loading 提前关掉。
+    if (epoch === navEpoch) chapterLoading.value = false
   }
 }
 
@@ -1261,6 +1352,26 @@ function onScroll() {
     searchHighlightCenter.value = viewportCenterPara.value
   }
   syncVisualPage()
+  maybeContinueToNextChapter(el)
+}
+
+// 「滚到章末自动接下一章」：只在连续滚动模式下、开关打开、本章已排完、且确实贴底时触发。
+// 屏幕翻页模式有自己的翻页与章末卡片，不在这里自动跳，避免和翻页手势打架。
+// 用 continueGuard 防止加载期间滚动事件反复触发；用 epoch 判断这一章是否已被换掉。
+let continueGuard = false
+function maybeContinueToNextChapter(el: HTMLElement | null) {
+  if (!el || readingMode.value !== 'scroll') return
+  if (!autoNextChapter.value || autoScrolling.value || continueGuard) return
+  if (!followingChapter.value) return
+  if (renderedCount.value < paras.value.length) return
+  // 贴底判定留 2px 容差（缩放/取整会让 scrollTop 差一点点到不了 max）
+  if (el.scrollHeight - el.clientHeight - el.scrollTop > 2) return
+  continueGuard = true
+  const epoch = navEpoch
+  void nextTick().then(() => {
+    if (epoch !== navEpoch || !followingChapter.value) return
+    return openChapter(followingChapter.value, 0, undefined, false, true)
+  }).finally(() => { continueGuard = false })
 }
 
 function goBrowseForChapter() {
@@ -1322,6 +1433,8 @@ function currentReaderPrefs(): ReaderPrefs {
     paragraphIndent: paragraphIndent.value,
     focusMode: focusMode.value,
     readingMode: readingMode.value,
+    autoScrollSpeed: autoScrollSpeed.value,
+    autoNextChapter: autoNextChapter.value,
   }
 }
 
@@ -1371,6 +1484,8 @@ function restoreDefaultReaderPrefs() {
   paragraphIndent.value = DEFAULT_READER_PREFS.paragraphIndent
   focusMode.value = DEFAULT_READER_PREFS.focusMode
   readingMode.value = DEFAULT_READER_PREFS.readingMode
+  autoScrollSpeed.value = DEFAULT_READER_PREFS.autoScrollSpeed ?? 3
+  autoNextChapter.value = DEFAULT_READER_PREFS.autoNextChapter === true
   message.success('已恢复默认阅读设置')
 }
 
@@ -1385,6 +1500,8 @@ async function loadPrefs() {
   paragraphIndent.value = s.reader.paragraphIndent
   focusMode.value = s.reader.focusMode
   readingMode.value = s.reader.readingMode
+  autoScrollSpeed.value = s.reader.autoScrollSpeed ?? 3
+  autoNextChapter.value = s.reader.autoNextChapter === true
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
   ttsSource.value = s.tts?.source === 'online' ? 'online' : 'system'
@@ -1643,7 +1760,7 @@ const {
 } = assistant
 
 watch(
-  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode],
+  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, autoScrollSpeed, autoNextChapter],
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()
@@ -1844,6 +1961,7 @@ onUnmounted(() => {
   window.removeEventListener('beforeunload', flushPendingReaderWrites)
   chapterPrefetch.dispose()
   stopFollowPolling()
+  stopAutoScroll()
   ttsStop()
   if (renderTimer) clearTimeout(renderTimer)
   renderGeneration++
@@ -2039,6 +2157,12 @@ onUnmounted(() => {
               <div class="option-grid">
                 <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
               </div>
+              <div class="control-label">
+                <n-button size="tiny" :type="autoScrolling ? 'warning' : 'default'" @click="toggleAutoScroll">{{ autoScrolling ? '暂停自动滚屏' : '开始自动滚屏' }}</n-button>
+              </div>
+              <div class="control-label">滚屏速度 {{ autoScrollSpeed }}</div>
+              <n-slider v-model:value="autoScrollSpeed" :min="1" :max="5" :step="1" />
+              <div class="control-label"><n-switch v-model:value="autoNextChapter" /> 滚到章末自动接下一章</div>
               <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
             </template>
           </div>

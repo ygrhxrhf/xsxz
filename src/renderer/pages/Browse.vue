@@ -91,6 +91,7 @@ let readingHideTimer: ReturnType<typeof setTimeout> | null = null
 let readingToolsLocked = false
 let lastToolActivityAt = Date.now()
 let readingSaveTimer: ReturnType<typeof setTimeout> | null = null
+let readingRestoreTimer: ReturnType<typeof setTimeout> | null = null
 let readingParagraphIndex = 0
 /** 位置恢复期间不写回，避免把恢复动作当成用户滚动。 */
 let readingRestoring = false
@@ -462,7 +463,8 @@ function restoreReadingPosition(position: { paragraphIndex: number; scrollRatio:
   readingCenterParagraph.value = position.paragraphIndex
   readingParagraphIndex = position.paragraphIndex
   syncReadingPage()
-  setTimeout(() => { readingRestoring = false }, 400)
+  if (readingRestoreTimer) clearTimeout(readingRestoreTimer)
+  readingRestoreTimer = setTimeout(() => { readingRestoreTimer = null; readingRestoring = false }, 400)
 }
 
 /** 位置保存节流 800ms；退出、翻章时立即写一次。 */
@@ -1351,6 +1353,7 @@ onUnmounted(() => {
   if (hideCountTimer) clearInterval(hideCountTimer)
   clearReadingHideTimer()
   if (readingSaveTimer) clearTimeout(readingSaveTimer)
+  if (readingRestoreTimer) { clearTimeout(readingRestoreTimer); readingRestoreTimer = null }
   stopAutoScroll()
   stopTts()
   if (readingPage.value) void window.api.browse.setReadingMode(false)

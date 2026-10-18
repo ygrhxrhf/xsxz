@@ -91,7 +91,8 @@ describe('useReaderMarks（阅读器标记域）', () => {
 
     const at = BODY.indexOf('第二段')
     expect(api.annotations.update).toHaveBeenCalledWith('b1', 'a-drift', { start: at, end: at + '第二段'.length })
-    expect(drifted.start).toBe(at)
+    // 本地坐标只在落盘成功后更新，所以这里等一次微任务。
+    await vi.waitFor(() => expect(drifted.start).toBe(at))
     expect(marks.lostHighlightIds.value.has('a-gone')).toBe(true)
     expect(marks.currentHighlightRanges.value.map((item) => item.id)).toEqual(['a-drift'])
   })

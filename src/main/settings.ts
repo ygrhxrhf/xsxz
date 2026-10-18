@@ -216,6 +216,8 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
         : DEFAULT_READER_PREFS.paragraphIndent,
     focusMode: readEnum(reader.focusMode, READER_FOCUS_MODES, DEFAULT_READER_PREFS.focusMode),
     readingMode: readEnum(reader.readingMode, READER_READING_MODES, DEFAULT_READER_PREFS.readingMode),
+    autoScrollSpeed: Math.round(readFiniteClamped(reader.autoScrollSpeed, 1, 5, DEFAULT_READER_PREFS.autoScrollSpeed!)),
+    autoNextChapter: typeof reader.autoNextChapter === 'boolean' ? reader.autoNextChapter : DEFAULT_READER_PREFS.autoNextChapter!,
   }
 }
 

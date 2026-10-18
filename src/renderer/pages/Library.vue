@@ -144,12 +144,17 @@ const webBooks = ref<WebShelfBook[]>([])
 const webRefreshing = ref(false)
 const webBusyId = ref('')
 let unsubShelf: (() => void) | null = null
+// 网页书架刷新也要防竞态：shelf.onChanged 与手动刷新交错时，慢的旧结果会覆盖新列表。
+let webRefreshSeq = 0
 
 async function refreshWebShelf(): Promise<void> {
+  const seq = ++webRefreshSeq
   try {
     const res = await window.api.shelf.list()
+    if (seq !== webRefreshSeq) return
     webBooks.value = res.ok ? res.books : []
   } catch {
+    if (seq !== webRefreshSeq) return
     webBooks.value = []
   }
 }
