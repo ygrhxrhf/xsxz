@@ -188,5 +188,8 @@ describe('Reader P2.4 accessibility wrap-up', () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
     expect(source).toContain('已回到上次读到')
     expect(source).toContain('resumeRatio > 0.02')
+    // 关键回归护栏：openChapter 内部会自增 navEpoch，若用外层 `epoch !== navEpoch` 判断早退，
+    // 续读提示会在弹出的前一行永远 return 掉。必须改判「仍落在续读这一章」，不能拿 epoch 拦。
+    expect(source).toContain('if (currentChapter.value?.id !== ch.id) return')
   })
 })

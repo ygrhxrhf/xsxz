@@ -1070,7 +1070,9 @@ async function loadBook(bookId: string) {
         const resumeRatio = res.book.progress.scrollRatio ?? 0
         const resumeIndex = chapters.value.findIndex((c) => c.id === ch.id)
         await openChapter(ch, resumeRatio, res.book.progress)
-        if (epoch !== navEpoch) return
+        // openChapter 内部会自增 navEpoch，不能用外层 epoch 判断（那样永远早退）；
+        // 改判「是否仍落在续读这一章」：被别的导航顶掉时 currentChapter 已不是 ch，就不提示。
+        if (currentChapter.value?.id !== ch.id) return
         // 续读不再是静默跳转：只有确实跳到了上次的非起点位置才提示，刚开书从头读不打扰。
         if (resumeIndex > 0 || resumeRatio > 0.02) {
           message.info(`已回到上次读到：第 ${resumeIndex + 1} 章 · ${ch.title}`)
