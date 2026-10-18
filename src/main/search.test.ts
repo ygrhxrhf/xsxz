@@ -87,6 +87,29 @@ describe('searchInBook（本书内全文搜索）', () => {
     await saveBook(await loadHelper(bookId))
     expect((await searchInBook(bookId, '不存在的词')).length).toBe(0)
   })
+
+  it('并发读盘下命中仍按章节顺序输出且不丢章', async () => {
+    // 30 章、每章都命中：并发读盘不能让顺序错乱，也不能漏章。
+    const bookId = 'd_many'
+    const titles = Array.from({ length: 30 }, (_, i) => `第${i + 1}章`)
+    await createBookFromBootstrap({
+      bookId, title: '多章书', author: '', importType: 'txt', chapterTitles: titles,
+    })
+    const book = await loadHelper(bookId)
+    for (const ch of book.chapters) {
+      await writeChapterFile(bookId, ch.id, {
+        title: ch.title,
+        body: `本章出现关键词。\n\n第二段也有关键词，共两处。`,
+        status: 'ready',
+      })
+    }
+
+    const hits = await searchInBook(bookId, '关键词')
+    expect(hits).toHaveLength(30)
+    // 顺序 = 目录序（章节 id 递增即 index 递增）
+    expect(hits.map((h) => h.chapterId)).toEqual(book.chapters.map((c) => c.id))
+    expect(hits.every((h) => h.count === 2)).toBe(true)
+  })
 })
 
 async function loadHelper(bookId: string) {

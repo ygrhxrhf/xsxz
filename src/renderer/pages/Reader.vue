@@ -712,11 +712,15 @@ function snapToVisualPage() {
   if (!el || readingMode.value !== 'screen') return
   const index = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
   const targetTop = scrollTopForVisualPage(index, el.scrollHeight, el.clientHeight)
-  
+  // 已经对齐就别再滚：省掉一次无意义的平滑滚动，也避免它触发 scroll 事件再回吸。
+  if (Math.abs(el.scrollTop - targetTop) < 1) return
+
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true
-  el.scrollTo({ 
-    top: targetTop, 
-    behavior: reduceMotion ? 'auto' : 'smooth' 
+  // 抑制这段时间内的自动回吸，否则 smooth 滚动的中间帧会被当成"用户停在半页"。
+  suppressSnapUntil = Date.now() + (reduceMotion ? 200 : 520)
+  el.scrollTo({
+    top: targetTop,
+    behavior: reduceMotion ? 'auto' : 'smooth',
   })
   syncVisualPage()
 }
@@ -734,6 +738,8 @@ function pageByScreen(direction: 1 | -1) {
     const count = visualPageCount(el.scrollHeight, el.clientHeight)
     const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
     const next = adjacentVisualPage(current, direction, count)
+    // 抑制回吸：翻页本身就是在对齐，别让防抖回吸再插一脚。
+    suppressSnapUntil = Date.now() + (behavior === 'auto' ? 200 : 520)
     el.scrollTo({ top: scrollTopForVisualPage(next, el.scrollHeight, el.clientHeight), behavior })
     return
   }
@@ -1344,15 +1350,50 @@ function updateViewportFocusAnchor() {
 function onScroll() {
   if (selectionOpen()) closeSelectionTools()
   const el = contentRef.value
+  // 轻活：每次 scroll 都跟，成本低（只读 scrollTop/Height）。
   if (el) scrollRatioView.value = currentChapterRatio(el)
   readerProgress.schedule()
-  updateViewportFocusAnchor()
-  if (showSearch.value && paras.value.length > 2000 &&
-      Math.abs(viewportCenterPara.value - searchHighlightCenter.value) > 100) {
-    searchHighlightCenter.value = viewportCenterPara.value
-  }
   syncVisualPage()
+  schedulePageSnap()
   maybeContinueToNextChapter(el)
+  // 重活（querySelectorAll + 强制布局二分）合并到每帧一次，别在每个 scroll 事件里同步跑。
+  scheduleScrollHeavyWork()
+}
+
+let scrollHeavyRaf: number | null = null
+function scheduleScrollHeavyWork() {
+  if (scrollHeavyRaf != null) return
+  scrollHeavyRaf = requestAnimationFrame(() => {
+    scrollHeavyRaf = null
+    updateViewportFocusAnchor()
+    if (showSearch.value && paras.value.length > 2000 &&
+        Math.abs(viewportCenterPara.value - searchHighlightCenter.value) > 100) {
+      searchHighlightCenter.value = viewportCenterPara.value
+    }
+  })
+}
+
+// 屏幕翻页模式：拖动滚动条 / 触控板惯性会让正文停在半页。滚动停下后回吸到最近整页。
+// 用 rAF 检测"滚动是否已停"（帧对齐，比定时器更准），并用程序化滚动抑制避免互相打架。
+let pageSnapRaf: number | null = null
+let pageSnapLastScrollAt = 0
+let suppressSnapUntil = 0
+function schedulePageSnap() {
+  if (readingMode.value !== 'screen') return
+  if (Date.now() < suppressSnapUntil) return
+  pageSnapLastScrollAt = performance.now()
+  if (pageSnapRaf != null) return
+  const settle = () => {
+    pageSnapRaf = null
+    if (readingMode.value !== 'screen' || Date.now() < suppressSnapUntil) return
+    // 距最后一次滚动不足 ~140ms 说明还在滑，下一帧再看
+    if (performance.now() - pageSnapLastScrollAt < 140) {
+      pageSnapRaf = requestAnimationFrame(settle)
+      return
+    }
+    snapToVisualPage()
+  }
+  pageSnapRaf = requestAnimationFrame(settle)
 }
 
 // 「滚到章末自动接下一章」：只在连续滚动模式下、开关打开、本章已排完、且确实贴底时触发。
@@ -1964,6 +2005,8 @@ onUnmounted(() => {
   stopAutoScroll()
   ttsStop()
   if (renderTimer) clearTimeout(renderTimer)
+  if (pageSnapRaf != null) { cancelAnimationFrame(pageSnapRaf); pageSnapRaf = null }
+  if (scrollHeavyRaf != null) { cancelAnimationFrame(scrollHeavyRaf); scrollHeavyRaf = null }
   renderGeneration++
   clearToolHideTimer()
   void flushReaderPrefsSave()
@@ -2112,9 +2155,9 @@ onUnmounted(() => {
               <strong>已读完《{{ book.title }}》</strong>
               <n-button size="small" @click="emit('back')">返回书库</n-button>
             </div>
-            <div v-if="readingMode === 'screen'" class="reader-page-indicator">{{ visualPageLabel(visualPageIndexView, visualPageCountView) }}</div>
           </template>
         </div>
+        <div v-if="readingMode === 'screen'" class="reader-page-indicator">{{ visualPageLabel(visualPageIndexView, visualPageCountView) }}</div>
         <button class="chapter-hotzone right" :disabled="!followingChapter" :title="followingChapter ? `下一章：${followingChapter.title}` : '已经是最后一章'" aria-label="下一章" @click="nextChapter"><span>›</span></button>
         </div>
       </div>
@@ -3535,11 +3578,17 @@ onUnmounted(() => {
 }
 
 .reader-page-indicator {
+  /* 挂在 .reader-body（不滚动的定位上下文）上，不随正文滚动走掉；
+     z-index 高于 chapter-hotzone，避免被翻章热区盖住。 */
   position: absolute;
+  z-index: 26;
   right: 16px;
   bottom: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
   pointer-events: none;
   color: var(--r-muted);
+  background: color-mix(in srgb, var(--reader-paper) 82%, transparent);
   font-size: 12px;
 }
 

@@ -180,7 +180,8 @@ describe('automatic full-book overview', () => {
     let release!: () => void
     mocks.complete.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ text: 'x', truncated: false, usage: {} }) }))
     service.start()
-    await vi.waitFor(async () => { expect((await view()).status).toBe('running') }, { timeout: 10_000 })
+    // 等模型真的被调用（running 状态早于 complete 被调用，直接等 release 就绪更稳）
+    await vi.waitFor(() => { expect(typeof release).toBe('function') }, { timeout: 10_000 })
     service.stop()
     release()
     // 取消后不该留下 failed 标记
