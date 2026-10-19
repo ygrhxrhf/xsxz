@@ -4,6 +4,9 @@ copyright: Copyright © 2026
 directories:
   output: release
   buildResources: build
+# 复用已解压的 Electron：解压 zip 后 default_app.asar 会被 Windows Defender 锁住，
+# 导致 electron-builder 的 rename/copy 持续 EPERM/EBUSY；直接复制本地 dist 可绕开。
+electronDist: node_modules/electron/dist
 files:
   - out/**/*
   - node_modules/**/*
