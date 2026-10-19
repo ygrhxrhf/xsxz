@@ -86,6 +86,7 @@ import {
   loadAndGetHtmlForTests,
   resetDownloadStateForTests,
   setBrowseView,
+  setNavigationGraceForTests,
   setOwnerWindow,
   setTestHtmlLoader,
   startDownload,
@@ -334,6 +335,20 @@ describe('loadAndGetHtml settle', () => {
     const html = await p
     expect(html).toContain('id="list"')
     expect(view.webContents.executeCalls).toBeGreaterThanOrEqual(1)
+  })
+
+  it('did-finish-load 被子资源拖住时，dom-ready 宽限后照常提取正文', async () => {
+    setNavigationGraceForTests(40)
+    const view = getHiddenView() as unknown as FakeView
+    view.webContents.html = fixture('chapter.html')
+    view.webContents.loadURLHandler = () => new Promise(() => {})
+    const p = loadAndGetHtmlForTests(view as never, 'https://example.com/book/1.html')
+    await new Promise((r) => setTimeout(r, 20))
+    const started = Date.now()
+    view.webContents.emit('dom-ready')
+    const html = await p
+    expect(html).toContain('张若尘')
+    expect(Date.now() - started).toBeLessThan(1000)
   })
 
   it('settles on loadURL() promise when no load events fire', async () => {

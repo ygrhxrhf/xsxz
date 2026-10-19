@@ -77,6 +77,17 @@ const MAX_CONTINUATION_PAGES = 3
 /** 墙页判定放在头几轮轮询里做：既快，又不给真正的 SPA 页面加每次轮询的解析开销。 */
 const WALL_PROBE_POLLS = 2
 const LOAD_TIMEOUT_MS = 25_000
+/**
+ * 子资源（广告/统计）会永久拖住 did-finish-load，但 dom-ready 后正文已经可读。
+ * 等这么久还没 finish 就先行进入水合轮询，避免每章白等满 LOAD_TIMEOUT_MS。
+ */
+const DOM_READY_GRACE_MS = 1_500
+let domReadyGraceMs = DOM_READY_GRACE_MS
+
+/** 测试用：缩短 dom-ready 宽限，避免用例真等 1.5s。 */
+export function setNavigationGraceForTests(ms: number | null): void {
+  domReadyGraceMs = ms ?? DOM_READY_GRACE_MS
+}
 /** Poll interval after navigation settles. Classic HTML should pass the first tick. */
 export const HYDRATE_POLL_MS = 300
 /** Cap for catalog/body ready wait (10–15s). Hash SPA hydration, not a extra sleep on HTML. */
@@ -271,6 +282,7 @@ export function resetDownloadStateForTests(): void {
   ownerWindow = null
   checkAllCancelled = false
   checkAllRunning = false
+  domReadyGraceMs = DOM_READY_GRACE_MS
   pendingPreview = null
 }
 
@@ -609,6 +621,7 @@ async function waitForNavigationSettle(wc: Electron.WebContents, url: string): P
   clearMainFrameStatus(url)
   await new Promise<void>((resolve, reject) => {
     let settled = false
+    let graceTimer: NodeJS.Timeout | undefined
     const timer = setTimeout(() => {
       cleanup()
       try {
@@ -627,6 +640,11 @@ async function waitForNavigationSettle(wc: Electron.WebContents, url: string): P
       cleanup()
       resolve()
     }
+    const onDomReady = () => {
+      if (settled || graceTimer) return
+      // 正文已在 DOM 里；水合轮询会继续等 SPA，这里不再陪挂起的广告子资源。
+      graceTimer = setTimeout(onOk, domReadyGraceMs)
+    }
     const onCancel = () => {
       cleanup()
       try {
@@ -640,7 +658,9 @@ async function waitForNavigationSettle(wc: Electron.WebContents, url: string): P
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (graceTimer) clearTimeout(graceTimer)
       cancelWaiters.delete(onCancel)
+      wc.removeListener('dom-ready', onDomReady)
       wc.removeListener('did-finish-load', onOk)
       wc.removeListener('did-navigate-in-page', onOk)
       wc.removeListener('did-fail-load', onFail)
@@ -650,6 +670,7 @@ async function waitForNavigationSettle(wc: Electron.WebContents, url: string): P
       onCancel()
       return
     }
+    wc.on('dom-ready', onDomReady)
     wc.on('did-finish-load', onOk)
     wc.on('did-navigate-in-page', onOk)
     wc.on('did-fail-load', onFail)
