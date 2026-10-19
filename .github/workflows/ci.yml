@@ -1,0 +1,30 @@
+name: ci
+
+# The project targets Windows (Electron + native paths in tests), so the runner
+# matches the machine the suite was written on rather than a Linux container.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # Tests run under vitest in Node; the Electron binary is not needed and
+      # downloading it would add ~100 MB per run.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test

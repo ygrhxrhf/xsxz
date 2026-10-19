@@ -93,9 +93,12 @@ describe('webAnnotations（网页阅读模式标注）', () => {
 
   it('drops illegal items on read and caps the file', async () => {
     const { writeFile } = await import('node:fs/promises')
+    // 基准时间必须显式用 UTC：本用例先写 5005 条超限数据，再断言 id=ok 的那条被保留，
+    // 而保留策略是按 createdAt 升序取最后 5000 条。若这里用本地时间构造，在 UTC+8 上
+    // 这些时间戳会早于 ok，在 UTC 的 CI 上却晚于 ok，测试结果随 runner 时区翻转。
     const seeded = Array.from({ length: WEB_ANNOTATION_LIMIT + 5 }, (_, i) => ({
       id: `a${i}`, url: URL_B, kind: 'bookmark', start: 0, end: 0, excerpt: '',
-      createdAt: new Date(2026, 0, 1, 0, 0, i % 60, i % 1000).toISOString(),
+      createdAt: new Date(Date.UTC(2025, 11, 31, 23, 59, 0, i % 1000)).toISOString(),
     }))
     await writeFile(join(dir, 'web-annotations.json'), JSON.stringify({
       version: 1,
