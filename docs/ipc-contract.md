@@ -188,6 +188,25 @@
 
 ---
 
+## 整站镜像
+
+从分类 / 作者 / 搜索结果列表页批量把书下载进书库。一期只跟同源「下一页」，最多 10 页；每本仍走「下载」一节同一条通道（隐藏视图加载、通用提取、撞墙暂停），因此与 `download.*` 共用单任务锁。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `mirror.start` | invoke | `{ seedUrl?: string; maxBooks?: number; maxPages?: number }` | `{ ok: true; jobId: string } \| { ok: false; message: string }` |
+| `mirror.cancel` | invoke | 无 | `{ ok: true }` |
+| `mirror.state` | invoke | 无 | `{ ok: true; state: MirrorStateView }` |
+| `mirror.progress` | 主→渲染 | — | `MirrorProgress` |
+
+- `seedUrl` 省略时用当前浏览页；非 http(s) 拒绝。`maxBooks` 缺省 10、夹紧 1–50；`maxPages` 缺省 3、夹紧 1–10。
+- 书目发现只取同源链接，排除导航 / 登录 / 搜索 / 分页 / 资源后缀与重复地址，按 `/book/`、`/novel/` 等路径特征打分；都没有特征时退回已过滤的同源链接。没有可识别链接则以 `status: 'error'` 结束并给中文原因。
+- 逐本串行：上一本 `waitForIdle` 结束才开下一本；单本失败不终止整批，进 `results`。`mirror.cancel` 在书目之间生效，正在下载的那本走 `download.cancel`，已入库的书保留。
+- 结束态为 `done` / `cancelled` / `error`，写入 `userData/mirror-state.json`（只保留最近一次任务）；`mirror.state` 返回 `{ running, last }`，界面重开可回看。
+- 不做：跨域、站内搜索接口、代登录、断点续爬队列。
+
+---
+
 ## 备份
 
 | 频道 | 方向 | 请求 | 响应 |
@@ -424,6 +443,7 @@ window.api = {
   library: { list, get, readChapter, delete, import, setProgress, getReadFrontier, markReadFrontier, confirmLegacyReadRange, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, getReadingStats, listTrash, restoreTrash, purgeTrash },
   bookOverview: { retry, onChanged },
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
+  mirror: { start, cancel, state, onProgress },
   settings: { get, set },
   backup: { create, restore, runAuto },
   ocr: { status },

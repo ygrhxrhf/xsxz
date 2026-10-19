@@ -193,6 +193,17 @@ const api = {
     onCheckAllProgress: (handler: (payload: import('../shared/types').CheckAllProgress) => void) =>
       on('download.checkAll.progress', handler),
   },
+  mirror: {
+    start: (options: { seedUrl?: string; maxBooks?: number; maxPages?: number }) =>
+      ipcRenderer.invoke('mirror.start', options) as Promise<
+        { ok: true; jobId: string } | { ok: false; message: string }
+      >,
+    cancel: () => ipcRenderer.invoke('mirror.cancel') as Promise<{ ok: true }>,
+    state: () =>
+      ipcRenderer.invoke('mirror.state') as Promise<{ ok: true; state: import('../shared/types').MirrorStateView }>,
+    onProgress: (handler: (payload: import('../shared/types').MirrorProgress) => void) =>
+      on('mirror.progress', handler),
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings.get') as Promise<Settings>,
     set: (update: SettingsUpdate) => ipcRenderer.invoke('settings.set', update) as Promise<Settings>,

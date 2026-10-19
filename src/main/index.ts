@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseReadingChapter, BrowseReadingPage, BrowseState, BrowseChapterLink, Settings, SiteRule } from '../shared/types'
+import { readFile, writeFile } from 'node:fs/promises'
+import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseReadingChapter, BrowseReadingPage, BrowseState, BrowseChapterLink, MirrorProgress, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import {
@@ -38,7 +39,8 @@ import {
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
-import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView, disposeHiddenView } from './download'
+import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, startDownloadFromPage, waitForIdle } from './download'
+import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
 import { ocrEngineReady, shutdownOcrEngine } from './ocrText'
@@ -467,6 +469,30 @@ function applyBrowseBounds(): void {
   browseView.setBounds(lastBounds)
 }
 
+/** 镜像状态文件：只保留最近一次任务，界面重开时能看到上次结果。 */
+function mirrorStatePath(): string {
+  return join(app.getPath('userData'), 'mirror-state.json')
+}
+
+async function configureMirrorRuntime(): Promise<void> {
+  setMirrorDeps({
+    loadHtml: (url) => loadPageHtml(url),
+    startBook: (html, url) => startDownloadFromPage(html, url),
+    // 一本数百章的书要跑很久；镜像按本串行，30 分钟只防死等。
+    waitIdle: () => waitForIdle(30 * 60_000),
+    cancelBook: (bookId) => cancelDownload(bookId),
+    emit: (progress) => { mainWindow?.webContents.send('mirror.progress', progress) },
+    saveState: (progress) => writeFile(mirrorStatePath(), JSON.stringify(progress), 'utf8'),
+    now: () => Date.now(),
+  })
+  try {
+    const saved = JSON.parse(await readFile(mirrorStatePath(), 'utf8')) as MirrorProgress
+    if (saved && typeof saved.jobId === 'string' && typeof saved.status === 'string') setMirrorLastState(saved)
+  } catch {
+    /* 首次运行没有历史状态 */
+  }
+}
+
 function createWindow(): void {
   const ses = novelSession()
   mainWindow = new BrowserWindow({
@@ -510,6 +536,7 @@ function createWindow(): void {
   })
 
   setOwnerWindow(mainWindow)
+  void configureMirrorRuntime()
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -1124,6 +1151,17 @@ function registerIpc(): void {
     cancelCheckAll()
     return { ok: true }
   })
+
+  ipcMain.handle('mirror.start', async (_e, args: { seedUrl?: string; maxBooks?: number; maxPages?: number } | undefined) => {
+    if (isDownloadBusy()) return { ok: false, message: '下载任务进行中，等它结束再镜像' }
+    const seedUrl = args?.seedUrl?.trim() || browseView?.webContents.getURL() || ''
+    return startMirror({ seedUrl, maxBooks: args?.maxBooks, maxPages: args?.maxPages })
+  })
+  ipcMain.handle('mirror.cancel', () => {
+    cancelMirror()
+    return { ok: true }
+  })
+  ipcMain.handle('mirror.state', () => ({ ok: true, state: getMirrorState() }))
 
   ipcMain.handle('siteRules.list', async () => {
     const rules = await listSiteRules()
