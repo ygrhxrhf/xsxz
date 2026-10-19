@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NProgress, NTag, useMessage } from 'naive-ui'
+import { NButton, NDrawer, NDrawerContent, NInputNumber, NProgress, NTag, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS, DEFAULT_WEB_READING_PREFS } from '@shared/types'
 import { READER_THEME_COLORS } from '@shared/readerTheme'
-import type { BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, PreviewPageKind, ReaderPrefs, WebAnnotation, WebReadingPrefs, WebShelfChapter } from '@shared/types'
+import type { BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, MirrorProgress, PreviewPageKind, ReaderPrefs, WebAnnotation, WebReadingPrefs, WebShelfChapter } from '@shared/types'
 import { adjacentVisualPage, scrollTopForVisualPage, visualPageCount, visualPageIndex, visualPageLabel } from './readerPager'
 import { approximateBookRatioFromIndex, clampRatio, paragraphIndexAtViewportCenter, readerScrollBehavior, selectionPopupPosition, shouldAutoHideReaderTools, wheelPageDirection } from './readerHelpers'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
@@ -216,6 +216,24 @@ const previewFailure = ref<{ message: string; pageKind: PreviewPageKind; code?: 
 const adFilterEnabled = ref(true)
 const adFilterBusy = ref(false)
 let lastAdHost = ''
+
+// Mirror state（整站镜像：从分类 / 作者页批量入书库）
+const showMirror = ref(false)
+const mirrorProgress = ref<MirrorProgress | null>(null)
+const mirrorBusy = ref(false)
+const mirrorMaxBooks = ref(10)
+const mirrorMaxPages = ref(3)
+const mirrorError = ref('')
+const mirrorRunning = computed(() => mirrorBusy.value || mirrorProgress.value?.status === 'running')
+const mirrorRecentResults = computed(() => (mirrorProgress.value?.results ?? []).slice(-10))
+const mirrorStatusText = computed(() => {
+  const status = mirrorProgress.value?.status
+  if (status === 'running') return '镜像中'
+  if (status === 'done') return '已完成'
+  if (status === 'cancelled') return '已取消'
+  if (status === 'error') return '出错'
+  return ''
+})
 
 const canOpenDownloadedBook = computed(() => {
   const p = downloadProgress.value
@@ -1272,6 +1290,62 @@ async function cancelDownload() {
   await window.api.download.cancel()
 }
 
+async function openMirror() {
+  if (!state.value.url || state.value.url === 'about:blank') return
+  mirrorError.value = ''
+  showMirror.value = true
+  try {
+    const res = await window.api.mirror.state()
+    if (res.ok && res.state.last) mirrorProgress.value = res.state.last
+  } catch {
+    /* 读不到上次状态不影响开始 */
+  }
+}
+
+async function startMirrorJob() {
+  if (mirrorRunning.value) return
+  mirrorError.value = ''
+  const seedUrl = state.value.url || address.value
+  if (!seedUrl || seedUrl === 'about:blank') {
+    mirrorError.value = '请先打开分类页、作者页或搜索结果页'
+    return
+  }
+  mirrorBusy.value = true
+  try {
+    const res = await window.api.mirror.start({
+      seedUrl,
+      maxBooks: mirrorMaxBooks.value ?? 10,
+      maxPages: mirrorMaxPages.value ?? 3,
+    })
+    if (!res.ok) {
+      mirrorError.value = res.message
+      return
+    }
+    mirrorProgress.value = {
+      jobId: res.jobId,
+      seedUrl,
+      status: 'running',
+      total: 0,
+      done: 0,
+      failed: 0,
+      pagesScanned: 0,
+      results: [],
+    }
+  } catch (error) {
+    mirrorError.value = error instanceof Error ? error.message : '镜像启动失败'
+  } finally {
+    mirrorBusy.value = false
+  }
+}
+
+async function cancelMirrorJob() {
+  try {
+    await window.api.mirror.cancel()
+  } catch {
+    /* 取消失败时等进度事件收口 */
+  }
+}
+
 async function retryFailedChapters() {
   const bookId = downloadProgress.value?.bookId
   if (!bookId || retryingFailed.value || downloading.value) return
@@ -1360,6 +1434,7 @@ onMounted(async () => {
       showProgress.value = true
     }
   }))
+  unsubs.push(window.api.mirror.onProgress((progress) => { mirrorProgress.value = progress }))
 })
 
 onUnmounted(() => {
@@ -1414,6 +1489,14 @@ onUnmounted(() => {
             @click.prevent="startDownload"
           >
             下载本书
+          </n-button>
+          <n-button
+            size="small"
+            secondary
+            :disabled="mirrorRunning || !state.url"
+            @click.prevent="openMirror"
+          >
+            {{ mirrorRunning ? '镜像中…' : '整站镜像' }}
           </n-button>
           <details class="browser-more">
             <summary>更多工具</summary>
@@ -1819,6 +1902,51 @@ onUnmounted(() => {
         <div v-else class="dl-waiting">等待下载开始…</div>
       </n-drawer-content>
     </n-drawer>
+
+    <!-- 整站镜像：列表页批量入书库 -->
+    <n-drawer v-model:show="showMirror" placement="right" :width="440">
+      <n-drawer-content title="整站镜像" closable>
+        <div class="mirror-panel">
+          <p class="mirror-hint">从当前分类 / 作者 / 搜索结果页批量下载同站的书。每本都走「下载本书」同一条通道，按本串行。</p>
+          <div class="mirror-options">
+            <label>最多本数
+              <n-input-number v-model:value="mirrorMaxBooks" size="small" :min="1" :max="50" />
+            </label>
+            <label>最多页数
+              <n-input-number v-model:value="mirrorMaxPages" size="small" :min="1" :max="10" />
+            </label>
+          </div>
+          <div class="mirror-actions">
+            <n-button type="primary" size="small" :loading="mirrorBusy" :disabled="mirrorRunning" @click="startMirrorJob">开始镜像</n-button>
+            <n-button size="small" quaternary type="error" :disabled="!mirrorRunning" @click="cancelMirrorJob">取消镜像</n-button>
+          </div>
+          <div v-if="mirrorError" class="dl-error" role="alert">{{ mirrorError }}</div>
+          <div v-if="mirrorProgress" class="dl-progress">
+            <div class="dl-title">{{ mirrorStatusText }} · {{ mirrorProgress.seedUrl }}</div>
+            <n-progress
+              type="line"
+              :percentage="mirrorProgress.total > 0 ? Math.round((mirrorProgress.done + mirrorProgress.failed) / mirrorProgress.total * 100) : 0"
+              :status="mirrorProgress.status === 'error' ? 'error' : mirrorProgress.status === 'done' ? 'success' : mirrorProgress.status === 'cancelled' ? 'warning' : 'default'"
+            />
+            <div class="dl-stats">
+              <span>已下 {{ mirrorProgress.done }} / 失败 {{ mirrorProgress.failed }} / 共 {{ mirrorProgress.total }} 本</span>
+              <span>已扫描 {{ mirrorProgress.pagesScanned }} 页</span>
+            </div>
+            <div v-if="mirrorProgress.currentTitle" class="dl-current">正在下载：{{ mirrorProgress.currentTitle }}</div>
+            <div v-if="mirrorProgress.message" class="dl-error">{{ mirrorProgress.message }}</div>
+            <ul v-if="mirrorRecentResults.length > 0" class="mirror-results">
+              <li v-for="item in mirrorRecentResults" :key="item.url">
+                <span class="mirror-name">{{ item.title }}</span>
+                <n-tag size="small" :type="item.status === 'downloaded' ? 'success' : 'error'">
+                  {{ item.status === 'downloaded' ? '已入库' : '失败' }}
+                </n-tag>
+                <span v-if="item.message" class="mirror-reason">{{ item.message }}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </n-drawer-content>
+    </n-drawer>
   </div>
 </template>
 
@@ -2188,6 +2316,68 @@ onUnmounted(() => {
   font-size: 15px;
   font-weight: 600;
   margin-bottom: var(--space-2);
+}
+
+.mirror-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.mirror-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.mirror-options {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.mirror-options label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.mirror-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.mirror-results {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.mirror-results li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+}
+
+.mirror-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirror-reason {
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .dl-stats {
