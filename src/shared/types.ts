@@ -237,6 +237,40 @@ export interface DownloadBlocked {
 /** 预览失败时附带的页面类型，界面据此决定提示和后续动作。 */
 export type PreviewPageKind = 'catalog' | 'chapter' | 'unknown'
 
+/**
+ * 整站镜像：从分类 / 作者等列表页批量把书下载进书库。
+ * 一期只镜像当前列表页及其同源「下一页」，不跨域、不猜接口。
+ */
+export interface MirrorBookResult {
+  url: string
+  title: string
+  status: 'downloaded' | 'failed'
+  bookId?: string
+  message?: string
+}
+
+export interface MirrorProgress {
+  jobId: string
+  seedUrl: string
+  /** `running` 之外都是结束态，结束时结果不再变化。 */
+  status: 'running' | 'done' | 'cancelled' | 'error'
+  /** 已发现的待下书目数；书目发现完成后才稳定。 */
+  total: number
+  done: number
+  failed: number
+  /** 已扫描的列表页数（含种子页）。 */
+  pagesScanned: number
+  currentTitle?: string
+  results: MirrorBookResult[]
+  /** 结束态的一句话原因；running 时不带。 */
+  message?: string
+}
+
+export interface MirrorStateView {
+  running: boolean
+  last: MirrorProgress | null
+}
+
 export interface DownloadPreview {
   token: string
   pageUrl: string

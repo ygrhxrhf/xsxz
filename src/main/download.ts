@@ -750,7 +750,7 @@ export function loadAndGetHtmlForTests(view: WebContentsView, url: string): Prom
   return loadAndGetHtml(view, url, true)
 }
 
-async function loadPageHtml(url: string): Promise<string> {
+export async function loadPageHtml(url: string): Promise<string> {
   if (testHtmlLoader) {
     if (anyActiveCancelled()) throw new Error('已取消')
     await guardHttpStatus(url)
