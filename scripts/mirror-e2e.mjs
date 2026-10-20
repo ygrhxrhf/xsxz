@@ -70,7 +70,7 @@ const userData = await mkdtemp(join(tmpdir(), 'spbf-mirror-e2e-'))
 const libraryPath = join(userData, 'library')
 await writeFile(join(userData, 'settings.json'), JSON.stringify({ libraryPath }, null, 2))
 
-const child = spawn(electronPath, [root, `--user-data-dir=${userData}`, `--remote-debugging-port=${PORT_CDP}`], {
+const child = spawn(electronPath, [root, '--no-sandbox', `--user-data-dir=${userData}`, `--remote-debugging-port=${PORT_CDP}`], {
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let stdout = ''
@@ -159,6 +159,19 @@ try {
   const persisted = JSON.parse(await readFile(join(userData, 'mirror-state.json'), 'utf-8'))
   check('mirror-state.json 落盘最近一次任务', persisted.status === 'done' && persisted.done === 2, JSON.stringify({ status: persisted.status, done: persisted.done }))
   check('书库目录写到了临时路径', existsSync(libraryPath))
+
+  // 第二轮：同一列表页再跑一次，两本都该按 sourceUrl 跳过，不再抓书页。
+  const again = await evaluate(ws, `window.api.mirror.start(${JSON.stringify({ seedUrl: `${base}/list.html`, maxBooks: 2, maxPages: 1 })})`)
+  check('第二次 mirror.start 返回 jobId', again?.ok === true, JSON.stringify(again))
+  let second = null
+  const secondDeadline = Date.now() + 60_000
+  while (Date.now() < secondDeadline) {
+    second = (await evaluate(ws, 'window.api.mirror.state()'))?.state?.last
+    if (second && second.status !== 'running') break
+    await sleep(1000)
+  }
+  check('第二次把两本都标为已在书库', second?.status === 'done' && second?.skipped === 2 && second?.done === 0, JSON.stringify(second && { status: second.status, skipped: second.skipped, done: second.done }))
+  check('跳过的书不再重复入库', ((await evaluate(ws, 'window.api.library.list()'))?.books ?? []).length === 2)
   ws.close()
 } catch (error) {
   check('E2E 跑到收尾', false, error instanceof Error ? error.message : String(error))
