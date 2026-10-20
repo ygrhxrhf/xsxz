@@ -750,6 +750,11 @@ export function loadAndGetHtmlForTests(view: WebContentsView, url: string): Prom
   return loadAndGetHtml(view, url, true)
 }
 
+/** 给镜像预取用：在调用方自己的隐藏视图里加载页面，复用同一套水合与探测。 */
+export function loadPageHtmlWithView(view: WebContentsView, url: string): Promise<string> {
+  return loadAndGetHtml(view, url)
+}
+
 export async function loadPageHtml(url: string): Promise<string> {
   if (testHtmlLoader) {
     if (anyActiveCancelled()) throw new Error('已取消')

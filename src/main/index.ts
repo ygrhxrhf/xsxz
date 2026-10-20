@@ -43,7 +43,7 @@ import {
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
-import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, startDownloadFromPage, waitForIdle } from './download'
+import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdle } from './download'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
@@ -478,9 +478,66 @@ function mirrorStatePath(): string {
   return join(app.getPath('userData'), 'mirror-state.json')
 }
 
+/**
+ * 镜像预取视图：与下载的隐藏视图分开，当前这本书在下载时，
+ * 下一本的书目页可以同时抓回来。下载仍由单任务锁串行。
+ */
+let mirrorPrefetchView: WebContentsView | null = null
+const mirrorPrefetchCache = new Map<string, Promise<string>>()
+
+function getMirrorPrefetchView(): WebContentsView {
+  if (!mirrorPrefetchView || mirrorPrefetchView.webContents.isDestroyed()) {
+    mirrorPrefetchView = new WebContentsView({
+      webPreferences: {
+        session: novelSession(),
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+    mirrorPrefetchView.setVisible(false)
+    mirrorPrefetchView.setBounds({ x: -2400, y: -2400, width: 800, height: 600 })
+  }
+  return mirrorPrefetchView
+}
+
+function prefetchMirrorPage(url: string): void {
+  if (mirrorPrefetchCache.has(url)) return
+  const pending = loadPageHtmlWithView(getMirrorPrefetchView(), url)
+  mirrorPrefetchCache.set(url, pending)
+  while (mirrorPrefetchCache.size > 4) {
+    const oldest = mirrorPrefetchCache.keys().next().value
+    if (oldest === undefined) break
+    mirrorPrefetchCache.delete(oldest)
+  }
+  void pending.catch(() => { mirrorPrefetchCache.delete(url) })
+}
+
+function disposeMirrorPrefetch(): void {
+  mirrorPrefetchCache.clear()
+  try {
+    mirrorPrefetchView?.webContents.close()
+  } catch {
+    /* 已经销毁 */
+  }
+  mirrorPrefetchView = null
+}
+
 async function configureMirrorRuntime(): Promise<void> {
   setMirrorDeps({
-    loadHtml: (url) => loadPageHtml(url),
+    loadHtml: async (url) => {
+      const pending = mirrorPrefetchCache.get(url)
+      if (pending !== undefined) {
+        mirrorPrefetchCache.delete(url)
+        try {
+          return await pending
+        } catch {
+          /* 预取失败就走正常加载 */
+        }
+      }
+      return loadPageHtml(url)
+    },
+    prefetch: (url) => prefetchMirrorPage(url),
     startBook: (html, url) => startDownloadFromPage(html, url),
     // 一本数百章的书要跑很久；镜像按本串行，30 分钟只防死等。
     waitIdle: () => waitForIdle(30 * 60_000),
@@ -567,6 +624,7 @@ function createWindow(): void {
     browseAdApplySeq++
     if (browseScrollTimer) clearInterval(browseScrollTimer)
     browseScrollTimer = null
+    disposeMirrorPrefetch()
   })
 
   setOwnerWindow(mainWindow)

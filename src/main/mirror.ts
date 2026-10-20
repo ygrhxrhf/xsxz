@@ -39,6 +39,8 @@ export interface MirrorDeps {
   cancelBook(bookId: string): void
   /** 书库里的真值：这本书是否已存在、是否已完整。返回 null 表示没有。 */
   lookupExisting(url: string): Promise<{ bookId: string; complete: boolean } | null>
+  /** 预取下一本的书目页；与下载并行，失败不影响主流程。 */
+  prefetch?(url: string): void
   emit(progress: MirrorProgress): void
   saveState(progress: MirrorProgress): Promise<void>
   now(): number
@@ -298,7 +300,8 @@ async function run(job: MirrorProgress, maxBooks: number, maxPages: number, pend
       await publish(job)
     }
 
-    for (const item of pending) {
+    for (let index = 0; index < pending.length; index++) {
+      const item = pending[index]!
       if (cancelled) break
       job.currentTitle = item.title
       await publish(job)
@@ -322,6 +325,9 @@ async function run(job: MirrorProgress, maxBooks: number, maxPages: number, pend
         const started = await d.startBook(html, item.url)
         if (started.ok && started.bookId) {
           currentBookId = started.bookId
+          // 下载这本书的时候，用独立的预取视图抓下一本的书目页。
+          const upcoming = pending[index + 1]
+          if (upcoming) d.prefetch?.(upcoming.url)
           await d.waitIdle()
           currentBookId = undefined
           // 中途取消的那本不记结果，续跑时幂等重试。

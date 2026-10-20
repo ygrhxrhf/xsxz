@@ -38,11 +38,13 @@ function makeDeps(overrides: Partial<MirrorDeps> = {}): {
   started: string[]
   loaded: string[]
   cancelledBooks: string[]
+  prefetched: string[]
   completed: Set<string>
 } {
   const started: string[] = []
   const loaded: string[] = []
   const cancelledBooks: string[] = []
+  const prefetched: string[] = []
   const completed = new Set<string>()
   const pages: Record<string, string> = {
     'https://novel.test/category/2': LIST_PAGE,
@@ -69,12 +71,13 @@ function makeDeps(overrides: Partial<MirrorDeps> = {}): {
     cancelBook: (bookId: string) => { cancelledBooks.push(bookId) },
     lookupExisting: async (url: string) =>
       completed.has(url) ? { bookId: `book-${url.split('/').filter(Boolean).pop()}`, complete: true } : null,
+    prefetch: (url: string) => { prefetched.push(url) },
     emit: () => {},
     saveState: async () => {},
     now: () => 0,
     ...overrides,
   }
-  return { deps, started, loaded, cancelledBooks, completed }
+  return { deps, started, loaded, cancelledBooks, prefetched, completed }
 }
 
 async function waitForFinish(timeoutMs = 2000): Promise<MirrorProgress> {
@@ -241,6 +244,14 @@ describe('startMirror', () => {
     expect(secondStarted).toEqual(['https://novel.test/book/102/'])
     expect(last.skipped).toBe(1)
     expect(last.done).toBe(1)
+  })
+
+  it('prefetches the next book page while the current one downloads', async () => {
+    const { deps, prefetched } = makeDeps()
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 2, maxPages: 1 })
+    await waitForFinish()
+    expect(prefetched).toEqual(['https://novel.test/book/102/'])
   })
 
   it('refuses resume from a different seed or with no pending plan', async () => {
