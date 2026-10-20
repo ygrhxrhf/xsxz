@@ -234,6 +234,14 @@ const mirrorStatusText = computed(() => {
   if (status === 'error') return '出错'
   return ''
 })
+const mirrorCanResume = computed(() => {
+  const p = mirrorProgress.value
+  if (!p || p.status === 'running') return false
+  const planned = p.plan?.length ?? 0
+  if (planned === 0) return false
+  // 还有没跑完的书目，或上次有失败要重试；页面上停在哪一页不影响继续。
+  return p.failed > 0 || p.results.length < planned
+})
 
 const canOpenDownloadedBook = computed(() => {
   const p = downloadProgress.value
@@ -1302,10 +1310,13 @@ async function openMirror() {
   }
 }
 
-async function startMirrorJob() {
+async function startMirrorJob(resume = false) {
   if (mirrorRunning.value) return
   mirrorError.value = ''
-  const seedUrl = state.value.url || address.value
+  // 续跑用上次保存的种子地址：用户可能已经翻到别的页，任务仍属于原列表页。
+  const seedUrl = resume && mirrorProgress.value?.seedUrl
+    ? mirrorProgress.value.seedUrl
+    : (state.value.url || address.value)
   if (!seedUrl || seedUrl === 'about:blank') {
     mirrorError.value = '请先打开分类页、作者页或搜索结果页'
     return
@@ -1316,20 +1327,27 @@ async function startMirrorJob() {
       seedUrl,
       maxBooks: mirrorMaxBooks.value ?? 10,
       maxPages: mirrorMaxPages.value ?? 3,
+      ...(resume ? { resume: true } : {}),
     })
     if (!res.ok) {
       mirrorError.value = res.message
       return
     }
-    mirrorProgress.value = {
-      jobId: res.jobId,
-      seedUrl,
-      status: 'running',
-      total: 0,
-      done: 0,
-      failed: 0,
-      pagesScanned: 0,
-      results: [],
+    if (!resume) {
+      mirrorProgress.value = {
+        jobId: res.jobId,
+        seedUrl,
+        status: 'running',
+        total: 0,
+        done: 0,
+        failed: 0,
+        skipped: 0,
+        pagesScanned: 0,
+        results: [],
+        plan: [],
+      }
+    } else if (mirrorProgress.value) {
+      mirrorProgress.value = { ...mirrorProgress.value, jobId: res.jobId, status: 'running', message: undefined }
     }
   } catch (error) {
     mirrorError.value = error instanceof Error ? error.message : '镜像启动失败'
@@ -1917,7 +1935,8 @@ onUnmounted(() => {
             </label>
           </div>
           <div class="mirror-actions">
-            <n-button type="primary" size="small" :loading="mirrorBusy" :disabled="mirrorRunning" @click="startMirrorJob">开始镜像</n-button>
+            <n-button type="primary" size="small" :loading="mirrorBusy" :disabled="mirrorRunning" @click="startMirrorJob()">开始镜像</n-button>
+            <n-button v-if="mirrorCanResume" size="small" secondary :loading="mirrorBusy" :disabled="mirrorRunning" @click="startMirrorJob(true)">继续上次</n-button>
             <n-button size="small" quaternary type="error" :disabled="!mirrorRunning" @click="cancelMirrorJob">取消镜像</n-button>
           </div>
           <div v-if="mirrorError" class="dl-error" role="alert">{{ mirrorError }}</div>
@@ -1925,11 +1944,11 @@ onUnmounted(() => {
             <div class="dl-title">{{ mirrorStatusText }} · {{ mirrorProgress.seedUrl }}</div>
             <n-progress
               type="line"
-              :percentage="mirrorProgress.total > 0 ? Math.round((mirrorProgress.done + mirrorProgress.failed) / mirrorProgress.total * 100) : 0"
+              :percentage="mirrorProgress.total > 0 ? Math.round((mirrorProgress.done + mirrorProgress.failed + mirrorProgress.skipped) / mirrorProgress.total * 100) : 0"
               :status="mirrorProgress.status === 'error' ? 'error' : mirrorProgress.status === 'done' ? 'success' : mirrorProgress.status === 'cancelled' ? 'warning' : 'default'"
             />
             <div class="dl-stats">
-              <span>已下 {{ mirrorProgress.done }} / 失败 {{ mirrorProgress.failed }} / 共 {{ mirrorProgress.total }} 本</span>
+              <span>已下 {{ mirrorProgress.done }} / 跳过 {{ mirrorProgress.skipped }} / 失败 {{ mirrorProgress.failed }} / 共 {{ mirrorProgress.total }} 本</span>
               <span>已扫描 {{ mirrorProgress.pagesScanned }} 页</span>
             </div>
             <div v-if="mirrorProgress.currentTitle" class="dl-current">正在下载：{{ mirrorProgress.currentTitle }}</div>
@@ -1937,8 +1956,11 @@ onUnmounted(() => {
             <ul v-if="mirrorRecentResults.length > 0" class="mirror-results">
               <li v-for="item in mirrorRecentResults" :key="item.url">
                 <span class="mirror-name">{{ item.title }}</span>
-                <n-tag size="small" :type="item.status === 'downloaded' ? 'success' : 'error'">
-                  {{ item.status === 'downloaded' ? '已入库' : '失败' }}
+                <n-tag
+                  size="small"
+                  :type="item.status === 'downloaded' ? 'success' : item.status === 'skipped' ? 'info' : 'error'"
+                >
+                  {{ item.status === 'downloaded' ? '已入库' : item.status === 'skipped' ? '已在书库' : '失败' }}
                 </n-tag>
                 <span v-if="item.message" class="mirror-reason">{{ item.message }}</span>
               </li>

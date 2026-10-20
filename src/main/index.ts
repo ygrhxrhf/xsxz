@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseReadingChapter, BrowseReadingPage, BrowseState, BrowseChapterLink, MirrorProgress, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
+import { canonicalizeUrl } from '../shared/urlHash'
 import {
   listBooks,
   getBook,
@@ -34,6 +35,9 @@ import {
   assertImportable,
   recoverInterruptedStatus,
   purgeExpiredTrash,
+  isBookComplete,
+  findExistingBookId,
+  normalizeBookHost,
   type AiMemoryCollection,
 } from './library'
 import { importTxt } from './importTxt'
@@ -481,13 +485,43 @@ async function configureMirrorRuntime(): Promise<void> {
     // 一本数百章的书要跑很久；镜像按本串行，30 分钟只防死等。
     waitIdle: () => waitForIdle(30 * 60_000),
     cancelBook: (bookId) => cancelDownload(bookId),
+    lookupExisting: async (url) => {
+      // 已入库的书按书目地址识别；完整与否问书库，不拿镜像日志当判据。
+      // 先用下载层的 bookId 变体（www / 非 www、目录跟进后的地址），再退回 sourceUrl 规范化比较。
+      try {
+        const host = normalizeBookHost(new URL(url).hostname)
+        const byIdentity = await findExistingBookId(host, url)
+        if (byIdentity !== null) return { bookId: byIdentity, complete: await isBookComplete(byIdentity) }
+      } catch {
+        /* 地址解析失败就只按 sourceUrl 比较 */
+      }
+      const key = canonicalizeUrl(url)
+      const books = await listBooks()
+      const hit = books.find((book) => book.sourceUrl !== undefined && canonicalizeUrl(book.sourceUrl) === key)
+      if (hit === undefined) return null
+      return { bookId: hit.id, complete: await isBookComplete(hit.id) }
+    },
     emit: (progress) => { mainWindow?.webContents.send('mirror.progress', progress) },
     saveState: (progress) => writeFile(mirrorStatePath(), JSON.stringify(progress), 'utf8'),
     now: () => Date.now(),
   })
   try {
     const saved = JSON.parse(await readFile(mirrorStatePath(), 'utf8')) as MirrorProgress
-    if (saved && typeof saved.jobId === 'string' && typeof saved.status === 'string') setMirrorLastState(saved)
+    if (saved && typeof saved.jobId === 'string' && typeof saved.status === 'string') {
+      if (saved.status === 'running') {
+        // 进程在任务中途退出：把脏 running 降级成可继续的取消态，界面才给「继续」。
+        const corrected: MirrorProgress = {
+          ...saved,
+          status: 'cancelled',
+          interrupted: true,
+          message: '上次镜像任务被中断，可继续',
+        }
+        setMirrorLastState(corrected)
+        await writeFile(mirrorStatePath(), JSON.stringify(corrected), 'utf8')
+      } else {
+        setMirrorLastState(saved)
+      }
+    }
   } catch {
     /* 首次运行没有历史状态 */
   }
@@ -1152,10 +1186,15 @@ function registerIpc(): void {
     return { ok: true }
   })
 
-  ipcMain.handle('mirror.start', async (_e, args: { seedUrl?: string; maxBooks?: number; maxPages?: number } | undefined) => {
+  ipcMain.handle('mirror.start', async (_e, args: { seedUrl?: string; maxBooks?: number; maxPages?: number; resume?: boolean } | undefined) => {
     if (isDownloadBusy()) return { ok: false, message: '下载任务进行中，等它结束再镜像' }
     const seedUrl = args?.seedUrl?.trim() || browseView?.webContents.getURL() || ''
-    return startMirror({ seedUrl, maxBooks: args?.maxBooks, maxPages: args?.maxPages })
+    return startMirror({
+      seedUrl,
+      maxBooks: args?.maxBooks,
+      maxPages: args?.maxPages,
+      resume: args?.resume === true,
+    })
   })
   ipcMain.handle('mirror.cancel', () => {
     cancelMirror()

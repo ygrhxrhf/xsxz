@@ -128,7 +128,7 @@
 
 `library.markReadFrontier` 由阅读器按视窗底部段落及字符上报，主进程验证位置并单调保存；跳章不补记跳过的章节。旧进度只作为提案，调用 `library.confirmLegacyReadRange` 后才用于 AI 取材。正文变化时旧位置失效。
 
-`Book.tags` / `BookListItem.tags` 始终是 `string[]`，缺省 `[]`。磁盘上旧书没有 `tags` 时按空数组读取，不得因此失败。`BookListItem.coverPath` 可选，有封面时给出相对书目录的路径。`library.updateMeta` 只改书名、作者和标签；`library.setCover` 用本机图片写入封面并返回 `coverPath`。`library.pickCoverFile` 打开本机选图对话框，取消时返回 `null`。
+`Book.tags` / `BookListItem.tags` 始终是 `string[]`，缺省 `[]`。磁盘上旧书没有 `tags` 时按空数组读取，不得因此失败。`BookListItem.coverPath` 可选，有封面时给出相对书目录的路径。`BookListItem.sourceUrl` 可选，下载来的书带原始目录地址；整站镜像用它判断「这本已在书库」。索引版本 2 起写入该字段，旧索引会重建一次。`library.updateMeta` 只改书名、作者和标签；`library.setCover` 用本机图片写入封面并返回 `coverPath`。`library.pickCoverFile` 打开本机选图对话框，取消时返回 `null`。
 
 `BookListItem.overview` 是列表读取时附加的可选视图状态，包含 `status`、可选 `text` 和 `message`。状态为 `off | waiting | pending | running | ready | stale | failed`。`bookOverview.retry` 清除本书当前失败标记并唤醒后台队列；自动生成设置关闭时不发起模型调用。
 
@@ -194,16 +194,18 @@
 
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
-| `mirror.start` | invoke | `{ seedUrl?: string; maxBooks?: number; maxPages?: number }` | `{ ok: true; jobId: string } \| { ok: false; message: string }` |
+| `mirror.start` | invoke | `{ seedUrl?: string; maxBooks?: number; maxPages?: number; resume?: boolean }` | `{ ok: true; jobId: string } \| { ok: false; message: string }` |
 | `mirror.cancel` | invoke | 无 | `{ ok: true }` |
 | `mirror.state` | invoke | 无 | `{ ok: true; state: MirrorStateView }` |
 | `mirror.progress` | 主→渲染 | — | `MirrorProgress` |
 
 - `seedUrl` 省略时用当前浏览页；非 http(s) 拒绝。`maxBooks` 缺省 10、夹紧 1–50；`maxPages` 缺省 3、夹紧 1–10。
-- 书目发现只取同源链接，排除导航 / 登录 / 搜索 / 分页 / 资源后缀与重复地址，按 `/book/`、`/novel/` 等路径特征打分；都没有特征时退回已过滤的同源链接。没有可识别链接则以 `status: 'error'` 结束并给中文原因。
-- 逐本串行：上一本 `waitForIdle` 结束才开下一本；单本失败不终止整批，进 `results`。`mirror.cancel` 在书目之间生效，正在下载的那本走 `download.cancel`，已入库的书保留。
-- 结束态为 `done` / `cancelled` / `error`，写入 `userData/mirror-state.json`（只保留最近一次任务）；`mirror.state` 返回 `{ running, last }`，界面重开可回看。
-- 不做：跨域、站内搜索接口、代登录、断点续爬队列。
+- 书目发现只取同源链接，排除导航 / 登录 / 搜索 / 分页 / 资源后缀与重复地址，按 `/book/`、`/novel/` 等路径特征打分；都没有特征时退回已过滤的同源链接。没有可识别链接则以 `status: 'error'` 结束并给中文原因。发现阶段是串行的：同一条「下一页」链本身没有并行度。
+- 已入库跳过：每本开始前用书目地址的规范化值对照书库（`BookListItem.sourceUrl`）。书已完整则记 `skipped`，不加载、不下载；只有一半的书仍交给下载层补章。书库是唯一真值，镜像日志不保存「已下过」的快照。
+- 逐本串行：上一本 `waitForIdle` 结束才开下一本；单本失败（含等待超时）只记 `failed`，不终止整批。`mirror.cancel` 在书目之间生效，正在下载的那本走 `download.cancel` 且不写结果，续跑时重试。
+- 续跑：`resume: true` 只接受与上次相同 `seedUrl` 且仍有未处理书目的任务，继续 `plan` 里没完成的书目；不同种子或没有待办时返回 `{ ok: false, message }`。进程在任务中途退出时，启动阶段把遗留的 `running` 降级为 `cancelled` 并标 `interrupted`，界面据此给「继续上次」。
+- 结束态为 `done` / `cancelled` / `error`，写入 `userData/mirror-state.json`（只保留最近一次任务，含发现阶段的 `plan`）；`mirror.state` 返回 `{ running, last }`，界面重开可回看。
+- 不做：跨域、站内搜索接口、代登录、并发下载、多视图并发发现。并发发现需要给每个 view 配调度槽，单隐藏视图上并发加载会互踩导航，一期不做。
 
 ---
 

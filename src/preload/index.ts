@@ -194,7 +194,7 @@ const api = {
       on('download.checkAll.progress', handler),
   },
   mirror: {
-    start: (options: { seedUrl?: string; maxBooks?: number; maxPages?: number }) =>
+    start: (options: { seedUrl?: string; maxBooks?: number; maxPages?: number; resume?: boolean }) =>
       ipcRenderer.invoke('mirror.start', options) as Promise<
         { ok: true; jobId: string } | { ok: false; message: string }
       >,
