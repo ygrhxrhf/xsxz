@@ -6,6 +6,7 @@ library-live/
 .env
 *.local
 release/
+release-*/
 *.tsbuildinfo
 .mission-planning/
 .multi-agent/**/*.png
