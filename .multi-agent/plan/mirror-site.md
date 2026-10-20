@@ -20,11 +20,11 @@
       - 验：`npx vitest run` → 135 文件 / 1228 用例全通过
       - 验：`npm run build` → 0
       - 验：`node scripts/mirror-e2e.mjs` → 13 项全 PASS
-- [x] 6. 小单元提交（11 个 commit，`origin/master..HEAD`）
+- [x] 6. 小单元提交（14 个 commit，`origin/master..HEAD`）
       - 验：`git log --oneline origin/master..HEAD`
 - [x] 7. 审查：三模型审 diff，收掉真问题
       - 验：`deepseek-flash` 出 5 条；`gpt-6-luna` 两次运行时错误、`mimo` 超时未产出 → 只算半成
-      - 已修：预取视图并发加载读到错页（`d9b56f6`）、预取视图不释放
+      - 已修：预取视图并发加载读到错页（`d9b56f6`）、预取视图不释放、开跑前不复检下载锁（`7b7a5c6` + `f5d49e5`）
 - [x] 8. 交付物：PR 正文（本机无 gh）
       - 验：`.multi-agent/pr-mirror-2026-10-20.md`
 
