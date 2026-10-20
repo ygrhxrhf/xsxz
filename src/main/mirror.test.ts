@@ -35,15 +35,15 @@ const NEXT_PAGE = `<html><body><ul class="book-list">
 
 function makeDeps(overrides: Partial<MirrorDeps> = {}): {
   deps: MirrorDeps
-  events: MirrorProgress[]
-  saved: MirrorProgress[]
   started: string[]
+  loaded: string[]
   cancelledBooks: string[]
+  completed: Set<string>
 } {
-  const events: MirrorProgress[] = []
-  const saved: MirrorProgress[] = []
   const started: string[] = []
+  const loaded: string[] = []
   const cancelledBooks: string[] = []
+  const completed = new Set<string>()
   const pages: Record<string, string> = {
     'https://novel.test/category/2': LIST_PAGE,
     'https://novel.test/category/2?page=2': NEXT_PAGE,
@@ -54,6 +54,7 @@ function makeDeps(overrides: Partial<MirrorDeps> = {}): {
   }
   const deps: MirrorDeps = {
     loadHtml: async (url: string) => {
+      loaded.push(url)
       const html = pages[url]
       if (!html) throw new Error(`no fixture for ${url}`)
       return html
@@ -61,16 +62,19 @@ function makeDeps(overrides: Partial<MirrorDeps> = {}): {
     startBook: async (_html: string, url: string) => {
       started.push(url)
       if (url.endsWith('/102/')) return { ok: false, message: '需要登录' }
+      completed.add(url)
       return { ok: true, bookId: `book-${url.split('/').filter(Boolean).pop()}` }
     },
     waitIdle: async () => {},
     cancelBook: (bookId: string) => { cancelledBooks.push(bookId) },
-    emit: (progress) => { events.push(progress) },
-    saveState: async (progress) => { saved.push(progress) },
+    lookupExisting: async (url: string) =>
+      completed.has(url) ? { bookId: `book-${url.split('/').filter(Boolean).pop()}`, complete: true } : null,
+    emit: () => {},
+    saveState: async () => {},
     now: () => 0,
     ...overrides,
   }
-  return { deps, events, saved, started, cancelledBooks }
+  return { deps, started, loaded, cancelledBooks, completed }
 }
 
 async function waitForFinish(timeoutMs = 2000): Promise<MirrorProgress> {
@@ -131,6 +135,7 @@ describe('startMirror', () => {
     expect(last.total).toBe(4)
     expect(last.done).toBe(3)
     expect(last.failed).toBe(1)
+    expect(last.skipped).toBe(0)
     expect(last.pagesScanned).toBe(2)
     expect(started).toEqual([
       'https://novel.test/book/101/',
@@ -142,34 +147,113 @@ describe('startMirror', () => {
       status: 'failed',
       message: '需要登录',
     })
-    expect(last.results.filter((item) => item.status === 'downloaded')).toHaveLength(3)
   })
 
-  it('honors maxBooks and stops discovering further books', async () => {
-    const { deps, started } = makeDeps()
-    setMirrorDeps(deps)
-    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 3, maxPages: 1 })
-    const last = await waitForFinish()
-    expect(last.total).toBe(3)
-    expect(last.done).toBe(2)
-    expect(last.failed).toBe(1)
-    expect(started).toHaveLength(3)
-    expect(last.pagesScanned).toBe(1)
-  })
-
-  it('cancels between books and keeps what already landed', async () => {
-    const cancelledBooks: string[] = []
-    const { deps } = makeDeps({
-      waitIdle: async () => { cancelMirror() },
-      cancelBook: (bookId: string) => { cancelledBooks.push(bookId) },
+  it('skips a book the library says is complete, without loading or downloading it', async () => {
+    const { deps, started, loaded } = makeDeps({
+      lookupExisting: async (url: string) =>
+        url === 'https://novel.test/book/101/' ? { bookId: 'book-101', complete: true } : null,
     })
     setMirrorDeps(deps)
-    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 5, maxPages: 1 })
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 2, maxPages: 1 })
     const last = await waitForFinish()
-    expect(last.status).toBe('cancelled')
+    expect(last.skipped).toBe(1)
+    expect(last.results.find((item) => item.url.endsWith('/101/'))).toMatchObject({ status: 'skipped', bookId: 'book-101' })
+    expect(started).toEqual(['https://novel.test/book/102/'])
+    expect(loaded).not.toContain('https://novel.test/book/101/')
+  })
+
+  it('still downloads a half-finished book so the downloader can fill missing chapters', async () => {
+    const { deps, started } = makeDeps({
+      lookupExisting: async (url: string) =>
+        url === 'https://novel.test/book/101/' ? { bookId: 'book-101', complete: false } : null,
+    })
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 1, maxPages: 1 })
+    const last = await waitForFinish()
+    expect(last.skipped).toBe(0)
+    expect(started).toEqual(['https://novel.test/book/101/'])
+  })
+
+  it('isolates a failing book: waitIdle rejection does not end the batch', async () => {
+    let calls = 0
+    const completed = new Set<string>()
+    const { deps } = makeDeps({
+      startBook: async (_html: string, url: string) => {
+        completed.add(url)
+        return { ok: true, bookId: `book-${url.slice(-4, -1)}` }
+      },
+      lookupExisting: async (url: string) =>
+        completed.has(url) ? { bookId: `book-${url.slice(-4, -1)}`, complete: true } : null,
+      waitIdle: async () => {
+        calls += 1
+        if (calls === 1) throw new Error('等待下载超时')
+      },
+    })
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 2, maxPages: 1 })
+    const last = await waitForFinish()
+    expect(last.status).toBe('done')
+    expect(last.failed).toBe(1)
     expect(last.done).toBe(1)
-    expect(last.results).toHaveLength(1)
-    expect(cancelledBooks).toEqual(['book-101'])
+  })
+
+  it('resumes a cancelled run from the same seed without redoing finished books', async () => {
+    let starts = 0
+    const firstStarted: string[] = []
+    const firstDone = new Set<string>()
+    const first = makeDeps({
+      startBook: async (_html: string, url: string) => {
+        firstStarted.push(url)
+        starts += 1
+        if (starts === 2) cancelMirror()
+        firstDone.add(url)
+        return { ok: true, bookId: `book-${url.split('/').filter(Boolean).pop()}` }
+      },
+      lookupExisting: async (url: string) =>
+        firstDone.has(url) ? { bookId: `book-${url.split('/').filter(Boolean).pop()}`, complete: true } : null,
+    })
+    setMirrorDeps(first.deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 2, maxPages: 1 })
+    const cancelled = await waitForFinish()
+    expect(cancelled.status).toBe('cancelled')
+    expect(cancelled.done).toBe(1)
+    expect(cancelled.results).toHaveLength(1)
+    expect(cancelled.plan?.length).toBe(2)
+    expect(firstStarted).toEqual(['https://novel.test/book/101/', 'https://novel.test/book/102/'])
+
+    const secondStarted: string[] = []
+    const secondDone = new Set<string>(['https://novel.test/book/101/'])
+    const second = makeDeps({
+      startBook: async (_html: string, url: string) => {
+        secondStarted.push(url)
+        secondDone.add(url)
+        return { ok: true, bookId: `book-${url.split('/').filter(Boolean).pop()}` }
+      },
+      lookupExisting: async (url: string) =>
+        secondDone.has(url) ? { bookId: `book-${url.split('/').filter(Boolean).pop()}`, complete: true } : null,
+    })
+    setMirrorDeps(second.deps)
+    const resumed = await startMirror({ seedUrl: 'https://novel.test/category/2', resume: true })
+    expect(resumed.ok).toBe(true)
+    const last = await waitForFinish()
+    expect(last.status).toBe('done')
+    expect(secondStarted).toEqual(['https://novel.test/book/102/'])
+    expect(last.skipped).toBe(1)
+    expect(last.done).toBe(1)
+  })
+
+  it('refuses resume from a different seed or with no pending plan', async () => {
+    const { deps } = makeDeps()
+    setMirrorDeps(deps)
+    const noPlan = await startMirror({ seedUrl: 'https://novel.test/category/2', resume: true })
+    expect(noPlan).toEqual({ ok: false, message: '没有可继续的镜像任务，请重新开始' })
+
+    const fresh = await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 1, maxPages: 1 })
+    expect(fresh.ok).toBe(true)
+    await waitForFinish()
+    const wrongSeed = await startMirror({ seedUrl: 'https://novel.test/category/3', resume: true })
+    expect(wrongSeed).toEqual({ ok: false, message: '没有可继续的镜像任务，请重新开始' })
   })
 
   it('reports an error when the listing page yields no book links', async () => {
