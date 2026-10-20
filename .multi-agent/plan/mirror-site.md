@@ -17,7 +17,7 @@
 - [x] 4. 实现：发现、sourceUrl 跳过、队列恢复、UI 抽屉
       - 验：`npm run typecheck` → 0
 - [x] 5. 真实表面验证
-      - 验：`npx vitest run` → 135 文件 / 1228 用例全通过
+      - 验：`npx vitest run` → 135 文件 / 1229 用例全通过
       - 验：`npm run build` → 0
       - 验：`node scripts/mirror-e2e.mjs` → 13 项全 PASS
 - [x] 6. 小单元提交（14 个 commit，`origin/master..HEAD`）

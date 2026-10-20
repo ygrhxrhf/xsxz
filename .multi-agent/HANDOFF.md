@@ -22,7 +22,7 @@
 | 检查 | 命令 | 结果 |
 |---|---|---|
 | 类型 | `npm run typecheck` | 0 |
-| 单测 | `npx vitest run` | 135 文件 / 1228 通过 |
+| 单测 | `npx vitest run` | 135 文件 / 1229 通过 |
 | 构建 | `npm run build` | 0 |
 | 端到端 | `node scripts/mirror-e2e.mjs` | 13/13 PASS |
 
