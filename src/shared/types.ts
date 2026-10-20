@@ -132,6 +132,8 @@ export interface BookListItem {
   author: string
   tags: string[]
   coverPath?: string
+  /** 下载来源地址；导入书或缺省。整站镜像用它判断这本书是否已经入库。 */
+  sourceUrl?: string
   importType: ImportType
   status: Book['status']
   chapterCount: number
@@ -244,9 +246,16 @@ export type PreviewPageKind = 'catalog' | 'chapter' | 'unknown'
 export interface MirrorBookResult {
   url: string
   title: string
-  status: 'downloaded' | 'failed'
+  status: 'downloaded' | 'failed' | 'skipped'
   bookId?: string
   message?: string
+  code?: FailCode
+}
+
+/** 发现阶段保存的书目；用于取消 / 中断后继续。 */
+export interface MirrorPlanItem {
+  url: string
+  title: string
 }
 
 export interface MirrorProgress {
@@ -254,14 +263,20 @@ export interface MirrorProgress {
   seedUrl: string
   /** `running` 之外都是结束态，结束时结果不再变化。 */
   status: 'running' | 'done' | 'cancelled' | 'error'
-  /** 已发现的待下书目数；书目发现完成后才稳定。 */
+  /** 已发现的待处理书目数；书目发现完成后才稳定。 */
   total: number
   done: number
   failed: number
+  /** 书库里已经完整、这次没有重新下载的本数。 */
+  skipped: number
   /** 已扫描的列表页数（含种子页）。 */
   pagesScanned: number
   currentTitle?: string
   results: MirrorBookResult[]
+  /** 发现阶段的书目计划；旧状态文件可能没有。 */
+  plan?: MirrorPlanItem[]
+  /** 上次进程在任务中途退出，启动时降级为可继续的取消态。 */
+  interrupted?: boolean
   /** 结束态的一句话原因；running 时不带。 */
   message?: string
 }

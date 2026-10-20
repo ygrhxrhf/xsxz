@@ -70,10 +70,10 @@
 
 ## index.json
 
-书列表缓存。启动时若缺失或与目录不一致，扫描各 `<bookId>/book.json` 重建。
+书列表缓存。启动时若缺失、版本不是 2，或与目录不一致，扫描各 `<bookId>/book.json` 重建。版本 2 起 `BookListItem` 带 `sourceUrl`；旧版索引缺这一列，会重建一次（备份恢复同时接受 1 和 2）。
 ```json
 {
-  "version": 1,
+  "version": 2,
   "writtenAt": "2026-10-14T09:20:00.000Z",
   "mtimes": { "d_0a776795d22acb41": 1760435200123.456 },
   "books": [
@@ -83,6 +83,7 @@
       "author": "…",
       "tags": [],
       "coverPath": "cover.jpg",
+      "sourceUrl": "https://example.com/book/123/",
       "importType": "download",
       "status": "ready",
       "chapterCount": 12,
@@ -503,7 +504,7 @@
 - `settings.json` **不含**站点规则（没有 `rules` / `siteRules` 数组）。规则见同级 `site-rules.json`。
 - 同级 `browse-state.json` 保存最近网页 `{ url, ratio, updatedAt }` 与按规范化域名映射的缩放比例；不属于书库备份。缺失或损坏时按无恢复位置、默认 100% 缩放读取。
 - `browse-state.json` 另存 `readingByUrl`：按 `canonicalizeUrl` 归一后的网页地址映射到阅读模式的 `{ paragraphIndex, scrollRatio, updatedAt }`，最多 200 条（超出按 `updatedAt` 淘汰最旧）。缺这个字段或条目非法时按无位置读取，不影响 `last` 与 `zoomByHost`。
-- 同级 `mirror-state.json` 保存最近一次整站镜像任务（`MirrorProgress`：种子地址、状态、已下/失败/总数、已扫描页数与逐本结果），不属于书库备份。缺失或损坏时按无历史任务读取，不影响镜像功能。
+- 同级 `mirror-state.json` 保存最近一次整站镜像任务（`MirrorProgress`：种子地址、状态、已下/跳过/失败/总数、已扫描页数、发现阶段的书目计划 `plan` 与逐本结果），不属于书库备份。`plan` 让取消或进程中断后能从同一列表页继续；书是否已入库以书库为准，文件里不存「已下过」快照。缺失或损坏时按无历史任务读取，不影响镜像功能；读到遗留的 `running` 时启动阶段降级为 `cancelled` 并标 `interrupted`。
 - `settings.json` 的 `webReading` 保存网页阅读模式偏好：`autoSpeed` 为 1–5 的整数（默认 3，越界夹紧、非数值回退默认），`autoPage` 为布尔值（默认 `true`）。缺失或损坏时补默认，不丢弃其他设置。
 - `autoBackup.destDir` 为空表示关闭；主进程启动时距上次成功满七天则创建 `spbf-auto-*.zip`，仅保留最近五份自动备份。旧设置缺失时按关闭读取。备份包不含设置与 API Key。
 - `appearance.skin` 取值 `light`（浅色，默认）/ `dark`（深色）。旧 `paper`、`white`、`sakura`、`minimal` 读入为 `light`，旧 `night` 读入为 `dark`；非法值回退 `light`。读取迁移不改动其他设置，下一次保存外观时写入正式值。

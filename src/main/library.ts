@@ -425,6 +425,9 @@ interface IndexData {
   books: BookListItem[]
 }
 
+/** 2 起 BookListItem 带 sourceUrl；旧索引缺这一列，必须重建一次。 */
+const INDEX_VERSION = 2
+
 async function readIndex(): Promise<IndexData | null> {
   try {
     const parsed = JSON.parse(await readFile(indexFile(), 'utf-8')) as IndexData
@@ -454,7 +457,7 @@ async function upsertIndexItem(book: Book): Promise<void> {
   const mtimes = { ...(cached?.mtimes ?? {}) }
   const mtime = await bookJsonMtime(book.id)
   if (mtime !== null) mtimes[book.id] = mtime
-  await writeIndex({ version: 1, books, writtenAt: new Date().toISOString(), mtimes })
+  await writeIndex({ version: INDEX_VERSION, books, writtenAt: new Date().toISOString(), mtimes })
 }
 
 /** 从索引里删掉一本书（增量）：书被移入回收站后不必整库重扫，改一条即可。 */
@@ -465,7 +468,7 @@ async function removeIndexItem(bookId: string): Promise<void> {
   if (books.length === cached.books.length) return
   const mtimes = { ...(cached.mtimes ?? {}) }
   delete mtimes[bookId]
-  await writeIndex({ version: 1, books, writtenAt: new Date().toISOString(), mtimes })
+  await writeIndex({ version: INDEX_VERSION, books, writtenAt: new Date().toISOString(), mtimes })
 }
 
 export async function rebuildIndex(): Promise<BookListItem[]> {
@@ -489,6 +492,7 @@ export async function rebuildIndex(): Promise<BookListItem[]> {
   const ids = Object.keys(mtimes)
   const cached = await readIndex()
   if (
+    cached?.version === INDEX_VERSION &&
     cached?.mtimes &&
     cached.books.length === ids.length &&
     Object.keys(cached.mtimes).length === ids.length &&
@@ -514,7 +518,7 @@ export async function rebuildIndex(): Promise<BookListItem[]> {
     const mtime = await bookJsonMtime(id)
     if (mtime !== null) fresh[id] = mtime
   }
-  await writeIndex({ version: 1, books: items, writtenAt: new Date().toISOString(), mtimes: fresh })
+  await writeIndex({ version: INDEX_VERSION, books: items, writtenAt: new Date().toISOString(), mtimes: fresh })
   return items
 }
 
@@ -527,6 +531,7 @@ function bookToList(b: Book): BookListItem {
     author: b.author,
     tags: normalizeTags(b.tags),
     coverPath: b.coverPath,
+    sourceUrl: b.sourceUrl,
     importType: b.importType,
     status: b.status,
     chapterCount: b.chapters.length,

@@ -138,7 +138,7 @@ function safeZipPath(name: string): string | null {
 
 export async function validateStagedLibrary(root: string, allowEmpty = false): Promise<number> {
   const index = JSON.parse(await readFile(join(root, 'index.json'), 'utf-8')) as unknown
-  if (!index || typeof index !== 'object' || !('version' in index) || index.version !== 1 ||
+  if (!index || typeof index !== 'object' || !('version' in index) || (index.version !== 1 && index.version !== 2) ||
     !('books' in index) || !Array.isArray(index.books)) throw new Error('索引格式无效')
   const entries = await readdir(root, { withFileTypes: true })
   const directories = entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('__'))
