@@ -72,6 +72,7 @@ import {
   DOWNLOAD_SESSION_PARTITION,
   followCatalogIfNeeded,
   getHiddenView,
+  getPausedForHuman,
   HIDDEN_VIEW_BOUNDS,
   identityFromPage,
   isDownloadBusy,
@@ -1916,6 +1917,11 @@ describe('checkUpdate', () => {
     })
     expect(payload.message).toMatch(/需要登录[\s\S]*已暂停本次下载/)
     expect(events.at(-1)?.status).toBe('awaitingHuman')
+    expect(getPausedForHuman()).toMatchObject({
+      bookId: started.bookId,
+      chapterTitle: '第三章 入门',
+      failCode: 'NeedLogin',
+    })
     const book = await loadBook(started.bookId!)
     expect(book.chapters.filter((c) => c.status === 'failed').length).toBe(WALL_PAUSE_STREAK)
     expect(book.chapters.filter((c) => c.status === 'pending').length).toBe(6 - WALL_PAUSE_STREAK)
@@ -1924,6 +1930,7 @@ describe('checkUpdate', () => {
     expect(isDownloadBusy()).toBe(true)
     cancelDownload(started.bookId!)
     await waitForIdle()
+    expect(getPausedForHuman()).toBeNull()
   })
 
   it('fills every chapter after the user handles the wall and resumes', async () => {
