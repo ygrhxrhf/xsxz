@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { JSDOM } from 'jsdom'
-import type { MirrorBookResult, MirrorPlanItem, MirrorProgress, MirrorStateView } from '../shared/types'
+import type { FailCode, MirrorBookResult, MirrorPlanItem, MirrorProgress, MirrorStateView } from '../shared/types'
 import { canonicalizeUrl } from '../shared/urlHash'
 
 /**
@@ -18,6 +18,10 @@ export const MIRROR_DEFAULT_MAX_BOOKS = 10
 export const MIRROR_MAX_BOOKS = 50
 export const MIRROR_DEFAULT_MAX_PAGES = 3
 export const MIRROR_MAX_PAGES = 10
+const MIRROR_WAIT_SLICE_MS = 1_000
+const MIRROR_WAIT_LIMIT_MS = 30 * 60_000
+/** 取消 / 撞墙后等下载层收尾：不能再用 30 分钟预算，否则「立即停批」会变成空等。 */
+const MIRROR_CLEANUP_WAIT_MS = 5_000
 
 export interface MirrorCandidate {
   url: string
@@ -35,7 +39,10 @@ export interface MirrorStartOptions {
 export interface MirrorDeps {
   loadHtml(url: string): Promise<string>
   startBook(html: string, url: string): Promise<{ ok: boolean; bookId?: string; message?: string; code?: string }>
-  waitIdle(): Promise<void>
+  /** 等一个时间片：true = 下载队列已空闲，false = 仍忙。 */
+  waitIdle(sliceMs: number): Promise<boolean>
+  /** 当前下载是否停在站点墙上等人工处理；有则给出墙的类型。 */
+  blockedReason?(): FailCode | null
   cancelBook(bookId: string): void
   /** 书库里的真值：这本书是否已存在、是否已完整。返回 null 表示没有。 */
   lookupExisting(url: string): Promise<{ bookId: string; complete: boolean } | null>
@@ -46,6 +53,26 @@ export interface MirrorDeps {
   emit(progress: MirrorProgress): void
   saveState(progress: MirrorProgress): Promise<void>
   now(): number
+}
+
+type MirrorWaitResult =
+  | { kind: 'idle' }
+  | { kind: 'cancelled' }
+  | { kind: 'blocked'; code: FailCode }
+  | { kind: 'timeout' }
+
+const WALL_TEXT: Partial<Record<FailCode, string>> = {
+  NeedLogin: '需要登录',
+  Paywall: '付费墙',
+  Intercepted: '站点拦截',
+}
+
+function wallText(code: FailCode): string {
+  return WALL_TEXT[code] ?? '站点墙'
+}
+
+function wallHalt(title: string, code: FailCode): string {
+  return `撞到站点墙，已停止批量（《${title}》）：${wallText(code)}。处理后可点「继续上次」`
 }
 
 const BOOK_SEGMENT = /\/(book|novel|info|read|txt|article|story|n|b)\//i
@@ -166,6 +193,26 @@ export function cancelMirror(): void {
   if (currentBookId) deps?.cancelBook(currentBookId)
 }
 
+async function waitForDownloadSlot(deadline: number = deps!.now() + MIRROR_WAIT_LIMIT_MS): Promise<MirrorWaitResult> {
+  const d = deps!
+  for (;;) {
+    if (cancelled) return { kind: 'cancelled' }
+    const blocked = d.blockedReason?.() ?? null
+    if (blocked !== null) return { kind: 'blocked', code: blocked }
+    if (await d.waitIdle(MIRROR_WAIT_SLICE_MS)) return { kind: 'idle' }
+    if (d.now() >= deadline) return { kind: 'timeout' }
+  }
+}
+
+/** 书库对账读失败时退回上一次的判据，不让一次读盘失败把书误判成没下过。 */
+async function readExisting(url: string, fallback: { bookId: string; complete: boolean } | null): Promise<{ bookId: string; complete: boolean } | null> {
+  try {
+    return (await deps!.lookupExisting(url)) ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
 export async function startMirror(options: MirrorStartOptions): Promise<{ ok: true; jobId: string } | { ok: false; message: string }> {
   if (!deps) return { ok: false, message: '镜像模块未初始化' }
   if (current?.status === 'running') return { ok: false, message: '已有镜像任务在进行中，请等待完成或取消' }
@@ -281,9 +328,107 @@ async function discover(job: MirrorProgress, maxBooks: number, maxPages: number)
   return candidates.slice(0, maxBooks).map((candidate) => ({ url: candidate.url, title: candidate.title }))
 }
 
+interface BookRun {
+  outcome: MirrorBookResult | null
+  haltedBy: FailCode | null
+  cancelled: boolean
+}
+
+/** 一本书：对账 → 加载书目页 → 起下载 → 等它结束。取消 / 撞墙 / 超时都收敛成返回值。 */
+async function runOneBook(
+  item: MirrorPlanItem,
+  upcoming: MirrorPlanItem | undefined,
+  existing: { bookId: string; complete: boolean } | null,
+  deadline: number,
+): Promise<BookRun> {
+  const d = deps!
+  try {
+    const latest = await readExisting(item.url, existing)
+    if (latest?.complete) {
+      return { outcome: { url: item.url, title: item.title, status: 'skipped', bookId: latest.bookId }, haltedBy: null, cancelled: false }
+    }
+    const html = await loadWithRetry(item.url)
+    // 目录页加载也可能花上几秒：开下之前再确认一次，取消后不再建出一本半成品。
+    if (cancelled) return { outcome: null, haltedBy: null, cancelled: true }
+    const started = await d.startBook(html, item.url)
+    if (!started.bookId) {
+      return {
+        outcome: {
+          url: item.url,
+          title: item.title,
+          status: 'failed',
+          ...(started.message === undefined ? {} : { message: started.message }),
+          ...(started.code === undefined ? {} : { code: started.code as MirrorBookResult['code'] }),
+        },
+        haltedBy: null,
+        cancelled: false,
+      }
+    }
+    if (!started.ok) {
+      // 下载层认出这是同一本已完整的书并拒绝重下：按「已在书库」处理。
+      return { outcome: { url: item.url, title: item.title, status: 'skipped', bookId: started.bookId }, haltedBy: null, cancelled: false }
+    }
+    currentBookId = started.bookId
+    // 下载这本书的时候，用独立的预取视图抓下一本的书目页。
+    if (upcoming) d.prefetch?.(upcoming.url)
+    const wait = await waitForDownloadSlot(deadline)
+    if (wait.kind === 'cancelled') return { outcome: null, haltedBy: null, cancelled: true }
+    if (wait.kind === 'blocked') {
+      return {
+        outcome: {
+          url: item.url,
+          title: item.title,
+          status: 'failed',
+          bookId: started.bookId,
+          code: wait.code,
+          message: `撞到${wallText(wait.code)}，已停止本批`,
+        },
+        haltedBy: wait.code,
+        cancelled: false,
+      }
+    }
+    if (wait.kind === 'timeout') {
+      return {
+        outcome: { url: item.url, title: item.title, status: 'failed', bookId: started.bookId, message: '等待下载任务结束超时，可继续重试' },
+        haltedBy: null,
+        cancelled: false,
+      }
+    }
+    currentBookId = undefined
+    if (cancelled) return { outcome: null, haltedBy: null, cancelled: true }
+    // 下载层「跑完了」不等于整本完整：以书库为准，半本留给续跑补。
+    const complete = (await readExisting(item.url, null))?.complete === true
+    return {
+      outcome: complete
+        ? { url: item.url, title: item.title, status: 'downloaded', bookId: started.bookId }
+        : { url: item.url, title: item.title, status: 'failed', bookId: started.bookId, message: '下载结束但书未完整，可继续重试' },
+      haltedBy: null,
+      cancelled: false,
+    }
+  } catch (error) {
+    return {
+      outcome: {
+        url: item.url,
+        title: item.title,
+        status: 'failed',
+        ...(error instanceof Error ? { message: error.message } : { message: String(error) }),
+      },
+      haltedBy: null,
+      cancelled: false,
+    }
+  } finally {
+    if (currentBookId) {
+      const stuck = currentBookId
+      currentBookId = undefined
+      d.cancelBook(stuck)
+      // 只等一小段：更长的收尾会拖住「停批」发布；等不到就让下一本的等锁循环接着等。
+      await d.waitIdle(MIRROR_CLEANUP_WAIT_MS)
+    }
+  }
+}
+
 async function run(job: MirrorProgress, maxBooks: number, maxPages: number, pending: MirrorPlanItem[] | null): Promise<void> {
-  const d = deps
-  if (!d) return
+  const d = deps!
   try {
     if (pending === null) {
       const plan = await discover(job, maxBooks, maxPages)
@@ -302,87 +447,35 @@ async function run(job: MirrorProgress, maxBooks: number, maxPages: number, pend
       await publish(job)
     }
 
+    let halt: string | null = null
+
     for (let index = 0; index < pending.length; index++) {
       const item = pending[index]!
       if (cancelled) break
       job.currentTitle = item.title
       await publish(job)
 
-      let existing: { bookId: string; complete: boolean } | null = null
-      try {
-        existing = await d.lookupExisting(item.url)
-      } catch {
-        existing = null
-      }
-      if (existing?.complete) {
-        job.skipped += 1
-        job.results.push({ url: item.url, title: item.title, status: 'skipped', bookId: existing.bookId })
-        await publish(job)
-        continue
-      }
-
+      const existing = await readExisting(item.url, null)
       let outcome: MirrorBookResult | null = null
-      try {
-        // 单任务锁是下载层的不变量：先等别的下载（含用户手点的「下载本书」）结束，
-        // 再决定这本是已入库还是需要下载，避免把锁的拒绝记成失败、也避免同一本并发开跑。
-        await d.waitIdle()
-        let latest = existing
-        try {
-          latest = (await d.lookupExisting(item.url)) ?? existing
-        } catch {
-          /* 读不到书库就按原判据继续 */
-        }
-        if (latest?.complete) {
-          outcome = { url: item.url, title: item.title, status: 'skipped', bookId: latest.bookId }
+
+      if (existing?.complete) {
+        outcome = { url: item.url, title: item.title, status: 'skipped', bookId: existing.bookId }
+      } else {
+        // 每本书一个 30 分钟预算：等锁和下载共用，别让一本吃掉几次 30 分钟。
+        const deadline = d.now() + MIRROR_WAIT_LIMIT_MS
+        const slot = await waitForDownloadSlot(deadline)
+        if (slot.kind === 'cancelled') break
+        if (slot.kind === 'blocked') {
+          outcome = { url: item.url, title: item.title, status: 'failed', code: slot.code, message: `撞到${wallText(slot.code)}，已停止本批` }
+          halt = wallHalt(item.title, slot.code)
+        } else if (slot.kind === 'timeout') {
+          outcome = { url: item.url, title: item.title, status: 'failed', message: '等待其它下载任务结束超时' }
+          halt = `等待其它下载任务结束超时，已停止批量（《${item.title}》）。检查其它下载后再点「继续上次」`
         } else {
-          const html = await loadWithRetry(item.url)
-          const started = await d.startBook(html, item.url)
-          if (started.ok && started.bookId) {
-            currentBookId = started.bookId
-            // 下载这本书的时候，用独立的预取视图抓下一本的书目页。
-            const upcoming = pending[index + 1]
-            if (upcoming) d.prefetch?.(upcoming.url)
-            await d.waitIdle()
-            currentBookId = undefined
-            // 中途取消的那本不记结果，续跑时幂等重试。
-            if (cancelled) break
-            // 下载层「跑完了」不等于整本完整：以书库为准，半本留给续跑补。
-            let complete = false
-            try {
-              complete = (await d.lookupExisting(item.url))?.complete === true
-            } catch {
-              complete = false
-            }
-            outcome = complete
-              ? { url: item.url, title: item.title, status: 'downloaded', bookId: started.bookId }
-              : { url: item.url, title: item.title, status: 'failed', bookId: started.bookId, message: '下载结束但书未完整，可继续重试' }
-          } else if (started.bookId) {
-            // 下载层认出这是同一本已完整的书并拒绝重下：按「已在书库」处理。
-            outcome = { url: item.url, title: item.title, status: 'skipped', bookId: started.bookId }
-          } else {
-            outcome = {
-              url: item.url,
-              title: item.title,
-              status: 'failed',
-              ...(started.message === undefined ? {} : { message: started.message }),
-              ...(started.code === undefined ? {} : { code: started.code as MirrorBookResult['code'] }),
-            }
-          }
-        }
-      } catch (error) {
-        outcome = {
-          url: item.url,
-          title: item.title,
-          status: 'failed',
-          ...(error instanceof Error ? { message: error.message } : { message: String(error) }),
-        }
-      } finally {
-        if (currentBookId) {
-          // 失败 / 超时后下载任务可能还占着单任务锁：先停掉并等它收尾，别让下一本全部撞锁。
-          const stuck = currentBookId
-          currentBookId = undefined
-          d.cancelBook(stuck)
-          await d.waitIdle().catch(() => {})
+          const bookRun = await runOneBook(item, pending[index + 1], existing, deadline)
+          if (bookRun.cancelled) break
+          outcome = bookRun.outcome
+          if (bookRun.haltedBy !== null) halt = wallHalt(item.title, bookRun.haltedBy)
         }
       }
 
@@ -393,11 +486,17 @@ async function run(job: MirrorProgress, maxBooks: number, maxPages: number, pend
         job.results.push(outcome)
       }
       await publish(job)
+      if (halt !== null) break
     }
 
     job.currentTitle = undefined
-    job.status = cancelled ? 'cancelled' : 'done'
-    if (job.status === 'cancelled') job.message = '已取消，已入库的书保留，可继续'
+    if (halt !== null) {
+      job.status = 'error'
+      job.message = halt
+    } else {
+      job.status = cancelled ? 'cancelled' : 'done'
+      if (job.status === 'cancelled') job.message = '已取消，已入库的书保留，可继续'
+    }
     await publish(job)
   } catch (error) {
     job.currentTitle = undefined

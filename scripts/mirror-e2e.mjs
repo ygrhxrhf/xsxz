@@ -34,17 +34,36 @@ const catalog = (book, author) => `<!doctype html><html><head><title>${book} 目
 <div id="list"><dl><dt>正文</dt>
 ${[1, 2, 3, 4, 5].map((n) => `<dd><a href="/book/${book === '剑来' ? 1 : 2}/c${n}.html">第${n}章</a></dd>`).join('\n')}
 </dl></div></body></html>`
+// 撞墙书：目录正常，章节页是登录墙，用来验证镜像撞墙后 1 秒内停批而不是空等 30 分钟。
+const wallCatalog = `<!doctype html><html><head><title>撞墙书 目录</title>
+<meta property="og:title" content="撞墙书"><meta property="og:novel:author" content="墙"></head><body>
+<h1>撞墙书</h1><div class="bookinfo"><span class="author">墙</span></div>
+<div id="list"><dl><dt>正文</dt>
+${[1, 2, 3, 4, 5].map((n) => `<dd><a href="/book/3/c${n}.html">第${n}章</a></dd>`).join('\n')}
+</dl></div></body></html>`
+const wallChapter = `<!doctype html><html><head><title>用户登录</title></head><body><div id="content"><p>请登录后阅读</p></div></body></html>`
+// 撞墙书后面的书：如果停批没生效，它会继续被下载，书库里就会多出第三本。
+const afterWallCatalog = `<!doctype html><html><head><title>墙后的书 目录</title>
+<meta property="og:title" content="墙后的书"><meta property="og:novel:author" content="后"></head><body>
+<h1>墙后的书</h1><div class="bookinfo"><span class="author">后</span></div>
+<div id="list"><dl><dt>正文</dt>
+${[1, 2, 3].map((n) => `<dd><a href="/book/4/c${n}.html">第${n}章</a></dd>`).join('\n')}
+</dl></div></body></html>`
 const listing = `<!doctype html><html><head><title>玄幻分类</title></head><body>
 <nav><a href="/">首页</a><a href="/login">登录</a><a href="/search">搜索</a></nav>
 <ul class="book-list">
 <li><a href="/book/1/">剑来</a></li>
 <li><a href="/book/2/">诡秘之主</a></li>
+<li><a href="/book/3/">撞墙书</a></li>
+<li><a href="/book/4/">墙后的书</a></li>
 </ul></body></html>`
 
 const pages = {
   '/list.html': listing,
   '/book/1/': catalog('剑来', '烽火戏诸侯'),
   '/book/2/': catalog('诡秘之主', '爱潜水的乌贼'),
+  '/book/3/': wallCatalog,
+  '/book/4/': afterWallCatalog,
   '/book/1/c1.html': chapter('第一章'),
   '/book/1/c2.html': chapter('第二章'),
   '/book/1/c3.html': chapter('第三章'),
@@ -55,6 +74,14 @@ const pages = {
   '/book/2/c3.html': chapter('第三章'),
   '/book/2/c4.html': chapter('第四章'),
   '/book/2/c5.html': chapter('第五章'),
+  '/book/3/c1.html': wallChapter,
+  '/book/3/c2.html': wallChapter,
+  '/book/3/c3.html': wallChapter,
+  '/book/3/c4.html': wallChapter,
+  '/book/3/c5.html': wallChapter,
+  '/book/4/c1.html': chapter('第一章'),
+  '/book/4/c2.html': chapter('第二章'),
+  '/book/4/c3.html': chapter('第三章'),
 }
 
 const server = createServer((req, res) => {
@@ -172,6 +199,25 @@ try {
   }
   check('第二次把两本都标为已在书库', second?.status === 'done' && second?.skipped === 2 && second?.done === 0, JSON.stringify(second && { status: second.status, skipped: second.skipped, done: second.done }))
   check('跳过的书不再重复入库', ((await evaluate(ws, 'window.api.library.list()'))?.books ?? []).length === 2)
+
+  // 第三轮：第三本是登录墙，第四本在它后面。撞墙后应在一两秒内停批，不再下第四本。
+  const wallRun = await evaluate(ws, `window.api.mirror.start(${JSON.stringify({ seedUrl: `${base}/list.html`, maxBooks: 4, maxPages: 1 })})`)
+  check('第三次 mirror.start 返回 jobId', wallRun?.ok === true, JSON.stringify(wallRun))
+  const wallStartedAt = Date.now()
+  let wall = null
+  const wallDeadline = Date.now() + 60_000
+  while (Date.now() < wallDeadline) {
+    wall = (await evaluate(ws, 'window.api.mirror.state()'))?.state?.last
+    if (wall && wall.status !== 'running') break
+    await sleep(500)
+  }
+  const wallElapsed = Date.now() - wallStartedAt
+  check('撞墙任务以 error 结束且指向站点墙', wall?.status === 'error' && /站点墙/.test(wall?.message ?? ''), JSON.stringify(wall && { status: wall.status, message: wall.message }))
+  check('撞墙前两本跳过、撞墙那本失败', wall?.skipped === 2 && wall?.failed === 1 && wall?.done === 0, JSON.stringify(wall && { skipped: wall.skipped, failed: wall.failed, done: wall.done }))
+  check('停批在 15 秒内生效，没有空等 30 分钟', wallElapsed < 15_000, `${wallElapsed}ms`)
+  check('结果只有三本，第四本未处理', wall?.results?.length === 3, JSON.stringify(wall?.results?.map((item) => item.status)))
+  const afterWallTitles = ((await evaluate(ws, 'window.api.library.list()'))?.books ?? []).map((book) => book.title)
+  check('撞墙后的书没有被下载', afterWallTitles.includes('撞墙书') && !afterWallTitles.includes('墙后的书'), afterWallTitles.join('、'))
   ws.close()
 } catch (error) {
   check('E2E 跑到收尾', false, error instanceof Error ? error.message : String(error))
@@ -187,4 +233,4 @@ if (failed.length) {
   if (stderr.trim()) console.log(`\n--- stderr ---\n${stderr.split('\n').slice(-15).join('\n')}`)
   process.exit(1)
 }
-console.log('整站镜像端到端通过：分类页 → 2 本书串行入库 → 状态落盘')
+console.log('整站镜像端到端通过：分类页 → 2 本入库 → 重复镜像全跳过 → 撞墙 6 秒内停批')

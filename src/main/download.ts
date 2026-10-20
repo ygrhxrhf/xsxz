@@ -296,8 +296,37 @@ export async function waitForIdle(timeoutMs = 15_000): Promise<void> {
   }
 }
 
+/** 等一个短时间片：true = 队列已空闲，false = 到点仍忙。给需要自己把握节奏的调用方用。 */
+export async function waitForIdleSlice(sliceMs: number): Promise<boolean> {
+  const started = Date.now()
+  while (active.size > 0 || runningJobs.size > 0) {
+    if (Date.now() - started > sliceMs) return false
+    await delay(20)
+  }
+  return true
+}
+
+/** 有没有一本书停在站点墙上等人工处理；有就把它交出来（同一时刻最多一本在跑）。 */
+export function getPausedForHuman(): DownloadBlocked | null {
+  for (const dl of active.values()) {
+    if (dl.pausedForHuman) return dl.pausedForHuman
+  }
+  return null
+}
+
+/**
+ * 外部占用探针：镜像任务也用同一个隐藏视图加载页面（`loadPageHtml` → `getHiddenView`）。
+ * 探针返回 true 时，下载侧的互斥判定一律当「忙」处理，否则两边会并发驱动同一个
+ * webContents，`waitForNavigationSettle` 可能把对方的页面当自己的结果。
+ */
+let externalBusyProbe: (() => boolean) | null = null
+
+export function setExternalBusyProbe(probe: (() => boolean) | null): void {
+  externalBusyProbe = probe
+}
+
 export function isDownloadBusy(): boolean {
-  return active.size > 0 || runningJobs.size > 0 || checkAllRunning
+  return active.size > 0 || runningJobs.size > 0 || checkAllRunning || externalBusyProbe?.() === true
 }
 
 export function getHiddenView(): WebContentsView {

@@ -43,7 +43,7 @@ import {
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
-import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdle } from './download'
+import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdleSlice, getPausedForHuman } from './download'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
 import { createSerialQueue } from './serialQueue'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
@@ -556,8 +556,8 @@ async function configureMirrorRuntime(): Promise<void> {
     // 任务结束后拆掉预取视图，别让一个隐藏渲染进程一直挂着。
     onFinish: () => disposeMirrorPrefetch(),
     startBook: (html, url) => startDownloadFromPage(html, url),
-    // 一本数百章的书要跑很久；镜像按本串行，30 分钟只防死等。
-    waitIdle: () => waitForIdle(30 * 60_000),
+    waitIdle: (sliceMs) => waitForIdleSlice(sliceMs),
+    blockedReason: () => getPausedForHuman()?.failCode ?? null,
     cancelBook: (bookId) => cancelDownload(bookId),
     lookupExisting: async (url) => {
       // 已入库的书按书目地址识别；完整与否问书库，不拿镜像日志当判据。

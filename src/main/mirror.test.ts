@@ -67,7 +67,7 @@ function makeDeps(overrides: Partial<MirrorDeps> = {}): {
       completed.add(url)
       return { ok: true, bookId: `book-${url.split('/').filter(Boolean).pop()}` }
     },
-    waitIdle: async () => {},
+    waitIdle: async () => true,
     cancelBook: (bookId: string) => { cancelledBooks.push(bookId) },
     lookupExisting: async (url: string) =>
       completed.has(url) ? { bookId: `book-${url.split('/').filter(Boolean).pop()}`, complete: true } : null,
@@ -178,27 +178,113 @@ describe('startMirror', () => {
     expect(started).toEqual(['https://novel.test/book/101/'])
   })
 
-  it('isolates a failing book: waitIdle rejection does not end the batch', async () => {
-    let calls = 0
-    const completed = new Set<string>()
-    const { deps } = makeDeps({
-      startBook: async (_html: string, url: string) => {
-        completed.add(url)
-        return { ok: true, bookId: `book-${url.slice(-4, -1)}` }
-      },
-      lookupExisting: async (url: string) =>
-        completed.has(url) ? { bookId: `book-${url.slice(-4, -1)}`, complete: true } : null,
-      waitIdle: async () => {
-        calls += 1
-        if (calls === 1) throw new Error('等待下载超时')
+  it('stops the batch when the download lock stays busy past the per-book budget', async () => {
+    let clock = 0
+    const { deps, started } = makeDeps({
+      waitIdle: async () => false,
+      now: () => {
+        clock += 10 * 60_000
+        return clock
       },
     })
     setMirrorDeps(deps)
     await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 2, maxPages: 1 })
     const last = await waitForFinish()
+    expect(last.status).toBe('error')
+    expect(last.failed).toBe(1)
+    expect(last.results).toHaveLength(1)
+    expect(started).toEqual([])
+    expect(last.message).toContain('等待其它下载任务结束超时')
+  })
+
+  it('stops the whole batch on the slice after a site wall appears', async () => {
+    const slices: number[] = []
+    let busy = 0
+    const { deps, started, cancelledBooks } = makeDeps({
+      waitIdle: async (sliceMs: number) => {
+        slices.push(sliceMs)
+        if (started.length === 0) return true
+        busy += 1
+        return false
+      },
+      blockedReason: () => (busy >= 2 ? 'Paywall' : null),
+    })
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 3, maxPages: 1 })
+    const last = await waitForFinish()
+    expect(started).toEqual(['https://novel.test/book/101/'])
+    expect(last.status).toBe('error')
+    expect(last.message).toContain('站点墙')
+    expect(last.message).toContain('剑来')
+    // 不再把下载层"点『我已处理好，继续下载』"的指令嵌进镜像文案：那个下载已被取消。
+    expect(last.message).not.toContain('我已处理好')
+    expect(last.results[0]).toMatchObject({ status: 'failed', code: 'Paywall', bookId: 'book-101' })
+    // 停批前要先把占着锁的那本停掉，下一本才不会全部撞锁。
+    expect(cancelledBooks).toEqual(['book-101'])
+    // 检测用 1 秒片；收尾最多 5 秒，不会又退回 30 分钟。
+    expect(slices.slice(0, 2)).toEqual([1_000, 1_000])
+    expect(Math.max(...slices)).toBeLessThanOrEqual(5_000)
+  })
+
+  it('sees a cancel within the wait slice and starts no book', async () => {
+    const { deps, started } = makeDeps({
+      waitIdle: async () => {
+        cancelMirror()
+        return false
+      },
+    })
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 2, maxPages: 1 })
+    const last = await waitForFinish()
+    expect(last.status).toBe('cancelled')
+    expect(started).toEqual([])
+  })
+
+  it('re-checks cancel after the lock frees in the same slice', async () => {
+    const { deps, started } = makeDeps({
+      waitIdle: async () => {
+        cancelMirror()
+        return true
+      },
+    })
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 1, maxPages: 1 })
+    const last = await waitForFinish()
+    expect(last.status).toBe('cancelled')
+    expect(started).toEqual([])
+  })
+
+  it('re-checks cancel after the catalog page finished loading, before starting the book', async () => {
+    const { deps, started } = makeDeps({
+      loadHtml: async (url: string) => {
+        if (url.endsWith('/101/')) cancelMirror()
+        return url.endsWith('/101/') ? '<html>101</html>' : LIST_PAGE
+      },
+    })
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 1, maxPages: 1 })
+    const last = await waitForFinish()
+    expect(last.status).toBe('cancelled')
+    expect(started).toEqual([])
+  })
+
+  it('fails the book on its own download timeout and cancels the stuck download', async () => {
+    let clock = 0
+    const { deps, started, cancelledBooks } = makeDeps({
+      waitIdle: async () => started.length === 0,
+      now: () => {
+        clock += 10 * 60_000
+        return clock
+      },
+    })
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 1, maxPages: 1 })
+    const last = await waitForFinish()
     expect(last.status).toBe('done')
     expect(last.failed).toBe(1)
-    expect(last.done).toBe(1)
+    expect(started).toEqual(['https://novel.test/book/101/'])
+    expect(last.results[0]?.message).toContain('等待下载任务结束超时')
+    expect(cancelledBooks).toEqual(['book-101'])
   })
 
   it('resumes a cancelled run from the same seed without redoing finished books', async () => {
@@ -249,7 +335,7 @@ describe('startMirror', () => {
   it('waits for the download lock and re-checks the library before starting a book', async () => {
     let waits = 0
     const { deps, started } = makeDeps({
-      waitIdle: async () => { waits += 1 },
+      waitIdle: async () => { waits += 1; return true },
       lookupExisting: async (url: string) => {
         // 第一次查时另一本书还在下载，库里还看不到它；等锁释放后再查就完整了。
         if (waits === 0) return null
