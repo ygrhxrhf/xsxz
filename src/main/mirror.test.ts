@@ -254,6 +254,28 @@ describe('startMirror', () => {
     expect(prefetched).toEqual(['https://novel.test/book/102/'])
   })
 
+  it('calls the finish hook exactly once, and also on a cancelled run', async () => {
+    let finished = 0
+    const { deps } = makeDeps({ onFinish: () => { finished += 1 } })
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 1, maxPages: 1 })
+    await waitForFinish()
+    expect(finished).toBe(1)
+
+    const cancelledDeps = makeDeps({
+      onFinish: () => { finished += 1 },
+      startBook: async (_html: string, url: string) => {
+        cancelMirror()
+        return { ok: true, bookId: `book-${url.split('/').filter(Boolean).pop()}` }
+      },
+    })
+    setMirrorDeps(cancelledDeps.deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 1, maxPages: 1 })
+    const cancelled = await waitForFinish()
+    expect(cancelled.status).toBe('cancelled')
+    expect(finished).toBe(2)
+  })
+
   it('refuses resume from a different seed or with no pending plan', async () => {
     const { deps } = makeDeps()
     setMirrorDeps(deps)

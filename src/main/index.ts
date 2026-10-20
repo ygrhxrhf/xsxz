@@ -45,6 +45,7 @@ import { importEpub } from './importEpub'
 import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
 import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdle } from './download'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
+import { createSerialQueue } from './serialQueue'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
 import { ocrEngineReady, shutdownOcrEngine } from './ocrText'
@@ -483,7 +484,10 @@ function mirrorStatePath(): string {
  * 下一本的书目页可以同时抓回来。下载仍由单任务锁串行。
  */
 let mirrorPrefetchView: WebContentsView | null = null
+let mirrorPrefetchClosed = false
 const mirrorPrefetchCache = new Map<string, Promise<string>>()
+/** 预取共用一个隐藏视图，而一个 WebContents 只有一条导航：加载必须排队。 */
+const enqueueMirrorPrefetch = createSerialQueue()
 
 function getMirrorPrefetchView(): WebContentsView {
   if (!mirrorPrefetchView || mirrorPrefetchView.webContents.isDestroyed()) {
@@ -502,19 +506,30 @@ function getMirrorPrefetchView(): WebContentsView {
 }
 
 function prefetchMirrorPage(url: string): void {
-  if (mirrorPrefetchCache.has(url)) return
-  const pending = loadPageHtmlWithView(getMirrorPrefetchView(), url)
-  mirrorPrefetchCache.set(url, pending)
+  if (mirrorPrefetchClosed || mirrorPrefetchCache.has(url)) return
+  const task = enqueueMirrorPrefetch(() => {
+    // 排队期间任务可能已经结束、视图已经被关掉：那时不再重建视图。
+    if (mirrorPrefetchClosed) throw new Error('镜像预取已关闭')
+    return loadPageHtmlWithView(getMirrorPrefetchView(), url)
+  })
+  mirrorPrefetchCache.set(url, task)
   while (mirrorPrefetchCache.size > 4) {
     const oldest = mirrorPrefetchCache.keys().next().value
     if (oldest === undefined) break
     mirrorPrefetchCache.delete(oldest)
   }
-  void pending.catch(() => { mirrorPrefetchCache.delete(url) })
+  void task.catch(() => { mirrorPrefetchCache.delete(url) })
+}
+
+/** 新任务开始时重新打开预取（上一次结束时视图已被拆掉）。 */
+function resetMirrorPrefetch(): void {
+  mirrorPrefetchCache.clear()
+  mirrorPrefetchClosed = false
 }
 
 function disposeMirrorPrefetch(): void {
   mirrorPrefetchCache.clear()
+  mirrorPrefetchClosed = true
   try {
     mirrorPrefetchView?.webContents.close()
   } catch {
@@ -538,6 +553,8 @@ async function configureMirrorRuntime(): Promise<void> {
       return loadPageHtml(url)
     },
     prefetch: (url) => prefetchMirrorPage(url),
+    // 任务结束后拆掉预取视图，别让一个隐藏渲染进程一直挂着。
+    onFinish: () => disposeMirrorPrefetch(),
     startBook: (html, url) => startDownloadFromPage(html, url),
     // 一本数百章的书要跑很久；镜像按本串行，30 分钟只防死等。
     waitIdle: () => waitForIdle(30 * 60_000),
@@ -1247,6 +1264,7 @@ function registerIpc(): void {
   ipcMain.handle('mirror.start', async (_e, args: { seedUrl?: string; maxBooks?: number; maxPages?: number; resume?: boolean } | undefined) => {
     if (isDownloadBusy()) return { ok: false, message: '下载任务进行中，等它结束再镜像' }
     const seedUrl = args?.seedUrl?.trim() || browseView?.webContents.getURL() || ''
+    resetMirrorPrefetch()
     return startMirror({
       seedUrl,
       maxBooks: args?.maxBooks,

@@ -41,6 +41,8 @@ export interface MirrorDeps {
   lookupExisting(url: string): Promise<{ bookId: string; complete: boolean } | null>
   /** 预取下一本的书目页；与下载并行，失败不影响主流程。 */
   prefetch?(url: string): void
+  /** 任务收尾（done / cancelled / error）后调用一次，用来拆掉预取视图这类一次性资源。 */
+  onFinish?(): void
   emit(progress: MirrorProgress): void
   saveState(progress: MirrorProgress): Promise<void>
   now(): number
@@ -389,5 +391,12 @@ async function run(job: MirrorProgress, maxBooks: number, maxPages: number, pend
     job.status = 'error'
     job.message = error instanceof Error ? error.message : String(error)
     await publish(job)
+  } finally {
+    // 收尾无论成败都跑一次：预取视图 / 队列不该在一个结束的任务后面继续占资源。
+    try {
+      d.onFinish?.()
+    } catch {
+      /* 释放失败不影响任务结果 */
+    }
   }
 }
