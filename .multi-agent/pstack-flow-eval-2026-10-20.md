@@ -29,6 +29,21 @@
 - 端到端：`node scripts/mirror-e2e.mjs` → 19 项 PASS；撞墙任务 `status: error`、`skipped 2 / failed 1`、第 4 本未下载、5917ms 结束。
 - 审查去重后收掉的高价值项：取消落点从「等锁后」挪到「目录页加载后」；停批收尾等待从 30 分钟改成 5 秒；撞墙感知从「只认自己那本」扩到「任意 pausedForHuman」；等锁超时从逐本重来改成停批；`waitIdle` 不再用异常当控制流；文案不再嵌「点『我已处理好』」这种被取消后必然失败的指令。
 
+### 干净工作树复核（隔离第三方改动）
+
+主工作区被第三方改坏后，用 `git worktree add` 在 `fa194f1` 建隔离工作树复核同一份提交：
+
+- `mirror.test.ts` 21/21。
+- `download.test.ts` 撞墙探针 75 用例中目标用例通过。
+- `npm run build` 退出 0。
+- `node scripts/mirror-e2e.mjs` 19/19，撞墙停批 5842ms。
+- 全量 1233/1234。唯一失败是 `aiReadingFollow` 的 `ENOTEMPTY` 临时目录竞态，单跑 14/14 通过；改动前的 PR 已把这条记为已知 flaky，与镜像无关。
+- `typecheck` 在隔离路径被 tsc 的 `tsbuildinfo` 写入拒绝挡住（环境限制，不是源码问题）；主工作区 12:17 的 `npm run typecheck` 退出 0 覆盖同一份源码。
+
+### 上一轮遗留审查与第三方改动
+
+`review-b.md`（上一会话留下，未提交）列出 B1「镜像/下载互斥只有单向检查」、M1「`mirror-state.json` 非原子写」等。12:12–12:14 的第三方改动正是在补这些：`setExternalBusyProbe`、`atomicWriteText`、`before-quit` 里 `cancelMirror`、续跑过滤。它停在 `Browse.vue:1503` 的语法错误，属于半截工作，不能按「已完成」处理。
+
 ## 并发写者事件（最严重的不连贯）
 
 | 时间 | 事件 |
@@ -43,7 +58,7 @@
 
 ## 与官方期待的差距（按类别）
 
-1. **座位稳定性**：`code`（gpt-6-luna）本会话 3 次失败（实现 1、审查 1、上一轮 2），`scout`（mimo）上一轮超时。多模型审查实际退化成单模型。
+1. **座位稳定性**：`code`（gpt-6-luna）本会话 2 次失败（实现 1、审查 1），上一轮另记 2 次失败；`scout`（mimo）上一轮超时。多模型审查实际退化成单模型。
 2. **PR 工具面**：`gh`、Origin 都不存在，step 8 没有等价的「创建 PR」动作；port 文档写了降级方式，playbook 没有写死。
 3. **工作区独占**：pstack 全程假设一个写者；仓库自己的 `AGENTS.md` 反而有「出现来源不明的提交先停手对账」的规则，这次靠它才没有在坏树上继续加码。
 4. **证据寿命**：`how` 报告按行号写，重构后全部失效；审查也按行号写，并发写者让行号漂移。pstack 的 `how` 没有「按符号引用」的约束。
