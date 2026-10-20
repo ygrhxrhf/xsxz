@@ -323,37 +323,50 @@ async function run(job: MirrorProgress, maxBooks: number, maxPages: number, pend
 
       let outcome: MirrorBookResult | null = null
       try {
-        const html = await loadWithRetry(item.url)
-        const started = await d.startBook(html, item.url)
-        if (started.ok && started.bookId) {
-          currentBookId = started.bookId
-          // 下载这本书的时候，用独立的预取视图抓下一本的书目页。
-          const upcoming = pending[index + 1]
-          if (upcoming) d.prefetch?.(upcoming.url)
-          await d.waitIdle()
-          currentBookId = undefined
-          // 中途取消的那本不记结果，续跑时幂等重试。
-          if (cancelled) break
-          // 下载层「跑完了」不等于整本完整：以书库为准，半本留给续跑补。
-          let complete = false
-          try {
-            complete = (await d.lookupExisting(item.url))?.complete === true
-          } catch {
-            complete = false
-          }
-          outcome = complete
-            ? { url: item.url, title: item.title, status: 'downloaded', bookId: started.bookId }
-            : { url: item.url, title: item.title, status: 'failed', bookId: started.bookId, message: '下载结束但书未完整，可继续重试' }
-        } else if (started.bookId) {
-          // 下载层认出这是同一本已完整的书并拒绝重下：按「已在书库」处理。
-          outcome = { url: item.url, title: item.title, status: 'skipped', bookId: started.bookId }
+        // 单任务锁是下载层的不变量：先等别的下载（含用户手点的「下载本书」）结束，
+        // 再决定这本是已入库还是需要下载，避免把锁的拒绝记成失败、也避免同一本并发开跑。
+        await d.waitIdle()
+        let latest = existing
+        try {
+          latest = (await d.lookupExisting(item.url)) ?? existing
+        } catch {
+          /* 读不到书库就按原判据继续 */
+        }
+        if (latest?.complete) {
+          outcome = { url: item.url, title: item.title, status: 'skipped', bookId: latest.bookId }
         } else {
-          outcome = {
-            url: item.url,
-            title: item.title,
-            status: 'failed',
-            ...(started.message === undefined ? {} : { message: started.message }),
-            ...(started.code === undefined ? {} : { code: started.code as MirrorBookResult['code'] }),
+          const html = await loadWithRetry(item.url)
+          const started = await d.startBook(html, item.url)
+          if (started.ok && started.bookId) {
+            currentBookId = started.bookId
+            // 下载这本书的时候，用独立的预取视图抓下一本的书目页。
+            const upcoming = pending[index + 1]
+            if (upcoming) d.prefetch?.(upcoming.url)
+            await d.waitIdle()
+            currentBookId = undefined
+            // 中途取消的那本不记结果，续跑时幂等重试。
+            if (cancelled) break
+            // 下载层「跑完了」不等于整本完整：以书库为准，半本留给续跑补。
+            let complete = false
+            try {
+              complete = (await d.lookupExisting(item.url))?.complete === true
+            } catch {
+              complete = false
+            }
+            outcome = complete
+              ? { url: item.url, title: item.title, status: 'downloaded', bookId: started.bookId }
+              : { url: item.url, title: item.title, status: 'failed', bookId: started.bookId, message: '下载结束但书未完整，可继续重试' }
+          } else if (started.bookId) {
+            // 下载层认出这是同一本已完整的书并拒绝重下：按「已在书库」处理。
+            outcome = { url: item.url, title: item.title, status: 'skipped', bookId: started.bookId }
+          } else {
+            outcome = {
+              url: item.url,
+              title: item.title,
+              status: 'failed',
+              ...(started.message === undefined ? {} : { message: started.message }),
+              ...(started.code === undefined ? {} : { code: started.code as MirrorBookResult['code'] }),
+            }
           }
         }
       } catch (error) {
