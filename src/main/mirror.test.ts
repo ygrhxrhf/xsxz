@@ -246,6 +246,24 @@ describe('startMirror', () => {
     expect(last.done).toBe(1)
   })
 
+  it('waits for the download lock and re-checks the library before starting a book', async () => {
+    let waits = 0
+    const { deps, started } = makeDeps({
+      waitIdle: async () => { waits += 1 },
+      lookupExisting: async (url: string) => {
+        // 第一次查时另一本书还在下载，库里还看不到它；等锁释放后再查就完整了。
+        if (waits === 0) return null
+        return url === 'https://novel.test/book/101/' ? { bookId: 'book-101', complete: true } : null
+      },
+    })
+    setMirrorDeps(deps)
+    await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 1, maxPages: 1 })
+    const last = await waitForFinish()
+    expect(waits).toBeGreaterThanOrEqual(1)
+    expect(last.skipped).toBe(1)
+    expect(started).toEqual([])
+  })
+
   it('prefetches the next book page while the current one downloads', async () => {
     const { deps, prefetched } = makeDeps()
     setMirrorDeps(deps)
