@@ -6,9 +6,10 @@
 ## 现在
 
 - 任务：整站镜像（分类页 → 批量入书库）
-- 状态：**代码完成、验证通过、已提交 14 个 commit，未推送**
+- 状态：**代码完成、验证通过、本地领先 `origin/master` 5 个 commit，未推送**
 - 计划与证据：`.multi-agent/plan/mirror-site.md`
-- PR 正文：`.multi-agent/pr-mirror-2026-10-20.md`
+- PR 正文：`.multi-agent/pr-mirror-2026-10-20.md`、`.multi-agent/pr-mirror-wall-2026-10-20.md`
+- 审查报告：`.multi-agent/reviews/review-b.md`（BLOCKER/MAJOR 已收口，见下）
 
 ## 下一步（按顺序）
 
@@ -22,15 +23,28 @@
 | 检查 | 命令 | 结果 |
 |---|---|---|
 | 类型 | `npm run typecheck` | 0 |
-| 单测 | `npx vitest run` | 135 文件 / 1229 通过 |
+| 单测 | `npx vitest run` | 135 文件 / 1236 通过 |
 | 构建 | `npm run build` | 0 |
-| 端到端 | `node scripts/mirror-e2e.mjs` | 13/13 PASS |
+| 端到端 | `node scripts/mirror-e2e.mjs` | 19/19 PASS（含撞墙 6 秒内停批） |
+
+## 审查 B 收口（2026-10-21）
+
+| 级别 | 问题 | 处理 |
+|---|---|---|
+| BLOCKER | 镜像与下载互斥只有单向，会并发驱动同一个隐藏视图 | `0ee14e6`：`setExternalBusyProbe` 让 `isDownloadBusy` 算上镜像；两个 start 入口分辨提示；界面双向禁用 |
+| MAJOR | `mirror-state.json` 非原子写，截断即丢 plan | `0ee14e6`：改 `atomicWriteText` |
+| MINOR | resume 无待办仍返回 ok | `ff38d38`：只跑未完成书目，全done 返回 `{ok:false}` |
+| MINOR | 旧索引被当增量基底写回 v2 | `e8c34da`：先整体重建，重建不出就跳过增量 |
+| MINOR | before-quit 没取消镜像 | `0ee14e6`：补 `cancelMirror()` + 释放预取视图 |
+| MINOR | 启动降级写可能覆盖新任务 | `0ee14e6`：写回前复查 `running` |
+| MINOR | 文档说 UI 按 `interrupted` 判断 | `0ee14e6`：文档改为按 plan/results 推导 |
+| MINOR | seedUrl 仅前缀校验 | 不修：评估不引入新 SSRF 面 |
 
 ## 未验证 / 风险
 
 - 只测了本地夹具站，没有真实站点数据
-- 章节撞墙时单本最多静默等 30 分钟（契约已记）
-- 审查只拿到 1 个模型的报告（`gpt-6-luna` 两次 runtime error、`mimo` 超时）
+- 撞墙即停批：处理墙要用户自己来，镜像不会自动解锁
+- 两个模型出了审查报告（judgment / scout），`gpt-6-luna` 两次 runtime error 未产出
 
 ## 历史坑（别再踩）
 
