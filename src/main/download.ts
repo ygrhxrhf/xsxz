@@ -284,6 +284,7 @@ export function resetDownloadStateForTests(): void {
   checkAllRunning = false
   domReadyGraceMs = DOM_READY_GRACE_MS
   pendingPreview = null
+  externalBusyProbe = null
 }
 
 export async function waitForIdle(timeoutMs = 15_000): Promise<void> {
