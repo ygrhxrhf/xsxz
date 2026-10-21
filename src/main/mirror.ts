@@ -227,13 +227,22 @@ export async function startMirror(options: MirrorStartOptions): Promise<{ ok: tr
     const sameSeed = previous !== null && canonicalizeUrl(previous.seedUrl) === canonicalizeUrl(seedUrl)
     if (!previous || !sameSeed) return { ok: false, message: '没有可继续的镜像任务，请重新开始' }
     if (!Array.isArray(previous.plan) || previous.plan.length === 0) return { ok: false, message: '上次任务没有保存书目，请重新开始' }
+    // 只跑上次没处理完的书目：已记 downloaded / skipped 的不再重复触发。
+    // failed 与没跑到的都留着——书库仍是唯一真值，真跑的时候还会再对账一次。
+    const settled = new Set(
+      previous.results
+        .filter((item) => item.status === 'downloaded' || item.status === 'skipped')
+        .map((item) => canonicalizeUrl(item.url)),
+    )
+    const pending = previous.plan.filter((item) => !settled.has(canonicalizeUrl(item.url)))
+    if (pending.length === 0) return { ok: false, message: '上次任务的书目都已处理完，无需继续' }
     // 续跑从书目重新对账：完整已入库的会被跳过，未完成 / 失败的重下。
     // 不沿用上次的 results，否则同一条目会重复计数，半本书也会被当成已完成。
     const job: MirrorProgress = {
       ...previous,
       jobId: randomUUID(),
       status: 'running',
-      total: previous.plan.length,
+      total: pending.length,
       done: 0,
       failed: 0,
       skipped: 0,
@@ -243,7 +252,7 @@ export async function startMirror(options: MirrorStartOptions): Promise<{ ok: tr
       interrupted: undefined,
     }
     current = job
-    void run(job, maxBooks, maxPages, previous.plan)
+    void run(job, maxBooks, maxPages, pending)
     return { ok: true, jobId: job.jobId }
   }
 
@@ -443,7 +452,8 @@ async function run(job: MirrorProgress, maxBooks: number, maxPages: number, pend
       }
       pending = plan
     } else {
-      job.total = job.plan?.length ?? job.results.length + pending.length
+      // 续跑的 plan 是上次的全量书目，待办已经过滤过：总数按待办算，不能再用 plan.length。
+      job.total = pending.length
       await publish(job)
     }
 

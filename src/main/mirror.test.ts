@@ -327,9 +327,31 @@ describe('startMirror', () => {
     expect(resumed.ok).toBe(true)
     const last = await waitForFinish()
     expect(last.status).toBe('done')
+    // 续跑只处理上次没做完的那本：已完成的书目直接从 plan 里摘掉，不靠书库再 skip 一次。
     expect(secondStarted).toEqual(['https://novel.test/book/102/'])
-    expect(last.skipped).toBe(1)
+    expect(last.total).toBe(1)
+    expect(last.skipped).toBe(0)
     expect(last.done).toBe(1)
+  })
+
+  it('refuses to resume a run whose plan is already fully settled', async () => {
+    const done = new Set<string>()
+    setMirrorDeps(makeDeps({
+      startBook: async (_html: string, url: string) => {
+        done.add(url)
+        return { ok: true, bookId: `book-${url.split('/').filter(Boolean).pop()}` }
+      },
+      lookupExisting: async (url: string) =>
+        done.has(url) ? { bookId: `book-${url.split('/').filter(Boolean).pop()}`, complete: true } : null,
+    }).deps)
+    const first = await startMirror({ seedUrl: 'https://novel.test/category/2', maxBooks: 2, maxPages: 1 })
+    expect(first.ok).toBe(true)
+    const finished = await waitForFinish()
+    expect(finished.status).toBe('done')
+    expect(finished.done).toBe(2)
+
+    const refused = await startMirror({ seedUrl: 'https://novel.test/category/2', resume: true })
+    expect(refused).toEqual({ ok: false, message: '上次任务的书目都已处理完，无需继续' })
   })
 
   it('waits for the download lock and re-checks the library before starting a book', async () => {
