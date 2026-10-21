@@ -39,10 +39,13 @@
 - **一个 worktree 一个写者**：这次实际出现过第三个写入方——`ff527ed`、`f5d49e5` 和 11:20 对 `mirror.ts` 的改动都不是主 Agent 写的。现象是「我正要提交，文件已经被别人提交掉了」。对策：动手前 `git status` + `git log -1` 对账，出现来源不明的提交先停手问人
 - **子代理只信文件**：不给文件路径、只让它「回复结论」，那么它 error/超时=白跑（本任务三个审查模型只回来一个）
 
-## 2026-10-20 12:20 停机对账（pstack 实测）
+## 2026-10-21 10:25 工作区已修复
 
-- `10efaa7` 已提交「撞墙停批 + 等待期取消」；`7edb55f` 补 `getPausedForHuman` 的单测探针。验证绑定 `10efaa7`：单测 1234/1234、e2e 19/19、撞墙 5917ms 停批。
-- 之后工作区被第三方写者改写：`index.ts`、`mirror.ts`、`mirror.test.ts`、`library.ts`、`Browse.vue`、`docs/disk-schema.md`、`docs/ipc-contract.md` 未提交；12:17 `mirror` 2 条红；12:20 `npm run build` 因 `Browse.vue:1503` 语法错误红。
-- 下一步第一条命令：`git status --short; git log --oneline -3`。确认第三方是否还在写；**不要在脏树上继续加码**。
-- 恢复后重跑：`npm run typecheck` → `npx vitest run` → `npm run build` → `node scripts/mirror-e2e.mjs` → `npm run plan:status`。
-- 流程评估：`.multi-agent/pstack-flow-eval-2026-10-20.md`；对抗审查：`.multi-agent/reviews/review-A-mirror-wall-2026-10-20.md`。
+- 2026-10-20 下午第三方留下的 9 个文件已收口并分成 3 个可验证提交：
+  - `e8c34da` 旧索引先重建再写增量补丁（library）；
+  - `0ee14e6` 镜像与下载双向互斥、`mirror-state.json` 原子写、退出时取消（download/index/Browse/契约/磁盘文档）；
+  - `ff38d38` 续跑只处理未完成书目，总数按待办算（mirror + 单测，含 2 条原本红的用例）。
+- 验证：`npm run typecheck` 0；`npx vitest run` 135 文件 / 1236 通过；`npm run build` 0；`node scripts/mirror-e2e.mjs` 19/19（撞墙 7088ms 停批）；`npm run plan:status` 见提交后结果。
+- 下一步：要交付就 `git push gitee master`；再挑一个真实分类页手测 3 本。
+- 若第三方写者再出现，先 `git status --short; git log --oneline -3` 对账，不要在来源不明的改动上继续加码。
+- 流程评估：`.multi-agent/pstack-flow-eval-2026-10-20.md`；对抗审查：`.multi-agent/reviews/review-A-mirror-wall-2026-10-20.md` 与 `review-b.md`。
