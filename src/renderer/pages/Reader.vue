@@ -636,7 +636,7 @@ function onContentZoneMouseup(e: MouseEvent) {
     toggleReaderTools()
     return
   }
-  if (toolsVisible.value) return
+  // 工具显示时中区只收起；左右区仍按 readerTapCanPage 翻屏，章首/章末停住。
   if (!readerTapCanPage({
     zone,
     scrollTop: el.scrollTop,
