@@ -165,12 +165,14 @@ describe('Reader P2.4 accessibility wrap-up', () => {
     expect(source).toContain('阅读方式')
     expect(source).toContain('连续滚动')
     expect(source).toContain('屏幕翻页')
-    expect(source).toContain('onContentWheel')
-    expect(source).toContain('wheelPageDirection')
-    expect(source).toContain('@wheel="onContentWheel"')
-    expect(source).toContain('readingMode.value !== \'screen\'')
+    expect(source).not.toContain('onContentWheel')
+    expect(source).not.toContain('@wheel="onContentWheel"')
+    expect(source).not.toContain('wheelPageDirection')
     expect(source).toContain('el.clientHeight * 0.9')
     expect(source).toContain('readerScrollBehavior')
+    expect(source).toContain('const toolsVisible = ref(false)')
+    expect(source).toContain('onContentZoneMouseup')
+    expect(source).not.toContain('@mousemove="onReaderPointerMove"')
   })
 
   it('locks the eye-care dim overlay and its z-order in source', async () => {

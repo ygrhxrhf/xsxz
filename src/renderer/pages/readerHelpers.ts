@@ -195,6 +195,61 @@ export function resolveImmersiveKey(
   return null
 }
 
+export type ReaderContentZone = 'left' | 'center' | 'right'
+
+const READER_ZONE_IGNORE_SELECTOR = 'button, a, input, textarea, select, [role="slider"]'
+
+/** 章首/章末停住的滚动余量。差不足这个值就不再翻屏，也不换章。 */
+export const READER_SCREEN_EDGE_PX = 8
+
+/**
+ * 指针相对 .reader-content 内容盒的横向分区。
+ * 左 [0, 1/3)，中 [1/3, 2/3)，右 [2/3, 1]。
+ * 点在按钮、链接、输入、滑杆上，或存在未折叠选区时，这次点击不分区。
+ */
+export function readerContentZone(opts: {
+  clientX: number
+  contentLeft: number
+  contentWidth: number
+  target?: EventTarget | null
+  selectionCollapsed?: boolean
+}): ReaderContentZone | null {
+  if (!opts || opts.selectionCollapsed === false) return null
+  const target = opts.target as { closest?: (selector: string) => unknown } | null | undefined
+  if (target && typeof target.closest === 'function' && target.closest(READER_ZONE_IGNORE_SELECTOR)) return null
+  const width = opts.contentWidth
+  if (!Number.isFinite(width) || width <= 0) return null
+  const x = opts.clientX
+  const left = opts.contentLeft
+  if (!Number.isFinite(x) || !Number.isFinite(left)) return null
+  const ratio = (x - left) / width
+  if (ratio < 0 || ratio > 1) return null
+  if (ratio < 1 / 3) return 'left'
+  if (ratio < 2 / 3) return 'center'
+  return 'right'
+}
+
+/**
+ * 点按翻屏能否在本章内移动。章首点左、章末点右都停住，不换章。
+ * 距最大滚动不足 READER_SCREEN_EDGE_PX 视为已经在最后一屏。
+ */
+export function readerTapCanPage(opts: {
+  zone: ReaderContentZone
+  scrollTop: number
+  scrollHeight: number
+  clientHeight: number
+  edgePx?: number
+}): boolean {
+  if (!opts || (opts.zone !== 'left' && opts.zone !== 'right')) return false
+  const top = opts.scrollTop
+  const height = opts.scrollHeight
+  const view = opts.clientHeight
+  if (!Number.isFinite(top) || !Number.isFinite(height) || !Number.isFinite(view)) return false
+  const edge = Number.isFinite(opts.edgePx) ? Math.max(0, opts.edgePx as number) : READER_SCREEN_EDGE_PX
+  if (opts.zone === 'left') return top > edge
+  return height - view - top >= edge
+}
+
 /** 把键盘事件解析成阅读器动作；不认识或不应处理时返回 null。 */
 export function resolveReaderKey(opts: {
   key: string

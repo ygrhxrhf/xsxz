@@ -46,8 +46,8 @@ import {
   resolveImmersiveKey,
   resolveReaderKey,
   scrollTopFromRatio,
-  shouldAutoHideReaderTools,
-  wheelPageDirection,
+  readerContentZone,
+  readerTapCanPage,
   selectionPopupPosition,
   catalogChapterBadge,
 } from './readerHelpers'
@@ -149,7 +149,7 @@ const retryingChapter = ref(false)
 
 // 沉浸工具层
 const immersiveMode = ref<ReaderImmersiveMode>('normal')
-const toolsVisible = ref(true)
+const toolsVisible = ref(false)
 const chapterFadeIn = ref(false)
 const temporaryToolReveal = ref(false)
 const pointerInToolbar = ref(false)
@@ -592,28 +592,8 @@ function clearToolHideTimer() {
 
 function scheduleToolHide() {
   clearToolHideTimer()
-  const focusedTool = document.activeElement?.closest('.reader-toolbar, .reader-bottombar')
-  if (anyDrawerOpen() || selectionOpen() || pointerInToolbar.value || focusedTool) {
-    toolsVisible.value = true
-    return
-  }
-  const elapsed = Date.now() - lastToolActivityAt
-  toolHideTimer = setTimeout(() => {
-    const idleMs = Date.now() - lastToolActivityAt
-    if (
-      shouldAutoHideReaderTools({
-        idleMs,
-        overlayOpen: anyDrawerOpen(),
-        selectionOpen: selectionOpen(),
-        pointerInToolbar: pointerInToolbar.value || Boolean(document.activeElement?.closest('.reader-toolbar, .reader-bottombar')),
-      })
-    ) {
-      toolsVisible.value = false
-      temporaryToolReveal.value = false
-    } else {
-      scheduleToolHide()
-    }
-  }, Math.max(0, 3000 - elapsed))
+  // 点按显隐由正文中区决定，不再按空闲秒数把工具收回去。
+  // 面板、选区、工具栏焦点仍阻止误收。下载 running 只挡 Esc，不在这里扩大。
 }
 
 function revealTools(temporary = false) {
@@ -623,12 +603,47 @@ function revealTools(temporary = false) {
   scheduleToolHide()
 }
 
-function onReaderPointerMove(e: MouseEvent) {
-  if (immersiveMode.value === 'locked') {
-    if (e.clientY <= 64) revealTools(true)
+/** 只用于 Esc：下载 running 时不收顶栏。点按中区不受这条限制。 */
+function downloadKeepsTools(): boolean {
+  return downloadProgress.value?.status === 'running' && downloadProgress.value.bookId === book.value?.id
+}
+
+function toggleReaderTools() {
+  if (toolsVisible.value) {
+    toolsVisible.value = false
+    temporaryToolReveal.value = false
+    clearToolHideTimer()
     return
   }
-  revealTools(false)
+  revealTools(immersiveMode.value === 'locked')
+}
+
+/** 点正文三分区：中区只显隐工具，左右翻屏。选区条仍由 onContentMouseup 自己出。 */
+function onContentZoneMouseup(e: MouseEvent) {
+  onContentMouseup(e)
+  if (!book.value || e.button !== 0) return
+  const el = contentRef.value
+  if (!el) return
+  const zone = readerContentZone({
+    clientX: e.clientX,
+    contentLeft: el.getBoundingClientRect().left,
+    contentWidth: el.clientWidth,
+    target: e.target,
+    selectionCollapsed: window.getSelection()?.isCollapsed !== false,
+  })
+  if (!zone) return
+  if (zone === 'center') {
+    toggleReaderTools()
+    return
+  }
+  if (toolsVisible.value) return
+  if (!readerTapCanPage({
+    zone,
+    scrollTop: el.scrollTop,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  })) return
+  pageByScreen(zone === 'left' ? -1 : 1)
 }
 
 function onToolbarEnter() {
@@ -757,25 +772,7 @@ function pageByScreen(direction: 1 | -1) {
   })
 }
 
-let wheelCooldownUntil = 0
 
-function onContentWheel(e: WheelEvent) {
-  if (readingMode.value !== 'screen') return
-  if (e.ctrlKey || e.metaKey) return
-  
-  const now = Date.now()
-  if (now < wheelCooldownUntil) {
-    e.preventDefault()
-    return
-  }
-  
-  const dir = wheelPageDirection(e.deltaY)
-  if (!dir) return
-  e.preventDefault()
-  
-  wheelCooldownUntil = now + 250
-  pageByScreen(dir)
-}
 
 // ---------------------------------------------------------------------------
 // 自动滚屏（本地阅读器）
@@ -869,7 +866,16 @@ function onReaderKeydown(e: KeyboardEvent) {
     revealTools(immersiveMode.value === 'locked')
     return
   }
-  if (!isTextEntry && !(e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'm' || e.key === 'Alt' || (e.key === 'Escape' && !anyDrawerOpen()))) {
+  if (e.key === 'Escape' && !isTextEntry && !(e.ctrlKey || e.metaKey) && !anyDrawerOpen() && !selectionOpen()) {
+    if (toolsVisible.value && !downloadKeepsTools()) {
+      e.preventDefault()
+      toolsVisible.value = false
+      temporaryToolReveal.value = false
+      clearToolHideTimer()
+    }
+    return
+  }
+  if (!isTextEntry && !(e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'm' || e.key === 'Alt')) {
     const result = resolveImmersiveKey(e.key, immersiveMode.value)
     if (result) {
       e.preventDefault()
@@ -2040,7 +2046,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :class="['reader-wrap', { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @mousemove="onReaderPointerMove" @focusin="onReaderFocusIn">
+  <div :class="['reader-wrap', { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @focusin="onReaderFocusIn">
     <!-- No book selected -->
     <div v-if="!book" class="page placeholder">
       <h2>阅读</h2>
@@ -2145,7 +2151,7 @@ onUnmounted(() => {
         </button>
         <div class="reader-body">
         <button class="chapter-hotzone left" :disabled="!previousChapter" :title="previousChapter ? `上一章：${previousChapter.title}` : '已经是第一章'" aria-label="上一章" @click="prevChapter"><span>‹</span></button>
-        <div class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentMouseup" @wheel="onContentWheel">
+        <div class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentZoneMouseup">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>
@@ -3409,7 +3415,10 @@ onUnmounted(() => {
 }
 
 .reader-toolbar {
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 30;
   flex: 0 0 auto;
   width: 100%;
@@ -3443,6 +3452,11 @@ onUnmounted(() => {
   visibility: hidden;
   pointer-events: none;
   transform: translateY(-8px);
+  height: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
 }
 
 .reader-bottombar.reader-tools-hidden {

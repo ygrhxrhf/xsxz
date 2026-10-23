@@ -12,6 +12,8 @@ import {
   remainingChapterCount,
   readerScrollBehavior,
   resolveFocusAnchor,
+  readerContentZone,
+  readerTapCanPage,
   resolveImmersiveKey,
   resolveReaderKey,
   scrollableDistance,
@@ -227,6 +229,36 @@ describe('failAdvice', () => {
   it('stays silent for codes without advice', () => {
     expect(failAdvice(undefined)).toBe('')
     expect(failAdvice('CatalogNotFound')).toBe('')
+  })
+})
+
+describe('reader content tap zones', () => {
+  const box = { contentLeft: 100, contentWidth: 300 }
+
+  it('splits the content box into left, center, and right thirds', () => {
+    expect(readerContentZone({ clientX: 100, ...box })).toBe('left')
+    expect(readerContentZone({ clientX: 199.9, ...box })).toBe('left')
+    expect(readerContentZone({ clientX: 200, ...box })).toBe('center')
+    expect(readerContentZone({ clientX: 299.9, ...box })).toBe('center')
+    expect(readerContentZone({ clientX: 300, ...box })).toBe('right')
+    expect(readerContentZone({ clientX: 400, ...box })).toBe('right')
+  })
+
+  it('ignores clicks on controls and an uncollapsed selection', () => {
+    const button = { closest: (selector: string) => (selector.includes('button') ? {} : null) } as unknown as Element
+    expect(readerContentZone({ clientX: 250, ...box, target: button })).toBeNull()
+    expect(readerContentZone({ clientX: 250, ...box, selectionCollapsed: false })).toBeNull()
+    expect(readerContentZone({ clientX: 99, ...box })).toBeNull()
+    expect(readerContentZone({ clientX: 401, ...box })).toBeNull()
+  })
+
+  it('stops at the chapter edges instead of turning the page', () => {
+    expect(readerTapCanPage({ zone: 'left', scrollTop: 0, scrollHeight: 2000, clientHeight: 800 })).toBe(false)
+    expect(readerTapCanPage({ zone: 'left', scrollTop: 9, scrollHeight: 2000, clientHeight: 800 })).toBe(true)
+    expect(readerTapCanPage({ zone: 'right', scrollTop: 1193, scrollHeight: 2000, clientHeight: 800 })).toBe(false)
+    expect(readerTapCanPage({ zone: 'right', scrollTop: 1192, scrollHeight: 2000, clientHeight: 800 })).toBe(true)
+    expect(readerTapCanPage({ zone: 'right', scrollTop: 1191, scrollHeight: 2000, clientHeight: 800 })).toBe(true)
+    expect(readerTapCanPage({ zone: 'center', scrollTop: 400, scrollHeight: 2000, clientHeight: 800 })).toBe(false)
   })
 })
 
