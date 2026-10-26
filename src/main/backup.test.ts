@@ -1,7 +1,8 @@
+import * as fs from 'node:fs/promises'
 import { mkdtemp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import JSZip from 'jszip'
 import {
   createBookFromBootstrap,
@@ -14,6 +15,11 @@ import {
 } from './library'
 import { backupFileName, createBackup, restoreBackup, recoverInterruptedRestore } from './backup'
 import { setAtomicWriteBeforeCommitForTests } from './atomicFile'
+
+// 保留真实文件系统实现，用可配置导出承载单用例 spy（原生 ESM 导出不可重定义）。
+vi.mock('node:fs/promises', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:fs/promises')>(),
+}))
 
 describe('backup（书库备份/恢复）', () => {
   let libDir: string
@@ -218,12 +224,24 @@ describe('backup（书库备份/恢复）', () => {
 
   it('目标盘不存在时提示先去创建目录', async () => {
     await seedBook('d_hint2', '提示书二')
-    const res = await createBackup('Q:/spbf-no-such-drive/out')
-    expect(res.ok).toBe(false)
-    if (res.ok) return
-    expect(res.message).toContain('无法写入备份目录')
-    expect(res.message).toContain('创建该目录')
-    expect(res.message).not.toContain('ENOENT')
+    const outDir = join(tmpdir(), 'spbf-backup-out')
+    const realMkdir = fs.mkdir
+    // 只让备份目标目录报错，书库索引重建等其它 mkdir 仍走真实文件系统。
+    const mkdirSpy = vi.spyOn(fs, 'mkdir').mockImplementation((path, options) => {
+      if (path === outDir) return Promise.reject(Object.assign(new Error('missing destination'), { code: 'ENOENT' }))
+      return realMkdir(path, options)
+    })
+    try {
+      const res = await createBackup(outDir)
+      expect(mkdirSpy).toHaveBeenCalledWith(outDir, { recursive: true })
+      expect(res.ok).toBe(false)
+      if (res.ok) return
+      expect(res.message).toContain('无法写入备份目录')
+      expect(res.message).toContain('创建该目录')
+      expect(res.message).not.toContain('ENOENT')
+    } finally {
+      mkdirSpy.mockRestore()
+    }
   })
 })
 

@@ -5,6 +5,7 @@ import { defaultLibraryPath } from './libraryPath'
 describe('defaultLibraryPath', () => {
   it('on Windows it lands in the home directory, not a pinned D: drive', () => {
     expect(defaultLibraryPath('win32', 'C:\\Users\\goot')).toBe('C:\\Users\\goot\\spbf\\library')
+    expect(defaultLibraryPath('win32', 'E:/Profiles/Reader Name')).toBe('E:\\Profiles\\Reader Name\\spbf\\library')
   })
 
   it('uses the home directory on other systems too', () => {

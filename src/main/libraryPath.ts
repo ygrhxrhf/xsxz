@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { join, posix } from 'node:path'
+import { posix, win32 } from 'node:path'
 
 /**
  * 默认书库落在当前用户家目录下的 `spbf/library`。
@@ -13,7 +13,6 @@ export function defaultLibraryPath(
   platform: NodeJS.Platform = process.platform,
   home: string = homedir(),
 ): string {
-  // 非 win32 分支按目标平台拼：本机是 Windows 时宿主 join 会拼出反斜杠，
-  // 与「其它系统落到家目录下同名结构」的语义不符（生产里该分支只在非 Windows 上走到）。
-  return platform === 'win32' ? join(home, 'spbf', 'library') : posix.join(home, 'spbf', 'library')
+  // 按目标平台拼接，显式传入的平台不受宿主系统路径分隔符影响。
+  return platform === 'win32' ? win32.join(home, 'spbf', 'library') : posix.join(home, 'spbf', 'library')
 }
