@@ -61,7 +61,7 @@ await writeFile(join(userData, 'settings.json'), JSON.stringify({
 
 console.log(`夹具：书库=${lib}\n      userData=${userData}（reader.dim=40，进度停在第二章中段）`)
 
-const child = spawn(electronPath, [root, `--user-data-dir=${userData}`, `--remote-debugging-port=${PORT}`], {
+const child = spawn(electronPath, [root, '--no-sandbox', `--user-data-dir=${userData}`, `--remote-debugging-port=${PORT}`], {
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
