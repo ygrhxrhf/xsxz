@@ -57,6 +57,53 @@ export function approximateBookRatio(
   return approximateBookRatioFromIndex(chapterIndex, chapters.length, chapterRatio)
 }
 
+/**
+ * 全书比例 → 章节序号：`approximateBookRatioFromIndex` 的反解。
+ *
+ * 进度条拖动拿到的只有 0–1 的比例，要落回「第几章」。映射规则必须和写盘用的公式同源，
+ * 否则拖到进度条 50% 会跳到和面板显示不一致的章。
+ */
+export function chapterIndexFromBookRatio(ratio: number, totalChapters: number): number {
+  if (!Number.isFinite(totalChapters) || totalChapters <= 0) return -1
+  const total = Math.trunc(totalChapters)
+  if (total <= 0) return -1
+  const index = Math.floor(clampRatio(ratio) * total)
+  return Math.min(total - 1, Math.max(0, index))
+}
+
+export interface ProgressScrubTarget<T extends Pick<ChapterMeta, 'id'>> {
+  index: number
+  chapter: T
+  /** 松手后落点：始终是章首。 */
+  scrollRatio: number
+}
+
+/**
+ * 进度条松手后要打开的章。落点固定 0（章首）——拖进度条是「跳到某章」，不是「跳到某章的某个位置」，
+ * 沿用手上的 scrollRatio 会把读者丢进陌生半章。
+ */
+export function progressScrubTarget<T extends Pick<ChapterMeta, 'id'>>(
+  chapters: readonly T[],
+  ratio: number,
+): ProgressScrubTarget<T> | null {
+  if (!Array.isArray(chapters) || chapters.length === 0) return null
+  const index = chapterIndexFromBookRatio(ratio, chapters.length)
+  if (index < 0) return null
+  const chapter = chapters[index]
+  if (!chapter) return null
+  return { index, chapter, scrollRatio: 0 }
+}
+
+/** 拖动浮标上的章名：`第 N 章 · 标题`，标题缺失时只留章序。 */
+export function progressScrubLabel(
+  chapter: Pick<ChapterMeta, 'id' | 'index' | 'title'>,
+  index: number,
+): string {
+  const ordinal = formatChapterOrdinal(chapter.id, chapter.index || index + 1)
+  const title = (chapter.title || '').trim()
+  return title ? `${ordinal} · ${title}` : ordinal
+}
+
 export function remainingChapterCount(
   chapters: Array<Pick<ChapterMeta, 'id'>>,
   chapterId?: string | null,

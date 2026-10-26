@@ -35,8 +35,11 @@ import type {
 import {
   approximateBookRatio,
   chapterScrollRatio,
+  clampRatio,
   failAdvice,
   filterCatalogChapters,
+  progressScrubLabel,
+  progressScrubTarget,
   readerProgressLabel,
   readerScrollBehavior,
   remainingChapterCount,
@@ -1521,6 +1524,99 @@ function goToChapterId(chId: string) {
   if (ch) openChapter(ch, 0)
 }
 
+/**
+ * 底部进度条按章拖动。
+ *
+ * 拖动（pointerdown → pointermove）只更新浮标上的目标章名，不打开章节——中途每动一下就 openChapter
+ * 会把正文刷成幻灯片，也把写盘状态机打乱。松手才 openChapter(ch, 0) 落在章首。
+ */
+const scrubRatio = ref<number | null>(null)
+const scrubTarget = computed(() => {
+  if (scrubRatio.value === null) return null
+  return progressScrubTarget(chapters.value, scrubRatio.value)
+})
+const scrubLabel = computed(() => {
+  const target = scrubTarget.value
+  return target ? progressScrubLabel(target.chapter, target.index) : ''
+})
+const scrubOrdinal = computed(() => scrubTarget.value ? progressScrubLabel({ ...scrubTarget.value.chapter, title: '' }, scrubTarget.value.index) : '')
+const scrubTitle = computed(() => scrubTarget.value?.chapter.title?.trim() || '')
+const scrubbing = computed(() => scrubRatio.value !== null)
+const scrubPercent = computed(() => Math.round((scrubRatio.value ?? 0) * 100))
+const progressTrackRef = ref<HTMLElement | null>(null)
+let scrubPointerId: number | null = null
+
+function ratioFromPointer(clientX: number): number {
+  const el = progressTrackRef.value
+  if (!el) return 0
+  const rect = el.getBoundingClientRect()
+  if (!(rect.width > 0)) return 0
+  return clampRatio((clientX - rect.left) / rect.width)
+}
+
+/** 只有按在进度条本身上才算拖；点在浮标文字上也按进度条算。 */
+function startProgressScrub(e: PointerEvent) {
+  if (e.button !== 0) return
+  if (!chapters.value.length) return
+  revealTools(immersiveMode.value === 'locked')
+  scrubPointerId = e.pointerId
+  scrubRatio.value = ratioFromPointer(e.clientX)
+  // 捕获指针：拖出进度条（甚至拖到窗口边缘）也要收到 pointermove / pointerup，
+  // 不然松手事件落在正文上，会变成一次静默取消。
+  try { (e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId) } catch { /* 合成事件没有捕获 */ }
+  e.preventDefault()
+}
+
+function moveProgressScrub(e: PointerEvent) {
+  if (scrubRatio.value === null) return
+  scrubRatio.value = ratioFromPointer(e.clientX)
+  e.preventDefault()
+}
+
+function endProgressScrub(e: PointerEvent) {
+  if (scrubRatio.value === null) return
+  const target = scrubTarget.value
+  scrubRatio.value = null
+  const pointerId = scrubPointerId
+  scrubPointerId = null
+  if (pointerId !== null) {
+    try { (e.currentTarget as HTMLElement | null)?.releasePointerCapture?.(pointerId) } catch { /* 已释放 */ }
+  }
+  if (e.type === 'pointercancel') {
+    e.preventDefault()
+    return
+  }
+  // 松手才真正换章：落点是章首（scrollRatio = 0），不是拖到的那个比例。
+  // 失败/空/未下章照样打开，正文区的失败说明、重试、去浏览页入口由既有分支渲染。
+  if (target) void openChapter(target.chapter, 0)
+  e.preventDefault()
+}
+
+function cancelProgressScrub() {
+  scrubRatio.value = null
+  scrubPointerId = null
+}
+
+/** 键盘把焦点放在进度条上也能跳章：左右箭头按章移，Home/End 到首末章。 */
+function onProgressTrackKeydown(e: KeyboardEvent) {
+  if (!chapters.value.length) return
+  const total = chapters.value.length
+  const currentIndex = currentChapterIndex.value
+  const base = currentIndex >= 0 ? currentIndex : 0
+  let next = -1
+  if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = Math.min(total - 1, base + 1)
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = Math.max(0, base - 1)
+  else if (e.key === 'Home') next = 0
+  else if (e.key === 'End') next = total - 1
+  if (next < 0) return
+  const ch = chapters.value[next]
+  if (!ch) return
+  e.preventDefault()
+  e.stopPropagation()
+  revealTools(immersiveMode.value === 'locked')
+  void openChapter(ch, 0)
+}
+
 function setCatalogItemRef(chapterId: string, element: unknown) {
   if (element instanceof HTMLElement) catalogItemRefs.set(chapterId, element)
   else catalogItemRefs.delete(chapterId)
@@ -2290,12 +2386,36 @@ onUnmounted(() => {
         </Transition>
       </div>
 
-      <div class="reader-progress-track" :title="bookProgressDetail" :aria-label="bookProgressDetail">
+      <div
+        ref="progressTrackRef"
+        class="reader-progress-track"
+        :class="{ scrubbing }"
+        role="slider"
+        tabindex="0"
+        aria-roledescription="阅读进度，拖动按章跳转"
+        :aria-label="bookProgressDetail"
+        :aria-valuemin="0"
+        :aria-valuemax="Math.max(0, chapters.length - 1)"
+        :aria-valuenow="currentChapterIndex >= 0 ? currentChapterIndex : 0"
+        :aria-valuetext="scrubbing ? scrubLabel : bookProgressDetail"
+        :title="bookProgressDetail"
+        @pointerdown="startProgressScrub"
+        @pointermove="moveProgressScrub"
+        @pointerup="endProgressScrub"
+        @pointercancel="endProgressScrub"
+        @lostpointercapture="cancelProgressScrub"
+        @keydown="onProgressTrackKeydown"
+      >
         <div class="reader-progress-row" aria-hidden="true">
           <div class="reader-progress-fill book" :style="{ width: `${bookPercent}%` }"></div>
+          <div v-if="scrubbing" class="reader-progress-fill scrub-preview" :style="{ width: `${scrubPercent}%` }"></div>
         </div>
         <div class="reader-progress-row" aria-hidden="true">
           <div class="reader-progress-fill chapter" :style="{ width: `${chapterPercent}%` }"></div>
+        </div>
+        <div v-if="scrubbing && scrubLabel" class="reader-progress-scrub-hint" aria-live="polite">
+          <span class="reader-progress-scrub-ordinal">{{ scrubOrdinal }}</span>
+          <span v-if="scrubTitle" class="reader-progress-scrub-title">{{ scrubTitle }}</span>
         </div>
       </div>
 
@@ -3710,12 +3830,62 @@ onUnmounted(() => {
 }
 
 .reader-progress-row { height: 2px; }
+.reader-progress-row { position: relative; }
 .reader-progress-fill {
   height: 100%;
   background: var(--active-chapter);
   transition: width .12s linear;
 }
 .reader-progress-fill.chapter { opacity: .55; }
+
+/* 拖动预览：跟着指针走的细描边，盖在全书填充之上，读成「你要跳到这儿」。 */
+.reader-progress-fill.scrub-preview {
+  position: absolute;
+  inset: 0 auto 0 0;
+  opacity: .45;
+  background: var(--r-focus);
+  transition: none;
+}
+
+.reader-progress-track {
+  cursor: pointer;
+}
+
+.reader-progress-track.scrubbing {
+  height: 8px;
+  opacity: 1;
+  cursor: grabbing;
+}
+
+.reader-progress-track:focus-visible {
+  outline: 2px solid var(--r-focus);
+  outline-offset: -2px;
+}
+
+/* 拖动时的目标章名浮标：贴在进度条上方，不遮正文。 */
+.reader-progress-scrub-hint {
+  position: absolute;
+  left: 12px;
+  bottom: calc(100% + 8px);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: calc(100vw - 24px);
+  padding: 4px 10px;
+  border: 1px solid var(--r-line);
+  border-radius: 999px;
+  background: var(--popover-bg);
+  box-shadow: var(--shadow-card);
+  color: var(--reader-paper-text);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.reader-progress-scrub-ordinal { font-variant-numeric: tabular-nums; }
+.reader-progress-scrub-title { overflow: hidden; text-overflow: ellipsis; color: var(--r-muted); }
 
 .reader-wrap.immersive-locked .reader-progress-track { opacity: 1; }
 .chapter-hotzone {

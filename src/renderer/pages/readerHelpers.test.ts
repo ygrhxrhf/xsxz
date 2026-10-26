@@ -7,8 +7,11 @@ import {
   chapterScrollRatio,
   failAdvice,
   focusHalfWindow,
+  chapterIndexFromBookRatio,
   isParagraphInFocus,
   paragraphIndexAtViewportCenter,
+  progressScrubLabel,
+  progressScrubTarget,
   remainingChapterCount,
   readerScrollBehavior,
   resolveFocusAnchor,
@@ -504,6 +507,58 @@ describe('catalogChapterBadge', () => {
     expect(
       catalogChapterBadge({ status: 'ready', chapterId: 'c1', chapters }),
     ).toBeNull()
+  })
+})
+
+describe('进度条按章拖动', () => {
+  const chapters = [
+    { id: 'c1', index: 1, title: '开篇' },
+    { id: 'c2', index: 2, title: '风起' },
+    { id: 'c3', index: 3, title: '落潮' },
+  ]
+
+  it('maps a book ratio onto the chapter the bar points at', () => {
+    expect(chapterIndexFromBookRatio(0, 3)).toBe(0)
+    expect(chapterIndexFromBookRatio(0.33, 3)).toBe(0)
+    expect(chapterIndexFromBookRatio(1 / 3, 3)).toBe(1)
+    expect(chapterIndexFromBookRatio(0.5, 3)).toBe(1)
+    expect(chapterIndexFromBookRatio(2 / 3, 3)).toBe(2)
+    expect(chapterIndexFromBookRatio(1, 3)).toBe(2)
+    // 反向验证：映射回来的章首比例必须落在该章自己的区间里
+    for (const ratio of [0, 0.2, 0.34, 0.5, 0.67, 0.9]) {
+      const index = chapterIndexFromBookRatio(ratio, 3)
+      expect(approximateBookRatioFromIndex(index, 3, 0)).toBeLessThanOrEqual(ratio + 1e-9)
+      expect(approximateBookRatioFromIndex(index + 1, 3, 0)).toBeGreaterThan(ratio)
+    }
+  })
+
+  it('survives degenerate inputs without inventing a chapter', () => {
+    expect(chapterIndexFromBookRatio(0.5, 0)).toBe(-1)
+    expect(chapterIndexFromBookRatio(0.5, Number.NaN)).toBe(-1)
+    expect(chapterIndexFromBookRatio(Number.NaN, 3)).toBe(0)
+    expect(chapterIndexFromBookRatio(-3, 3)).toBe(0)
+    expect(chapterIndexFromBookRatio(9, 3)).toBe(2)
+    expect(progressScrubTarget([], 0.5)).toBeNull()
+    // clampRatio 把非有限值收成 0：拖拽坐标不可能真是 Infinity，落首章即可
+    expect(progressScrubTarget(chapters, Number.POSITIVE_INFINITY)?.chapter.id).toBe('c1')
+  })
+
+  it('drops onto the start of the target chapter', () => {
+    expect(progressScrubTarget(chapters, 0)?.chapter.id).toBe('c1')
+    expect(progressScrubTarget(chapters, 0.5)?.chapter.id).toBe('c2')
+    expect(progressScrubTarget(chapters, 1)?.chapter.id).toBe('c3')
+    // 松手一律落章首：拖到 96% 也不能把读者丢进章尾
+    expect(progressScrubTarget(chapters, 0.96)?.scrollRatio).toBe(0)
+    expect(progressScrubTarget(chapters, 0.5)?.index).toBe(1)
+    for (const ratio of [0, 0.1, 0.5, 0.77, 1]) {
+      expect(progressScrubTarget(chapters, ratio)?.scrollRatio).toBe(0)
+    }
+  })
+
+  it('labels the floating hint with chapter ordinal and title', () => {
+    expect(progressScrubLabel(chapters[1], 1)).toBe('第 2 章 · 风起')
+    expect(progressScrubLabel({ id: 'c9', index: 9, title: '   ' }, 8)).toBe('第 9 章')
+    expect(progressScrubLabel({ id: 'raw-id', index: 0, title: '无序号' }, 0)).toBe('第 1 章 · 无序号')
   })
 })
 

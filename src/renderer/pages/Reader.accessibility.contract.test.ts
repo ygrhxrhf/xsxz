@@ -259,3 +259,40 @@ describe('Reader U1.1 re-entry', () => {
     expect(source).not.toContain('location.reload')
   })
 })
+
+describe('Reader U1.2 progress scrubbing', () => {
+  it('shows the target chapter name while dragging, not after release', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    // 目标章名来自拖动中的 scrubRatio（pointermove 更新），不能只靠松手后的 currentChapter。
+    expect(source).toContain('const scrubLabel = computed(')
+    expect(source).toContain('progressScrubLabel(target.chapter, target.index)')
+    expect(source).toContain('@pointermove="moveProgressScrub"')
+    expect(source).toContain('v-if="scrubbing && scrubLabel"')
+    expect(source).toContain('class="reader-progress-scrub-hint"')
+    // 浮标是进度条的一部分，必须有 live 区域让读屏跟着念。
+    expect(source).toContain('aria-live="polite"')
+  })
+
+  it('opens the target chapter at its start on release', async () => {
+    const helpers = await readFile(join(process.cwd(), 'src/renderer/pages/readerHelpers.ts'), 'utf-8')
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    expect(helpers).toContain('export function progressScrubTarget')
+    expect(helpers).toContain('return { index, chapter, scrollRatio: 0 }')
+    expect(source).toContain('if (target) void openChapter(target.chapter, 0)')
+    // 拖动过程中不许换章：pointermove 只更新比例。
+    const moveBlock = source.slice(source.indexOf('function moveProgressScrub'), source.indexOf('function endProgressScrub'))
+    expect(moveBlock).not.toContain('openChapter')
+  })
+
+  it('keeps the track keyboard reachable and its old labels', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    expect(source).toContain('role="slider"')
+    expect(source).toContain('tabindex="0"')
+    expect(source).toContain(':aria-label="bookProgressDetail"')
+    expect(source).toContain('@keydown="onProgressTrackKeydown"')
+    expect(source).toContain('.reader-progress-track:focus-visible')
+    // 失败章按既有分支渲染：拖过去也要留着重试与去浏览页入口。
+    expect(source).toContain('v-if="canRetryChapter" size="small" type="warning"')
+    expect(source).toContain('去浏览页')
+  })
+})
