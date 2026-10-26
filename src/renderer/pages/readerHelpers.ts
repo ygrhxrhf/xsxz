@@ -163,6 +163,17 @@ export interface ReaderImmersiveKeyResult {
 const TEXT_ENTRY_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
 const TOOL_HIDE_DELAY_MS = 3000
 
+/**
+ * 阅读页从「不在屏幕上」变回可见时，工具要回到默认收起。
+ * 首次观测（null）只登记状态；一直可见的重复回调不收起，避免打断正在读的人。
+ */
+export function shouldResetReaderToolsOnEntry(
+  wasOnScreen: boolean | null,
+  isOnScreen: boolean,
+): boolean {
+  return wasOnScreen === false && isOnScreen === true
+}
+
 /** 工具层只在阅读现场完全空闲时自动隐藏。 */
 export function shouldAutoHideReaderTools(context: ReaderToolVisibilityContext): boolean {
   return (

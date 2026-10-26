@@ -19,6 +19,7 @@ import {
   scrollableDistance,
   selectionPopupPosition,
   shouldAutoHideReaderTools,
+  shouldResetReaderToolsOnEntry,
   scrollTopFromRatio,
   wheelPageDirection,
 } from './readerHelpers'
@@ -98,6 +99,18 @@ describe('immersive reader helpers', () => {
     expect(resolveImmersiveKey('Alt', 'locked')).toEqual({ mode: 'locked', toolsVisible: true, temporaryReveal: true })
     expect(resolveImmersiveKey('Escape', 'locked')).toEqual({ mode: 'normal', toolsVisible: true, temporaryReveal: false })
     expect(resolveImmersiveKey('Escape', 'normal')).toEqual({ mode: 'normal', toolsVisible: true, temporaryReveal: false })
+  })
+
+  it('re-collapses reader tools only when the page becomes visible again', () => {
+    // 首次观测（还没登记过）不是重入，不能顺手收起。
+    expect(shouldResetReaderToolsOnEntry(null, true)).toBe(false)
+    expect(shouldResetReaderToolsOnEntry(null, false)).toBe(false)
+    // 离开再回来才是进入阅读页。
+    expect(shouldResetReaderToolsOnEntry(false, true)).toBe(true)
+    // 常驻可见期间不打断正在阅读的人。
+    expect(shouldResetReaderToolsOnEntry(true, true)).toBe(false)
+    expect(shouldResetReaderToolsOnEntry(true, false)).toBe(false)
+    expect(shouldResetReaderToolsOnEntry(false, false)).toBe(false)
   })
 })
 

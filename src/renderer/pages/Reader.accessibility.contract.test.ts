@@ -8,6 +8,19 @@ import Reader from './Reader.vue'
 import { readerScrollBehavior, resolveReaderKey } from './readerHelpers'
 
 class ResizeObserverStub { observe() {}; unobserve() {}; disconnect() {} }
+// 捕获 ResizeObserver 回调，用来手动模拟「阅读页隐藏 → 重新可见」。
+function installResizeObserverCapture(): Array<(entries: Array<{ contentRect: { width: number; height: number } }>) => void> {
+  const callbacks: Array<(entries: Array<{ contentRect: { width: number; height: number } }>) => void> = []
+  class CaptureResizeObserver {
+    constructor(cb: (entries: Array<{ contentRect: { width: number; height: number } }>) => void) { callbacks.push(cb) }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  Object.defineProperty(window, 'ResizeObserver', { value: CaptureResizeObserver, configurable: true })
+  Object.defineProperty(globalThis, 'ResizeObserver', { value: CaptureResizeObserver, configurable: true })
+  return callbacks
+}
 Object.defineProperty(window, 'ResizeObserver', { value: ResizeObserverStub, configurable: true })
 Object.defineProperty(window, 'matchMedia', { value: () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} }), configurable: true })
 Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { value: () => {}, configurable: true })
@@ -193,5 +206,56 @@ describe('Reader P2.4 accessibility wrap-up', () => {
     // 关键回归护栏：openChapter 内部会自增 navEpoch，若用外层 `epoch !== navEpoch` 判断早退，
     // 续读提示会在弹出的前一行永远 return 掉。必须改判「仍落在续读这一章」，不能拿 epoch 拦。
     expect(source).toContain('if (currentChapter.value?.id !== ch.id) return')
+  })
+})
+
+describe('Reader U1.1 re-entry', () => {
+  it('collapses the tools when the reader page becomes visible again', async () => {
+    installReaderApi()
+    const callbacks = installResizeObserverCapture()
+    try {
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const app = createApp({ render: () => h(NMessageProvider, null, { default: () => h(Reader, { bookId: 'book-1' }) }) })
+      app.mount(host)
+      await nextTick(); await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(callbacks.length).toBeGreaterThan(0)
+      const emitSize = (width: number, height: number) => callbacks[0]([{ contentRect: { width, height } }])
+      const toolbar = () => document.querySelector('.reader-toolbar')
+      // 首次观测只登记：在屏幕上不等于重入。
+      emitSize(900, 600)
+      await nextTick()
+      expect(toolbar()?.getAttribute('aria-hidden')).toBe('true')
+      // 展开工具（键盘焦点进入阅读区会唤回顶栏）。
+      document.querySelector('.reader-wrap')?.dispatchEvent(new Event('focusin', { bubbles: true }))
+      await nextTick()
+      expect(toolbar()?.getAttribute('aria-hidden')).toBe('false')
+      // 离开阅读页（v-show 切到 display:none，尺寸归零）。
+      emitSize(0, 0)
+      await nextTick()
+      // 从书库点书卡回到阅读页：工具必须已收起，正文与书脊仍在。
+      emitSize(900, 600)
+      await nextTick()
+      expect(toolbar()?.getAttribute('aria-hidden')).toBe('true')
+      expect(toolbar()?.classList.contains('reader-tools-hidden')).toBe(true)
+      expect(document.querySelector('.reader-bottombar')?.getAttribute('aria-hidden')).toBe('true')
+      expect(document.querySelector('.reader-spine')).not.toBeNull()
+      expect(document.querySelector('.reader-content')?.textContent).toContain('第一段。')
+      app.unmount()
+    } finally {
+      Object.defineProperty(window, 'ResizeObserver', { value: ResizeObserverStub, configurable: true })
+      Object.defineProperty(globalThis, 'ResizeObserver', { value: ResizeObserverStub, configurable: true })
+    }
+  })
+
+  it('resets the tools on every entry path in source', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    expect(source).toContain('ref="readerRootRef"')
+    expect(source).toContain('collapseToolsForEntry')
+    expect(source).toContain('shouldResetReaderToolsOnEntry')
+    // 换书也算进入：loadBook 必须在新书上复位，不能沿用上一本展开着的工具层。
+    expect(source).toContain('if (book.value?.id !== bookId) collapseToolsForEntry()')
+    // 不得用定时器或强制重载冒充复位。
+    expect(source).not.toContain('location.reload')
   })
 })

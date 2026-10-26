@@ -50,6 +50,7 @@ import {
   readerTapCanPage,
   selectionPopupPosition,
   catalogChapterBadge,
+  shouldResetReaderToolsOnEntry,
 } from './readerHelpers'
 import type { ReaderImmersiveMode } from './readerHelpers'
 import {
@@ -158,6 +159,11 @@ const activeBottomPanel = ref<'catalog' | 'progress' | 'background' | 'font' | n
 const libraryPath = ref('')
 let lastToolActivityAt = Date.now()
 let toolHideTimer: ReturnType<typeof setTimeout> | null = null
+// 阅读页用 v-show 常驻挂载：靠根元素的真实尺寸判断「是不是又回到这一页」。
+const readerRootRef = ref<HTMLElement | null>(null)
+// 上一次观测到的「本页是否在屏幕上」：null 表示还没观测过。
+let readerOnScreen: boolean | null = null
+let readerVisibilityObserver: ResizeObserver | null = null
 
 const prefsReady = ref(false)
 let prefsSaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -596,6 +602,44 @@ function scheduleToolHide() {
   // 面板、选区、工具栏焦点仍阻止误收。下载 running 只挡 Esc，不在这里扩大。
 }
 
+/** 进入阅读页时把工具层收回默认态：正文和左侧书脊优先。 */
+function collapseToolsForEntry() {
+  toolsVisible.value = false
+  temporaryToolReveal.value = false
+  pointerInToolbar.value = false
+  lastToolActivityAt = Date.now()
+  clearToolHideTimer()
+}
+
+/**
+ * 本页离开又回来（书库点书卡、从其他页返回）时工具默认收起。
+ * 首次观测只登记，常驻可见期间不打断正在阅读的人。
+ * 只动工具层，不动阅读位置、沉浸模式和面板状态。
+ */
+function applyReaderOnScreen(isOnScreen: boolean) {
+  const wasOnScreen = readerOnScreen
+  readerOnScreen = isOnScreen
+  if (shouldResetReaderToolsOnEntry(wasOnScreen, isOnScreen)) collapseToolsForEntry()
+}
+
+function startReaderVisibilityWatch() {
+  const el = readerRootRef.value
+  if (!el || readerVisibilityObserver || typeof ResizeObserver === 'undefined') return
+  // v-show 切到 display:none 时尺寸归零，切回来时恢复：这是「重入本页」的真实信号。
+  readerVisibilityObserver = new ResizeObserver((entries) => {
+    const rect = entries[entries.length - 1]?.contentRect
+    const onScreen = rect ? rect.width > 0 && rect.height > 0 : el.clientWidth > 0 || el.clientHeight > 0
+    applyReaderOnScreen(onScreen)
+  })
+  readerVisibilityObserver.observe(el)
+}
+
+function stopReaderVisibilityWatch() {
+  readerVisibilityObserver?.disconnect()
+  readerVisibilityObserver = null
+  readerOnScreen = null
+}
+
 function revealTools(temporary = false) {
   toolsVisible.value = true
   temporaryToolReveal.value = temporary
@@ -1021,6 +1065,8 @@ const spineInitial = computed(() => libraryCoverText(book.value?.title || ''))
 
 async function loadBook(bookId: string) {
   assistantBudgets.value = {}
+  // 换书也是一次「进入阅读页」：新书不能沿用上一本展开着的工具层。
+  if (book.value?.id !== bookId) collapseToolsForEntry()
   const epoch = ++navEpoch
   ttsStop()
   ttsSavedPosition.value = null
@@ -1873,6 +1919,7 @@ watch(
 
 onMounted(async () => {
   refreshTtsVoices()
+  startReaderVisibilityWatch()
   if ('speechSynthesis' in window) window.speechSynthesis.addEventListener?.('voiceschanged', refreshTtsVoices)
   window.addEventListener('keydown', onReaderKeydown)
   window.addEventListener('resize', onReaderResize)
@@ -2027,6 +2074,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', onReaderResize)
   window.removeEventListener('beforeunload', flushPendingReaderWrites)
   chapterPrefetch.dispose()
+  stopReaderVisibilityWatch()
   stopFollowPolling()
   stopAutoScroll()
   ttsStop()
@@ -2046,7 +2094,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :class="['reader-wrap', { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @focusin="onReaderFocusIn">
+  <div ref="readerRootRef" :class="['reader-wrap', { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @focusin="onReaderFocusIn">
     <!-- No book selected -->
     <div v-if="!book" class="page placeholder">
       <h2>阅读</h2>
