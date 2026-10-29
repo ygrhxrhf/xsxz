@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ReaderFocusMode } from '@shared/types'
+import { scrollTopForParagraphPage, snapScrollTopToParagraph } from './readerPager'
 import {
   approximateBookRatio,
   approximateBookRatioFromIndex,
@@ -568,5 +569,97 @@ describe('chapterScrollRatio 尺寸未测出时', () => {
     expect(chapterScrollRatio(0, 0, 0)).toBe(0)
     // 量出来了但整章只有一屏：确实看到底了
     expect(chapterScrollRatio(0, 600, 600)).toBe(1)
+  })
+})
+
+// U1.3 —— 屏幕翻页对齐段落边界。视口统一 800px；top/bottom 相对正文内容顶。
+const PAGER_PARAS = [
+  { top: 0, bottom: 300 },
+  { top: 300, bottom: 700 },
+  { top: 700, bottom: 900 },
+  { top: 900, bottom: 1200 },
+  { top: 1200, bottom: 1500 },
+]
+
+describe('scrollTopForParagraphPage 短段对齐', () => {
+  it('lands on the top of the paragraph the next screen would cut in half', () => {
+    // 朴素整屏落点 800 会把 [700, 900] 拦腰切开
+    const target = scrollTopForParagraphPage({
+      paragraphs: PAGER_PARAS, scrollTop: 0, clientHeight: 800, scrollHeight: 3000, direction: 1,
+    })
+    expect(target).toBe(700)
+    // 该段第一句在新屏顶部完整可见：段首就是视口顶
+    expect(PAGER_PARAS[2]!.top).toBe(target)
+    expect(PAGER_PARAS[2]!.bottom).toBeLessThanOrEqual(target + 800)
+  })
+
+  it('snaps to the next paragraph start when the screen bottom lands in the gap', () => {
+    const paragraphs = [{ top: 0, bottom: 300 }, { top: 800, bottom: 1000 }]
+    expect(scrollTopForParagraphPage({
+      paragraphs, scrollTop: 0, clientHeight: 800, scrollHeight: 3000, direction: 1,
+    })).toBe(800)
+  })
+
+  it('falls back to a plain screen when there is no paragraph info', () => {
+    expect(scrollTopForParagraphPage({
+      paragraphs: [], scrollTop: 0, clientHeight: 800, scrollHeight: 3000, direction: 1,
+    })).toBe(800)
+  })
+})
+
+describe('scrollTopForParagraphPage 超长段不跳过', () => {
+  // 第二段 2000px > 一屏 800px
+  const paragraphs = [{ top: 0, bottom: 400 }, { top: 400, bottom: 2400 }, { top: 2400, bottom: 2700 }]
+
+  it('advances at most one screen inside an over-long paragraph', () => {
+    const first = scrollTopForParagraphPage({ paragraphs, scrollTop: 400, clientHeight: 800, scrollHeight: 3000, direction: 1 })
+    expect(first).toBe(1200)
+    expect(first - 400).toBeLessThanOrEqual(800)
+    const second = scrollTopForParagraphPage({ paragraphs, scrollTop: 1200, clientHeight: 800, scrollHeight: 3000, direction: 1 })
+    expect(second - 1200).toBeLessThanOrEqual(800)
+    expect(second).toBe(1600)
+  })
+
+  it('leaves no text of the long paragraph unread before moving on', () => {
+    // 1600 起视口覆盖到段尾 2400，剩余文字全看过；再前进落到下一段段首
+    const next = scrollTopForParagraphPage({ paragraphs, scrollTop: 1600, clientHeight: 800, scrollHeight: 3500, direction: 1 })
+    expect(next).toBe(2400)
+    expect(paragraphs[2]!.top).toBe(next)
+  })
+})
+
+describe('scrollTopForParagraphPage 向上落段首', () => {
+  it('bounces a mid-paragraph landing up to that paragraph start', () => {
+    expect(scrollTopForParagraphPage({
+      paragraphs: PAGER_PARAS, scrollTop: 1400, clientHeight: 800, scrollHeight: 3000, direction: -1,
+    })).toBe(300)
+    expect(scrollTopForParagraphPage({
+      paragraphs: PAGER_PARAS, scrollTop: 1500, clientHeight: 800, scrollHeight: 3000, direction: -1,
+    })).toBe(700)
+  })
+
+  it('retreats a single screen inside an over-long paragraph instead of its start', () => {
+    const paragraphs = [{ top: 0, bottom: 400 }, { top: 400, bottom: 2400 }]
+    const target = scrollTopForParagraphPage({ paragraphs, scrollTop: 1600, clientHeight: 800, scrollHeight: 3000, direction: -1 })
+    expect(target).toBe(800)
+    expect(1600 - target).toBeLessThanOrEqual(800)
+  })
+
+  it('stops at the chapter start instead of going negative', () => {
+    expect(scrollTopForParagraphPage({ paragraphs: PAGER_PARAS, scrollTop: 0, clientHeight: 800, scrollHeight: 3000, direction: -1 })).toBe(0)
+    expect(scrollTopForParagraphPage({ paragraphs: PAGER_PARAS, scrollTop: 200, clientHeight: 800, scrollHeight: 3000, direction: -1 })).toBe(0)
+  })
+})
+
+describe('snapScrollTopToParagraph 回吸不跨屏', () => {
+  const paragraphs = [{ top: 0, bottom: 400 }, { top: 400, bottom: 2400 }, { top: 2400, bottom: 2700 }]
+
+  it('keeps the current position inside an over-long paragraph', () => {
+    expect(snapScrollTopToParagraph(paragraphs, 1300, 2, 800)).toBe(1300)
+  })
+
+  it('pulls a half-shown short paragraph back to its start', () => {
+    expect(snapScrollTopToParagraph(paragraphs, 2420, 2, 800)).toBe(2400)
+    expect(snapScrollTopToParagraph(paragraphs, 250, 2, 800)).toBe(0)
   })
 })

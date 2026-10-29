@@ -64,6 +64,122 @@ export function visualPageIndexFromRatio(ratio: number, scrollHeight: number, cl
   return Math.round(clampRatio(ratio) * (count - 1))
 }
 
+/** 段落相对正文的纵向范围（px，以正文内容顶为 0）。 */
+export interface ReaderParagraphSpan {
+  top: number
+  bottom: number
+}
+
+export interface ParagraphPagingInput {
+  /** 段落 spans，顺序无关；非法项会被丢掉。 */
+  paragraphs: readonly ReaderParagraphSpan[]
+  scrollTop: number
+  clientHeight: number
+  direction: 1 | -1
+  /** 正文可滚动总高；缺省时用最后一段的 bottom 兜底。 */
+  scrollHeight?: number
+  /** 段间空隙容差（px），默认 0。 */
+  tolerance?: number
+}
+
+function isSpan(value: ReaderParagraphSpan | null | undefined): value is ReaderParagraphSpan {
+  return !!value && isFiniteNumber(value.top) && isFiniteNumber(value.bottom) && value.bottom > value.top
+}
+
+/**
+ * 屏幕翻页落点：视口顶部停在段落边界上。
+ *
+ * 向下：先按一屏算新屏底部；若底部切断某段（top < 底部 < bottom），落点收到该段段首，
+ * 让该段第一句在新屏顶部完整出现。超长段（bottom - top > clientHeight）只前进
+ * clientHeight，不跳过该段剩余文字。
+ * 向上：退一屏后若落在某段内部，就收到该段段首；超长段只退一屏。
+ * 结果钳制在 [0, maxScrollTop]，章首/章末不越界。
+ */
+export function scrollTopForParagraphPage(input: ParagraphPagingInput): number {
+  const view = input?.clientHeight
+  const direction = input?.direction === -1 ? -1 : 1
+  const tolerance = isFiniteNumber(input?.tolerance) ? Math.max(0, input.tolerance as number) : 0
+  const spans = (input?.paragraphs ?? []).filter(isSpan).slice().sort((a, b) => a.top - b.top)
+
+  if (!isFiniteNumber(view) || view <= 0) return 0
+
+  const contentBottom = spans.length ? spans[spans.length - 1]!.bottom : 0
+  const height = isFiniteNumber(input?.scrollHeight) && (input.scrollHeight as number) > 0
+    ? (input.scrollHeight as number)
+    : contentBottom
+  const maxTop = Math.max(0, height - view)
+  const current = Math.max(0, Math.min(isFiniteNumber(input?.scrollTop) ? input.scrollTop : 0, maxTop))
+
+  if (!spans.length) {
+    // 没有段落信息（空章 / 还没量出排版）：退回整屏翻页。
+    return direction === -1 ? Math.max(0, current - view) : Math.min(current + view, maxTop)
+  }
+
+  const clampTop = (value: number) => Math.max(0, Math.min(value, maxTop))
+
+  if (direction === -1) {
+    const candidate = Math.max(0, current - view)
+    const covering = spans.find((s) => s.top < candidate - tolerance && s.bottom > candidate + tolerance)
+    if (!covering) return clampTop(candidate)
+    // 超长段一次退到段首会跨过一整屏文字，只退一屏。
+    if (covering.bottom - covering.top > view) return clampTop(candidate)
+    return clampTop(covering.top)
+  }
+
+  const edge = current + view
+  // 新屏底部切断的那一段（最先出现的那段）：落点收到它的段首。
+  const cut = spans.find((s) => s.top < edge - tolerance && s.bottom > edge + tolerance)
+  let target: number
+  if (cut) {
+    if (cut.bottom - cut.top > view) {
+      // 超长段：只前进一屏，不越过段内剩余文字。
+      target = cut.top > current + tolerance
+        ? cut.top
+        : Math.min(edge, cut.bottom - view)
+    } else {
+      target = Math.max(current, cut.top)
+    }
+  } else {
+    // 底部落在段间空白或章末：对齐到下一段段首，没有下一段就整屏前进。
+    const next = spans.find((s) => s.top >= edge - tolerance)
+    target = next ? next.top : edge
+  }
+
+  target = clampTop(target)
+  // 兜底：任何情况下章内都要能往前走，否则翻页会卡死。
+  if (target <= current + tolerance && current < maxTop) target = clampTop(current + view)
+  return clampTop(target)
+}
+
+/**
+ * 把任意 scrollTop 吸附到最近的段落段首（用于「滚动停下后回吸」）。
+ * 优先取当前视口顶部所在段的段首；比它更近的下一段段首才会被采纳。
+ * 传入 clientHeight 时，视口顶部落在超长段内部就原地不动——否则会一下跳回很远的段首。
+ * 没有段落信息时返回原值，交给调用方兜底。
+ */
+export function snapScrollTopToParagraph(
+  paragraphs: readonly ReaderParagraphSpan[],
+  scrollTop: number,
+  tolerance = 0,
+  clientHeight = 0,
+): number {
+  const spans = (paragraphs ?? []).filter(isSpan).slice().sort((a, b) => a.top - b.top)
+  if (!spans.length || !isFiniteNumber(scrollTop)) return isFiniteNumber(scrollTop) ? scrollTop : 0
+  const tol = isFiniteNumber(tolerance) ? Math.max(0, tolerance) : 0
+  const current = Math.max(0, scrollTop)
+  const view = isFiniteNumber(clientHeight) ? clientHeight : 0
+  if (view > 0) {
+    const tall = spans.find((s) => s.bottom - s.top > view && s.top < current - tol && s.bottom > current + tol)
+    if (tall) return current
+  }
+  let target = spans[0]!.top
+  for (const span of spans) {
+    if (span.top <= current + tol) target = span.top
+    else break
+  }
+  return Math.max(0, target)
+}
+
 export function adjacentVisualPage(pageIndex: number, direction: 1 | -1, pageCount: number): number {
   if (!isFiniteNumber(pageCount) || pageCount <= 1) return 0
   const start = clampIndex(pageIndex, pageCount)

@@ -182,6 +182,10 @@ describe('Reader P2.4 accessibility wrap-up', () => {
     expect(source).not.toContain('@wheel="onContentWheel"')
     expect(source).not.toContain('wheelPageDirection')
     expect(source).toContain('el.clientHeight * 0.9')
+    // U1.3：屏幕翻页走段落对齐，连续滚动仍按 0.9 屏推进、不吸附。
+    expect(source).toContain('scrollTopForParagraphPage')
+    expect(source).toContain('collectParagraphSpans')
+    expect(source).toContain('snapScrollTopToParagraph')
     expect(source).toContain('readerScrollBehavior')
     expect(source).toContain('const toolsVisible = ref(false)')
     expect(source).toContain('onContentZoneMouseup')

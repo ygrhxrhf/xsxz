@@ -58,11 +58,14 @@ import {
 import type { ReaderImmersiveMode } from './readerHelpers'
 import {
   adjacentVisualPage,
+  scrollTopForParagraphPage,
   scrollTopForVisualPage,
+  snapScrollTopToParagraph,
   visualPageCount,
   visualPageIndex,
   visualPageLabel,
 } from './readerPager'
+import type { ReaderParagraphSpan } from './readerPager'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { ttsBodyHash, validTtsPosition } from './ttsPosition'
 import { decorateText } from '@shared/paragraphSearch'
@@ -780,8 +783,16 @@ function syncVisualPage() {
 function snapToVisualPage() {
   const el = contentRef.value
   if (!el || readingMode.value !== 'screen') return
-  const index = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
-  const targetTop = scrollTopForVisualPage(index, el.scrollHeight, el.clientHeight)
+  const spans = collectParagraphSpans(el)
+  let targetTop: number
+  if (spans.length) {
+    // 回吸也落段落边界：停在半段时收到该段段首；超长段保持原地，不硬拽回很远的段首。
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight)
+    targetTop = Math.max(0, Math.min(snapScrollTopToParagraph(spans, el.scrollTop, 2, el.clientHeight), maxTop))
+  } else {
+    const index = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
+    targetTop = scrollTopForVisualPage(index, el.scrollHeight, el.clientHeight)
+  }
   // 已经对齐就别再滚：省掉一次无意义的平滑滚动，也避免它触发 scroll 事件再回吸。
   if (Math.abs(el.scrollTop - targetTop) < 1) return
 
@@ -800,19 +811,54 @@ function onReaderResize() {
   snapToVisualPage()
 }
 
+/** 量出每个段落相对正文内容顶的纵向范围，供段落对齐翻页使用。 */
+function collectParagraphSpans(el: HTMLElement): ReaderParagraphSpan[] {
+  const paneTop = el.getBoundingClientRect().top
+  const nodes = el.querySelectorAll<HTMLElement>('.para[data-p]')
+  const spans: ReaderParagraphSpan[] = []
+  nodes.forEach((node) => {
+    const rect = node.getBoundingClientRect()
+    if (rect.height <= 0) return
+    const top = rect.top - paneTop + el.scrollTop
+    spans.push({ top, bottom: top + rect.height })
+  })
+  return spans
+}
+
 function pageByScreen(direction: 1 | -1) {
   const el = contentRef.value
   if (!el) return
   const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
   if (readingMode.value === 'screen') {
+    const spans = collectParagraphSpans(el)
+    if (spans.length) {
+      // 段落对齐：被屏底切断的段落下一屏从段首开始，超长段只前进一屏。
+      const target = scrollTopForParagraphPage({
+        paragraphs: spans,
+        scrollTop: el.scrollTop,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+        direction,
+      })
+      // 抑制回吸：翻页本身就是在对齐，别让防抖回吸再插一脚。
+      suppressSnapUntil = Date.now() + (behavior === 'auto' ? 200 : 520)
+      if (Math.abs(el.scrollTop - target) < 1) {
+        syncVisualPage()
+        return
+      }
+      el.scrollTo({ top: target, behavior })
+      syncVisualPage()
+      return
+    }
+    // 还没量出段落（空章 / 正在排版）：退回整页对齐，不越界。
     const count = visualPageCount(el.scrollHeight, el.clientHeight)
     const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
     const next = adjacentVisualPage(current, direction, count)
-    // 抑制回吸：翻页本身就是在对齐，别让防抖回吸再插一脚。
     suppressSnapUntil = Date.now() + (behavior === 'auto' ? 200 : 520)
     el.scrollTo({ top: scrollTopForVisualPage(next, el.scrollHeight, el.clientHeight), behavior })
     return
   }
+  // 连续滚动：不吸附、不拦截滚轮，只按一屏净高度的一小截前进，留出行间重叠。
   el.scrollBy({
     top: direction * el.clientHeight * 0.9,
     behavior,
