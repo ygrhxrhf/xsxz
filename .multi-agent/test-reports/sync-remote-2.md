@@ -52,9 +52,8 @@ bf545af merge: 同步远端 master 的 library/mirror/download 修复
 - 未复核 readiness 第 5 行（属主 Agent 门禁职责）。
 - 未跑默认分支合入后 E2E（`node scripts/mirror-e2e.mjs` 与 `scripts/*e2e*`），不在本任务范围。
 
-## 补充：报告提交
+## 报告自身提交说明
 
-- 本报告自身提交 `1c1c5459bc2fdc57c2cc7950936a7981493b5dbc`（docs: 记录 sync-remote-2 合并报告）。
-- 合并后 HEAD 之上唯一新增均为 `.multi-agent/` 下的 docs 提交，产品代码未再变化。合并提交 `bf545af` 之后的产品代码终点 = `bf545af` 本身，可用 `git diff --stat bf545af HEAD -- src scripts docs` 验证为空。
-- 工作区剩余 ` M .multi-agent/readiness.md`：门禁自动写的 PENDING，留待主 Agent 复核。
-- 本报告定稿时的 master HEAD：`ff424fe9eaac6ca6077a301ab71cfe250d605109`（该 sha 之后若再提交 docs，产品代码仍停在 `bf545af`）。
+- 本报告与后续账本修订都在 `.multi-agent/` 下单独成 docs 提交，不携带产品代码改动。
+- 产品代码在默认分支的终点就是合并提交 `bf545af278d77579ca8f29ff4b77641e3658b4e0`；验证：`git diff --stat bf545af HEAD -- src scripts docs` 输出为空。
+- 工作区剩余 ` M .multi-agent/readiness.md`：门禁自动写的 PENDING（第 5 行改 PENDING、HEAD 行更新、末尾追加门禁提示），留待主 Agent 复核后处理。
