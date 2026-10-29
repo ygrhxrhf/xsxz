@@ -1,0 +1,110 @@
+{
+  "card": "打开《样例·长夜行舟》",
+  "click": [
+    124,
+    715
+  ],
+  "env": {
+    "vis": "visible",
+    "hidden": false,
+    "focus": true
+  },
+  "marks": [
+    {
+      "wait": 0,
+      "toolbar": [
+        "reader-toolbar",
+        "visible",
+        "1",
+        56,
+        "false"
+      ],
+      "buttons": [
+        "visible",
+        "visible",
+        "visible",
+        "visible"
+      ]
+    },
+    {
+      "wait": 300,
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "hidden",
+        "0",
+        0,
+        "true"
+      ],
+      "buttons": [
+        "hidden",
+        "hidden",
+        "hidden",
+        "hidden"
+      ]
+    },
+    {
+      "wait": 800,
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "hidden",
+        "0",
+        0,
+        "true"
+      ],
+      "buttons": [
+        "hidden",
+        "hidden",
+        "hidden",
+        "hidden"
+      ]
+    },
+    {
+      "wait": 1500,
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "hidden",
+        "0",
+        0,
+        "true"
+      ],
+      "buttons": [
+        "hidden",
+        "hidden",
+        "hidden",
+        "hidden"
+      ]
+    },
+    {
+      "wait": 2500,
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "hidden",
+        "0",
+        0,
+        "true"
+      ],
+      "buttons": [
+        "hidden",
+        "hidden",
+        "hidden",
+        "hidden"
+      ]
+    },
+    {
+      "wait": 4000,
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "hidden",
+        "0",
+        0,
+        "true"
+      ],
+      "buttons": [
+        "hidden",
+        "hidden",
+        "hidden",
+        "hidden"
+      ]
+    }
+  ]
+}

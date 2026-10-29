@@ -1,0 +1,64 @@
+{
+  "viewport": {
+    "vw": 1280,
+    "vh": 771
+  },
+  "paras": [
+    {
+      "p": "0",
+      "text": "样例正文第一段：雨停之后，街灯把水面照成一条条亮线，他沿着巷口慢慢往家走。从此段朗读",
+      "rect": {
+        "x": 384,
+        "y": 177,
+        "w": 564,
+        "h": 65
+      },
+      "inViewport": true,
+      "display": "block",
+      "visibility": "visible",
+      "opacity": "1"
+    },
+    {
+      "p": "1",
+      "text": "样例正文第二段：这一段是正常叙述，用来对照站点尾巴是否被整段藏掉。从此段朗读",
+      "rect": {
+        "x": 384,
+        "y": 250,
+        "w": 564,
+        "h": 65
+      },
+      "inViewport": true,
+      "display": "block",
+      "visibility": "visible",
+      "opacity": "1"
+    },
+    {
+      "p": "2",
+      "text": "请收藏本站，下次不迷路。本站域名 www.example.com 请记住。从此段朗读",
+      "rect": {
+        "x": 384,
+        "y": 323,
+        "w": 564,
+        "h": 65
+      },
+      "inViewport": true,
+      "display": "block",
+      "visibility": "visible",
+      "opacity": "1"
+    },
+    {
+      "p": "3",
+      "text": "样例正文第三段：这是尾巴之后的正常段落，净化打开时它仍然应当显示。从此段朗读",
+      "rect": {
+        "x": 384,
+        "y": 396,
+        "w": 564,
+        "h": 65
+      },
+      "inViewport": true,
+      "display": "block",
+      "visibility": "visible",
+      "opacity": "1"
+    }
+  ]
+}

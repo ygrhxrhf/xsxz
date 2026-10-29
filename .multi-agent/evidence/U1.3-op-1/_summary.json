@@ -1,0 +1,448 @@
+{
+  "screenClickAt": {
+    "cx": 983,
+    "cy": 530
+  },
+  "closed": {
+    "barHidden": true,
+    "panelPresent": true,
+    "hitAtRightThird": "DIV.reader-content reader-pane chapter|第一章 样例翻页第 ",
+    "steps": [
+      "center-click(hide)"
+    ]
+  },
+  "op8": {
+    "name": "OP-8",
+    "clickAt": {
+      "x": 960,
+      "y": 380
+    },
+    "clickHitElement": "DIV.reader-content reader-pane chapter|第一章 样例翻页第 ",
+    "preScrollTop": 153,
+    "postScrollTop": 809,
+    "advanced": 656,
+    "scrollCurve": [
+      {
+        "t": 0,
+        "top": 153
+      },
+      {
+        "t": 370,
+        "top": 164
+      },
+      {
+        "t": 738,
+        "top": 164
+      },
+      {
+        "t": 1107,
+        "top": 809
+      },
+      {
+        "t": 1473,
+        "top": 809
+      },
+      {
+        "t": 1842,
+        "top": 809
+      }
+    ],
+    "curveFinal": 809,
+    "preCutShort": {
+      "i": 9,
+      "top": 656,
+      "bottom": 785,
+      "absTop": 809,
+      "absBottom": 938,
+      "height": 130,
+      "viewTop": 680,
+      "head": "第 10 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 10 段：这是样例段落的完整首句。",
+      "chars": 115
+    },
+    "preShortPara": {
+      "absTop": 809,
+      "absBottom": 938,
+      "h": 130
+    },
+    "postShortPara": {
+      "absTop": 809,
+      "absBottom": 938,
+      "viewTop": 24,
+      "h": 130,
+      "firstSentence": "第 10 段：这是样例段落的完整首句。"
+    },
+    "preLongPara": {
+      "absTop": 1165,
+      "absBottom": 3335,
+      "h": 2170
+    },
+    "postLongPara": {
+      "absTop": 1165,
+      "absBottom": 3335,
+      "h": 2170
+    },
+    "postAlignAtTop": [
+      9
+    ],
+    "longTextRemainingBelowViewport": 1803,
+    "preMode": {
+      "screen": true,
+      "scroll": false
+    },
+    "postMode": {
+      "screen": true,
+      "scroll": false
+    }
+  },
+  "a": {
+    "name": "A",
+    "clickAt": {
+      "x": 960,
+      "y": 380
+    },
+    "clickHitElement": "DIV.reader-content reader-pane chapter|第一章 样例翻页第 ",
+    "preScrollTop": 1209,
+    "postScrollTop": 1932,
+    "advanced": 723,
+    "scrollCurve": [
+      {
+        "t": 1,
+        "top": 1209
+      },
+      {
+        "t": 369,
+        "top": 1209
+      },
+      {
+        "t": 736,
+        "top": 1209
+      },
+      {
+        "t": 1098,
+        "top": 1932
+      },
+      {
+        "t": 1461,
+        "top": 1932
+      },
+      {
+        "t": 1824,
+        "top": 1932
+      }
+    ],
+    "curveFinal": 1932,
+    "preCutShort": null,
+    "preShortPara": {
+      "absTop": 809,
+      "absBottom": 938,
+      "h": 130
+    },
+    "postShortPara": {
+      "absTop": 809,
+      "absBottom": 938,
+      "viewTop": -1099,
+      "h": 130,
+      "firstSentence": "第 10 段：这是样例段落的完整首句。"
+    },
+    "preLongPara": {
+      "absTop": 1165,
+      "absBottom": 3335,
+      "h": 2170
+    },
+    "postLongPara": {
+      "absTop": 1165,
+      "absBottom": 3335,
+      "h": 2170
+    },
+    "postAlignAtTop": [],
+    "longTextRemainingBelowViewport": 680,
+    "preMode": {
+      "screen": true,
+      "scroll": false
+    },
+    "postMode": {
+      "screen": true,
+      "scroll": false
+    }
+  },
+  "aEntry": [
+    {
+      "scrollTop": 809,
+      "absTop": 1165,
+      "absBottom": 3335
+    },
+    {
+      "scrollTop": 1209,
+      "absTop": 1165,
+      "absBottom": 3335
+    },
+    {
+      "settled": {
+        "scrollTop": 1209,
+        "absTop": 1165,
+        "absBottom": 3335
+      }
+    }
+  ],
+  "bClickAt": {
+    "cx": 865,
+    "cy": 530
+  },
+  "miBack": {
+    "screen": {
+      "rect": [
+        926,
+        515,
+        113,
+        30
+      ],
+      "active": false,
+      "center": {
+        "cx": 983,
+        "cy": 530
+      },
+      "hitIsSelf": true,
+      "hitText": "屏幕翻页"
+    },
+    "scroll": {
+      "rect": [
+        808,
+        515,
+        113,
+        30
+      ],
+      "active": true,
+      "center": {
+        "cx": 865,
+        "cy": 530
+      },
+      "hitIsSelf": true,
+      "hitText": "连续滚动"
+    },
+    "panelPresent": true,
+    "panelRect": [
+      793,
+      166,
+      390,
+      440
+    ]
+  },
+  "bClosed": {
+    "barHidden": true,
+    "panelPresent": true,
+    "hitAtRightThird": "DIV.reader-content reader-pane chapter|第一章 样例翻页第 ",
+    "steps": [
+      "center-click(hide)"
+    ]
+  },
+  "bWheel": [
+    {
+      "step": 1,
+      "deltaY": 120,
+      "before": 1212,
+      "after": 1332,
+      "moved": 120,
+      "alignedParaAtTop": []
+    },
+    {
+      "step": 2,
+      "deltaY": 120,
+      "before": 1332,
+      "after": 1332,
+      "moved": 0,
+      "alignedParaAtTop": []
+    },
+    {
+      "step": 3,
+      "deltaY": 120,
+      "before": 1332,
+      "after": 1452,
+      "moved": 120,
+      "alignedParaAtTop": []
+    },
+    {
+      "step": 4,
+      "deltaY": 120,
+      "before": 1452,
+      "after": 1572,
+      "moved": 120,
+      "alignedParaAtTop": []
+    },
+    {
+      "step": 5,
+      "deltaY": 120,
+      "before": 1572,
+      "after": 1692,
+      "moved": 120,
+      "alignedParaAtTop": []
+    },
+    {
+      "step": 6,
+      "deltaY": 120,
+      "before": 1692,
+      "after": 1812,
+      "moved": 120,
+      "alignedParaAtTop": []
+    },
+    {
+      "step": 7,
+      "deltaY": 120,
+      "before": 1812,
+      "after": 1932,
+      "moved": 120,
+      "alignedParaAtTop": []
+    },
+    {
+      "step": 8,
+      "deltaY": 120,
+      "before": 1932,
+      "after": 2052,
+      "moved": 120,
+      "alignedParaAtTop": []
+    }
+  ],
+  "bQuick": {
+    "before": 2052,
+    "after": 2892,
+    "samples": [
+      {
+        "t": 1154,
+        "top": 2172
+      },
+      {
+        "t": 1202,
+        "top": 2172
+      },
+      {
+        "t": 1249,
+        "top": 2172
+      },
+      {
+        "t": 3152,
+        "top": 2292
+      },
+      {
+        "t": 3198,
+        "top": 2292
+      },
+      {
+        "t": 3246,
+        "top": 2292
+      },
+      {
+        "t": 5152,
+        "top": 2412
+      },
+      {
+        "t": 5198,
+        "top": 2412
+      },
+      {
+        "t": 5246,
+        "top": 2412
+      },
+      {
+        "t": 7153,
+        "top": 2532
+      },
+      {
+        "t": 7201,
+        "top": 2532
+      },
+      {
+        "t": 7249,
+        "top": 2532
+      },
+      {
+        "t": 9149,
+        "top": 2652
+      },
+      {
+        "t": 9195,
+        "top": 2652
+      },
+      {
+        "t": 9241,
+        "top": 2652
+      },
+      {
+        "t": 11153,
+        "top": 2772
+      },
+      {
+        "t": 11199,
+        "top": 2772
+      },
+      {
+        "t": 11247,
+        "top": 2772
+      },
+      {
+        "t": 11370,
+        "top": 2772
+      },
+      {
+        "t": 11493,
+        "top": 2772
+      },
+      {
+        "t": 11615,
+        "top": 2772
+      },
+      {
+        "t": 11738,
+        "top": 2772
+      },
+      {
+        "t": 11861,
+        "top": 2772
+      },
+      {
+        "t": 11984,
+        "top": 2772
+      },
+      {
+        "t": 12107,
+        "top": 2892
+      },
+      {
+        "t": 12230,
+        "top": 2892
+      },
+      {
+        "t": 12354,
+        "top": 2892
+      },
+      {
+        "t": 12477,
+        "top": 2892
+      }
+    ],
+    "finalAligned": []
+  },
+  "bFinal": {
+    "chapter": "第一章 样例翻页",
+    "scrollTop": 2892,
+    "clientHeight": 723,
+    "scrollHeight": 4162,
+    "maxTop": 3439,
+    "viewportBottom": 3615,
+    "mode": {
+      "screen": false,
+      "scroll": true
+    },
+    "pageIndicator": null,
+    "cutAtBottom": [
+      {
+        "i": 17,
+        "absTop": 3562,
+        "absBottom": 3627,
+        "height": 65,
+        "chars": 45,
+        "firstSentence": "第 18 段：这是样例段落的完整首句。"
+      }
+    ],
+    "alignAtTop": []
+  }
+}

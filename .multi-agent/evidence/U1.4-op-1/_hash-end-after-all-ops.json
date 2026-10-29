@@ -1,0 +1,36 @@
+{
+  "tag": "end-after-all-ops",
+  "at": "2026-10-29T04:28:27.416Z",
+  "files": {
+    "/tmp/U1.4-op-1/userData/settings.json": {
+      "sha256": "be8fbde8fe6d2d89e3f56cc44b775358fc6ad739c2418a5fbfc460cc00d5cabd",
+      "size": 358,
+      "mtimeMs": 1793247782102.9167
+    },
+    "/tmp/U1.4-op-1/library/index.json": {
+      "sha256": "d99b8369a7947ae96f14612d2e82db432bec605d9c99aa994ea6c953a1d1bf9f",
+      "size": 646,
+      "mtimeMs": 1793247998864.4185
+    },
+    "/tmp/U1.4-op-1/library/sample_u14/book.json": {
+      "sha256": "a13fe76d88d906dc71b41d26b027acf4cc9cc2404b39a63cef4c106cbf1ef7f5",
+      "size": 874,
+      "mtimeMs": 1793248065909.9463
+    },
+    "/tmp/U1.4-op-1/library/sample_u14/chapters/0001.json": {
+      "sha256": "dabb60cf4c785bd3cf9c69a059e1e55f53f73dc23cc36574c2949f0de405ccfc",
+      "size": 1348,
+      "mtimeMs": 1793247795124.2761
+    },
+    "/tmp/U1.4-op-1/library/sample_u14/chapters/0002.json": {
+      "sha256": "23b870ec150f2a5d77aa05d7fba2c1b75a6106bf8314deb0e10e411ba03e9951",
+      "size": 1157,
+      "mtimeMs": 1793247795178.2776
+    },
+    "/tmp/U1.4-op-1/library/sample_u14/reading-frontier.json": {
+      "sha256": "5118d3d5d60e196ed1a31945f49d1e067e004a25bbdd10ff8d86939e83a2790e",
+      "size": 678,
+      "mtimeMs": 1793248065916.9465
+    }
+  }
+}

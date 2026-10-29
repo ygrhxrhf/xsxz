@@ -1,0 +1,120 @@
+{
+  "more": {
+    "cx": 168,
+    "cy": 556,
+    "hit": "SPAN.n-button__content",
+    "hitOk": true
+  },
+  "menu": [
+    {
+      "text": "编辑信息",
+      "cx": 168,
+      "cy": 223,
+      "disabled": false,
+      "hit": "编辑信息"
+    },
+    {
+      "text": "前情提要",
+      "cx": 168,
+      "cy": 257,
+      "disabled": false,
+      "hit": "前情提要"
+    },
+    {
+      "text": "检查质量",
+      "cx": 168,
+      "cy": 291,
+      "disabled": false,
+      "hit": "检查质量"
+    },
+    {
+      "text": "检查更新",
+      "cx": 168,
+      "cy": 325,
+      "disabled": false,
+      "hit": "检查更新"
+    },
+    {
+      "text": "重试失败章",
+      "cx": 168,
+      "cy": 359,
+      "disabled": false,
+      "hit": "重试失败章"
+    },
+    {
+      "text": "查看失败章",
+      "cx": 168,
+      "cy": 393,
+      "disabled": false,
+      "hit": "查看失败章"
+    },
+    {
+      "text": "导出 txt",
+      "cx": 168,
+      "cy": 436,
+      "disabled": false,
+      "hit": "导出 txt"
+    },
+    {
+      "text": "导出 epub",
+      "cx": 168,
+      "cy": 470,
+      "disabled": false,
+      "hit": "导出 epub"
+    },
+    {
+      "text": "移入回收站",
+      "cx": 168,
+      "cy": 513,
+      "disabled": false,
+      "hit": "移入回收站"
+    }
+  ],
+  "retry": {
+    "text": "重试失败章",
+    "cx": 168,
+    "cy": 359,
+    "disabled": false,
+    "hit": "重试失败章"
+  },
+  "afterRetry": {
+    "capturedAt": "2026-10-29T05:36:38.833Z",
+    "nav": [
+      {
+        "label": "浏览",
+        "active": false
+      },
+      {
+        "label": "书库",
+        "active": true
+      },
+      {
+        "label": "阅读",
+        "active": false
+      },
+      {
+        "label": "设置",
+        "active": false
+      }
+    ],
+    "hasReaderToolbar": true,
+    "sidebarDl": "样例站点·示例书一\n已下 127 / 200 章\n取消",
+    "cards": [
+      {
+        "title": "样例站点·示例书一",
+        "status": "下载中",
+        "progress": "读到第 1 章 / 共 200 章",
+        "task": "正在下载新章节…",
+        "cancelButton": true
+      },
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "小说浏览器\n浏览\n书库\n阅读\n设置\n样例站点·示例书一\n已下 127 / 200 章\n取消\n书架\n\n最近在读放在最前，其余按书架排开。\n\n继续读\n浏览下载\n全部检查更新\n阅读统计\n回收站\n导入 txt / epub\n按书名、作者或标签筛选\n全部状态\n最近读过\n样例\n更多标签\n样\n最近在读\n样例站点·示例书一\n样例作者\n读到第 1 章 / 共 200 章 · 2026/10/29 13:35:33\n样\n样例站点·示例书一\n样例作者\n下载中\n读到第 1 章 / 共 200 章\n2026/10/29 13:35:33\n正在下载新章节…\n取消下载\n全书概览 含剧透\n\n章节未全部就绪，暂不能生成全书概览"
+  }
+}

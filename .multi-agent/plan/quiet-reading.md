@@ -1,0 +1,19 @@
+# quiet-reading-20261023 验证计划
+
+切片状态唯一来源：../dev-plan.md。此处只记录最终收工检查，不以 worktree 提交或旧样板代替验收。
+
+- [x] U1.1 默认收起与点按：验 npm run build、npm test、合入后 npm run e2e:reader → 全部退出码 0；OP-1–OP-5 达到（重入缺陷经 677cbe7 修复后由 U1.1-op-2 的 OP-1R 复拍确认）。
+- [x] U1.2 按章拖动：验 npm run build、npm test、合入后 npm run e2e:reader → 全部退出码 0；OP-6–OP-7 达到。
+- [x] U1.3 段落翻屏：验 npm run build、npm test → 退出码 0；OP-8 达到，超长段不跳过、连续滚动不吸附。
+- [x] U1.4 渲染层净化：验 npm run build、npm test、合入后 npm run e2e:reader → 退出码 0；OP-9–OP-11 达到，六文件 hash 全程未变。
+- [x] U1.5 下载进度露出：验 npm run build、npm test、合入后 npm run e2e:reader → 本刀自身断言通过；OP-12 达到。续读提示断言的观测窗缺陷已由 U1.5-toast-probe 实测归因，不属产品回归。
+- [x] U1.6 偏好兼容：验 npm run build、npm test → 退出码 0；OP-13–OP-14 达到，旧文件缺字段补 true 已锁定。
+- [x] 默认分支最终复验：验 git rev-parse HEAD、npm run build、npm test、npm run e2e:reader → HEAD 2e7db64，四条命令退出码 0，证据见 test-reports/FINAL-verify.md。
+- [ ] 收工自检：验 npm run plan:status → 退出码 0，已跟踪工作区干净。
+- [ ] 已授权推送：验 git push 与远端分支 HEAD → 推送成功且与验收提交一致；不 force push。
+
+## 已有证据
+
+- 全部切片 done，master 依次为 1b86a79 → 995e69d → 09f165a → 35002d1 → 33e1401 → 2944406 → 2e7db64。
+- 真实操作验收证据目录：evidence/U1.1-op-1、U1.1-op-2、U1.2-op-1、U1.3-op-1、U1.4-op-1、U1.5-op-1、U1.6-op-1。
+- 最终验证：test-reports/FINAL-verify.md（build 0、test 0 共 1289 用例、e2e 11/11、typecheck 0）。

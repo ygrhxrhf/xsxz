@@ -1,0 +1,120 @@
+{
+  "clicks": [
+    {
+      "step": "shelf",
+      "ok": true,
+      "info": {
+        "cx": 449,
+        "cy": 28,
+        "rect": {
+          "x": 426,
+          "y": 10,
+          "w": 46,
+          "h": 36
+        },
+        "text": "书架",
+        "label": "书架",
+        "hit": "BUTTON.tool-button",
+        "hitOk": true
+      }
+    }
+  ],
+  "before": {
+    "capturedAt": "2026-10-29T05:36:24.783Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar",
+    "hiddenClass": false,
+    "ariaHidden": "false",
+    "inert": null,
+    "computed": {
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 56,
+      "minHeight": "56px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 56
+    },
+    "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n设置\n浏览",
+    "progress": null,
+    "cancel": null,
+    "bottombarHidden": false,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "app": {
+    "capturedAt": "2026-10-29T05:36:26.602Z",
+    "nav": [
+      {
+        "label": "浏览",
+        "active": false
+      },
+      {
+        "label": "书库",
+        "active": true
+      },
+      {
+        "label": "阅读",
+        "active": false
+      },
+      {
+        "label": "设置",
+        "active": false
+      }
+    ],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例站点·示例书一",
+        "status": "部分",
+        "progress": "读到第 1 章 / 共 200 章",
+        "task": "76 章下载失败",
+        "cancelButton": false
+      },
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "小说浏览器\n浏览\n书库\n阅读\n设置\n书架\n\n最近在读放在最前，其余按书架排开。\n\n继续读\n浏览下载\n全部检查更新\n阅读统计\n回收站\n导入 txt / epub\n按书名、作者或标签筛选\n全部状态\n最近读过\n样例\n更多标签\n样\n最近在读\n样例站点·示例书一\n样例作者\n读到第 1 章 / 共 200 章 · 2026/10/29 13:35:33\n样\n样例站点·示例书一\n样例作者\n部分\n读到第 1 章 / 共 200 章\n2026/10/29 13:35:33\n76 章下载失败\n全书概览 含剧透\n\n章节未全部就绪，暂不能生成全书概览\n\n更多\n样\n样例·基线书\n样例作者\n完整\n读到第 1 章 / 共 "
+  },
+  "cardButtons": [
+    {
+      "cls": "book-open-area",
+      "text": "样样例站点·示例书一样例作者部分读到第 ",
+      "aria": "打开《样例站点·示例书一》",
+      "cx": 124,
+      "cy": 727,
+      "w": 104,
+      "h": 350
+    },
+    {
+      "cls": "n-button.n-button--default-type",
+      "text": "更多",
+      "aria": "更多操作：《样例站点·示例书一》",
+      "cx": 168,
+      "cy": 556,
+      "w": 48,
+      "h": 32
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "navBtn": {
+    "cx": 238,
+    "cy": 30,
+    "hit": "SPAN.nav-label"
+  },
+  "afterNav": {
+    "capturedAt": "2026-10-29T05:32:20.131Z",
+    "nav": [
+      {
+        "label": "浏览",
+        "active": true
+      },
+      {
+        "label": "书库",
+        "active": false
+      },
+      {
+        "label": "阅读",
+        "active": false
+      },
+      {
+        "label": "设置",
+        "active": false
+      }
+    ],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "小说浏览器\n浏览\n书库\n阅读\n设置\n打开\n尚未打开网页\n下载本书\n整站镜像\n更多工具\n收起工具栏\n上一章\n下一章\n阅读模式\nAlt＋↑ / Alt＋↓ 翻章"
+  },
+  "addr": {
+    "cx": 681,
+    "cy": 91,
+    "w": 1050,
+    "h": 40,
+    "visible": true,
+    "hit": "INPUT."
+  },
+  "addrValue": "http://127.0.0.1:37855/book1/index.html",
+  "afterNav2": {
+    "capturedAt": "2026-10-29T05:32:24.666Z",
+    "nav": [
+      {
+        "label": "浏览",
+        "active": true
+      },
+      {
+        "label": "书库",
+        "active": false
+      },
+      {
+        "label": "阅读",
+        "active": false
+      },
+      {
+        "label": "设置",
+        "active": false
+      }
+    ],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "小说浏览器\n浏览\n书库\n阅读\n设置\n打开\n尚未打开网页\n下载本书\n整站镜像\n更多工具\n收起工具栏\n上一章\n下一章\n阅读模式\nAlt＋↑ / Alt＋↓ 翻章"
+  }
+}

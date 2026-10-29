@@ -1,0 +1,71 @@
+{
+  "at": "2026-10-29T06:24:57.155Z",
+  "note": "CDP AX 树里 n-switch 无 accessible name，按 DOM 顺序与行文字对齐",
+  "switches": [
+    {
+      "label": "首行缩进",
+      "domChecked": "true",
+      "className": "n-switch n-switch--active n-switch--round n-switch--rubber-band",
+      "rect": {
+        "x": 808,
+        "y": 513,
+        "w": 40,
+        "h": 22
+      },
+      "axChecked": "true",
+      "axIgnored": false
+    },
+    {
+      "label": "滚到章末自动接下一章",
+      "domChecked": "false",
+      "className": "n-switch n-switch--round n-switch--rubber-band",
+      "rect": {
+        "x": 808,
+        "y": 756,
+        "w": 40,
+        "h": 22
+      },
+      "axChecked": "false",
+      "axIgnored": false
+    },
+    {
+      "label": "净化",
+      "domChecked": "false",
+      "className": "n-switch n-switch--round n-switch--rubber-band",
+      "rect": {
+        "x": 808,
+        "y": 786,
+        "w": 40,
+        "h": 22
+      },
+      "axChecked": "false",
+      "axIgnored": false
+    },
+    {
+      "label": "本章显示原文",
+      "domChecked": "false",
+      "className": "n-switch n-switch--disabled n-switch--round n-switch--rubber-band",
+      "rect": {
+        "x": 808,
+        "y": 816,
+        "w": 40,
+        "h": 22
+      },
+      "axChecked": "false",
+      "axIgnored": false
+    },
+    {
+      "label": "工具一直显示",
+      "domChecked": "true",
+      "className": "n-switch n-switch--active n-switch--round n-switch--rubber-band",
+      "rect": {
+        "x": 808,
+        "y": 874,
+        "w": 40,
+        "h": 22
+      },
+      "axChecked": "true",
+      "axIgnored": false
+    }
+  ]
+}

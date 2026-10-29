@@ -1,0 +1,207 @@
+{
+  "beforeCancel": {
+    "capturedAt": "2026-10-29T05:35:32.740Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar",
+    "hiddenClass": false,
+    "ariaHidden": "false",
+    "inert": null,
+    "computed": {
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 56,
+      "minHeight": "56px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 56
+    },
+    "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n已下 124 / 200 章\n取消\n设置\n浏览",
+    "progress": {
+      "text": "已下 124 / 200 章",
+      "rect": {
+        "x": 946,
+        "y": 10,
+        "w": 120,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "SPAN.tool-button"
+    },
+    "cancel": {
+      "text": "取消",
+      "rect": {
+        "x": 1070,
+        "y": 10,
+        "w": 46,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "BUTTON.tool-button"
+    },
+    "bottombarHidden": false,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "cancelClick": {
+    "ok": true,
+    "info": {
+      "cx": 1093,
+      "cy": 28,
+      "rect": {
+        "x": 1070,
+        "y": 10,
+        "w": 46,
+        "h": 36
+      },
+      "text": "取消",
+      "label": null,
+      "hit": "BUTTON.tool-button",
+      "hitOk": true
+    }
+  },
+  "afterCancel": {
+    "capturedAt": "2026-10-29T05:35:35.608Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar",
+    "hiddenClass": false,
+    "ariaHidden": "false",
+    "inert": null,
+    "computed": {
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 56,
+      "minHeight": "56px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 56
+    },
+    "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n设置\n浏览",
+    "progress": null,
+    "cancel": null,
+    "bottombarHidden": false,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "appAfterCancel": {
+    "capturedAt": "2026-10-29T05:35:35.610Z",
+    "nav": [],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例站点·示例书一",
+        "status": "部分",
+        "progress": "读到第 1 章 / 共 200 章",
+        "task": "76 章下载失败",
+        "cancelButton": false
+      },
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n设置\n浏览\n样\n‹\n第1章 样例章节 001\n\n验收占位段落 001-1：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-2：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-3：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-4：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-5：这一段只是样例正文，用来让下载与提取"
+  },
+  "afterCancelSettled": {
+    "capturedAt": "2026-10-29T05:35:43.538Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar",
+    "hiddenClass": false,
+    "ariaHidden": "false",
+    "inert": null,
+    "computed": {
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 56,
+      "minHeight": "56px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 56
+    },
+    "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n设置\n浏览",
+    "progress": null,
+    "cancel": null,
+    "bottombarHidden": false,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "appSettled": {
+    "capturedAt": "2026-10-29T05:35:43.539Z",
+    "nav": [],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例站点·示例书一",
+        "status": "部分",
+        "progress": "读到第 1 章 / 共 200 章",
+        "task": "76 章下载失败",
+        "cancelButton": false
+      },
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n设置\n浏览\n样\n‹\n第1章 样例章节 001\n\n验收占位段落 001-1：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-2：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-3：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-4：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-5：这一段只是样例正文，用来让下载与提取"
+  }
+}

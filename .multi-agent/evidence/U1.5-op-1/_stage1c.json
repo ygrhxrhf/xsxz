@@ -1,0 +1,54 @@
+{
+  "addrValue": "http://127.0.0.1:37855/book1/index.html",
+  "openBtn": {
+    "cx": 1241,
+    "cy": 91,
+    "text": "打开",
+    "hit": "BUTTON.browser-open-button"
+  },
+  "afterOpen": {
+    "capturedAt": "2026-10-29T05:32:48.141Z",
+    "nav": [
+      {
+        "label": "浏览",
+        "active": true
+      },
+      {
+        "label": "书库",
+        "active": false
+      },
+      {
+        "label": "阅读",
+        "active": false
+      },
+      {
+        "label": "设置",
+        "active": false
+      }
+    ],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "小说浏览器\n浏览\n书库\n阅读\n设置\n打开\n当前站点：127.0.0.1\n下载本书\n整站镜像\n更多工具\n收起工具栏\n上一章\n下一章\n阅读模式\nAlt＋↑ / Alt＋↓ 翻章"
+  },
+  "downloadBtn": {
+    "text": "下载本书",
+    "disabled": false,
+    "rect": {
+      "x": 1026,
+      "y": 133,
+      "w": 76,
+      "h": 28
+    },
+    "cx": 1064,
+    "cy": 147
+  }
+}

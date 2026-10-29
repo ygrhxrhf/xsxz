@@ -1,0 +1,392 @@
+{
+  "capturedAt": "2026-10-29T03:39:05.445Z",
+  "docTitle": "小说浏览器",
+  "url": "file:///home/goot/cod/xs/xsxz/out/renderer/index.html",
+  "size": {
+    "w": 1280,
+    "h": 771,
+    "dpr": 1
+  },
+  "chapterTitle": "第一章 样例翻页",
+  "pane": {
+    "x": 324,
+    "y": 24,
+    "w": 684,
+    "h": 723,
+    "scrollTop": 153,
+    "clientHeight": 723,
+    "scrollHeight": 4162,
+    "maxTop": 3439
+  },
+  "modeActive": {
+    "screen": true,
+    "scroll": false
+  },
+  "modeBtnRect": {
+    "x": 926,
+    "y": 515,
+    "w": 113,
+    "h": 30
+  },
+  "scrollBtnRect": {
+    "x": 808,
+    "y": 515,
+    "w": 113,
+    "h": 30
+  },
+  "paraCount": 22,
+  "cutAtBottom": [
+    {
+      "i": 9,
+      "top": 656,
+      "bottom": 785,
+      "absTop": 809,
+      "absBottom": 938,
+      "height": 130,
+      "viewTop": 680,
+      "head": "第 10 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 10 段：这是样例段落的完整首句。",
+      "chars": 115
+    }
+  ],
+  "alignAtTop": [
+    {
+      "i": 0,
+      "top": 0,
+      "viewTop": 24,
+      "head": "第 1 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 1 段：这是样例段落的完整首句。"
+    }
+  ],
+  "paras": [
+    {
+      "i": 0,
+      "top": 0,
+      "bottom": 65,
+      "absTop": 153,
+      "absBottom": 218,
+      "viewTop": 24,
+      "viewBottom": 89,
+      "height": 65,
+      "chars": 45,
+      "head": "第 1 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 1 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 1,
+      "top": 73,
+      "bottom": 138,
+      "absTop": 226,
+      "absBottom": 291,
+      "viewTop": 97,
+      "viewBottom": 162,
+      "height": 65,
+      "chars": 45,
+      "head": "第 2 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 2 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 2,
+      "top": 146,
+      "bottom": 210,
+      "absTop": 299,
+      "absBottom": 363,
+      "viewTop": 170,
+      "viewBottom": 234,
+      "height": 65,
+      "chars": 45,
+      "head": "第 3 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 3 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 3,
+      "top": 219,
+      "bottom": 283,
+      "absTop": 372,
+      "absBottom": 436,
+      "viewTop": 243,
+      "viewBottom": 307,
+      "height": 65,
+      "chars": 45,
+      "head": "第 4 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 4 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 4,
+      "top": 291,
+      "bottom": 356,
+      "absTop": 444,
+      "absBottom": 509,
+      "viewTop": 315,
+      "viewBottom": 380,
+      "height": 65,
+      "chars": 45,
+      "head": "第 5 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 5 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 5,
+      "top": 364,
+      "bottom": 429,
+      "absTop": 517,
+      "absBottom": 582,
+      "viewTop": 388,
+      "viewBottom": 453,
+      "height": 65,
+      "chars": 45,
+      "head": "第 6 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 6 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 6,
+      "top": 437,
+      "bottom": 502,
+      "absTop": 590,
+      "absBottom": 655,
+      "viewTop": 461,
+      "viewBottom": 526,
+      "height": 65,
+      "chars": 45,
+      "head": "第 7 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 7 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 7,
+      "top": 510,
+      "bottom": 575,
+      "absTop": 663,
+      "absBottom": 728,
+      "viewTop": 534,
+      "viewBottom": 599,
+      "height": 65,
+      "chars": 45,
+      "head": "第 8 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 8 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 8,
+      "top": 583,
+      "bottom": 648,
+      "absTop": 736,
+      "absBottom": 801,
+      "viewTop": 607,
+      "viewBottom": 672,
+      "height": 65,
+      "chars": 45,
+      "head": "第 9 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是否",
+      "firstSentence": "第 9 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 9,
+      "top": 656,
+      "bottom": 785,
+      "absTop": 809,
+      "absBottom": 938,
+      "viewTop": 680,
+      "viewBottom": 809,
+      "height": 130,
+      "chars": 115,
+      "head": "第 10 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 10 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 10,
+      "top": 793,
+      "bottom": 858,
+      "absTop": 946,
+      "absBottom": 1011,
+      "viewTop": 817,
+      "viewBottom": 882,
+      "height": 65,
+      "chars": 45,
+      "head": "第 11 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 11 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 11,
+      "top": 866,
+      "bottom": 931,
+      "absTop": 1019,
+      "absBottom": 1084,
+      "viewTop": 890,
+      "viewBottom": 955,
+      "height": 65,
+      "chars": 45,
+      "head": "第 12 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 12 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 12,
+      "top": 939,
+      "bottom": 1004,
+      "absTop": 1092,
+      "absBottom": 1157,
+      "viewTop": 963,
+      "viewBottom": 1028,
+      "height": 65,
+      "chars": 45,
+      "head": "第 13 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 13 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 13,
+      "top": 1012,
+      "bottom": 3182,
+      "absTop": 1165,
+      "absBottom": 3335,
+      "viewTop": 1036,
+      "viewBottom": 3206,
+      "height": 2170,
+      "chars": 2005,
+      "head": "第 14 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 14 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 14,
+      "top": 3190,
+      "bottom": 3255,
+      "absTop": 3343,
+      "absBottom": 3408,
+      "viewTop": 3214,
+      "viewBottom": 3279,
+      "height": 65,
+      "chars": 45,
+      "head": "第 15 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 15 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 15,
+      "top": 3263,
+      "bottom": 3328,
+      "absTop": 3416,
+      "absBottom": 3481,
+      "viewTop": 3287,
+      "viewBottom": 3352,
+      "height": 65,
+      "chars": 45,
+      "head": "第 16 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 16 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 16,
+      "top": 3336,
+      "bottom": 3401,
+      "absTop": 3489,
+      "absBottom": 3554,
+      "viewTop": 3360,
+      "viewBottom": 3425,
+      "height": 65,
+      "chars": 45,
+      "head": "第 17 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 17 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 17,
+      "top": 3409,
+      "bottom": 3474,
+      "absTop": 3562,
+      "absBottom": 3627,
+      "viewTop": 3433,
+      "viewBottom": 3498,
+      "height": 65,
+      "chars": 45,
+      "head": "第 18 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 18 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 18,
+      "top": 3482,
+      "bottom": 3547,
+      "absTop": 3635,
+      "absBottom": 3700,
+      "viewTop": 3506,
+      "viewBottom": 3571,
+      "height": 65,
+      "chars": 45,
+      "head": "第 19 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 19 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 19,
+      "top": 3555,
+      "bottom": 3619,
+      "absTop": 3708,
+      "absBottom": 3772,
+      "viewTop": 3579,
+      "viewBottom": 3643,
+      "height": 65,
+      "chars": 45,
+      "head": "第 20 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 20 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 20,
+      "top": 3628,
+      "bottom": 3692,
+      "absTop": 3781,
+      "absBottom": 3845,
+      "viewTop": 3652,
+      "viewBottom": 3716,
+      "height": 65,
+      "chars": 45,
+      "head": "第 21 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 21 段：这是样例段落的完整首句。"
+    },
+    {
+      "i": 21,
+      "top": 3700,
+      "bottom": 3765,
+      "absTop": 3853,
+      "absBottom": 3918,
+      "viewTop": 3724,
+      "viewBottom": 3789,
+      "height": 65,
+      "chars": 45,
+      "head": "第 22 段：这是样例段落的完整首句。用于确认屏幕翻页落点与屏底切断段是",
+      "firstSentence": "第 22 段：这是样例段落的完整首句。"
+    }
+  ],
+  "pageIndicator": "第 1 / 6 页",
+  "bottomButtons": [
+    {
+      "label": "目录",
+      "rect": {
+        "x": 1199,
+        "y": 296,
+        "w": 52,
+        "h": 42
+      },
+      "active": false
+    },
+    {
+      "label": "进度",
+      "rect": {
+        "x": 1199,
+        "y": 342,
+        "w": 52,
+        "h": 42
+      },
+      "active": false
+    },
+    {
+      "label": "背景",
+      "rect": {
+        "x": 1199,
+        "y": 388,
+        "w": 52,
+        "h": 42
+      },
+      "active": false
+    },
+    {
+      "label": "字体",
+      "rect": {
+        "x": 1199,
+        "y": 434,
+        "w": 52,
+        "h": 42
+      },
+      "active": true
+    }
+  ]
+}

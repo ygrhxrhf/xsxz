@@ -1,0 +1,33 @@
+button	返回书库
+StaticText	样
+button	上一章
+button	下一章
+StaticText	‹
+button	下一章：第二章 样例换章
+StaticText	›
+StaticText	第一章 样例尾巴章
+StaticText	第 1 段样例正文（验收占位，不含真实作品内容）。窗外下着小雨，街上的车灯把水洼照得发亮，远处有人撑着伞快步走过。
+button	从第 1 段开始朗读
+StaticText	请收藏这封信。信上只写了三行字，字迹很轻，末尾没有署名。
+button	从第 3 段开始朗读
+StaticText	第 2 段样例正文（验收占位，不含真实作品内容）。台灯下的纸边微微卷起，他伸手把折角压平，又放下笔。
+button	从第 4 段开始朗读
+StaticText	第 3 段样例正文（验收占位，不含真实作品内容）。橡木桌上摆着一只旧茶杯，杯沿有一道洗不掉的茶渍。
+button	从第 5 段开始朗读
+StaticText	第 4 段样例正文（验收占位，不含真实作品内容）。他把窗关上，屋里的风声立刻退到玻璃外面去了。
+button	从第 6 段开始朗读
+StaticText	第 5 段样例正文（验收占位，不含真实作品内容）。走廊尽头的灯忽明忽暗，脚步声在狭窄的楼道里来回折返。
+button	从第 7 段开始朗读
+StaticText	第 6 段样例正文（验收占位，不含真实作品内容）。书页之间夹着一张车票，边角已经磨毛，日期看不太清了。
+button	从第 8 段开始朗读
+StaticText	第 7 段样例正文（验收占位，不含真实作品内容）。雨停之后，空气里有一种潮湿的铁锈味，从排水口慢慢升上来。
+button	从第 9 段开始朗读
+StaticText	下一章：第二章 样例换章
+StaticText	从此段朗读
+StaticText	从此段朗读
+StaticText	从此段朗读
+StaticText	从此段朗读
+StaticText	从此段朗读
+StaticText	从此段朗读
+StaticText	从此段朗读
+StaticText	从此段朗读

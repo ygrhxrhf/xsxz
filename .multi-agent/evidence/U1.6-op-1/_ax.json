@@ -1,0 +1,97 @@
+[
+  {
+    "role": "button",
+    "name": "书架",
+    "ignored": false
+  },
+  {
+    "role": "button",
+    "name": "搜索",
+    "ignored": false
+  },
+  {
+    "role": "button",
+    "name": "字体",
+    "ignored": false
+  },
+  {
+    "role": "StaticText",
+    "name": "书架",
+    "ignored": false
+  },
+  {
+    "role": "StaticText",
+    "name": "搜索",
+    "ignored": false
+  },
+  {
+    "role": "StaticText",
+    "name": "字体",
+    "ignored": false
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "书架",
+    "ignored": false
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "搜索",
+    "ignored": false
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "字体",
+    "ignored": false
+  },
+  {
+    "role": "StaticText",
+    "name": "字体",
+    "ignored": false
+  },
+  {
+    "role": "StaticText",
+    "name": "字体",
+    "ignored": false
+  },
+  {
+    "role": "switch",
+    "name": "",
+    "checked": "true",
+    "ignored": false
+  },
+  {
+    "role": "switch",
+    "name": "",
+    "checked": "false",
+    "ignored": false
+  },
+  {
+    "role": "switch",
+    "name": "",
+    "checked": "false",
+    "ignored": false
+  },
+  {
+    "role": "switch",
+    "name": "",
+    "checked": "false",
+    "ignored": false
+  },
+  {
+    "role": "switch",
+    "name": "",
+    "checked": "true",
+    "ignored": false
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "字体",
+    "ignored": false
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "字体",
+    "ignored": false
+  }
+]

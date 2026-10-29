@@ -1,0 +1,46 @@
+{
+  "confirm": {
+    "cx": 87,
+    "cy": 643
+  },
+  "afterConfirm": {
+    "capturedAt": "2026-10-29T05:33:17.562Z",
+    "nav": [
+      {
+        "label": "浏览",
+        "active": true
+      },
+      {
+        "label": "书库",
+        "active": false
+      },
+      {
+        "label": "阅读",
+        "active": false
+      },
+      {
+        "label": "设置",
+        "active": false
+      }
+    ],
+    "hasReaderToolbar": true,
+    "sidebarDl": "样例站点·示例书一\n已下 2 / 200 章\n取消",
+    "cards": [
+      {
+        "title": "样例站点·示例书一",
+        "status": "下载中",
+        "progress": "共 200 章，还没开始读",
+        "task": "正在下载新章节…",
+        "cancelButton": true
+      },
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "小说浏览器\n浏览\n书库\n阅读\n设置\n样例站点·示例书一\n已下 2 / 200 章\n取消\n打开\n当前站点：127.0.0.1\n下载本书\n整站镜像\n更多工具\n收起工具栏\n上一章\n下一章\n阅读模式\nAlt＋↑ / Alt＋↓ 翻章\n下载进度\n样例站点·示例书一\n1%\n已下 2 / 200 章\n正在下载：第3章 样例章节 003\n取消下载\n关闭"
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "t0": {
+    "tag": "t0-boot",
+    "at": "2026-10-29T04:23:37.551Z",
+    "files": {
+      "/tmp/U1.4-op-1/userData/settings.json": {
+        "sha256": "be8fbde8fe6d2d89e3f56cc44b775358fc6ad739c2418a5fbfc460cc00d5cabd",
+        "size": 358,
+        "mtimeMs": 1793247782102.9167
+      },
+      "/tmp/U1.4-op-1/library/index.json": {
+        "sha256": "d08dcc21f842d9e6246f4d9bb71f00cdbdd1a42f81d33149b49f3c8c52a63e27",
+        "size": 707,
+        "mtimeMs": 1793247794650.263
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/book.json": {
+        "sha256": "25e98b7a2ed208a20e3f952ec14f90ca7cb8682af526fa4b8166e664223c135f",
+        "size": 925,
+        "mtimeMs": 1793247795182.2776
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0001.json": {
+        "sha256": "dabb60cf4c785bd3cf9c69a059e1e55f53f73dc23cc36574c2949f0de405ccfc",
+        "size": 1348,
+        "mtimeMs": 1793247795124.2761
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0002.json": {
+        "sha256": "23b870ec150f2a5d77aa05d7fba2c1b75a6106bf8314deb0e10e411ba03e9951",
+        "size": 1157,
+        "mtimeMs": 1793247795178.2776
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/reading-frontier.json": {
+        "sha256": "fc69c527ef4da42d83f3a7db43099b154b73e473cee56127d64a423aed24bbe7",
+        "size": 132,
+        "mtimeMs": 1793247782102.9167
+      }
+    }
+  },
+  "beforeSwitch": {
+    "tag": "before-switch",
+    "at": "2026-10-29T04:23:42.304Z",
+    "files": {
+      "/tmp/U1.4-op-1/userData/settings.json": {
+        "sha256": "be8fbde8fe6d2d89e3f56cc44b775358fc6ad739c2418a5fbfc460cc00d5cabd",
+        "size": 358,
+        "mtimeMs": 1793247782102.9167
+      },
+      "/tmp/U1.4-op-1/library/index.json": {
+        "sha256": "d08dcc21f842d9e6246f4d9bb71f00cdbdd1a42f81d33149b49f3c8c52a63e27",
+        "size": 707,
+        "mtimeMs": 1793247794650.263
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/book.json": {
+        "sha256": "25e98b7a2ed208a20e3f952ec14f90ca7cb8682af526fa4b8166e664223c135f",
+        "size": 925,
+        "mtimeMs": 1793247795182.2776
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0001.json": {
+        "sha256": "dabb60cf4c785bd3cf9c69a059e1e55f53f73dc23cc36574c2949f0de405ccfc",
+        "size": 1348,
+        "mtimeMs": 1793247795124.2761
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0002.json": {
+        "sha256": "23b870ec150f2a5d77aa05d7fba2c1b75a6106bf8314deb0e10e411ba03e9951",
+        "size": 1157,
+        "mtimeMs": 1793247795178.2776
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/reading-frontier.json": {
+        "sha256": "fc69c527ef4da42d83f3a7db43099b154b73e473cee56127d64a423aed24bbe7",
+        "size": 132,
+        "mtimeMs": 1793247782102.9167
+      }
+    }
+  },
+  "afterSwitch": {
+    "tag": "after-switch",
+    "at": "2026-10-29T04:23:44.074Z",
+    "files": {
+      "/tmp/U1.4-op-1/userData/settings.json": {
+        "sha256": "be8fbde8fe6d2d89e3f56cc44b775358fc6ad739c2418a5fbfc460cc00d5cabd",
+        "size": 358,
+        "mtimeMs": 1793247782102.9167
+      },
+      "/tmp/U1.4-op-1/library/index.json": {
+        "sha256": "d08dcc21f842d9e6246f4d9bb71f00cdbdd1a42f81d33149b49f3c8c52a63e27",
+        "size": 707,
+        "mtimeMs": 1793247794650.263
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/book.json": {
+        "sha256": "25e98b7a2ed208a20e3f952ec14f90ca7cb8682af526fa4b8166e664223c135f",
+        "size": 925,
+        "mtimeMs": 1793247795182.2776
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0001.json": {
+        "sha256": "dabb60cf4c785bd3cf9c69a059e1e55f53f73dc23cc36574c2949f0de405ccfc",
+        "size": 1348,
+        "mtimeMs": 1793247795124.2761
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0002.json": {
+        "sha256": "23b870ec150f2a5d77aa05d7fba2c1b75a6106bf8314deb0e10e411ba03e9951",
+        "size": 1157,
+        "mtimeMs": 1793247795178.2776
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/reading-frontier.json": {
+        "sha256": "fc69c527ef4da42d83f3a7db43099b154b73e473cee56127d64a423aed24bbe7",
+        "size": 132,
+        "mtimeMs": 1793247782102.9167
+      }
+    }
+  },
+  "afterChapterChange": {
+    "tag": "after-chapter-change",
+    "at": "2026-10-29T04:23:53.631Z",
+    "files": {
+      "/tmp/U1.4-op-1/userData/settings.json": {
+        "sha256": "be8fbde8fe6d2d89e3f56cc44b775358fc6ad739c2418a5fbfc460cc00d5cabd",
+        "size": 358,
+        "mtimeMs": 1793247782102.9167
+      },
+      "/tmp/U1.4-op-1/library/index.json": {
+        "sha256": "d08dcc21f842d9e6246f4d9bb71f00cdbdd1a42f81d33149b49f3c8c52a63e27",
+        "size": 707,
+        "mtimeMs": 1793247794650.263
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/book.json": {
+        "sha256": "1c25c11ddc0b80f641fbe6dd3deed444bbc32a23a16bc82a8b9c1d8dd25b5b21",
+        "size": 925,
+        "mtimeMs": 1793247832004.2715
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0001.json": {
+        "sha256": "dabb60cf4c785bd3cf9c69a059e1e55f53f73dc23cc36574c2949f0de405ccfc",
+        "size": 1348,
+        "mtimeMs": 1793247795124.2761
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0002.json": {
+        "sha256": "23b870ec150f2a5d77aa05d7fba2c1b75a6106bf8314deb0e10e411ba03e9951",
+        "size": 1157,
+        "mtimeMs": 1793247795178.2776
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/reading-frontier.json": {
+        "sha256": "9be29f76b782f074db8aab365d0a40ffde6c53a9c7fcf211db6500490e42fe88",
+        "size": 467,
+        "mtimeMs": 1793247832114.2744
+      }
+    }
+  },
+  "final": {
+    "tag": "final",
+    "at": "2026-10-29T04:23:59.988Z",
+    "files": {
+      "/tmp/U1.4-op-1/userData/settings.json": {
+        "sha256": "be8fbde8fe6d2d89e3f56cc44b775358fc6ad739c2418a5fbfc460cc00d5cabd",
+        "size": 358,
+        "mtimeMs": 1793247782102.9167
+      },
+      "/tmp/U1.4-op-1/library/index.json": {
+        "sha256": "d08dcc21f842d9e6246f4d9bb71f00cdbdd1a42f81d33149b49f3c8c52a63e27",
+        "size": 707,
+        "mtimeMs": 1793247794650.263
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/book.json": {
+        "sha256": "1c25c11ddc0b80f641fbe6dd3deed444bbc32a23a16bc82a8b9c1d8dd25b5b21",
+        "size": 925,
+        "mtimeMs": 1793247832004.2715
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0001.json": {
+        "sha256": "dabb60cf4c785bd3cf9c69a059e1e55f53f73dc23cc36574c2949f0de405ccfc",
+        "size": 1348,
+        "mtimeMs": 1793247795124.2761
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/chapters/0002.json": {
+        "sha256": "23b870ec150f2a5d77aa05d7fba2c1b75a6106bf8314deb0e10e411ba03e9951",
+        "size": 1157,
+        "mtimeMs": 1793247795178.2776
+      },
+      "/tmp/U1.4-op-1/library/sample_u14/reading-frontier.json": {
+        "sha256": "9be29f76b782f074db8aab365d0a40ffde6c53a9c7fcf211db6500490e42fe88",
+        "size": 467,
+        "mtimeMs": 1793247832114.2744
+      }
+    }
+  }
+}

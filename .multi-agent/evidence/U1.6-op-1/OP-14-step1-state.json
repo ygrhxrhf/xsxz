@@ -1,0 +1,226 @@
+{
+  "commit": "2e7db64dbae0b317fd8b1e6d47e5b072f348e0c1",
+  "clicks": [
+    {
+      "name": "always-show-switch",
+      "ok": true,
+      "at": [
+        828,
+        544
+      ],
+      "before": "false"
+    }
+  ],
+  "states": {
+    "before": {
+      "at": "2026-10-29T06:19:41.690Z",
+      "step": "before-enable-always-show",
+      "toolbar": {
+        "hiddenClass": false,
+        "ariaHidden": "false",
+        "inert": null,
+        "visibility": "visible",
+        "opacity": "1",
+        "height": 56,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1280,
+          "h": 56
+        },
+        "innerText": "样例·站尾样书\n书架\n搜索\n标记\n朗读\nAI\n设置\n浏览"
+      },
+      "bottombarHidden": false,
+      "switches": {
+        "panelPresent": true,
+        "panelText": "字体 字体 宋体阅读 系统黑体 等宽 字号 18 行距 1.8 列宽 窄 中 宽 段间距 紧凑 标准 宽松 首行缩进 行焦点 关 1 段 3 段 5 段 阅读方式 连续滚动 屏幕翻页 开始自动滚屏 滚屏速度 3 滚到章末自动接下一章 净化 本章显示原文 只影响当前章，换章或重开书恢复净化 工具一直显示 恢复默认",
+        "purge": {
+          "present": true,
+          "label": "净化",
+          "switchClass": "n-switch n-switch--round n-switch--rubber-band",
+          "checkedByClass": false,
+          "ariaChecked": "false",
+          "visibility": "visible",
+          "rowRect": {
+            "x": 808,
+            "y": 546,
+            "w": 350,
+            "h": 22
+          }
+        },
+        "alwaysShow": {
+          "present": true,
+          "label": "工具一直显示",
+          "switchClass": "n-switch n-switch--round n-switch--rubber-band",
+          "checkedByClass": false,
+          "ariaChecked": "false",
+          "visibility": "visible",
+          "rowRect": {
+            "x": 808,
+            "y": 634,
+            "w": 350,
+            "h": 22
+          }
+        }
+      },
+      "paras": [
+        {
+          "p": "0",
+          "text": "样例正文第一段：雨停之后，街灯把水面照成一条条亮线，他沿着巷口慢慢往家走。从此段朗读"
+        },
+        {
+          "p": "1",
+          "text": "样例正文第二段：这一段是正常叙述，用来对照站点尾巴是否被整段藏掉。从此段朗读"
+        },
+        {
+          "p": "2",
+          "text": "请收藏本站，下次不迷路。本站域名 www.example.com 请记住。从此段朗读"
+        },
+        {
+          "p": "3",
+          "text": "样例正文第三段：这是尾巴之后的正常段落，净化打开时它仍然应当显示。从此段朗读"
+        }
+      ],
+      "tailParagraphRendered": true,
+      "apiReader": {
+        "hideSiteTail": false,
+        "hideReaderChrome": true
+      },
+      "file": {
+        "hideSiteTail": false,
+        "hideReaderChrome": true,
+        "path": "/tmp/U1.6-op-1/userData/settings.json",
+        "mtime": 1793254700064.9092
+      },
+      "extra": {
+        "step": "before-enable-always-show"
+      }
+    },
+    "after": {
+      "at": "2026-10-29T06:19:47.158Z",
+      "step": "always-show-on",
+      "toolbar": {
+        "hiddenClass": false,
+        "ariaHidden": "false",
+        "inert": null,
+        "visibility": "visible",
+        "opacity": "1",
+        "height": 56,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1280,
+          "h": 56
+        },
+        "innerText": "样例·站尾样书\n书架\n搜索\n标记\n朗读\nAI\n设置\n浏览"
+      },
+      "bottombarHidden": false,
+      "switches": {
+        "panelPresent": true,
+        "panelText": "字体 字体 宋体阅读 系统黑体 等宽 字号 18 行距 1.8 列宽 窄 中 宽 段间距 紧凑 标准 宽松 首行缩进 行焦点 关 1 段 3 段 5 段 阅读方式 连续滚动 屏幕翻页 开始自动滚屏 滚屏速度 3 滚到章末自动接下一章 净化 本章显示原文 只影响当前章，换章或重开书恢复净化 工具一直显示 恢复默认",
+        "purge": {
+          "present": true,
+          "label": "净化",
+          "switchClass": "n-switch n-switch--round n-switch--rubber-band",
+          "checkedByClass": false,
+          "ariaChecked": "false",
+          "visibility": "visible",
+          "rowRect": {
+            "x": 808,
+            "y": 445,
+            "w": 350,
+            "h": 22
+          }
+        },
+        "alwaysShow": {
+          "present": true,
+          "label": "工具一直显示",
+          "switchClass": "n-switch n-switch--active n-switch--round n-switch--rubber-band",
+          "checkedByClass": true,
+          "ariaChecked": "true",
+          "visibility": "visible",
+          "rowRect": {
+            "x": 808,
+            "y": 533,
+            "w": 350,
+            "h": 22
+          }
+        }
+      },
+      "paras": [
+        {
+          "p": "0",
+          "text": "样例正文第一段：雨停之后，街灯把水面照成一条条亮线，他沿着巷口慢慢往家走。从此段朗读"
+        },
+        {
+          "p": "1",
+          "text": "样例正文第二段：这一段是正常叙述，用来对照站点尾巴是否被整段藏掉。从此段朗读"
+        },
+        {
+          "p": "2",
+          "text": "请收藏本站，下次不迷路。本站域名 www.example.com 请记住。从此段朗读"
+        },
+        {
+          "p": "3",
+          "text": "样例正文第三段：这是尾巴之后的正常段落，净化打开时它仍然应当显示。从此段朗读"
+        }
+      ],
+      "tailParagraphRendered": true,
+      "apiReader": {
+        "hideSiteTail": false,
+        "hideReaderChrome": false
+      },
+      "file": {
+        "hideSiteTail": false,
+        "hideReaderChrome": false,
+        "path": "/tmp/U1.6-op-1/userData/settings.json",
+        "mtime": 1793254786037.9844
+      },
+      "extra": {
+        "step": "always-show-on"
+      }
+    }
+  },
+  "target": {
+    "g": {
+      "found": true,
+      "cx": 828,
+      "cy": 544,
+      "inside": true,
+      "hitIsSwitch": true,
+      "checked": "false",
+      "className": "n-switch n-switch--round n-switch--rubber-band",
+      "rect": {
+        "x": 808,
+        "y": 533,
+        "w": 40,
+        "h": 22
+      }
+    },
+    "wheels": 1,
+    "trace": [
+      {
+        "i": 0,
+        "panelScrollTop": 240,
+        "switchY": 634,
+        "inside": false,
+        "hitIsSwitch": false
+      }
+    ]
+  },
+  "afterSwitch": {
+    "found": true,
+    "cx": 828,
+    "cy": 544,
+    "inside": true,
+    "hitIsSwitch": true,
+    "checked": "true",
+    "className": "n-switch n-switch--active n-switch--round n-switch--rubber-band",
+    "rect": {
+      "x": 808,
+      "y": 533,
+      "w": 40,
+      "h": 22
+    }
+  }
+}

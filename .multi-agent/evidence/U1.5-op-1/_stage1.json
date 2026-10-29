@@ -1,0 +1,102 @@
+{
+  "afterEsc": {
+    "capturedAt": "2026-10-29T05:31:48.861Z",
+    "bookTitle": "样例·基线书",
+    "chapterTitle": "第1章 基线样例章",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar reader-tools-hidden",
+    "hiddenClass": true,
+    "ariaHidden": "true",
+    "inert": "",
+    "computed": {
+      "visibility": "hidden",
+      "opacity": "0",
+      "height": 0,
+      "minHeight": "0px",
+      "transform": "matrix(1, 0, 0, 1, 0, -8)"
+    },
+    "rect": {
+      "x": 0,
+      "y": -8,
+      "w": 1280,
+      "h": 0
+    },
+    "innerText": "",
+    "progress": null,
+    "cancel": null,
+    "bottombarHidden": true,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "browseBtn": {
+    "cx": 1217,
+    "cy": -8
+  },
+  "afterBrowseClick": {
+    "capturedAt": "2026-10-29T05:31:50.078Z",
+    "nav": [],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "样\n‹\n第1章 基线样例章\n\n验收占位段落 1-1：这一段只是样例正文，用来给阅读页顶栏的默认收起状态做对照，不含任何作品内容。\n从此段朗读\n\n验收占位段落 1-2：这一段只是样例正文，用来给阅读页顶栏的默认收起状态做对照，不含任何作品内容。\n从此段朗读\n\n验收占位段落 1-3：这一段只是样例正文，用来给阅读页顶栏的默认收起状态做对照，不含任何作品内容。\n从此段朗读\n\n验收占位段落 1-4：这一段只是样例正文，用来给阅读页顶栏的默认收起状态做对照，不含任何作品内容。\n从此段朗读\n\n验收占位段落 1-5：这一段只是样例正文，用来给阅读页顶栏的默认收起状态做对照，不含任何作品内容。\n从此段朗读\n\n"
+  },
+  "addrRect": {
+    "cx": 0,
+    "cy": 0,
+    "w": 0,
+    "h": 0,
+    "text": "",
+    "hit": "BUTTON.reader-spine",
+    "hitText": "样"
+  },
+  "afterNavigate": {
+    "capturedAt": "2026-10-29T05:31:53.646Z",
+    "nav": [
+      {
+        "label": "浏览",
+        "active": false
+      },
+      {
+        "label": "书库",
+        "active": true
+      },
+      {
+        "label": "阅读",
+        "active": false
+      },
+      {
+        "label": "设置",
+        "active": false
+      }
+    ],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "小说浏览器\n浏览\n书库\n阅读\n设置\n书架\n\n最近在读放在最前，其余按书架排开。\n\n继续读\n浏览下载\n全部检查更新\n阅读统计\n回收站\n导入 txt / epub\n按书名、作者或标签筛选\n全部状态\n最近读过\n样例\n更多标签\n样\n最近在读\n样例·基线书\n样例作者\n读到第 1 章 / 共 2 章 · 2026/10/29 13:31:24\n样\n样例·基线书\n样例作者\n完整\n读到第 1 章 / 共 2 章\n2026/10/29 13:31:24\n全书概览 含剧透\n\n自动概览未开启\n\n更多"
+  }
+}

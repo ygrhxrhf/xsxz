@@ -1,0 +1,18 @@
+{
+  "OP-6-after.png": {
+    "bestOffsetY": 29,
+    "diffPct": 6.079
+  },
+  "OP-7-after.png": {
+    "bestOffsetY": 29,
+    "diffPct": 0.0
+  },
+  "windowCapture": {
+    "file": "_window-x11.png",
+    "x": 640,
+    "y": 320,
+    "w": 1280,
+    "h": 800,
+    "note": "X11 抓屏：桌面原点 (640,320)，含 29px 标题栏；裁掉标题栏后与 CDP 视口截图逐像素一致"
+  }
+}

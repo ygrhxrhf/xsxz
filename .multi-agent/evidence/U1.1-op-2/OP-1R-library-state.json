@@ -1,0 +1,130 @@
+{
+  "capturedAt": "2026-10-26T09:53:08.123Z",
+  "title": "小说浏览器",
+  "url": "file:///home/goot/cod/xs/xsxz/out/renderer/index.html",
+  "shell": "app-shell",
+  "size": {
+    "width": 1280,
+    "height": 771,
+    "dpr": 1
+  },
+  "scroll": {
+    "scrollTop": 0,
+    "clientHeight": 0,
+    "scrollHeight": 0,
+    "cls": "reader-content reader-pane chapter-fade-in"
+  },
+  "chapterTitle": null,
+  "toolbar": {
+    "class": "reader-toolbar",
+    "visibility": "visible",
+    "opacity": "1",
+    "height": 0,
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+    },
+    "ariaHidden": "false",
+    "inert": false,
+    "text": "样例·长夜行舟书架搜索标记朗读AI设置浏览"
+  },
+  "bottombar": {
+    "class": "reader-bottombar",
+    "visibility": "visible",
+    "opacity": "1",
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+    },
+    "ariaHidden": "false",
+    "inert": false,
+    "text": "目录进度背景字体"
+  },
+  "buttons": [
+    {
+      "text": "目录",
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 0,
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      }
+    },
+    {
+      "text": "进度",
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 0,
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      }
+    },
+    {
+      "text": "背景",
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 0,
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      }
+    },
+    {
+      "text": "字体",
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 0,
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      }
+    }
+  ],
+  "spine": {
+    "text": "样",
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+    },
+    "visibility": "visible",
+    "opacity": "1"
+  },
+  "visibleParagraphs": [],
+  "bodyText": "小说浏览器\n浏览\n书库\n阅读\n设置\n书架\n\n最近在读放在最前，其余按书架排开。\n\n继续读\n浏览下载\n全部检查更新\n阅读统计\n回收站\n导入 txt / epub\n按书名、作者或标签筛选\n全部状态\n最近读过\n样例\n更多标签\n样\n最近在读\n样例·长夜行舟\n样例作者\n读到第 2 章 / 共 3 章 · 2026/10/26 17:40:52\n样\n样例·长夜行舟\n样例作者\n完整\n读到第 2 章 / 共 3 章\n2026/10/26 17:40:52\n全书概览 含剧透\n\n自动概览未开启\n\n更多",
+  "libraryCards": [
+    {
+      "label": "样最近在读样例·长夜行舟样例作者读到第 2 章 / 共 3 ",
+      "rect": {
+        "x": 38,
+        "y": 287,
+        "width": 560,
+        "height": 208
+      }
+    },
+    {
+      "label": "打开《样例·长夜行舟》",
+      "rect": {
+        "x": 71,
+        "y": 552,
+        "width": 104,
+        "height": 325
+      }
+    }
+  ]
+}

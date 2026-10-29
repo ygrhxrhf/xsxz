@@ -1,0 +1,100 @@
+{
+  "app": {
+    "capturedAt": "2026-10-29T06:13:54.129Z",
+    "nav": [],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例·站尾样书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "样\n‹\n第1章 样例章·带站尾\n\n样例正文第一段：雨停之后，街灯把水面照成一条条亮线，他沿着巷口慢慢往家走。\n从此段朗读\n\n样例正文第二段：这一段是正常叙述，用来对照站点尾巴是否被整段藏掉。\n从此段朗读\n\n样例正文第三段：这是尾巴之后的正常段落，净化打开时它仍然应当显示。\n从此段朗读\n\n下一章：第2章 样例章·无站尾\n›"
+  },
+  "settings": {
+    "libraryPath": "/tmp/U1.6-op-1/library",
+    "baseUrl": "https://api.deepseek.com/v1",
+    "model": "deepseek-v4-flash",
+    "apiKeyConfigured": false,
+    "apiKeyUnreadable": false,
+    "embedding": {
+      "baseUrl": "",
+      "model": "",
+      "keyConfigured": false
+    },
+    "tierSenseKeyConfigured": false,
+    "reader": {
+      "fontSize": 18,
+      "lineHeight": 1.8,
+      "theme": "paper",
+      "fontFamily": "serif",
+      "contentWidth": "medium",
+      "paragraphSpacing": "normal",
+      "paragraphIndent": true,
+      "focusMode": "off",
+      "readingMode": "scroll",
+      "autoScrollSpeed": 3,
+      "autoNextChapter": false,
+      "dim": 0,
+      "hideSiteTail": true,
+      "hideReaderChrome": true
+    },
+    "tts": {
+      "rate": 1,
+      "autoNextChapter": true,
+      "source": "system",
+      "systemVoiceURI": "",
+      "onlineEndpoint": "",
+      "onlineModel": "",
+      "onlineVoice": "",
+      "onlineKeyConfigured": false
+    },
+    "appearance": {
+      "skin": "light"
+    },
+    "webReading": {
+      "autoPage": true,
+      "autoSpeed": 3
+    },
+    "ai": {
+      "provider": "deepseek",
+      "thinkingEnabled": true,
+      "recapLength": "standard",
+      "budgetWarningTokens": 8000,
+      "trustedCustomOrigins": [],
+      "autoBookOverview": false,
+      "autoReadingFollow": false,
+      "followMaxChaptersPerRun": 12,
+      "autoMonthlyTokenLimit": 100000,
+      "promptMode": {
+        "clean": "builtin",
+        "translate": "builtin",
+        "chapterSummary": "builtin",
+        "chapterNote": "builtin",
+        "recap": "builtin",
+        "memory": "builtin",
+        "evidenceQa": "builtin"
+      },
+      "customPrompts": {},
+      "tierSense": {
+        "enabled": false,
+        "baseUrl": "",
+        "difficultyEnabled": true,
+        "compressionEnabled": true,
+        "memoryDecideEnabled": true,
+        "compressionMinTokens": 6000,
+        "difficultyThreshold": 0.6
+      }
+    },
+    "downloadPace": "standard",
+    "autoBackup": {
+      "destDir": "",
+      "lastSuccessAt": "",
+      "lastError": ""
+    }
+  }
+}

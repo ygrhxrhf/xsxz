@@ -1,0 +1,67 @@
+{
+  "capturedAt": "2026-10-29T02:25:06.086Z",
+  "url": "file:///home/goot/cod/xs/xsxz/out/renderer/index.html",
+  "docTitle": "小说浏览器",
+  "size": {
+    "w": 1280,
+    "h": 771,
+    "dpr": 1
+  },
+  "readerVisible": true,
+  "chapterTitle": "第三章 样例断章",
+  "chapterError": "本章需要付费或会员",
+  "chapterHint": "本章要付费或会员，请到浏览页解锁后重试该章",
+  "track": {
+    "rect": {
+      "x": 0,
+      "y": 765,
+      "w": 1280,
+      "h": 6
+    },
+    "cls": "reader-progress-track",
+    "aria": {
+      "min": "0",
+      "max": "2",
+      "now": "2",
+      "valuetext": "全书约 100% · 本章 100% · 还剩 0 章",
+      "label": "全书约 100% · 本章 100% · 还剩 0 章"
+    },
+    "bookFill": "100%",
+    "chapterFill": "100%",
+    "scrubPreview": null
+  },
+  "hint": null,
+  "pane": {
+    "scrollTop": 0,
+    "clientHeight": 723,
+    "scrollHeight": 723,
+    "rect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    }
+  },
+  "paraCount": 0,
+  "firstParaTop": null,
+  "visibleParas": [],
+  "buttons": [
+    "书架",
+    "搜索",
+    "标记",
+    "朗读",
+    "AI",
+    "设置",
+    "浏览",
+    "样",
+    "‹",
+    "重试失败章",
+    "去浏览页",
+    "›",
+    "目录",
+    "进度",
+    "背景",
+    "字体"
+  ],
+  "bodyText": "样例·夜行舟\n书架\n搜索\n标记\n朗读\nAI\n设置\n浏览\n样\n‹\n第三章 样例断章\n\n本章需要付费或会员\n\n本章要付费或会员，请到浏览页解锁后重试该章\n\n重试失败章\n去浏览页\n›\n目录\n进度\n背景\n字体"
+}

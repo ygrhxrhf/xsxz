@@ -1,0 +1,556 @@
+{
+  "page": "ws://127.0.0.1:37482/devtools/page/D21CCF805C96AEC923114C7C61777D66",
+  "pane": {
+    "x": 324,
+    "y": 24,
+    "w": 684,
+    "h": 723
+  },
+  "clicks": {
+    "reveal": [
+      666,
+      386
+    ],
+    "spine": [
+      26,
+      386
+    ],
+    "card": [
+      123,
+      715
+    ]
+  },
+  "cardLabel": "打开《样例·长夜行舟》",
+  "timeline": [
+    {
+      "phase": "start",
+      "at": "2026-10-26T09:53:02.879Z",
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "hidden",
+        "0",
+        0,
+        "true"
+      ],
+      "bottombar": [
+        "reader-bottombar reader-tools-hidden",
+        "hidden",
+        "0",
+        "true"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "进度",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "背景",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "字体",
+          "hidden",
+          "1",
+          42
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 52,
+          "height": 771
+        }
+      ],
+      "visibleParagraphs": 6
+    },
+    {
+      "phase": "before/工具已展开",
+      "at": "2026-10-26T09:53:03.796Z",
+      "toolbar": [
+        "reader-toolbar",
+        "visible",
+        "1",
+        56,
+        "false"
+      ],
+      "bottombar": [
+        "reader-bottombar",
+        "visible",
+        "1",
+        "false"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "进度",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "背景",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "字体",
+          "visible",
+          "1",
+          42
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 52,
+          "height": 771
+        }
+      ],
+      "visibleParagraphs": 6
+    },
+    {
+      "phase": "library/已回书库",
+      "at": "2026-10-26T09:53:08.123Z",
+      "toolbar": [
+        "reader-toolbar",
+        "visible",
+        "1",
+        0,
+        "false"
+      ],
+      "bottombar": [
+        "reader-bottombar",
+        "visible",
+        "1",
+        "false"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "visible",
+          "1",
+          0
+        ],
+        [
+          "进度",
+          "visible",
+          "1",
+          0
+        ],
+        [
+          "背景",
+          "visible",
+          "1",
+          0
+        ],
+        [
+          "字体",
+          "visible",
+          "1",
+          0
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        }
+      ],
+      "visibleParagraphs": 0
+    },
+    {
+      "phase": "after+0ms",
+      "at": "2026-10-26T09:53:11.965Z",
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "visible",
+        "1",
+        0,
+        "true"
+      ],
+      "bottombar": [
+        "reader-bottombar reader-tools-hidden",
+        "visible",
+        "1",
+        "true"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "进度",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "背景",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "字体",
+          "visible",
+          "1",
+          42
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 52,
+          "height": 771
+        }
+      ],
+      "visibleParagraphs": 6
+    },
+    {
+      "phase": "after+300ms",
+      "at": "2026-10-26T09:53:12.243Z",
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "visible",
+        "1",
+        0,
+        "true"
+      ],
+      "bottombar": [
+        "reader-bottombar reader-tools-hidden",
+        "visible",
+        "1",
+        "true"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "进度",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "背景",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "字体",
+          "visible",
+          "1",
+          42
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 52,
+          "height": 771
+        }
+      ],
+      "visibleParagraphs": 6
+    },
+    {
+      "phase": "after+800ms",
+      "at": "2026-10-26T09:53:12.744Z",
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "visible",
+        "1",
+        0,
+        "true"
+      ],
+      "bottombar": [
+        "reader-bottombar reader-tools-hidden",
+        "visible",
+        "1",
+        "true"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "进度",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "背景",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "字体",
+          "visible",
+          "1",
+          42
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 52,
+          "height": 771
+        }
+      ],
+      "visibleParagraphs": 6
+    },
+    {
+      "phase": "after+1500ms",
+      "at": "2026-10-26T09:53:13.443Z",
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "visible",
+        "1",
+        0,
+        "true"
+      ],
+      "bottombar": [
+        "reader-bottombar reader-tools-hidden",
+        "visible",
+        "1",
+        "true"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "进度",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "背景",
+          "visible",
+          "1",
+          42
+        ],
+        [
+          "字体",
+          "visible",
+          "1",
+          42
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 52,
+          "height": 771
+        }
+      ],
+      "visibleParagraphs": 6
+    },
+    {
+      "phase": "after+2500ms",
+      "at": "2026-10-26T09:53:14.442Z",
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "hidden",
+        "0",
+        0,
+        "true"
+      ],
+      "bottombar": [
+        "reader-bottombar reader-tools-hidden",
+        "hidden",
+        "0",
+        "true"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "进度",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "背景",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "字体",
+          "hidden",
+          "1",
+          42
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 52,
+          "height": 771
+        }
+      ],
+      "visibleParagraphs": 6
+    },
+    {
+      "phase": "after+4000ms",
+      "at": "2026-10-26T09:53:15.941Z",
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "hidden",
+        "0",
+        0,
+        "true"
+      ],
+      "bottombar": [
+        "reader-bottombar reader-tools-hidden",
+        "hidden",
+        "0",
+        "true"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "进度",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "背景",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "字体",
+          "hidden",
+          "1",
+          42
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 52,
+          "height": 771
+        }
+      ],
+      "visibleParagraphs": 6
+    },
+    {
+      "phase": "after/重入后",
+      "at": "2026-10-26T09:53:15.944Z",
+      "toolbar": [
+        "reader-toolbar reader-tools-hidden",
+        "hidden",
+        "0",
+        0,
+        "true"
+      ],
+      "bottombar": [
+        "reader-bottombar reader-tools-hidden",
+        "hidden",
+        "0",
+        "true"
+      ],
+      "buttons": [
+        [
+          "目录",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "进度",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "背景",
+          "hidden",
+          "1",
+          42
+        ],
+        [
+          "字体",
+          "hidden",
+          "1",
+          42
+        ]
+      ],
+      "spine": [
+        "visible",
+        {
+          "x": 0,
+          "y": 0,
+          "width": 52,
+          "height": 771
+        }
+      ],
+      "visibleParagraphs": 6
+    }
+  ]
+}

@@ -1,0 +1,364 @@
+{
+  "clicks": [
+    {
+      "step": "nav-library",
+      "ok": true,
+      "info": {
+        "cx": 325,
+        "cy": 30,
+        "rect": {
+          "x": 286,
+          "y": 0,
+          "w": 79,
+          "h": 60
+        },
+        "text": "书库",
+        "label": null,
+        "hit": "SPAN.nav-label",
+        "hitOk": true
+      }
+    }
+  ],
+  "samples": [
+    {
+      "capturedAt": "2026-10-29T05:34:42.908Z",
+      "bookTitle": "样例站点·示例书一",
+      "chapterTitle": "第1章 样例章节 001",
+      "toolbarPresent": true,
+      "classes": "reader-toolbar",
+      "hiddenClass": false,
+      "ariaHidden": "false",
+      "inert": null,
+      "computed": {
+        "visibility": "visible",
+        "opacity": "1",
+        "height": 56,
+        "minHeight": "56px",
+        "transform": "matrix(1, 0, 0, 1, 0, 0)"
+      },
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 1280,
+        "h": 56
+      },
+      "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n已下 79 / 200 章\n取消\n设置\n浏览",
+      "progress": {
+        "text": "已下 79 / 200 章",
+        "rect": {
+          "x": 953,
+          "y": 10,
+          "w": 113,
+          "h": 36
+        },
+        "inViewport": true,
+        "visibility": "visible",
+        "opacity": "1",
+        "display": "grid",
+        "hitIsSelf": true,
+        "hitDesc": "SPAN.tool-button"
+      },
+      "cancel": {
+        "text": "取消",
+        "rect": {
+          "x": 1070,
+          "y": 10,
+          "w": 46,
+          "h": 36
+        },
+        "inViewport": true,
+        "visibility": "visible",
+        "opacity": "1",
+        "display": "grid",
+        "hitIsSelf": true,
+        "hitDesc": "BUTTON.tool-button"
+      },
+      "bottombarHidden": false,
+      "contentRect": {
+        "x": 324,
+        "y": 24,
+        "w": 684,
+        "h": 723
+      },
+      "viewport": {
+        "w": 1280,
+        "h": 771,
+        "dpr": 1
+      }
+    },
+    {
+      "capturedAt": "2026-10-29T05:34:44.714Z",
+      "bookTitle": "样例站点·示例书一",
+      "chapterTitle": "第1章 样例章节 001",
+      "toolbarPresent": true,
+      "classes": "reader-toolbar",
+      "hiddenClass": false,
+      "ariaHidden": "false",
+      "inert": null,
+      "computed": {
+        "visibility": "visible",
+        "opacity": "1",
+        "height": 56,
+        "minHeight": "56px",
+        "transform": "matrix(1, 0, 0, 1, 0, 0)"
+      },
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 1280,
+        "h": 56
+      },
+      "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n已下 81 / 200 章\n取消\n设置\n浏览",
+      "progress": {
+        "text": "已下 81 / 200 章",
+        "rect": {
+          "x": 953,
+          "y": 10,
+          "w": 113,
+          "h": 36
+        },
+        "inViewport": true,
+        "visibility": "visible",
+        "opacity": "1",
+        "display": "grid",
+        "hitIsSelf": true,
+        "hitDesc": "SPAN.tool-button"
+      },
+      "cancel": {
+        "text": "取消",
+        "rect": {
+          "x": 1070,
+          "y": 10,
+          "w": 46,
+          "h": 36
+        },
+        "inViewport": true,
+        "visibility": "visible",
+        "opacity": "1",
+        "display": "grid",
+        "hitIsSelf": true,
+        "hitDesc": "BUTTON.tool-button"
+      },
+      "bottombarHidden": false,
+      "contentRect": {
+        "x": 324,
+        "y": 24,
+        "w": 684,
+        "h": 723
+      },
+      "viewport": {
+        "w": 1280,
+        "h": 771,
+        "dpr": 1
+      }
+    },
+    {
+      "capturedAt": "2026-10-29T05:34:46.521Z",
+      "bookTitle": "样例站点·示例书一",
+      "chapterTitle": "第1章 样例章节 001",
+      "toolbarPresent": true,
+      "classes": "reader-toolbar",
+      "hiddenClass": false,
+      "ariaHidden": "false",
+      "inert": null,
+      "computed": {
+        "visibility": "visible",
+        "opacity": "1",
+        "height": 56,
+        "minHeight": "56px",
+        "transform": "matrix(1, 0, 0, 1, 0, 0)"
+      },
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 1280,
+        "h": 56
+      },
+      "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n已下 82 / 200 章\n取消\n设置\n浏览",
+      "progress": {
+        "text": "已下 82 / 200 章",
+        "rect": {
+          "x": 953,
+          "y": 10,
+          "w": 113,
+          "h": 36
+        },
+        "inViewport": true,
+        "visibility": "visible",
+        "opacity": "1",
+        "display": "grid",
+        "hitIsSelf": true,
+        "hitDesc": "SPAN.tool-button"
+      },
+      "cancel": {
+        "text": "取消",
+        "rect": {
+          "x": 1070,
+          "y": 10,
+          "w": 46,
+          "h": 36
+        },
+        "inViewport": true,
+        "visibility": "visible",
+        "opacity": "1",
+        "display": "grid",
+        "hitIsSelf": true,
+        "hitDesc": "BUTTON.tool-button"
+      },
+      "bottombarHidden": false,
+      "contentRect": {
+        "x": 324,
+        "y": 24,
+        "w": 684,
+        "h": 723
+      },
+      "viewport": {
+        "w": 1280,
+        "h": 771,
+        "dpr": 1
+      }
+    }
+  ],
+  "library": {
+    "capturedAt": "2026-10-29T05:34:27.575Z",
+    "nav": [
+      {
+        "label": "浏览",
+        "active": false
+      },
+      {
+        "label": "书库",
+        "active": true
+      },
+      {
+        "label": "阅读",
+        "active": false
+      },
+      {
+        "label": "设置",
+        "active": false
+      }
+    ],
+    "hasReaderToolbar": true,
+    "sidebarDl": "样例站点·示例书一\n已下 65 / 200 章\n取消",
+    "cards": [
+      {
+        "title": "样例站点·示例书一",
+        "status": "下载中",
+        "progress": "共 200 章，还没开始读",
+        "task": "正在下载新章节…",
+        "cancelButton": true
+      },
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "小说浏览器\n浏览\n书库\n阅读\n设置\n样例站点·示例书一\n已下 65 / 200 章\n取消\n书架\n\n最近在读放在最前，其余按书架排开。\n\n继续读\n浏览下载\n全部检查更新\n阅读统计\n回收站\n导入 txt / epub\n按书名、作者或标签筛选\n全部状态\n最近读过\n样例\n更多标签\n样\n最近在读\n样例·基线书\n样例作者\n读到第 1 章 / 共 2 章 · 2026/10/29 13:31:24\n样\n样例站点·示例书一\n样例作者\n下载中\n共 200 章，还没开始读\n未读\n正在下载新章节…\n取消下载\n全书概览 含剧透\n\n下载完成后生成\n\n更多\n样\n样例·基线书\n样例作者\n完整\n读到第 1 章 / 共 2 章"
+  },
+  "openInfo": {
+    "cx": 124,
+    "cy": 602,
+    "rect": {
+      "x": 71,
+      "y": 552,
+      "w": 104,
+      "h": 350
+    },
+    "hit": "DIV.book-cover",
+    "hitOk": true,
+    "cardText": "样 样例站点·示例书一 样例作者 下载中 共 200 章，还没开始读 未读 正在下载新章节… 取消下载 全书概览 含剧透 下载完成后生成 更多"
+  },
+  "entryNoClick": {
+    "capturedAt": "2026-10-29T05:34:36.076Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar",
+    "hiddenClass": false,
+    "ariaHidden": "false",
+    "inert": null,
+    "computed": {
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 56,
+      "minHeight": "56px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 56
+    },
+    "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n已下 73 / 200 章\n取消\n设置\n浏览",
+    "progress": {
+      "text": "已下 73 / 200 章",
+      "rect": {
+        "x": 953,
+        "y": 10,
+        "w": 113,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "SPAN.tool-button"
+    },
+    "cancel": {
+      "text": "取消",
+      "rect": {
+        "x": 1070,
+        "y": 10,
+        "w": 46,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "BUTTON.tool-button"
+    },
+    "bottombarHidden": false,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "appReader": {
+    "capturedAt": "2026-10-29T05:34:36.077Z",
+    "nav": [],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例站点·示例书一",
+        "status": "下载中",
+        "progress": "共 200 章，还没开始读",
+        "task": "正在下载新章节…",
+        "cancelButton": true
+      },
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n已下 73 / 200 章\n取消\n设置\n浏览\n样\n‹\n第1章 样例章节 001\n\n验收占位段落 001-1：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-2：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-3：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-4：这一段只是样例正文，用来让下载与提取走完真实流程，不含任何作品内容。\n从此段朗读\n\n验收占位段落 001-5：这"
+  }
+}

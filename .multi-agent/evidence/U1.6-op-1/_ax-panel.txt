@@ -1,0 +1,5 @@
+switch	首行缩进	domChecked=true	axChecked=true	class=n-switch n-switch--active n-switch--round n-switch--rubber-band
+switch	滚到章末自动接下一章	domChecked=false	axChecked=false	class=n-switch n-switch--round n-switch--rubber-band
+switch	净化	domChecked=false	axChecked=false	class=n-switch n-switch--round n-switch--rubber-band
+switch	本章显示原文	domChecked=false	axChecked=false	class=n-switch n-switch--disabled n-switch--round n-switch--rubber-band
+switch	工具一直显示	domChecked=true	axChecked=true	class=n-switch n-switch--active n-switch--round n-switch--rubber-band

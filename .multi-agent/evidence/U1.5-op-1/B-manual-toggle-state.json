@@ -1,0 +1,346 @@
+{
+  "steps": [],
+  "before": {
+    "capturedAt": "2026-10-29T05:35:08.621Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar",
+    "hiddenClass": false,
+    "ariaHidden": "false",
+    "inert": null,
+    "computed": {
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 56,
+      "minHeight": "56px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 56
+    },
+    "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n已下 102 / 200 章\n取消\n设置\n浏览",
+    "progress": {
+      "text": "已下 102 / 200 章",
+      "rect": {
+        "x": 946,
+        "y": 10,
+        "w": 120,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "SPAN.tool-button"
+    },
+    "cancel": {
+      "text": "取消",
+      "rect": {
+        "x": 1070,
+        "y": 10,
+        "w": 46,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "BUTTON.tool-button"
+    },
+    "bottombarHidden": false,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "centerPoint": {
+    "cx": 666,
+    "cy": 386,
+    "rect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "hit": "P.para",
+    "hitText": "验收占位段落 001-3：这一段只是样例正文，用来让下载与提取走完真实流程，不含",
+    "insideContent": true
+  },
+  "afterFirstClick": {
+    "capturedAt": "2026-10-29T05:35:09.546Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar reader-tools-hidden",
+    "hiddenClass": true,
+    "ariaHidden": "true",
+    "inert": "",
+    "computed": {
+      "visibility": "hidden",
+      "opacity": "0",
+      "height": 0,
+      "minHeight": "0px",
+      "transform": "matrix(1, 0, 0, 1, 0, -8)"
+    },
+    "rect": {
+      "x": 0,
+      "y": -8,
+      "w": 1280,
+      "h": 0
+    },
+    "innerText": "",
+    "progress": {
+      "text": "已下 103 / 200 章",
+      "rect": {
+        "x": 970,
+        "y": -26,
+        "w": 120,
+        "h": 36
+      },
+      "inViewport": false,
+      "visibility": "hidden",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": false,
+      "hitDesc": "DIV.reader-body"
+    },
+    "cancel": {
+      "text": "取消",
+      "rect": {
+        "x": 1094,
+        "y": -26,
+        "w": 46,
+        "h": 36
+      },
+      "inViewport": false,
+      "visibility": "hidden",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": false,
+      "hitDesc": "DIV.reader-body"
+    },
+    "bottombarHidden": true,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "afterWaitCollapsed": {
+    "capturedAt": "2026-10-29T05:35:16.944Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar reader-tools-hidden",
+    "hiddenClass": true,
+    "ariaHidden": "true",
+    "inert": "",
+    "computed": {
+      "visibility": "hidden",
+      "opacity": "0",
+      "height": 0,
+      "minHeight": "0px",
+      "transform": "matrix(1, 0, 0, 1, 0, -8)"
+    },
+    "rect": {
+      "x": 0,
+      "y": -8,
+      "w": 1280,
+      "h": 0
+    },
+    "innerText": "",
+    "progress": {
+      "text": "已下 110 / 200 章",
+      "rect": {
+        "x": 970,
+        "y": -26,
+        "w": 119,
+        "h": 36
+      },
+      "inViewport": false,
+      "visibility": "hidden",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": false,
+      "hitDesc": "DIV.reader-body"
+    },
+    "cancel": {
+      "text": "取消",
+      "rect": {
+        "x": 1094,
+        "y": -26,
+        "w": 46,
+        "h": 36
+      },
+      "inViewport": false,
+      "visibility": "hidden",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": false,
+      "hitDesc": "DIV.reader-body"
+    },
+    "bottombarHidden": true,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "afterSecondClick": {
+    "capturedAt": "2026-10-29T05:35:17.864Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar",
+    "hiddenClass": false,
+    "ariaHidden": "false",
+    "inert": null,
+    "computed": {
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 56,
+      "minHeight": "56px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 56
+    },
+    "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n已下 111 / 200 章\n取消\n设置\n浏览",
+    "progress": {
+      "text": "已下 111 / 200 章",
+      "rect": {
+        "x": 947,
+        "y": 10,
+        "w": 119,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "SPAN.tool-button"
+    },
+    "cancel": {
+      "text": "取消",
+      "rect": {
+        "x": 1070,
+        "y": 10,
+        "w": 46,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "BUTTON.tool-button"
+    },
+    "bottombarHidden": false,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "afterWaitExpanded": {
+    "capturedAt": "2026-10-29T05:35:24.041Z",
+    "bookTitle": "样例站点·示例书一",
+    "chapterTitle": "第1章 样例章节 001",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar",
+    "hiddenClass": false,
+    "ariaHidden": "false",
+    "inert": null,
+    "computed": {
+      "visibility": "visible",
+      "opacity": "1",
+      "height": 56,
+      "minHeight": "56px",
+      "transform": "matrix(1, 0, 0, 1, 0, 0)"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 56
+    },
+    "innerText": "样例站点·示例书一\n书架\n搜索\n标记\n朗读\nAI\n已下 116 / 200 章\n取消\n设置\n浏览",
+    "progress": {
+      "text": "已下 116 / 200 章",
+      "rect": {
+        "x": 946,
+        "y": 10,
+        "w": 119,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "SPAN.tool-button"
+    },
+    "cancel": {
+      "text": "取消",
+      "rect": {
+        "x": 1070,
+        "y": 10,
+        "w": 46,
+        "h": 36
+      },
+      "inViewport": true,
+      "visibility": "visible",
+      "opacity": "1",
+      "display": "grid",
+      "hitIsSelf": true,
+      "hitDesc": "BUTTON.tool-button"
+    },
+    "bottombarHidden": false,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  }
+}

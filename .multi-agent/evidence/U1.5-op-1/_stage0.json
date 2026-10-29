@@ -1,0 +1,73 @@
+{
+  "app0": {
+    "capturedAt": "2026-10-29T05:30:24.079Z",
+    "nav": [],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "样\n‹\n第1章 基线样例章\n\n这一章没有正文\n\n去浏览页\n›"
+  },
+  "navReader": null,
+  "tools0": {
+    "capturedAt": "2026-10-29T05:30:25.328Z",
+    "bookTitle": "样例·基线书",
+    "chapterTitle": "第1章 基线样例章",
+    "toolbarPresent": true,
+    "classes": "reader-toolbar reader-tools-hidden",
+    "hiddenClass": true,
+    "ariaHidden": "true",
+    "inert": "",
+    "computed": {
+      "visibility": "hidden",
+      "opacity": "0",
+      "height": 0,
+      "minHeight": "0px",
+      "transform": "matrix(1, 0, 0, 1, 0, -8)"
+    },
+    "rect": {
+      "x": 0,
+      "y": -8,
+      "w": 1280,
+      "h": 0
+    },
+    "innerText": "",
+    "progress": null,
+    "cancel": null,
+    "bottombarHidden": true,
+    "contentRect": {
+      "x": 324,
+      "y": 24,
+      "w": 684,
+      "h": 723
+    },
+    "viewport": {
+      "w": 1280,
+      "h": 771,
+      "dpr": 1
+    }
+  },
+  "app1": {
+    "capturedAt": "2026-10-29T05:30:25.333Z",
+    "nav": [],
+    "hasReaderToolbar": true,
+    "sidebarDl": null,
+    "cards": [
+      {
+        "title": "样例·基线书",
+        "status": "完整",
+        "progress": "读到第 1 章 / 共 2 章",
+        "task": "",
+        "cancelButton": false
+      }
+    ],
+    "bodyHead": "样\n‹\n第1章 基线样例章\n\n这一章没有正文\n\n去浏览页\n›"
+  }
+}

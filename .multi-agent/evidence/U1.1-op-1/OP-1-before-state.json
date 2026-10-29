@@ -1,0 +1,111 @@
+{
+  "capturedAt": "2026-10-26T07:33:16.096Z",
+  "title": "小说浏览器",
+  "url": "file:///home/goot/cod/xs/xsxz/out/renderer/index.html",
+  "size": {
+    "width": 1280,
+    "height": 771,
+    "dpr": 1
+  },
+  "chapterTitle": "第二章 样例长夜",
+  "scroll": {
+    "scrollTop": 0,
+    "clientHeight": 0,
+    "scrollHeight": 0
+  },
+  "bodyText": "小说浏览器\n浏览\n书库\n阅读\n设置\n书架\n\n最近在读放在最前，其余按书架排开。\n\n继续读\n浏览下载\n全部检查更新\n阅读统计\n回收站\n导入 txt / epub\n按书名、作者或标签筛选\n全部状态\n最近读过\n样例\n更多标签\n样\n最近在读\n样例·长夜行舟\n样例作者\n读到第 2 章 / 共 3 章 · 2026/10/26 15:28:51\n样\n样例·长夜行舟\n样例作者\n完整\n读到第 2 章 / 共 3 章\n2026/10/26 15:28:51\n全书概览 含剧透\n\n自动概览未开启\n\n更多",
+  "readerElements": [
+    {
+      "class": "reader-toolbar",
+      "text": "样例·长夜行舟书架搜索标记朗读AI设置浏览",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "display": "flex",
+      "visibility": "visible",
+      "opacity": "1"
+    },
+    {
+      "class": "reader-spine",
+      "text": "样",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "display": "flex",
+      "visibility": "visible",
+      "opacity": "1"
+    },
+    {
+      "class": "reader-spine-initial",
+      "text": "样",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "display": "grid",
+      "visibility": "visible",
+      "opacity": "1"
+    },
+    {
+      "class": "bottom-button",
+      "text": "目录",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "display": "block",
+      "visibility": "visible",
+      "opacity": "1"
+    },
+    {
+      "class": "bottom-button",
+      "text": "进度",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "display": "block",
+      "visibility": "visible",
+      "opacity": "1"
+    },
+    {
+      "class": "bottom-button",
+      "text": "背景",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "display": "block",
+      "visibility": "visible",
+      "opacity": "1"
+    },
+    {
+      "class": "bottom-button",
+      "text": "字体",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "display": "block",
+      "visibility": "visible",
+      "opacity": "1"
+    }
+  ],
+  "visibleParagraphs": []
+}
