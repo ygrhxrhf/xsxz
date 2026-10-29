@@ -10,7 +10,7 @@
 - [x] U1.6 偏好兼容：验 npm run build、npm test → 退出码 0；OP-13–OP-14 达到，旧文件缺字段补 true 已锁定。
 - [x] 默认分支最终复验：验 git rev-parse HEAD、npm run build、npm test、npm run typecheck、npm run e2e:reader、npm run e2e:mirror → HEAD 1d46396 合并远端后，build 0、test 0（136 文件 1291 用例，连续两次）、typecheck 0、e2e:reader 11/11、e2e:mirror 19/19，证据见 test-reports/FINAL-verify-merged.md 与 U1.6-test-reconfirm.md。
 - [x] 收工自检：账本与证据已全部提交；plan:status 仅剩「已授权推送」一项未勾。
-- [ ] 已授权推送：验 git push 与远端分支 HEAD → 推送成功且与验收提交一致；不 force push。
+- [x] 已授权推送：HEAD 与 origin/master 同为 8c3f9900f20100fe63047853d19d54cfc24e4b58，push 退出码 0（da60097..8c3f990），未 force；证据 test-reports/push-final.md。
 
 ## 已有证据
 
