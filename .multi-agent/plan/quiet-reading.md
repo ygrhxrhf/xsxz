@@ -9,7 +9,7 @@
 - [x] U1.5 下载进度露出：验 npm run build、npm test、合入后 npm run e2e:reader → 本刀自身断言通过；OP-12 达到。续读提示断言的观测窗缺陷已由 U1.5-toast-probe 实测归因，不属产品回归。
 - [x] U1.6 偏好兼容：验 npm run build、npm test → 退出码 0；OP-13–OP-14 达到，旧文件缺字段补 true 已锁定。
 - [x] 默认分支最终复验：验 git rev-parse HEAD、npm run build、npm test、npm run e2e:reader → HEAD 2e7db64，四条命令退出码 0，证据见 test-reports/FINAL-verify.md。
-- [ ] 收工自检：验 npm run plan:status → 退出码 0，已跟踪工作区干净。
+- [ ] 收工自检：验 npm run plan:status → 账本与证据已全部提交，仅剩推送项待勾。
 - [ ] 已授权推送：验 git push 与远端分支 HEAD → 推送成功且与验收提交一致；不 force push。
 
 ## 已有证据
