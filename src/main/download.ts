@@ -1778,6 +1778,31 @@ export function cancelCheckAll(): void {
   cancelDownload()
 }
 
+/**
+ * 失败章重试的兜底文案：技术型错误翻成中文，业务侧中文原样透出。
+ * 不能一刀切 String(e)，否则渲染层会显示 `HttpStatusError: HTTP 404` 这类内部报错。
+ */
+function retryFailureMessage(e: unknown): string {
+  if (e instanceof HttpStatusError) {
+    if (e.status === 404) return '目录页或章节页返回 404，可能已下架或地址已变更'
+    if (e.status === 403) return '站点拒绝访问（403），请先在浏览页登录或解锁'
+    if (e.status === 429) return '站点请求过于频繁（429），请稍后重试'
+    if (e.status >= 500) return `站点暂时不可用（HTTP ${e.status}），请稍后重试`
+    return `站点返回 HTTP ${e.status}，重试失败`
+  }
+  if (e instanceof Error) {
+    if (/ERR_(ABORTED|CONNECTION|CONNECTION_RESET|NETWORK|NAME_NOT_RESOLVED|TIMED_OUT|INTERNET_DISCONNECTED)/.test(e.message)) {
+      return '网络连接失败，请检查网络后重试'
+    }
+    if (/^(?:[A-Za-z][A-Za-z0-9]*Error\b|HTTP \d)/.test(e.message)) {
+      return '重试失败，请稍后再试；若目录页已变化，请去浏览页处理'
+    }
+    const message = e.message.trim()
+    if (message) return message
+  }
+  return '重试失败，请稍后再试'
+}
+
 export async function retryFailed(bookId: string): Promise<{ ok: boolean; message?: string }> {
   if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
   if (active.size > 0) {
@@ -1827,7 +1852,9 @@ export async function retryFailed(bookId: string): Promise<{ ok: boolean; messag
     }
     return { ok: true }
   } catch (e: unknown) {
-    return { ok: false, message: String(e) }
+    // 原始错误仍进控制台，方便排障；给用户的必须是中文可读原因。
+    console.warn('[download] retryFailed 失败:', e)
+    return { ok: false, message: retryFailureMessage(e) }
   }
 }
 
