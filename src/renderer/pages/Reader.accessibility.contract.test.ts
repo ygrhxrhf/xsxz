@@ -300,3 +300,60 @@ describe('Reader U1.2 progress scrubbing', () => {
     expect(source).toContain('去浏览页')
   })
 })
+
+describe('Reader U1.4 渲染层整段尾巴净化', () => {
+  /** 正文：正文段 / 站点尾巴 / 叙述段「请收藏这封信」/ 纯网址尾巴。 */
+  const TAIL_BODY = '第一段正文。\n\n请收藏本站，下次不迷路。\n\n请收藏这封信。\n\nwww.xsxz.example'
+
+  function installTailApi() {
+    installReaderApi()
+    const api = (window as unknown as { api: Record<string, Record<string, unknown>> }).api
+    api.library!.readChapter = async () => ({ chapter: { title: '第一章', body: TAIL_BODY, status: 'ready' } })
+  }
+
+  async function mountReader() {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp({ render: () => h(NMessageProvider, null, { default: () => h(Reader, { bookId: 'book-1' }) }) })
+    app.mount(host)
+    await nextTick(); await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    return app
+  }
+
+  it('默认开启净化：整段尾巴不渲染，叙述段仍显示，data-p 保持原始下标', async () => {
+    installTailApi()
+    const app = await mountReader()
+    const paras = [...document.querySelectorAll<HTMLElement>('.reader-content [data-p]')]
+    // 尾巴段（下标 1、3）整段不渲染；正文段与「请收藏这封信」还在。
+    expect(paras.map((node) => node.dataset.p)).toEqual(['0', '2'])
+    const text = document.querySelector('.reader-content')?.textContent ?? ''
+    expect(text).toContain('第一段正文。')
+    expect(text).toContain('请收藏这封信。')
+    expect(text).not.toContain('请收藏本站')
+    expect(text).not.toContain('www.xsxz.example')
+    // 渲染层是纯文本节点，不许走 v-html。
+    expect(document.querySelector('.reader-content')?.innerHTML).not.toContain('&lt;')
+    app.unmount()
+  })
+
+  it('字体面板有「净化」与「本章显示原文」，原文开关只活在内存里', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    expect(source).toContain('<n-switch v-model:value="hideSiteTail" /> 净化')
+    expect(source).toContain('<n-switch v-model:value="showRawThisChapter"')
+    // 默认开启净化；原文开关是内存 ref，不进 currentReaderPrefs（不落盘）。
+    expect(source).toContain('const hideSiteTail = ref(true)')
+    expect(source).toContain('const showRawThisChapter = ref(false)')
+    const prefs = source.slice(source.indexOf('function currentReaderPrefs'), source.indexOf('async function saveReaderPrefsSnapshot'))
+    expect(prefs).not.toContain('showRawThisChapter')
+    // 换章（每次 openChapter）都回到净化状态。
+    const openChapter = source.slice(source.indexOf('async function openChapter'), source.indexOf('function paragraphTextNodes'))
+    expect(openChapter).toContain('showRawThisChapter.value = false')
+    // 净化只在渲染层过滤，绝不改写章节正文与坐标空间。
+    expect(source).toContain('import { isSiteTailParagraph } from \'./readerTail\'')
+    expect(source).not.toContain('v-html')
+    expect(source).toContain('const normalizedBody = computed(() => paras.value.join(\'\\n\\n\'))')
+    // 过滤结果只喂给渲染下标列表，不写回 chapterBody / normalizedBody。
+    const purge = source.slice(source.indexOf('const tailHiddenFlags'), source.indexOf('const renderedCount'))
+    expect(purge).not.toContain('chapterBody.value =')
+  })
+})

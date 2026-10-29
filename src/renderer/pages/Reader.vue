@@ -69,6 +69,7 @@ import type { ReaderParagraphSpan } from './readerPager'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { ttsBodyHash, validTtsPosition } from './ttsPosition'
 import { decorateText } from '@shared/paragraphSearch'
+import { isSiteTailParagraph } from './readerTail'
 import { useReaderMarks } from './readerMarks'
 import { useReaderSelection } from './readerSelection'
 import { useReaderAssistant } from './readerAssistant'
@@ -138,6 +139,10 @@ const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
 const autoScrollSpeed = ref(DEFAULT_READER_PREFS.autoScrollSpeed ?? 3)
 const autoNextChapter = ref(DEFAULT_READER_PREFS.autoNextChapter === true)
 const dim = ref(DEFAULT_READER_PREFS.dim ?? 0)
+// 渲染层整段净化：默认开启（偏好字段 U1.6 接入 settings）。
+const hideSiteTail = ref(true)
+// 「本章显示原文」只是内存态，换章/重开书即恢复净化，绝不落盘。
+const showRawThisChapter = ref(false)
 const viewportCenterPara = ref(-1)
 // AI state
 const aiLoading = ref(false)
@@ -200,6 +205,24 @@ function saveTtsParagraph(index: number) {
   })
 }
 const paras = computed(() => splitIntoParagraphs(chapterBody.value))
+/**
+ * 本章是否正在显示原文：只有「本章显示原文」打开、且总开关开着时才算。
+ * 这是内存态，换章 / 重开书都不会带过去。
+ */
+const tailPurgeOffForChapter = computed(() => !hideSiteTail.value || showRawThisChapter.value)
+/** 净化判断只跟正文与两个开关有关，按段缓存，滚动时不重复跑规则。 */
+const tailHiddenFlags = computed(() => {
+  const list = paras.value
+  if (tailPurgeOffForChapter.value) return list.map(() => false)
+  return list.map((text) => isSiteTailParagraph(text))
+})
+/** 要渲染的段落「原始下标」：过滤只减元素，下标仍是原文下标。 */
+const visibleParaIndexes = computed(() => {
+  const flags = tailHiddenFlags.value
+  const out: number[] = []
+  for (let i = 0; i < flags.length; i += 1) if (!flags[i]) out.push(i)
+  return out
+})
 const renderedCount = ref(120)
 let renderGeneration = 0
 let renderTimer: ReturnType<typeof setTimeout> | null = null
@@ -395,19 +418,23 @@ const {
 const plainDecoratedParas = computed(() => paras.value.map((text) => decorateText(text, '', [])))
 // 只算「已渲染」的那一段前缀：分批渲染下可见段最多 renderedCount 段，
 // 对整章（可能上万段）做 map 会在每次滚动/标记变更时白算大半个章节。
+// 净化只从这一段原始下标前缀里挑出要显示的段，下标本身保持原文坐标。
 const renderedParas = computed(() => {
   const count = Math.min(renderedCount.value, paras.value.length)
   const q = searchQuery.value.trim()
   const searchingNow = showSearch.value && !!q
   const highlights = currentHighlightRanges.value
-  if (!searchingNow && highlights.length === 0) return plainDecoratedParas.value.slice(0, count)
+  const indexes = visibleParaIndexes.value.filter((index) => index < count)
+  if (!searchingNow && highlights.length === 0) {
+    return indexes.map((index) => ({ index, segs: plainDecoratedParas.value[index]! }))
+  }
   const starts = paraNormStarts.value
   const large = paras.value.length > 2000
-  const out: ReturnType<typeof decorateText>[] = []
-  for (let i = 0; i < count; i += 1) {
+  const out: Array<{ index: number; segs: ReturnType<typeof decorateText> }> = []
+  for (const i of indexes) {
     const text = paras.value[i]!
     if (searchingNow && large && Math.abs(i - searchHighlightCenter.value) > 80) {
-      out.push(plainDecoratedParas.value[i]!)
+      out.push({ index: i, segs: plainDecoratedParas.value[i]! })
       continue
     }
     const base = starts[i] ?? 0
@@ -415,11 +442,13 @@ const renderedParas = computed(() => {
       searchingNow && q
         ? []
         : highlights.map((a) => ({ start: a.start - base, end: a.end - base }))
-    out.push(decorateText(text, searchingNow ? q : '', localHl))
+    out.push({ index: i, segs: decorateText(text, searchingNow ? q : '', localHl) })
   }
   return out
 })
 const visibleParas = computed(() => renderedParas.value)
+/** 排版提示用：已渲染前缀里真正显示出来的段数（净化掉的不计入）。 */
+const renderedVisibleCount = computed(() => renderedParas.value.length)
 
 /** 把渲染层选区换算成规范化正文里的字符区间 */
 
@@ -1116,6 +1145,8 @@ async function loadBook(bookId: string) {
   assistantBudgets.value = {}
   // 换书也是一次「进入阅读页」：新书不能沿用上一本展开着的工具层。
   if (book.value?.id !== bookId) collapseToolsForEntry()
+  // 重开书不继承「本章显示原文」：只看净化开关。
+  showRawThisChapter.value = false
   const epoch = ++navEpoch
   ttsStop()
   ttsSavedPosition.value = null
@@ -1202,6 +1233,8 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
   chapterPrefetch.beginNavigation()
   closeSelectionTools()
   ttsStop(continueListening)
+  // 「本章显示原文」只活在当前章内存里：任何一次 openChapter（换章、续章、重开书）都回到净化状态。
+  showRawThisChapter.value = false
   const progressSave = currentChapter.value && currentChapter.value.id !== ch.id
     ? readerProgress.writeNow().then((outcome) => {
       if (outcome !== 'failed') return true
@@ -1462,7 +1495,10 @@ function updateViewportFocusAnchor() {
     if (node.offsetTop + node.offsetHeight / 2 < viewportCenter) low = middle + 1
     else high = middle
   }
-  viewportCenterPara.value = nodes.length ? Math.min(low, nodes.length - 1) : -1
+  // 净化后 DOM 序号不等于段落下标：一律回读 data-p，保持「原始段落坐标」。
+  const node = nodes[Math.min(low, nodes.length - 1)]
+  const index = node ? Number(node.dataset.p) : Number.NaN
+  viewportCenterPara.value = Number.isSafeInteger(index) && index >= 0 ? index : -1
 }
 
 function onScroll() {
@@ -1740,6 +1776,9 @@ function restoreDefaultReaderPrefs() {
   autoScrollSpeed.value = DEFAULT_READER_PREFS.autoScrollSpeed ?? 3
   autoNextChapter.value = DEFAULT_READER_PREFS.autoNextChapter === true
   dim.value = DEFAULT_READER_PREFS.dim ?? 0
+  // 净化默认开启；「本章显示原文」是临时态，恢复默认就回到净化。
+  hideSiteTail.value = true
+  showRawThisChapter.value = false
   message.success('已恢复默认阅读设置')
 }
 
@@ -2360,12 +2399,12 @@ onUnmounted(() => {
               </n-button>
             </n-space>
             <p
-              v-for="(segs, i) in visibleParas"
+              v-for="{ index: i, segs } in visibleParas"
               :key="i"
               :data-p="i"
               :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: paras.length }) }]"
             ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
-            <div v-if="renderedCount < paras.length" class="loading-hint" role="status">正在排版：{{ renderedCount }} / {{ paras.length }} 段</div>
+            <div v-if="renderedCount < paras.length" class="loading-hint" role="status">正在排版：{{ renderedVisibleCount }} / {{ paras.length }} 段</div>
             <button v-else-if="chapterReady && followingChapter" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
             <div v-else-if="chapterReady && currentChapterIndex === chapters.length - 1" class="chapter-end-card finished">
               <strong>已读完《{{ book.title }}》</strong>
@@ -2426,6 +2465,11 @@ onUnmounted(() => {
               <div class="control-label">滚屏速度 {{ autoScrollSpeed }}</div>
               <n-slider v-model:value="autoScrollSpeed" :min="1" :max="5" :step="1" />
               <div class="control-label"><n-switch v-model:value="autoNextChapter" /> 滚到章末自动接下一章</div>
+              <div class="control-label"><n-switch v-model:value="hideSiteTail" /> 净化（整段站点尾巴不显示）</div>
+              <div class="control-label">
+                <n-switch v-model:value="showRawThisChapter" :disabled="!hideSiteTail" /> 本章显示原文
+              </div>
+              <div class="control-label">只影响当前章，换章或重开书恢复净化</div>
               <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
             </template>
           </div>

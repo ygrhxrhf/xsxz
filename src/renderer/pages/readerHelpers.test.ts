@@ -27,6 +27,85 @@ import {
   scrollTopFromRatio,
   wheelPageDirection,
 } from './readerHelpers'
+import {
+  isSiteTailParagraph,
+  matchSiteTailRule,
+  normalizeTailText,
+  visibleParagraphIndexes,
+} from './readerTail'
+
+/** 覆盖 scheme「内置整段规则」R1–R5 与反例（U1.4 渲染层整段尾巴净化）。 */
+describe('readerTail 内置整段尾巴规则', () => {
+  it('R1 整段同时含「请收藏」与「本站」时整段不渲染', () => {
+    expect(matchSiteTailRule('请收藏本站，下次不迷路')).toBe('R1')
+    expect(isSiteTailParagraph('请收藏本站，下次不迷路')).toBe(true)
+  })
+
+  it('R2 整段同时含「请收藏」与「网址」时整段不渲染', () => {
+    expect(matchSiteTailRule('请收藏我们的网址，随时续读')).toBe('R2')
+    expect(isSiteTailParagraph('请收藏我们的网址，随时续读')).toBe(true)
+  })
+
+  it('R3 整段同时含「请收藏」与「地址」时整段不渲染', () => {
+    expect(matchSiteTailRule('请收藏我们的地址，方便下次访问')).toBe('R3')
+    expect(isSiteTailParagraph('请收藏我们的地址，方便下次访问')).toBe(true)
+  })
+
+  it('R4 以「最新网址」「最新地址」「手机用户请」「本章未完」之一开头时整段不渲染', () => {
+    expect(matchSiteTailRule('最新网址：xsxz.example')).toBe('R4')
+    expect(matchSiteTailRule('最新地址：xsxz.example')).toBe('R4')
+    expect(matchSiteTailRule('手机用户请使用浏览器打开')).toBe('R4')
+    expect(matchSiteTailRule('本章未完，点击下一页继续阅读')).toBe('R4')
+  })
+
+  it('R5 整段是纯网址或 www 开头时整段不渲染', () => {
+    expect(matchSiteTailRule('https://xsxz.example/book/1')).toBe('R5')
+    expect(matchSiteTailRule('http://xsxz.example')).toBe('R5')
+    expect(matchSiteTailRule('www.xsxz.example')).toBe('R5')
+  })
+
+  it('叙述段「请收藏这封信」不命中任何规则，仍然渲染', () => {
+    const narration = '请收藏这封信'
+    expect(matchSiteTailRule(narration)).toBeNull()
+    expect(isSiteTailParagraph(narration)).toBe(false)
+    expect(visibleParagraphIndexes(['正文一。', narration, '正文二。'], { hideTail: true })).toEqual([0, 1, 2])
+  })
+
+  it('判断前删除段内全部 Unicode 空白再整段判断', () => {
+    expect(normalizeTailText('  请 收藏\t本 站\n')).toBe('请收藏本站')
+    expect(matchSiteTailRule('请  收藏\u3000本站')).toBe('R1')
+    expect(matchSiteTailRule('  HTTP://XSXZ.EXAMPLE  ')).toBe('R5')
+  })
+
+  it('同一段里两句分别带「请收藏」和「本站」且中间无空行，算命中 R1', () => {
+    expect(matchSiteTailRule('记得请收藏。本站每天更新')).toBe('R1')
+  })
+
+  it('不含两个关键词、不以 R4 开头、不是纯网址的段不隐藏', () => {
+    expect(isSiteTailParagraph('他合上本站的旧书，走进雨里。')).toBe(false)
+    expect(isSiteTailParagraph('这是最新网址吗？她问道。')).toBe(false)
+    expect(isSiteTailParagraph('详见 https://xsxz.example/book/1 这一章')).toBe(false)
+    expect(isSiteTailParagraph('')).toBe(false)
+  })
+
+  it('过滤只去掉命中段的元素，保留下标仍是原始段落索引', () => {
+    const paragraphs = [
+      '正文一。',
+      '请收藏本站，下次不迷路',
+      '正文二。',
+      'www.xsxz.example',
+      '正文三。',
+      '最新网址：xsxz.example',
+    ]
+    expect(visibleParagraphIndexes(paragraphs, { hideTail: true })).toEqual([0, 2, 4])
+    expect(visibleParagraphIndexes(paragraphs).length).toBe(3)
+    expect(paragraphs[2]).toBe('正文二。')
+  })
+
+  it('关掉净化时返回全部原始下标，原文段一个不少', () => {
+    expect(visibleParagraphIndexes(['正文一。', '请收藏本站', '正文二。'], { hideTail: false })).toEqual([0, 1, 2])
+  })
+})
 
 describe('reader progress helpers', () => {
   const chapters = [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }]
