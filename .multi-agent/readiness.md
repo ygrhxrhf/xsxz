@@ -6,7 +6,7 @@
 |---|---|
 | 战役 ID | quiet-reading-20261023 |
 | 目标修订 | 1 |
-| 默认分支 HEAD | 68c0455e463b3a645af7c4f8a1a9ed7f01a7d47c |
+| 默认分支 HEAD | 1d46396a90186f528fc8749790f2a668d8861a41 |
 | 对照日期 | 2026-10-23 |
 | 结果 | PASS |
 | 处置 | 专家组从 U1.1 开工。样板已确认，不暂停等代表页 |
@@ -17,7 +17,7 @@
 | 2 | 当前切片验收标准可观察 | PASS | scheme 真实操作验收 OP-13、OP-14，对应 U1.6；另有缺省 true、旧文件缺字段补 true、两开关方向断言 |
 | 3 | 验证命令来自仓库且可执行 | PASS | package.json：`npm run build`、`npm test`。U1.6 验证列 build,contract |
 | 4 | worktree、回滚与集成策略明确 | PASS | decision-log：业务只在 worktree；ff-only 合入；用户已授权完成后推送。失败处置在 scheme。worktree `.dsh/worktrees/session-<短ID>` |
-| 5 | 目标修订和默认分支 HEAD 已核对 | PASS | 目标修订 1。本地 HEAD 68c0455e463b3a645af7c4f8a1a9ed7f01a7d47c，与 git rev-parse HEAD 一致；与最后一个产品提交 2e7db64 之间只有 docs 提交，非 .multi-agent/ 路径计数为 0。全部切片 done；FINAL-verify.md：build 0、test 0（136 文件 1289 用例）、e2e 11/11、typecheck 0；OP-13 与 OP-14 由 U1.6-op-1 画面证据确认。远端 origin/master da60097 含 5 个本地未有的提交（e8c34da、0ee14e6、ff38d38 三个产品修复加两个 docs），push 被非快进拒绝，已停手交用户决定整合方式 |
+| 5 | 目标修订和默认分支 HEAD 已核对 | PASS | 目标修订 1。HEAD 1d46396a90186f528fc8749790f2a668d8861a41，与 git rev-parse HEAD 一致。已用 git merge --no-ff 把远端 origin/master（da60097）的 5 个提交并入，合并提交 bf545af；merge-tree 预演与实做均只有 .multi-agent/HANDOFF.md 一个账本冲突，产品代码零冲突，两侧记录都保留。合并后 npm run build 退出码 0、npm test 退出码 0（136 文件 1291 用例）。全部切片 done；OP-1 至 OP-14 均有本战役画面证据。合并引入远端 library/mirror/download 改动，合入后 e2e 待复跑 |
 | 6 | 未决假设有 owner、验证时点和失败处置 | PASS | 无未决产品假设。挑刺已核销，见 sweep.md「挑刺复核：通过」。实现者说明：关闭「工具一直显示」只记偏好、不立刻收起顶栏（避免抢走正开着的字体面板），收起发生在下次进入与 Esc；该取舍已由实现按 scheme 落定，OP-14 只要求开启后重启仍在 |
 | 7 | 跨模块接口和依赖已识别，或明确不适用 | PASS | 本刀即契约补丁：types.ts 加两可选布尔、settings.ts 归一补齐。不改 preload、不改 IPC 名、不改其他设置项。无 native 模块、无新依赖 |
 | 8 | 数据与兼容策略明确，或明确不碰数据 | PASS | 旧 settings.json 缺两字段按 true 补齐，已由 settings.readerPrefs.test.ts 锁定；不改章节 json、annotations、tts-position、reading-frontier、书库格式 |
@@ -61,3 +61,6 @@
 
 
 - HEAD 已变化为 68c0455e463b3a645af7c4f8a1a9ed7f01a7d47c。门禁已把结果标为 PENDING。复核受影响行之后才能再派工。
+
+
+- HEAD 已变化为 8ea7a833c74e447fa5d817e18308fc5fb7d2f23a。门禁已把结果标为 PENDING。复核受影响行之后才能再派工。
