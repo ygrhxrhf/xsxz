@@ -264,6 +264,16 @@ export function shouldForceToolsForDownload(
 }
 
 /**
+ * 偏好「工具一直显示」是否打开。字段语义是反义：hideReaderChrome 为 false 才表示常显；
+ * 缺字段按缺省 true（收起）。
+ */
+export function shouldRevealToolsForPreference(
+  hideReaderChrome: boolean | null | undefined,
+): boolean {
+  return hideReaderChrome === false
+}
+
+/**
  * 下载由 running 转为其他状态（done / error / cancelled）的那一次变化。
  * 只有「曾经在跑、现在停了」才成立；本来就没在跑不算结束，避免每次进度事件都收起。
  */

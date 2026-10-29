@@ -341,7 +341,7 @@ describe('Reader U1.4 渲染层整段尾巴净化', () => {
     expect(source).toContain('<n-switch v-model:value="hideSiteTail" /> 净化')
     expect(source).toContain('<n-switch v-model:value="showRawThisChapter"')
     // 默认开启净化；原文开关是内存 ref，不进 currentReaderPrefs（不落盘）。
-    expect(source).toContain('const hideSiteTail = ref(true)')
+    expect(source).toContain('const hideSiteTail = ref(DEFAULT_READER_PREFS.hideSiteTail ?? true)')
     expect(source).toContain('const showRawThisChapter = ref(false)')
     const prefs = source.slice(source.indexOf('function currentReaderPrefs'), source.indexOf('async function saveReaderPrefsSnapshot'))
     expect(prefs).not.toContain('showRawThisChapter')
@@ -428,5 +428,81 @@ describe('Reader U1.5 下载运行时自动露出顶栏', () => {
     await nextTick()
     expect(toolbarHidden()).toBe(false)
     app.unmount()
+  })
+})
+
+describe('Reader U1.6 净化与工具常显两个持久开关', () => {
+  /** 用带尾巴的正文，并按需要覆盖 settings.reader 的两个新字段。 */
+  function installPrefsApi(reader: Record<string, unknown>) {
+    installReaderApi()
+    const api = (window as unknown as { api: Record<string, Record<string, unknown>> }).api
+    api.library!.readChapter = async () => ({
+      chapter: { title: '第一章', body: '第一段正文。\n\n请收藏本站，下次不迷路。', status: 'ready' },
+    })
+    const baseGet = api.settings!.get as () => Promise<Record<string, unknown>>
+    api.settings!.get = async () => {
+      const snapshot = await baseGet()
+      return { ...snapshot, reader: { ...(snapshot.reader as Record<string, unknown>), ...reader } }
+    }
+  }
+
+  async function mountReader() {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp({ render: () => h(NMessageProvider, null, { default: () => h(Reader, { bookId: 'book-1' }) }) })
+    app.mount(host)
+    await nextTick(); await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    return app
+  }
+
+  const toolbarHidden = () => document.querySelector('.reader-toolbar')?.classList.contains('reader-tools-hidden') ?? null
+
+  it('净化开着（hideSiteTail=true）整段尾巴不渲染，缺字段等于开着', async () => {
+    installPrefsApi({ hideSiteTail: true })
+    const app = await mountReader()
+    const text = document.querySelector('.reader-content')?.textContent ?? ''
+    expect(text).toContain('第一段正文。')
+    expect(text).not.toContain('请收藏本站')
+    app.unmount()
+  })
+
+  it('净化关掉（hideSiteTail=false，落盘值读回）整段尾巴照原文显示', async () => {
+    installPrefsApi({ hideSiteTail: false })
+    const app = await mountReader()
+    const text = document.querySelector('.reader-content')?.textContent ?? ''
+    expect(text).toContain('第一段正文。')
+    expect(text).toContain('请收藏本站')
+    app.unmount()
+  })
+
+  it('旧设置缺两个字段时按缺省 true：净化开、顶栏收起', async () => {
+    installPrefsApi({})
+    const app = await mountReader()
+    const text = document.querySelector('.reader-content')?.textContent ?? ''
+    expect(text).not.toContain('请收藏本站')
+    expect(toolbarHidden()).toBe(true)
+    app.unmount()
+  })
+
+  it('工具一直显示（hideReaderChrome=false）进页面顶栏就常驻可见', async () => {
+    installPrefsApi({ hideReaderChrome: false })
+    const app = await mountReader()
+    expect(toolbarHidden()).toBe(false)
+    expect(document.querySelector('.reader-toolbar')?.getAttribute('aria-hidden')).toBe('false')
+    // 常显仍可手动收起（点中区），不是把开关做成不可逆。
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+    expect(toolbarHidden()).toBe(true)
+    app.unmount()
+  })
+
+  it('下载 running 的露出优先于「工具收起」缺省，两条规则都在源码里', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    const collapse = source.slice(source.indexOf('function collapseToolsForEntry'), source.indexOf('function currentDownloadSignal'))
+    expect(collapse).toContain('revealToolsForDownload()')
+    expect(collapse).toContain('revealToolsForPreference()')
+    expect(collapse.indexOf('revealToolsForDownload()')).toBeLessThan(collapse.indexOf('revealToolsForPreference()'))
+    // 保存失败沿用既有句子，不新增、不阻断翻页。
+    expect(source).toContain('阅读设置保存失败，重启后可能无法保留。')
   })
 })

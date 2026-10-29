@@ -219,6 +219,12 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
     autoScrollSpeed: Math.round(readFiniteClamped(reader.autoScrollSpeed, 1, 5, DEFAULT_READER_PREFS.autoScrollSpeed!)),
     autoNextChapter: typeof reader.autoNextChapter === 'boolean' ? reader.autoNextChapter : DEFAULT_READER_PREFS.autoNextChapter!,
     dim: Math.round(readFiniteClamped(reader.dim, 0, 70, DEFAULT_READER_PREFS.dim!)),
+    hideSiteTail:
+      typeof reader.hideSiteTail === 'boolean' ? reader.hideSiteTail : DEFAULT_READER_PREFS.hideSiteTail!,
+    hideReaderChrome:
+      typeof reader.hideReaderChrome === 'boolean'
+        ? reader.hideReaderChrome
+        : DEFAULT_READER_PREFS.hideReaderChrome!,
   }
 }
 

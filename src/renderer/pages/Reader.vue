@@ -56,6 +56,7 @@ import {
   shouldResetReaderToolsOnEntry,
   isCurrentBookDownloading,
   shouldForceToolsForDownload,
+  shouldRevealToolsForPreference,
   resolveDownloadToolsPolicy,
 } from './readerHelpers'
 import type { ReaderDownloadSignal as DownloadSignal, ReaderImmersiveMode, ReaderDownloadToolsIntent } from './readerHelpers'
@@ -144,8 +145,14 @@ const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
 const autoScrollSpeed = ref(DEFAULT_READER_PREFS.autoScrollSpeed ?? 3)
 const autoNextChapter = ref(DEFAULT_READER_PREFS.autoNextChapter === true)
 const dim = ref(DEFAULT_READER_PREFS.dim ?? 0)
-// 渲染层整段净化：默认开启（偏好字段 U1.6 接入 settings）。
-const hideSiteTail = ref(true)
+// 渲染层整段净化（字体面板「净化」）接持久偏好 hideSiteTail，缺字段按缺省 true。
+const hideSiteTail = ref(DEFAULT_READER_PREFS.hideSiteTail ?? true)
+// 「工具一直显示」是持久偏好 hideReaderChrome 的反义：hideReaderChrome=false 才常显。
+const hideReaderChrome = ref(DEFAULT_READER_PREFS.hideReaderChrome ?? true)
+const alwaysShowTools = computed({
+  get: () => hideReaderChrome.value === false,
+  set: (value: boolean) => { hideReaderChrome.value = value !== true },
+})
 // 「本章显示原文」只是内存态，换章/重开书即恢复净化，绝不落盘。
 const showRawThisChapter = ref(false)
 const viewportCenterPara = ref(-1)
@@ -655,6 +662,8 @@ function collapseToolsForEntry() {
   clearToolHideTimer()
   downloadToolsIntent.value = 'untouched'
   revealToolsForDownload()
+  // 下载 running 优先；没在下载时才按「工具一直显示」偏好把顶栏留在屏幕上。
+  revealToolsForPreference()
 }
 
 /** 当前下载状态里顶栏关心的两个字段，供纯函数判定。 */
@@ -668,6 +677,15 @@ function currentDownloadSignal(): { status: string; bookId: string } | null {
 function revealToolsForDownload() {
   if (!shouldForceToolsForDownload(downloadProgress.value, book.value?.id)) return
   if (downloadToolsIntent.value === 'collapsed') return
+  toolsVisible.value = true
+  temporaryToolReveal.value = false
+  lastToolActivityAt = Date.now()
+  clearToolHideTimer()
+}
+
+/** 偏好「工具一直显示」打开时，进页面与下载结束都按偏好把顶栏留在屏幕上。 */
+function revealToolsForPreference() {
+  if (!shouldRevealToolsForPreference(hideReaderChrome.value)) return
   toolsVisible.value = true
   temporaryToolReveal.value = false
   lastToolActivityAt = Date.now()
@@ -1781,6 +1799,8 @@ function currentReaderPrefs(): ReaderPrefs {
     autoScrollSpeed: autoScrollSpeed.value,
     autoNextChapter: autoNextChapter.value,
     dim: dim.value,
+    hideSiteTail: hideSiteTail.value,
+    hideReaderChrome: hideReaderChrome.value,
   }
 }
 
@@ -1833,9 +1853,16 @@ function restoreDefaultReaderPrefs() {
   autoScrollSpeed.value = DEFAULT_READER_PREFS.autoScrollSpeed ?? 3
   autoNextChapter.value = DEFAULT_READER_PREFS.autoNextChapter === true
   dim.value = DEFAULT_READER_PREFS.dim ?? 0
-  // 净化默认开启；「本章显示原文」是临时态，恢复默认就回到净化。
-  hideSiteTail.value = true
+  // 净化与「工具一直显示」同样回到缺省（净化开、工具收起）；「本章显示原文」是临时态。
+  hideSiteTail.value = DEFAULT_READER_PREFS.hideSiteTail ?? true
+  hideReaderChrome.value = DEFAULT_READER_PREFS.hideReaderChrome ?? true
   showRawThisChapter.value = false
+  // 顶栏只按两条露出规则重算：下载 running 优先，恢复默认不丢「已下 x / y 章」与「取消」。
+  toolsVisible.value = false
+  temporaryToolReveal.value = false
+  clearToolHideTimer()
+  revealToolsForDownload()
+  revealToolsForPreference()
   message.success('已恢复默认阅读设置')
 }
 
@@ -1853,6 +1880,9 @@ async function loadPrefs() {
   autoScrollSpeed.value = s.reader.autoScrollSpeed ?? 3
   autoNextChapter.value = s.reader.autoNextChapter === true
   dim.value = s.reader.dim ?? 0
+  // 旧设置文件缺这两项时按缺省 true（净化开、工具收起）。
+  hideSiteTail.value = s.reader.hideSiteTail ?? DEFAULT_READER_PREFS.hideSiteTail ?? true
+  hideReaderChrome.value = s.reader.hideReaderChrome ?? DEFAULT_READER_PREFS.hideReaderChrome ?? true
   ttsRate.value = clampTtsRate(s.tts?.rate ?? 1)
   ttsAutoNext.value = s.tts?.autoNextChapter ?? true
   ttsSource.value = s.tts?.source === 'online' ? 'online' : 'system'
@@ -2111,13 +2141,18 @@ const {
 } = assistant
 
 watch(
-  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, autoScrollSpeed, autoNextChapter, dim],
+  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()
     void nextTick(() => snapToVisualPage())
   },
 )
+// 打开「工具一直显示」立刻留住顶栏；关掉只记偏好，默认收起留给下一次进入与 Esc，
+// 避免把用户此刻正开着的字体面板抢走。下载 running 的露出优先，不受这条影响。
+watch(hideReaderChrome, (next, prev) => {
+  if (prev === true && next === false) revealToolsForPreference()
+})
 
 watch([ttsRate, ttsAutoNext, ttsSource, ttsVoiceURI], () => {
   if (!prefsReady.value) return
@@ -2525,11 +2560,12 @@ onUnmounted(() => {
               <div class="control-label">滚屏速度 {{ autoScrollSpeed }}</div>
               <n-slider v-model:value="autoScrollSpeed" :min="1" :max="5" :step="1" />
               <div class="control-label"><n-switch v-model:value="autoNextChapter" /> 滚到章末自动接下一章</div>
-              <div class="control-label"><n-switch v-model:value="hideSiteTail" /> 净化（整段站点尾巴不显示）</div>
+              <div class="control-label"><n-switch v-model:value="hideSiteTail" /> 净化</div>
               <div class="control-label">
                 <n-switch v-model:value="showRawThisChapter" :disabled="!hideSiteTail" /> 本章显示原文
               </div>
               <div class="control-label">只影响当前章，换章或重开书恢复净化</div>
+              <div class="control-label"><n-switch v-model:value="alwaysShowTools" /> 工具一直显示</div>
               <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
             </template>
           </div>

@@ -552,6 +552,10 @@ export interface ReaderPrefs {
   autoNextChapter?: boolean
   /** 护眼压暗：正文区叠一层黑色遮罩的不透明度百分比，0–70（越界夹紧）；0 = 关，缺省按 DEFAULT_READER_PREFS。 */
   dim?: number
+  /** 渲染层净化整段站点尾巴（字体面板「净化」）；缺省 true，旧文件缺字段等于 true。 */
+  hideSiteTail?: boolean
+  /** 是否默认收起顶栏与右侧胶囊（字体面板「工具一直显示」的反义）；缺省 true，旧文件缺字段等于 true。 */
+  hideReaderChrome?: boolean
 }
 
 /** 网页阅读模式（内置浏览器的阅读模式）偏好；与本地阅读器 ReaderPrefs 分开。 */
@@ -1043,6 +1047,8 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   autoScrollSpeed: 3,
   autoNextChapter: false,
   dim: 0,
+  hideSiteTail: true,
+  hideReaderChrome: true,
 }
 
 export const DEFAULT_WEB_READING_PREFS: WebReadingPrefs = {

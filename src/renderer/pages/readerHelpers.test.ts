@@ -29,6 +29,7 @@ import {
   isCurrentBookDownloading,
   isDownloadJustSettled,
   resolveDownloadToolsPolicy,
+  shouldRevealToolsForPreference,
   scrollTopFromRatio,
   wheelPageDirection,
 } from './readerHelpers'
@@ -268,6 +269,41 @@ describe('reader download tools policy', () => {
     expect(source).toContain('data-reader-dl="progress"')
     expect(source).toContain('data-reader-dl="cancel"')
     expect(source).toContain('已下 {{ downloadProgress!.done }} / {{ downloadProgress!.total }} 章')
+  })
+})
+
+/** U1.6：字体面板「净化」与「工具一直显示」两个开关的语义方向。 */
+describe('reader prefs switches (hideSiteTail / hideReaderChrome)', () => {
+  it('工具一直显示只由 hideReaderChrome === false 成立，缺字段按收起', () => {
+    expect(shouldRevealToolsForPreference(false)).toBe(true)
+    expect(shouldRevealToolsForPreference(true)).toBe(false)
+    expect(shouldRevealToolsForPreference(undefined)).toBe(false)
+    expect(shouldRevealToolsForPreference(null)).toBe(false)
+  })
+
+  it('净化开关直连 hideSiteTail：开着净化才藏整段尾巴', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    // 净化 = hideSiteTail 正向：true 才净；关掉即整段显示。
+    expect(source).toContain('const tailPurgeOffForChapter = computed(() => !hideSiteTail.value || showRawThisChapter.value)')
+    // 两开关文案严格用 COPY-1 / COPY-3，方向不写反。
+    expect(source).toContain('<n-switch v-model:value="hideSiteTail" /> 净化')
+    expect(source).toContain('<n-switch v-model:value="alwaysShowTools" /> 工具一直显示')
+    // 「工具一直显示」是反义字段：开 = hideReaderChrome false。
+    expect(source).toContain('get: () => hideReaderChrome.value === false')
+    expect(source).toContain('set: (value: boolean) => { hideReaderChrome.value = value !== true }')
+    // 两个字段都进持久偏好快照，读回时缺字段按缺省 true。
+    const prefs = source.slice(source.indexOf('function currentReaderPrefs'), source.indexOf('async function saveReaderPrefsSnapshot'))
+    expect(prefs).toContain('hideSiteTail: hideSiteTail.value')
+    expect(prefs).toContain('hideReaderChrome: hideReaderChrome.value')
+    expect(source).toContain('hideSiteTail.value = s.reader.hideSiteTail ?? DEFAULT_READER_PREFS.hideSiteTail ?? true')
+    expect(source).toContain('hideReaderChrome.value = s.reader.hideReaderChrome ?? DEFAULT_READER_PREFS.hideReaderChrome ?? true')
+    // 进页面先让下载 running 露出，再让偏好常显生效；running 优先。
+    const collapse = source.slice(source.indexOf('function collapseToolsForEntry'), source.indexOf('function currentDownloadSignal'))
+    expect(collapse.indexOf('revealToolsForDownload()')).toBeLessThan(collapse.indexOf('revealToolsForPreference()'))
+    // 「本章显示原文」仍是内存态，不因这次接线进设置。
+    expect(prefs).not.toContain('showRawThisChapter')
+    // 正文仍纯文本渲染。
+    expect(source).not.toContain('v-html')
   })
 })
 
