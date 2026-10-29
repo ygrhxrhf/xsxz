@@ -1,0 +1,81 @@
+{
+  "entry": {
+    "top": 0,
+    "h": 690,
+    "sh": 218594
+  },
+  "screenFlips": [
+    {
+      "beforeTop": 0,
+      "afterTop": 671.2,
+      "delta": 671.2,
+      "cutPara": 12,
+      "cutBottomFromTop": 33.9,
+      "fits": true,
+      "firstVisible": 12
+    },
+    {
+      "beforeTop": 671.2,
+      "afterTop": 1355.2,
+      "delta": 684,
+      "cutPara": 28,
+      "cutBottomFromTop": 33.8,
+      "fits": true,
+      "firstVisible": 28
+    },
+    {
+      "beforeTop": 1355.2,
+      "afterTop": 2039.2,
+      "delta": 684,
+      "cutPara": 44,
+      "cutBottomFromTop": 33.6,
+      "fits": true,
+      "firstVisible": 44
+    }
+  ],
+  "beforeHome": {
+    "top": 2039.2,
+    "h": 690,
+    "sh": 216587
+  },
+  "afterHome": {
+    "top": 799.2,
+    "h": 690,
+    "sh": 216587
+  },
+  "afterEnd": {
+    "top": 198712,
+    "h": 690,
+    "sh": 199402
+  },
+  "afterPageUp": {
+    "top": 197802.4,
+    "h": 690,
+    "sh": 198816
+  },
+  "panelAfterModeSwitch": {
+    "panel": false,
+    "op": null
+  },
+  "scrollMode": {
+    "c0": {
+      "top": 197802.4,
+      "h": 690,
+      "sh": 198816
+    },
+    "c1": {
+      "top": 198126.4,
+      "h": 690,
+      "sh": 198816
+    },
+    "c2": {
+      "top": 198126.4,
+      "h": 690,
+      "sh": 198816
+    },
+    "step1": 324,
+    "step2": 0,
+    "expected": 621
+  },
+  "appOutTail": "\r\n\r\nDevTools listening on ws://127.0.0.1:38400/devtools/browser/0bf8d506-a02d-44d4-8314-9a23d70f158f\r\n"
+}

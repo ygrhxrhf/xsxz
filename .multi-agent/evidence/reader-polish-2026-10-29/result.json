@@ -1,0 +1,596 @@
+{
+  "results": [
+    {
+      "path": "入口与默认收起",
+      "status": "ok",
+      "summary": "进入《长目录测试书》第 200 章，顶栏/底栏默认收起=true",
+      "entry": {
+        "title": "第 200 章 章节 200",
+        "toolbarHidden": true,
+        "bottombarHidden": true,
+        "at": 1203.199951171875,
+        "mode": []
+      },
+      "evidence": [
+        "01-reader-entry.png"
+      ]
+    },
+    {
+      "path": "正文中区唤出工具",
+      "status": "ok",
+      "summary": "点中区后顶栏=true，底栏=true",
+      "evidence": [
+        "02-tools-revealed.png"
+      ]
+    },
+    {
+      "path": "连续滚动 PageDown 不吸附",
+      "status": "issue",
+      "summary": "PageDown 前进 0% 屏高，800ms 后是否又动了=false",
+      "cont": {
+        "beforeScroll": {
+          "top": 1203.199951171875,
+          "h": 690,
+          "sh": 6707
+        },
+        "afterScroll": {
+          "top": 1203.199951171875,
+          "h": 690,
+          "sh": 6707
+        },
+        "stableScroll": {
+          "top": 1203.199951171875,
+          "h": 690,
+          "sh": 6707
+        },
+        "delta": 0,
+        "ratio": 0,
+        "snapped": false,
+        "modes": [
+          "宋体阅读",
+          "中",
+          "标准",
+          "关",
+          "连续滚动"
+        ]
+      },
+      "evidence": [
+        "03-scroll-pagedown.png"
+      ]
+    },
+    {
+      "path": "Home/End 到章首章末",
+      "status": "issue",
+      "summary": "End 到底=false，Home 回顶 scrollTop=1388.800048828125",
+      "beforeEnd": {
+        "top": 1388.800048828125,
+        "h": 690,
+        "sh": 6707
+      },
+      "afterEnd": {
+        "top": 1388.800048828125,
+        "h": 690,
+        "sh": 6707
+      },
+      "afterHome": {
+        "top": 1388.800048828125,
+        "h": 690,
+        "sh": 6707
+      }
+    },
+    {
+      "path": "屏幕翻页段落吸附（5 次连续翻页）",
+      "status": "issue",
+      "summary": "5 次翻页中 5 次未对齐段首或切断段未完整显示",
+      "flips": [
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        },
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        },
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        },
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        },
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        }
+      ],
+      "badFlips": [
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        },
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        },
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        },
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        },
+        {
+          "beforeTop": 0,
+          "expected": 679,
+          "afterTop": 0,
+          "straddlePara": 5,
+          "firstVisiblePara": 0,
+          "straddleFullyVisible": false,
+          "beforeIdx": 0,
+          "aligned": false
+        }
+      ],
+      "modes": [
+        "宋体阅读",
+        "中",
+        "标准",
+        "关",
+        "屏幕翻页"
+      ],
+      "evidence": [
+        "04-screen-page-snap.png"
+      ]
+    },
+    {
+      "path": "屏幕翻页回翻",
+      "status": "unsure",
+      "summary": "回翻后 scrollTop=594.4000244140625，翻页前=0",
+      "back": {
+        "top": 594.4000244140625,
+        "h": 690,
+        "sh": 6707
+      }
+    },
+    {
+      "path": "进度条拖拽松手跳章且落章首",
+      "status": "ok",
+      "summary": "拖动提示「第 358 章 · 第 358 章 章节 358」，松手到「第 358 章 章节 358」，scrollTop=0",
+      "dragHint": {
+        "hint": "第 358 章 · 第 358 章 章节 358",
+        "preview": "85%"
+      },
+      "jumpTitle": "第 358 章 章节 358",
+      "jumpMetrics": {
+        "top": 0,
+        "h": 690,
+        "sh": 6707
+      },
+      "evidence": [
+        "05-progress-drag-85.png",
+        "06-progress-jump.png"
+      ]
+    },
+    {
+      "path": "拖到失败章停在该章并显示失败说明/重试",
+      "status": "ok",
+      "summary": "提示「第 211 章 · 第 211 章 章节 211」；正文区失败说明「章节地址加载失败」；重试按钮=true",
+      "failUi": {
+        "title": "第 211 章 章节 211",
+        "error": "章节地址加载失败",
+        "hint": "地址加载失败，可稍后重试这一章",
+        "retry": true,
+        "browse": true,
+        "top": 0
+      },
+      "evidence": [
+        "07-failed-chapter.png"
+      ]
+    },
+    {
+      "path": "失败章重试按钮给出可读反馈",
+      "status": "ok",
+      "summary": "2606ms 后提示「HttpStatusError: HTTP 404」",
+      "retryToast": "HttpStatusError: HTTP 404",
+      "elapsedMs": 2606,
+      "evidence": [
+        "07b-failed-chapter-retry-toast.png"
+      ]
+    },
+    {
+      "path": "长目录打开/定位当前章",
+      "status": "ok",
+      "summary": "目录 420 项，当前章「第 211 章 章节 211章节地址加载失败」是否滚到可见=true，打开耗时 147ms",
+      "catInfo": {
+        "count": 420,
+        "currentVisible": true,
+        "currentText": "第 211 章 章节 211章节地址加载失败",
+        "listScroll": 11169.599609375
+      },
+      "evidence": [
+        "08-catalog-open.png"
+      ]
+    },
+    {
+      "path": "长目录过滤与跳转",
+      "status": "ok",
+      "summary": "过滤后 1 项；跳转第 350 章耗时 24ms",
+      "filtered": [
+        "第 350 章 章节 350已读"
+      ],
+      "jumpMs": 24,
+      "evidence": [
+        "09-catalog-filter-jump.png"
+      ]
+    },
+    {
+      "path": "背景面板切夜间即时生效",
+      "status": "ok",
+      "summary": "夜间正文背景 rgb(27, 29, 32)，文字 rgb(216, 210, 199)",
+      "night": {
+        "bodyBg": "rgb(17, 19, 22)",
+        "contentBg": "rgb(27, 29, 32)",
+        "color": "rgb(216, 210, 199)"
+      },
+      "evidence": [
+        "10-night-theme.png"
+      ]
+    },
+    {
+      "path": "字号滑块键盘操作不应误跳章",
+      "status": "ok",
+      "summary": "焦点在 n-slider-handle-wrapper；按 → 前章节「第 350 章 章节 350」，按后「第 350 章 章节 350」，字号标签「字号 19」",
+      "sliderFocus": {
+        "tag": "DIV",
+        "cls": "n-slider-handle-wrapper",
+        "role": "slider",
+        "active": true
+      },
+      "titleBeforeSlider": "第 350 章 章节 350",
+      "afterSlider": {
+        "title": "第 350 章 章节 350",
+        "fontSizeLabel": "字号 19"
+      },
+      "evidence": [
+        "11-slider-arrow-key.png"
+      ]
+    },
+    {
+      "path": "工具收起时 Tab 不应进入不可见工具条",
+      "status": "ok",
+      "summary": "工具收起=true；10 次 Tab 落入隐藏工具条=0",
+      "tabStops": [
+        {
+          "tag": "DIV",
+          "cls": "reader-progress-track",
+          "label": "全书约 83% · 本章 2% · 还剩 70 章",
+          "inHiddenToolbar": false
+        },
+        {
+          "tag": "BUTTON",
+          "cls": "tool-button tool-text",
+          "label": "书架",
+          "inHiddenToolbar": false
+        },
+        {
+          "tag": "BUTTON",
+          "cls": "tool-button tool-icon-text",
+          "label": "搜索",
+          "inHiddenToolbar": false
+        },
+        {
+          "tag": "BUTTON",
+          "cls": "tool-button tool-icon-text",
+          "label": "标记",
+          "inHiddenToolbar": false
+        },
+        {
+          "tag": "BUTTON",
+          "cls": "tool-button tool-icon-text",
+          "label": "朗读",
+          "inHiddenToolbar": false
+        },
+        {
+          "tag": "BUTTON",
+          "cls": "tool-button tool-icon-text",
+          "label": "AI",
+          "inHiddenToolbar": false
+        },
+        {
+          "tag": "BUTTON",
+          "cls": "tool-button tool-text",
+          "label": "设置",
+          "inHiddenToolbar": false
+        },
+        {
+          "tag": "BUTTON",
+          "cls": "tool-button tool-text",
+          "label": "浏览",
+          "inHiddenToolbar": false
+        },
+        {
+          "tag": "BUTTON",
+          "cls": "tool-button tool-button-offstage",
+          "label": "快捷键说明",
+          "inHiddenToolbar": false
+        },
+        {
+          "tag": "BUTTON",
+          "cls": "tool-button",
+          "label": "沉浸模式",
+          "inHiddenToolbar": false
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "path": "选中正文出选区工具条",
+      "status": "ok",
+      "summary": "工具条按钮：复制/划线/备注/翻译/问 AI · 解释这段/这个人物是谁/这件事之前发生了什么",
+      "selInfo": {
+        "text": "段：这是一段用来测量翻屏与吸附边界的正文，长度保持中等，方便计算段落高度。这是一段用来测量翻屏与吸附边界的正文，长度保持中等",
+        "hasParaBtn": true
+      },
+      "popup": {
+        "shown": true,
+        "buttons": [
+          "复制",
+          "划线",
+          "备注",
+          "翻译",
+          "问 AI · 解释这段",
+          "这个人物是谁",
+          "这件事之前发生了什么"
+        ]
+      },
+      "evidence": [
+        "12-selection-popup.png"
+      ]
+    },
+    {
+      "path": "划线落盘并即时渲染",
+      "status": "issue",
+      "summary": "高亮 0→1，annotations.json 条数=n/a，提示「已划线」",
+      "hlAfter": {
+        "marks": 1,
+        "toast": "已划线"
+      },
+      "annFile": {
+        "version": 1,
+        "items": [
+          {
+            "bookId": "d_aaaaaaaaaaaaaaaa",
+            "chapterId": "c0350",
+            "kind": "highlight",
+            "start": 206,
+            "end": 268,
+            "excerpt": "段：这是一段用来测量翻屏与吸附边界的正文，长度保持中等，方便计算段落高度。这是一段用来测量翻屏与吸附边界的正文，长度保持中等",
+            "id": "ad8d3e78-9883-435a-9ca2-9bf3b29409f0",
+            "createdAt": "2026-10-29T08:46:43.188Z"
+          }
+        ]
+      },
+      "evidence": [
+        "13-highlight-applied.png"
+      ]
+    },
+    {
+      "path": "标记抽屉能看到刚写的划线",
+      "status": "ok",
+      "summary": "标记列表 1 行",
+      "marksUi": {
+        "drawer": true,
+        "rows": 1
+      },
+      "evidence": [
+        "14-marks-drawer.png"
+      ]
+    },
+    {
+      "path": "听书播放与段高亮",
+      "status": "ok",
+      "summary": "段高亮=true，状态「本章第 4 / 60 段」",
+      "ttsPanel": {
+        "open": true,
+        "text": "听书\n上一段\n暂停\n下一段\n停止\n本章第 4 / 60 段\n语音来源\n系统语音\n在线语音\n系统音色\n系统默认\nMicrosoft Huihui - Chinese (Simplified, PRC)（zh-CN）\nMicrosoft Kangkang - Chinese (Simplified, PRC)（zh-CN）\nMicrosoft Yaoyao - Chinese (Simplified,",
+        "supported": true
+      },
+      "ttsState": {
+        "speaking": true,
+        "status": "本章第 4 / 60 段",
+        "errors": []
+      },
+      "evidence": [
+        "15-tts-speaking.png"
+      ]
+    },
+    {
+      "path": "听书位置落盘",
+      "status": "issue",
+      "summary": "书目录文件：ai,annotations.json,book.json,chapters,reading-frontier.json,tts-position.json；位置内容 {\n  \"chapterId\": \"c0350\",\n  \"paragraphIndex\": 3,\n  \"bodyHash\": \"705a0517\",\n  \"updatedAt\": \"2026-10-29T08:46:46.824Z\"\n}",
+      "posFile": "tts-position.json",
+      "posRaw": "{\n  \"chapterId\": \"c0350\",\n  \"paragraphIndex\": 3,\n  \"bodyHash\": \"705a0517\",\n  \"updatedAt\": \"2026-10-29T08:46:46.824Z\"\n}"
+    },
+    {
+      "path": "AI 抽屉打开",
+      "status": "ok",
+      "summary": "打开耗时 93ms；未配置 key 时的提示：「AI 助手 / 旧书已读范围待确认 / 旧版只记录到当前章节的进度。确认后，将它之前的章节与本章已到位置纳入 AI 已读范围；不确认时只使用新版实际记录的位置。 / 确认旧进度为已读 / 长目录测试书 / 模型服务：https://api.」",
+      "aiInfo": {
+        "open": true,
+        "text": "AI 助手\n旧书已读范围待确认\n旧版只记录到当前章节的进度。确认后，将它之前的章节与本章已到位置纳入 AI 已读范围；不确认时只使用新版实际记录的位置。\n确认旧进度为已读\n长目录测试书\n模型服务：https://api.deepseek.com\n当前任务：前情\n已读截止：第 350 章 章节 350\n仅包含当前阅读进度以内的内容，不发送未读章节。\n现在可以做什么\n先选任务，再由你决定是否调用模型。\n接着读\n查看已保存前情\n找人物与伏笔\n",
+        "hasGoSettings": false
+      },
+      "aiMs": 93,
+      "evidence": [
+        "16-ai-drawer.png"
+      ]
+    },
+    {
+      "path": "AI 未配置 key 时摘要失败可感知且不卡住",
+      "status": "ok",
+      "summary": "121ms 后提示「读完本章后才能保存完整章节摘要；当前已读部分可使用情节问答」，抽屉内 loading=0",
+      "sumState": {
+        "messages": "读完本章后才能保存完整章节摘要；当前已读部分可使用情节问答",
+        "stage": "",
+        "drawerLoading": 0,
+        "drawerOpen": true
+      }
+    },
+    {
+      "path": "Esc 关闭 AI 抽屉",
+      "status": "issue",
+      "summary": "Esc 后仍存在抽屉 1 个",
+      "aiClosed": 1
+    },
+    {
+      "path": "大章节（2600 段 / 约 6 万字）首屏与全量排版",
+      "status": "issue",
+      "summary": "打开成功=false；首屏段落可见 12049ms；剩余段落全部排版完成 nullms；段落 60；scrollHeight=7063",
+      "largeOpenOk": false,
+      "firstParaSeen": 12049,
+      "allRenderedMs": null,
+      "largeInfo": {
+        "paras": 60,
+        "scrollHeight": 7063,
+        "clientHeight": 690,
+        "largeClass": false,
+        "rendered": ""
+      },
+      "evidence": [
+        "17-large-chapter.png"
+      ]
+    },
+    {
+      "path": "换字体后重开书位置恢复",
+      "status": "ok",
+      "summary": "重开前首段 #24（比例 0.450），重开后 #24（比例 0.450），段落偏差 0",
+      "restoreBefore": {
+        "ratio": 0.45002353679585755,
+        "para": 24,
+        "top": 2868,
+        "font": ""
+      },
+      "restoreAfter": {
+        "ratio": 0.45002353679585755,
+        "para": 24,
+        "top": 2868
+      },
+      "paraDelta": 0,
+      "evidence": [
+        "18-restore-after-font.png"
+      ]
+    },
+    {
+      "path": "下载进行中常显进度与取消",
+      "status": "ok",
+      "summary": "顶栏「已下 1 / 2 章」，取消按钮=true，工具条是否收起=false",
+      "dlChapter": {
+        "title": "第二章 断章",
+        "error": "章节地址加载失败",
+        "retry": true
+      },
+      "dlInfo": {
+        "text": "已下 1 / 2 章",
+        "cancel": true,
+        "toolbarHidden": false
+      },
+      "evidence": [
+        "19-download-book-failed-chapter.png",
+        "20-download-running.png"
+      ]
+    },
+    {
+      "path": "取消下载后进度条消失并回默认收起",
+      "status": "ok",
+      "summary": "875ms 内进度条消失；之后顶栏收起=true",
+      "gone": true,
+      "afterCancel": {
+        "toolbarHidden": true,
+        "progress": false
+      },
+      "evidence": [
+        "21-download-cancelled.png"
+      ]
+    }
+  ],
+  "shots": [
+    "01-reader-entry.png",
+    "02-tools-revealed.png",
+    "03-scroll-pagedown.png",
+    "04-screen-page-snap.png",
+    "05-progress-drag-85.png",
+    "06-progress-jump.png",
+    "07-failed-chapter.png",
+    "07b-failed-chapter-retry-toast.png",
+    "08-catalog-open.png",
+    "09-catalog-filter-jump.png",
+    "10-night-theme.png",
+    "11-slider-arrow-key.png",
+    "12-selection-popup.png",
+    "13-highlight-applied.png",
+    "14-marks-drawer.png",
+    "15-tts-speaking.png",
+    "16-ai-drawer.png",
+    "17-large-chapter.png",
+    "18-restore-after-font.png",
+    "19-download-book-failed-chapter.png",
+    "20-download-running.png",
+    "21-download-cancelled.png"
+  ],
+  "appOutTail": "\r\n\r\nDevTools listening on ws://127.0.0.1:37166/devtools/browser/9d081e68-8430-4815-aa9f-041a8e1ed1c2\r\n自动备份暂未完成： Error: 书库正在写入，请等待完成后再恢复\n    at beginLibraryRestore (file:///C:/codes/xsxz/out/main/index.js:176:44)\n    at file:///C:/codes/xsxz/out/main/index.js:14385:19\n    at Timeout._onTimeout (file:///C:/codes/xsxz/out/main/index.js:14400:7)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)\n"
+}

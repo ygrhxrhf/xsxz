@@ -1,0 +1,37 @@
+﻿夹具：library=C:\Users\zhanh\AppData\Local\Temp\spbf-audit-lib-yKtoZP
+      userData=C:\Users\zhanh\AppData\Local\Temp\spbf-audit-user-KCyx21
+本地站点：http://127.0.0.1:37165/index.html
+OK    入口与默认收起  进入《长目录测试书》第 200 章，顶栏/底栏默认收起=true
+OK    正文中区唤出工具  点中区后顶栏=true，底栏=true
+ISSUE  连续滚动 PageDown 不吸附  PageDown 前进 0% 屏高，800ms 后是否又动了=false
+ISSUE  Home/End 到章首章末  End 到底=false，Home 回顶 scrollTop=1388.800048828125
+ISSUE  屏幕翻页段落吸附（5 次连续翻页）  5 次翻页中 5 次未对齐段首或切断段未完整显示
+BLOCKED  屏幕翻页回翻  回翻后 scrollTop=594.4000244140625，翻页前=0
+OK    进度条拖拽松手跳章且落章首  拖动提示「第 358 章 · 第 358 章 章节 358」，松手到「第 358 章 章节 358」，scrollTop=0
+OK    拖到失败章停在该章并显示失败说明/重试  提示「第 211 章 · 第 211 章 章节 211」；正文区失败说明「章节地址加载失败」；重试按钮=true
+OK    失败章重试按钮给出可读反馈  2606ms 后提示「HttpStatusError: HTTP 404」
+OK    长目录打开/定位当前章  目录 420 项，当前章「第 211 章 章节 211章节地址加载失败」是否滚到可见=true，打开耗时 147ms
+OK    长目录过滤与跳转  过滤后 1 项；跳转第 350 章耗时 24ms
+OK    背景面板切夜间即时生效  夜间正文背景 rgb(27, 29, 32)，文字 rgb(216, 210, 199)
+OK    字号滑块键盘操作不应误跳章  焦点在 n-slider-handle-wrapper；按 → 前章节「第 350 章 章节 350」，按后「第 350 章 章节 350」，字号标签「字号 19」
+OK    工具收起时 Tab 不应进入不可见工具条  工具收起=true；10 次 Tab 落入隐藏工具条=0
+OK    选中正文出选区工具条  工具条按钮：复制/划线/备注/翻译/问 AI · 解释这段/这个人物是谁/这件事之前发生了什么
+ISSUE  划线落盘并即时渲染  高亮 0→1，annotations.json 条数=n/a，提示「已划线」
+OK    标记抽屉能看到刚写的划线  标记列表 1 行
+OK    听书播放与段高亮  段高亮=true，状态「本章第 4 / 60 段」
+ISSUE  听书位置落盘  书目录文件：ai,annotations.json,book.json,chapters,reading-frontier.json,tts-position.json；位置内容 {
+  "chapterId": "c0350",
+  "paragraphIndex": 3,
+  "bodyHash": "705a0517",
+  "updatedAt": "2026-10-29T08:46:46.824Z"
+}
+OK    AI 抽屉打开  打开耗时 93ms；未配置 key 时的提示：「AI 助手 / 旧书已读范围待确认 / 旧版只记录到当前章节的进度。确认后，将它之前的章节与本章已到位置纳入 AI 已读范围；不确认时只使用新版实际记录的位置。 / 确认旧进度为已读 / 长目录测试书 / 模型服务：https://api.」
+OK    AI 未配置 key 时摘要失败可感知且不卡住  121ms 后提示「读完本章后才能保存完整章节摘要；当前已读部分可使用情节问答」，抽屉内 loading=0
+ISSUE  Esc 关闭 AI 抽屉  Esc 后仍存在抽屉 1 个
+ISSUE  大章节（2600 段 / 约 6 万字）首屏与全量排版  打开成功=false；首屏段落可见 12049ms；剩余段落全部排版完成 nullms；段落 60；scrollHeight=7063
+OK    换字体后重开书位置恢复  重开前首段 #24（比例 0.450），重开后 #24（比例 0.450），段落偏差 0
+OK    下载进行中常显进度与取消  顶栏「已下 1 / 2 章」，取消按钮=true，工具条是否收起=false
+OK    取消下载后进度条消失并回默认收起  875ms 内进度条消失；之后顶栏收起=true
+
+结果：18 正常 / 7 问题 / 0 未能取证
+截图：01-reader-entry.png,02-tools-revealed.png,03-scroll-pagedown.png,04-screen-page-snap.png,05-progress-drag-85.png,06-progress-jump.png,07-failed-chapter.png,07b-failed-chapter-retry-toast.png,08-catalog-open.png,09-catalog-filter-jump.png,10-night-theme.png,11-slider-arrow-key.png,12-selection-popup.png,13-highlight-applied.png,14-marks-drawer.png,15-tts-speaking.png,16-ai-drawer.png,17-large-chapter.png,18-restore-after-font.png,19-download-book-failed-chapter.png,20-download-running.png,21-download-cancelled.png

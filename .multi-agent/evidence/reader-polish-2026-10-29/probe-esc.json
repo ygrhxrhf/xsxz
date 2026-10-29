@@ -1,0 +1,248 @@
+[
+  {
+    "name": "1-no-overlay-esc",
+    "before": {
+      "panel": false,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": true,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "after": {
+      "panel": false,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": true,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "escLog": [
+      {
+        "t": 1793264190262,
+        "phase": "bubble",
+        "prevented": false
+      }
+    ]
+  },
+  {
+    "name": "2-key-then-esc",
+    "before": {
+      "panel": false,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": true,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "after": {
+      "panel": false,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "escLog": [
+      {
+        "t": 1793264190262,
+        "phase": "bubble",
+        "prevented": false
+      },
+      {
+        "t": 1793264192478,
+        "phase": "bubble",
+        "prevented": false
+      }
+    ]
+  },
+  {
+    "name": "3-key-a-then-esc",
+    "before": {
+      "panel": false,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "after": {
+      "panel": false,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "escLog": [
+      {
+        "t": 1793264192478,
+        "phase": "bubble",
+        "prevented": false
+      },
+      {
+        "t": 1793264197266,
+        "phase": "bubble",
+        "prevented": false
+      }
+    ]
+  },
+  {
+    "name": "4-mouse-font-then-esc",
+    "before": {
+      "panel": false,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "after": {
+      "panel": true,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "escLog": [
+      {
+        "t": 1793264197266,
+        "phase": "bubble",
+        "prevented": false
+      },
+      {
+        "t": 1793264198037,
+        "phase": "bubble",
+        "prevented": false
+      }
+    ]
+  },
+  {
+    "name": "5-click-again-close",
+    "before": {
+      "panel": true,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "after": {
+      "panel": true,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "escLog": [
+      {
+        "t": 1793264197266,
+        "phase": "bubble",
+        "prevented": false
+      },
+      {
+        "t": 1793264198037,
+        "phase": "bubble",
+        "prevented": false
+      }
+    ]
+  },
+  {
+    "name": "6-key-i-then-esc",
+    "before": {
+      "panel": true,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "after": {
+      "panel": true,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "escLog": [
+      {
+        "t": 1793264198037,
+        "phase": "bubble",
+        "prevented": false
+      },
+      {
+        "t": 1793264205495,
+        "phase": "bubble",
+        "prevented": false
+      }
+    ]
+  },
+  {
+    "name": "7-esc-no-blur",
+    "before": {
+      "panel": true,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": false,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "after": {
+      "panel": true,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": true,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "escLog": [
+      {
+        "t": 1793264205495,
+        "phase": "bubble",
+        "prevented": false
+      },
+      {
+        "t": 1793264206218,
+        "phase": "bubble",
+        "prevented": true
+      }
+    ]
+  },
+  {
+    "name": "8-keydown-type-esc",
+    "before": {
+      "panel": true,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": true,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "after": {
+      "panel": true,
+      "drawerVis": false,
+      "tool": false,
+      "toolbarHidden": true,
+      "title": "第 220 章 章节 220",
+      "top": 0
+    },
+    "escLog": [
+      {
+        "t": 1793264206218,
+        "phase": "bubble",
+        "prevented": true
+      },
+      {
+        "t": 1793264206943,
+        "phase": "bubble",
+        "prevented": false
+      }
+    ]
+  },
+  {
+    "appOutTail": "\r\n\r\nDevTools listening on ws://127.0.0.1:37910/devtools/browser/29f61fa6-f9b8-4d43-9cfe-b359dbc904bb\r\n"
+  }
+]

@@ -1,0 +1,38 @@
+{
+  "reset": {
+    "top": 0,
+    "h": 690,
+    "sh": 216796
+  },
+  "scrollStep1": {
+    "before": 0,
+    "after": 620.8,
+    "step": 620.8
+  },
+  "scrollStep2": {
+    "before": 620.8,
+    "after": 1241.6,
+    "step": 620.8
+  },
+  "scrollStep3": {
+    "before": 1241.6,
+    "after": 1862.4,
+    "step": 620.8
+  },
+  "beforeHome": {
+    "top": 4338.4,
+    "h": 690,
+    "sh": 212573
+  },
+  "afterHome": {
+    "top": 0,
+    "h": 690,
+    "sh": 212573
+  },
+  "afterEnd": {
+    "top": 197081.6,
+    "h": 690,
+    "sh": 197771
+  },
+  "max": 197081
+}

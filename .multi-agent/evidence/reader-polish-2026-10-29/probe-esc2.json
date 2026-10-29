@@ -1,0 +1,1249 @@
+[
+  {
+    "label": "A key-a-open",
+    "frames": [
+      {
+        "ms": 54,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 170,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 280,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 390,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 499,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 610,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 721,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 831,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 942,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1052,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1162,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1270,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1379,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1488,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "B esc-close",
+    "frames": [
+      {
+        "ms": 9,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 121,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 230,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 339,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 449,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 560,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 670,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 779,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 887,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 996,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1104,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1214,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1324,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1432,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      }
+    ]
+  },
+  {
+    "label": "C click-font-open",
+    "frames": [
+      {
+        "ms": 10,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 123,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 231,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 341,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 450,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 560,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 670,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 780,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 888,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 996,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1104,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1215,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1324,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1435,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "D esc-close-after-mouse",
+    "frames": [
+      {
+        "ms": 5,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 108,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 217,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 326,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 436,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 543,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 652,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 761,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 871,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 980,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1088,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1195,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1303,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1413,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      }
+    ]
+  },
+  {
+    "label": "E click-font-reopen",
+    "frames": [
+      {
+        "ms": 17,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 126,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 236,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 345,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 453,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 563,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 674,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 785,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 894,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1006,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1118,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1228,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1340,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      },
+      {
+        "ms": 1452,
+        "panel": true,
+        "op": "0",
+        "tr": "matrix(1, 0, 0, 1, 8, -220)",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": [
+          "字体"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "F click-font-close",
+    "frames": [
+      {
+        "ms": 6,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 110,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 221,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 333,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 444,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 554,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 667,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 776,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 886,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 995,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1105,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1216,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1327,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1435,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": false,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      }
+    ]
+  },
+  {
+    "label": "G key-i-open",
+    "frames": [
+      {
+        "ms": 111,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 238,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 347,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 456,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 567,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 678,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 788,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 895,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1003,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1114,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1223,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1336,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1445,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1554,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      }
+    ]
+  },
+  {
+    "label": "H esc-close-ai",
+    "frames": [
+      {
+        "ms": 8,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 123,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 230,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 339,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 446,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 556,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 666,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 775,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 885,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 995,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1106,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1215,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1323,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      },
+      {
+        "ms": 1433,
+        "panel": false,
+        "op": "-",
+        "tr": "-",
+        "drawer": true,
+        "tool": false,
+        "tbHidden": false,
+        "activeBtn": []
+      }
+    ]
+  },
+  {
+    "appOutTail": "\r\n\r\nDevTools listening on ws://127.0.0.1:38153/devtools/browser/8910fe2c-2f7c-4937-bab2-d30ae4216ad2\r\n"
+  }
+]

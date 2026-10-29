@@ -1,0 +1,44 @@
+[
+  {
+    "step": "panel-open-after-frames",
+    "panel": true,
+    "op": 1,
+    "drawer": false,
+    "dw": 0
+  },
+  {
+    "step": "panel-esc",
+    "panel": false,
+    "op": null,
+    "drawer": false,
+    "dw": 0
+  },
+  {
+    "step": "panel-reopen-after-frames",
+    "panel": true,
+    "op": 1,
+    "drawer": false,
+    "dw": 0
+  },
+  {
+    "step": "ai-focus-button",
+    "button": "确认旧进度为已读"
+  },
+  {
+    "step": "ai-esc-300ms",
+    "panel": false,
+    "op": null,
+    "drawer": false,
+    "dw": 0
+  },
+  {
+    "step": "ai-esc-1300ms",
+    "panel": false,
+    "op": null,
+    "drawer": false,
+    "dw": 0
+  },
+  {
+    "appOutTail": "\r\n\r\nDevTools listening on ws://127.0.0.1:38382/devtools/browser/e0ea48d3-5d95-4769-b4b9-7aec1969ba3a\r\n"
+  }
+]

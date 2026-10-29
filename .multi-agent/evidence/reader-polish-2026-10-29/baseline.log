@@ -1,0 +1,370 @@
+﻿== typecheck ==
+
+> spbf@0.1.0 typecheck
+> tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json
+
+TYPECHECK_EXIT=0
+== test ==
+
+> spbf@0.1.0 test
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.12 [39m[90mC:/codes/xsxz[39m
+
+ [32m✓[39m src/renderer/pages/Library.ui.contract.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 137[2mms[22m[39m
+ [32m✓[39m src/main/aiEvidenceSearch.test.ts [2m([22m[2m28 tests[22m[2m)[22m[32m 116[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/libraryCard.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 227[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/readerHelpers.test.ts [2m([22m[2m84 tests[22m[2m)[22m[32m 160[2mms[22m[39m
+ [32m✓[39m src/main/settings.test.ts [2m([22m[2m39 tests[22m[2m)[22m[33m 879[2mms[22m[39m
+ [32m✓[39m src/main/aiMemoryOrchestrator.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 652[2mms[22m[39m
+ [32m✓[39m src/main/ai.transport.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 137[2mms[22m[39m
+ [32m✓[39m src/main/ocrText.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 222[2mms[22m[39m
+ [32m✓[39m src/main/readFrontier.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 2326[2mms[22m[39m
+ [32m✓[39m src/main/aiQueue.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 947[2mms[22m[39m
+ [32m✓[39m src/main/ai.events.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 240[2mms[22m[39m
+ [32m✓[39m src/main/library.test.ts [2m([22m[2m67 tests[22m[2m)[22m[33m 4281[2mms[22m[39m
+ [32m✓[39m src/main/aiMemory.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 43[2mms[22m[39m
+ [32m✓[39m src/main/webShelf.test.ts [2m([22m[2m15 tests[22m[2m)[22m[33m 1549[2mms[22m[39m
+     [33m[2m✓[22m[39m refreshes every book and reports counters [33m 859[2mms[22m[39m
+ [32m✓[39m src/main/aiEvidenceQa.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 41[2mms[22m[39m
+ [32m✓[39m src/main/startupGuard.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 67[2mms[22m[39m
+ [32m✓[39m src/main/bookOverview.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 4939[2mms[22m[39m
+     [33m[2m✓[22m[39m summarizes every chapter, persists the result, and avoids duplicate calls after restart [33m 724[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps the old overview visible and regenerates only changed chapter summaries [33m 763[2mms[22m[39m
+     [33m[2m✓[22m[39m 改一章只重算那一章与它所在的归并组，不重跑整棵归并树 [33m 1639[2mms[22m[39m
+     [33m[2m✓[22m[39m does not call the model until the user enables automatic generation [33m 499[2mms[22m[39m
+     [33m[2m✓[22m[39m preserves a failure and resumes after an explicit retry [33m 530[2mms[22m[39m
+     [33m[2m✓[22m[39m 取消不写成失败：停止时不能被谎报为「AI 请求超时」并锁死 [33m 415[2mms[22m[39m
+ [32m✓[39m src/main/aiRecap.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 284[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.aiAssistant.contract.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 92[2mms[22m[39m
+ [32m✓[39m src/main/ai.qaStream.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 228[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Browse.readingMode.ui.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 95[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/readerPrefetch.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/main/aiResumeCard.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 1326[2mms[22m[39m
+     [33m[2m✓[22m[39m reports not-yet-generated when no card file exists [33m 322[2mms[22m[39m
+ [32m✓[39m src/main/aiReadingFollow.test.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 14151[2mms[22m[39m
+     [33m[2m✓[22m[39m 读完一章就整理本章并推进记忆，读者没读到的章绝不送模型 [33m 840[2mms[22m[39m
+     [33m[2m✓[22m[39m stop() 等在飞的那一轮整理写完，不把落盘半路截断 [33m 734[2mms[22m[39m
+     [33m[2m✓[22m[39m 滚动比例不足的章不算读完，不入队也不花钱 [33m 445[2mms[22m[39m
+     [33m[2m✓[22m[39m 单次章数上限到点就带原因暂停，记忆按 5 章一批推进，零头留在队列 [33m 5729[2mms[22m[39m
+     [33m[2m✓[22m[39m 模型调用期间读者继续上报新章，落盘时不会把新章抹掉 [33m 766[2mms[22m[39m
+     [33m[2m✓[22m[39m 连续网络失败按 5s/15s/60s 退避，用尽后落失败标记并停住 [33m 372[2mms[22m[39m
+     [33m[2m✓[22m[39m 同一份正文失败过不再重复花额度，正文变了才自动重来 [33m 521[2mms[22m[39m
+     [33m[2m✓[22m[39m 记忆批次失败后停住，同一批正文不再重复花钱 [33m 1284[2mms[22m[39m
+     [33m[2m✓[22m[39m 设置页总开关关闭时自动触发不花钱，用户点「继续」仍可跑这一次 [33m 433[2mms[22m[39m
+     [33m[2m✓[22m[39m 关窗重启后从同一目录续跑，已整理过的章不再重复送模型 [33m 884[2mms[22m[39m
+     [33m[2m✓[22m[39m 退出取消打断记忆批次时保留原记忆，章仍是待推进而不是已完成 [33m 1516[2mms[22m[39m
+ [32m✓[39m src/main/aiChapterNote.ipc.contract.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 106[2mms[22m[39m
+ [32m✓[39m src/main/httpStatus.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 41[2mms[22m[39m
+ [32m✓[39m src/main/importEpub.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 712[2mms[22m[39m
+ [32m✓[39m src/main/aiEvidenceIndex.test.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 17304[2mms[22m[39m
+     [33m[2m✓[22m[39m 建索引后签名一致就不重算，正文变了只重算那一章 [33m 365[2mms[22m[39m
+     [33m[2m✓[22m[39m 索引文件里不含任何连续正文 [33m 317[2mms[22m[39m
+     [33m[2m✓[22m[39m 剪枝不会漏掉全扫能引用的章，并且确实省掉读盘 [33m 379[2mms[22m[39m
+     [33m[2m✓[22m[39m 读盘之前回报一次剪枝计划，界面才说得出第一次提问为什么慢 [33m 310[2mms[22m[39m
+     [33m[2m✓[22m[39m 记忆提示指向的章即使词面毫不重叠也必须读盘 [33m 496[2mms[22m[39m
+     [33m[2m✓[22m[39m 八百章的书一次提问只读预算内的章 [33m 14319[2mms[22m[39m
+node.exe : [90mstderr[2m | src/main/ai.retry.test.ts[2m > [22m[2mbounded transient retries[2m > [22m[2mstops af
+ter two retries for 503
+所在位置 行:1 字符: 1
++ & "C:\huanjin\nodejs/node.exe" "C:\huanjin\nodejs/node_modules/npm/bi ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([90mstderr[2m...retries for 503:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[22m[39m[ai] 请求失败 503：unavailable
+
+[90mstderr[2m | src/main/ai.retry.test.ts[2m > [22m[2mbounded transient retries[2m > [22m[2mnever retries statu
+s 401
+[22m[39m[ai] 请求失败 401：denied
+
+[90mstderr[2m | src/main/ai.retry.test.ts[2m > [22m[2mbounded transient retries[2m > [22m[2mnever retries statu
+s 402
+[22m[39m[ai] 请求失败 402：denied
+
+[90mstderr[2m | src/main/ai.retry.test.ts[2m > [22m[2mbounded transient retries[2m > [22m[2mnever retries statu
+s 403
+[22m[39m[ai] 请求失败 403：denied
+
+[90mstderr[2m | src/main/ai.retry.test.ts[2m > [22m[2msingle compatibility downgrade[2m > [22m[2mperforms at mo
+st one compatibility downgrade
+[22m[39m[ai] 请求失败 400：still unsupported
+
+[90mstderr[2m | src/main/ai.retry.test.ts[2m > [22m[2msingle compatibility downgrade[2m > [22m[2mdoes not downg
+rade or retry a 422 when no compatibility extension was sent
+[22m[39m[ai] 请求失败 422：bad input
+
+ [32m✓[39m src/main/ai.retry.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 100[2mms[22m[39m
+ [32m✓[39m src/main/aiTimeline.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 933[2mms[22m[39m
+ [32m✓[39m src/main/annotations.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1022[2mms[22m[39m
+     [33m[2m✓[22m[39m updates notes and relocated offsets [33m 356[2mms[22m[39m
+     [33m[2m✓[22m[39m noteSource 跟着备注走，只改坐标不影响来源 [33m 351[2mms[22m[39m
+ [32m✓[39m src/main/chapterApi.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 126[2mms[22m[39m
+ [32m✓[39m src/main/pageProbe.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 667[2mms[22m[39m
+     [33m[2m✓[22m[39m 正文只在 window 数据里时也能被解锁（SPA 付费墙） [33m 393[2mms[22m[39m
+ [32m✓[39m src/main/paywallUnlock.test.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 1594[2mms[22m[39m
+     [33m[2m✓[22m[39m 从隐藏节点里拿回全文 [33m 420[2mms[22m[39m
+ [32m✓[39m src/main/mirror.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 1748[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps same-origin book links and drops nav, off-origin, anchors and duplicates [33m 482[2mms[22m[39m
+ [32m✓[39m src/main/siteRules.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 431[2mms[22m[39m
+ [32m✓[39m src/main/readingSession.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 1867[2mms[22m[39m
+     [33m[2m✓[22m[39m extracts a chapter with previous and next links [33m 632[2mms[22m[39m
+     [33m[2m✓[22m[39m 站点分页章节续抓后半章：拼上被藏起来的下一页 [33m 319[2mms[22m[39m
+ [32m✓[39m src/main/webAnnotations.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 626[2mms[22m[39m
+ [32m✓[39m src/shared/aiText.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 68[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/readerMarks.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 131[2mms[22m[39m
+ [32m✓[39m src/main/aiChapterNote.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 88[2mms[22m[39m
+ [32m✓[39m src/main/importTxt.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 1102[2mms[22m[39m
+ [32m✓[39m src/main/aiChapterNotes.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 630[2mms[22m[39m
+ [32m✓[39m src/main/download.hydrate.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 5354[2mms[22m[39m
+     [33m[2m✓[22m[39m treats empty #app as not ready [33m 576[2mms[22m[39m
+     [33m[2m✓[22m[39m hydration empty #app then later #list succeeds within cap [33m 421[2mms[22m[39m
+     [33m[2m✓[22m[39m 空骨架不是墙：没爬到正文就继续轮询 [33m 1258[2mms[22m[39m
+     [33m[2m✓[22m[39m empty guest on hash URL triggers one hidden loadPageHtml then extract [33m 751[2mms[22m[39m
+ [32m✓[39m src/main/extract.test.ts [2m([22m[2m62 tests[22m[2m)[22m[33m 5561[2mms[22m[39m
+     [33m[2m✓[22m[39m detects catalog and extracts 6 chapters [33m 468[2mms[22m[39m
+     [33m[2m✓[22m[39m does not call an empty body a paywall because the header sells VIP [33m 368[2mms[22m[39m
+ [32m✓[39m src/main/aiMaterial.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 26[2mms[22m[39m
+ [32m✓[39m src/main/aiReaderNotesIntoQa.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/readerProgressWriter.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m src/main/adRequestFilter.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 295[2mms[22m[39m
+ [32m✓[39m src/shared/paragraphSearch.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 40[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/readerPager.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m src/main/ai.summarize.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 119[2mms[22m[39m
+ [32m✓[39m src/main/aiFollowIpc.contract.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 61[2mms[22m[39m
+ [32m✓[39m src/main/ai.jsonFieldSink.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m src/main/aiMonthlyBudget.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 554[2mms[22m[39m
+ [32m✓[39m src/renderer/visualShell.contract.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 91[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.aiStatus.contract.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 80[2mms[22m[39m
+ [32m✓[39m src/preload/ipcContract.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 224[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.progress.contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 78[2mms[22m[39m
+ [32m✓[39m src/main/aiMemorySave.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 32[2mms[22m[39m
+ [32m✓[39m src/main/browseState.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 7520[2mms[22m[39m
+     [33m[2m✓[22m[39m 封顶缩放偏好：访问很多站也不会让 zoomByHost 无界增长 [33m 3149[2mms[22m[39m
+     [33m[2m✓[22m[39m drops the oldest reading positions beyond the cap [33m 4157[2mms[22m[39m
+ [32m✓[39m src/main/ai.cleanBatch.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 535[2mms[22m[39m
+ [32m✓[39m src/main/exportBook.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 936[2mms[22m[39m
+     [33m[2m✓[22m[39m exports ready chapters to a local txt and skips failed ones [33m 510[2mms[22m[39m
+ [32m✓[39m src/main/libraryMigration.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1060[2mms[22m[39m
+     [33m[2m✓[22m[39m copies and verifies an empty target while retaining the original [33m 394[2mms[22m[39m
+ [32m✓[39m src/main/aiEvidenceQa.ipc.contract.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 40[2mms[22m[39m
+ [32m✓[39m src/main/search.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 2026[2mms[22m[39m
+     [33m[2m✓[22m[39m is case-insensitive, skips failed chapters and returns [] on blank query [33m 325[2mms[22m[39m
+     [33m[2m✓[22m[39m 并发读盘下命中仍按章节顺序输出且不丢章 [33m 1332[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/aiAssistantStatus.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/main/aiLiveSmoke.contract.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m src/main/semanticSearch.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 1300[2mms[22m[39m
+     [33m[2m✓[22m[39m throws for empty question [33m 369[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/readingAutoScroll.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.aiMemoryUi.contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 32[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/selectionOffsets.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 106[2mms[22m[39m
+ [32m✓[39m src/main/tts.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 179[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/readerAssistant.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m src/main/aiMemoryIpc.contract.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m src/main/settings.readerPrefs.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 55[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.pagination.contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m src/main/quality.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 592[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.visual.contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m src/main/aiUpgradeFlow.integration.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 66[2mms[22m[39m
+ [32m✓[39m src/main/download.retry.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/aiContractSurface.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 88[2mms[22m[39m
+ [32m✓[39m src/main/ai.stream.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 148[2mms[22m[39m
+ [32m✓[39m src/main/aiMemoryIpcValidation.test.ts [2m([22m[2m33 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m src/main/readingStats.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 8900[2mms[22m[39m
+     [33m[2m✓[22m[39m 天数超过上限时按最旧淘汰 [33m 8520[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/useTts.playback.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 32[2mms[22m[39m
+ [32m✓[39m src/main/ai.prompts.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 60[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Settings.ui.contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m src/main/browseReading.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 654[2mms[22m[39m
+     [33m[2m✓[22m[39m finds valid chapter anchors and respects manual selectors [33m 320[2mms[22m[39m
+ [32m✓[39m src/main/aiAssistantBudget.ipc.contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/useTts.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/renderer/aiSettings.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/main/shutdown.contract.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 26[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.aiEvidenceUi.contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 35[2mms[22m[39m
+ [32m✓[39m src/main/autoBackup.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 208[2mms[22m[39m
+ [32m✓[39m src/main/aiQueueIpc.contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/vueScriptDeclarations.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Browse.ui.contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 28[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/memorySourceLocator.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.memorySource.contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 26[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.recapBudget.contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 37[2mms[22m[39m
+[90mstderr[2m | src/main/ai.error.test.ts[2m > [22m[2mAI error copy[2m > [22m[2mmaps 401 / 429 / 5xx / timeout 
+to Chinese
+[22m[39m[ai] 请求失败 400：bad model
+
+[90mstderr[2m | src/main/ai.error.test.ts[2m > [22m[2mtestConnection[2m > [22m[2msurfaces 401 as key invalid
+[22m[39m[ai] 请求失败 401：unauthorized
+
+ [32m✓[39m src/main/ai.error.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32m✓[39m src/preload/aiMemory.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 65[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.selection.contract.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/main/aiRecapIpc.contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m src/shared/aiPrompts.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/main/userAgent.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Settings.aiFollow.contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/main/serialQueue.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 70[2mms[22m[39m
+ [32m✓[39m src/main/aiBudget.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m src/main/ipcChannels.contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/main/libraryPath.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/main/browserAds.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 406[2mms[22m[39m
+     [33m[2m✓[22m[39m hides an ad added after load while leaving a login dialog visible, and reverses on removal [33m 397[2mms[22m[39m
+ [32m✓[39m src/main/atomicFile.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 126[2mms[22m[39m
+ [32m✓[39m src/main/aiStageCopy.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.catalog.contract.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/aiEvidenceUi.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/main/libraryMaintenance.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/renderer/aiSaveRecoveryLock.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/aiAssistantTransparency.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/ttsPosition.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.ttsStart.contract.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m src/main/download.test.ts [2m([22m[2m76 tests[22m[2m)[22m[33m 39657[2mms[22m[39m
+     [33m[2m✓[22m[39m recovers the catalog from a chapter page and hashes one bookId [33m 770[2mms[22m[39m
+     [33m[2m✓[22m[39m starts from a chapter page, follows the catalog, and stores one six-chapter book [33m 940[2mms[22m[39m
+     [33m[2m✓[22m[39m 同一本书的 www 与裸主机地址只建一本 [33m 1019[2mms[22m[39m
+     [33m[2m✓[22m[39m 老库按带 www 的旧键建好的书，重新下载时复用而不是新开一本 [33m 1022[2mms[22m[39m
+     [33m[2m✓[22m[39m uses the displayed guest HTML/URL, not an uncommitted draft [33m 1309[2mms[22m[39m
+     [33m[2m✓[22m[39m re-download fills failed/empty/pending and does not rewrite ready bodies [33m 1472[2mms[22m[39m
+     [33m[2m✓[22m[39m promotes every extractable chapter to ready on disk and in the library index [33m 1463[2mms[22m[39m
+     [33m[2m✓[22m[39m confirms a preview only once and downloads through the hidden loader [33m 1227[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps the old body and URL when one-chapter re-extraction fails [33m 354[2mms[22m[39m
+     [33m[2m✓[22m[39m does not navigate the visible guest when crawling chapters [33m 645[2mms[22m[39m
+     [33m[2m✓[22m[39m start and chapter-page follow use the matching rule for Alpha/Beta bodies [33m 343[2mms[22m[39m
+     [33m[2m✓[22m[39m saves cleaned text and raw text separately so a chapter can be restored [33m 676[2mms[22m[39m
+     [33m[2m✓[22m[39m start from a chapter page still follows the catalog via the matching rule [33m 405[2mms[22m[39m
+     [33m[2m✓[22m[39m retryFailed re-extracts failed chapters with the current host rule [33m 763[2mms[22m[39m
+     [33m[2m✓[22m[39m adds only a new catalog row and downloads it without rewriting ready bodies (VAL-DL-001/002/019) [33m 957[2mms[22m[39m
+     [33m[2m✓[22m[39m 目录分页时把后续页的章节也并进来，不再只取第一页 [33m 674[2mms[22m[39m
+     [33m[2m✓[22m[39m retries a failed chapter without counting added (VAL-DL-003) [33m 597[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects imported or sourceless books with the exact checkUpdate sentence (VAL-DL-004) [33m 1909[2mms[22m[39m
+     [33m[2m✓[22m[39m refuses when another download already holds the lock (VAL-DL-005) [33m 548[2mms[22m[39m
+     [33m[2m✓[22m[39m refuses while startDownloadFromPage is running (VAL-DL-006) [33m 433[2mms[22m[39m
+     [33m[2m✓[22m[39m refuses while retryFailed holds the lock (VAL-DL-007) [33m 673[2mms[22m[39m
+     [33m[2m✓[22m[39m retryFailed leaves chapter status unchanged when the catalog cannot be opened [33m 460[2mms[22m[39m
+     [33m[2m✓[22m[39m fails with Chinese when the catalog has zero chapter links (VAL-DL-009) [33m 486[2mms[22m[39m
+     [33m[2m✓[22m[39m start still identities a download book from the current page (VAL-DL-014) [33m 513[2mms[22m[39m
+     [33m[2m✓[22m[39m emits progress, cancel releases the lock, and ready chapters remain (VAL-DL-015) [33m 715[2mms[22m[39m
+     [33m[2m✓[22m[39m releases the download lock when the retry backoff is cancelled (VAL-DL-015b) [33m 738[2mms[22m[39m
+     [33m[2m✓[22m[39m counts only the new row when an old failed chapter is retried at the same time (VAL-DL-016) [33m 795[2mms[22m[39m
+     [33m[2m✓[22m[39m still reports added=1 when the new row is Intercepted (VAL-DL-017) [33m 536[2mms[22m[39m
+     [33m[2m✓[22m[39m loads only the stored sourceUrl even if the browse page is another book (VAL-DL-018) [33m 503[2mms[22m[39m
+     [33m[2m✓[22m[39m does not delete existing rows when the catalog shrinks (VAL-DL-020) [33m 495[2mms[22m[39m
+     [33m[2m✓[22m[39m applies isolated host rules when checking updates (VAL-DL-021) [33m 333[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects a second checkUpdate / start / retryFailed while one is running (VAL-DL-022/023/024) [33m 598[2mms[22m[39m
+     [33m[2m✓[22m[39m retries NavFailed twice then keeps the last failure [33m 361[2mms[22m[39m
+     [33m[2m✓[22m[39m recovers a NavFailed chapter on the last retry [33m 405[2mms[22m[39m
+     [33m[2m✓[22m[39m does not retry Intercepted chapter pages [33m 432[2mms[22m[39m
+     [33m[2m✓[22m[39m stores a VIP teaser as a failed Paywall chapter, never as ready [33m 438[2mms[22m[39m
+     [33m[2m✓[22m[39m recovers a paywalled chapter from hidden nodes and records how it was unlocked [33m 514[2mms[22m[39m
+     [33m[2m✓[22m[39m asks the site chapter API in page context when DOM recovery fails [33m 558[2mms[22m[39m
+     [33m[2m✓[22m[39m site rule can turn off automatic unlock and the wall stays a wall [33m 390[2mms[22m[39m
+     [33m[2m✓[22m[39m 站点开了 OCR 开关时，图片正文走 OCR 认字入库 [33m 515[2mms[22m[39m
+     [33m[2m✓[22m[39m 人工提示里写明自动恢复为什么没成 [33m 413[2mms[22m[39m
+     [33m[2m✓[22m[39m glues hidden continuation pages onto the recovered chapter [33m 394[2mms[22m[39m
+     [33m[2m✓[22m[39m pauses on the third same-kind wall chapter and waits for the user [33m 377[2mms[22m[39m
+     [33m[2m✓[22m[39m fills every chapter after the user handles the wall and resumes [33m 919[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps the wall chapters for retryFailed when the user cancels instead of resuming [33m 930[2mms[22m[39m
+     [33m[2m✓[22m[39m maps HTTP 402 to Paywall without storing the teaser as a chapter [33m 424[2mms[22m[39m
+     [33m[2m✓[22m[39m never fetches a rate-limited chapter body and settles it as a retryable rate limit [33m 519[2mms[22m[39m
+     [33m[2m✓[22m[39m returns NeedLogin / Intercepted codes so the library can send the user to browse [33m 483[2mms[22m[39m
+     [33m[2m✓[22m[39m opens just the blocked chapter in the browse view for the user to unlock [33m 394[2mms[22m[39m
+     [33m[2m✓[22m[39m updates every download book serially and aggregates results [33m 1169[2mms[22m[39m
+     [33m[2m✓[22m[39m skips imported books and books without sourceUrl [33m 601[2mms[22m[39m
+     [33m[2m✓[22m[39m refuses while another download job holds the lock [33m 538[2mms[22m[39m
+     [33m[2m✓[22m[39m cancelCheckAll stops before the remaining books [33m 1027[2mms[22m[39m
+     [33m[2m✓[22m[39m persists the book status before sending a terminal done event [33m 459[2mms[22m[39m
+     [33m[2m✓[22m[39m omits the list while running and sends [] or the failed/empty rows when finished [33m 469[2mms[22m[39m
+     [33m[2m✓[22m[39m 成功下载一章只写一次 book.json，不留第二次可失败的写 [33m 375[2mms[22m[39m
+     [33m[2m✓[22m[39m 成功路径的 book.json 写失败不会把已 ready 的正文抹成占位 [33m 378[2mms[22m[39m
+ [32m✓[39m src/main/ocrEngine.integration.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 1439[2mms[22m[39m
+     [33m[2m✓[22m[39m 用仓库自带的语言包把引擎真的起起来 [33m 1435[2mms[22m[39m
+ [32m✓[39m src/renderer/components/AiBudgetConfirm.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 407[2mms[22m[39m
+     [33m[2m✓[22m[39m shows the reduced range and emits only the chosen action [33m 343[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.prefetch.contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 576[2mms[22m[39m
+     [33m[2m✓[22m[39m uses a cached ready neighbor without a second readChapter and does not prefetch pending or write progress [33m 554[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.ttsFlow.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 863[2mms[22m[39m
+     [33m[2m✓[22m[39m loads the next ready chapter and keeps speaking [33m 859[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.marks.ui.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 1243[2mms[22m[39m
+     [33m[2m✓[22m[39m 打开标记抽屉后列出本章书签与划线，并带上备注 [33m 829[2mms[22m[39m
+     [33m[2m✓[22m[39m 没有标记时抽屉给空态，不是空白 [33m 410[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.accessibility.contract.test.ts [2m([22m[2m26 tests[22m[2m)[22m[33m 1847[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps ordinary paragraph clicks silent and exposes focusable, named controls [33m 601[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.assistant.ui.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 1834[2mms[22m[39m
+     [33m[2m✓[22m[39m 打开助手能看到五类 tab 与四张入口卡 [33m 1186[2mms[22m[39m
+     [33m[2m✓[22m[39m 切到「问答」能看到提问框 [33m 644[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.progressFlow.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 2156[2mms[22m[39m
+     [33m[2m✓[22m[39m 换章写的是要走那一章的位置，新章位置只来自新章自己的滚动 [33m 1997[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.followFlow.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 2654[2mms[22m[39m
+     [33m[2m✓[22m[39m 离开读完的章节才上报，比率交给主进程判定 [33m 591[2mms[22m[39m
+     [33m[2m✓[22m[39m 队列与进度显示的是主进程记账，不是界面自己数的 [33m 761[2mms[22m[39m
+     [33m[2m✓[22m[39m 切自动先过预算门禁，主进程没答应就不改模式 [33m 541[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.aiLanes.ui.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 3176[2mms[22m[39m
+     [33m[2m✓[22m[39m 记忆在跑时问答照常可用，只有问答自己开始才灰掉输入框 [33m 2259[2mms[22m[39m
+     [33m[2m✓[22m[39m 清正文结果落在同一个壳的「输出」tab，应用后写回正文 [33m 416[2mms[22m[39m
+     [33m[2m✓[22m[39m I 打开 AI 助手，N 直达本章笔记 [33m 496[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Settings.ui.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 5575[2mms[22m[39m
+     [33m[2m✓[22m[39m copies a built-in prompt for editing and persists only the editable task requirement [33m 1718[2mms[22m[39m
+     [33m[2m✓[22m[39m restores immediately and supports one in-memory undo for the same prompt [33m 1066[2mms[22m[39m
+     [33m[2m✓[22m[39m migrates a legacy DeepSeek model only after the user clicks the explicit action [33m 490[2mms[22m[39m
+     [33m[2m✓[22m[39m cancels without trust or API call, then confirms once before the first real call [33m 683[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps all established operations reachable in their fixed sections [33m 796[2mms[22m[39m
+     [33m[2m✓[22m[39m selects 标准 when downloadPace is missing and saves the chosen pace immediately [33m 463[2mms[22m[39m
+     [33m[2m✓[22m[39m rolls the selection back and shows the save error [33m 358[2mms[22m[39m
+ [32m✓[39m src/renderer/pages/Reader.aiStream.ui.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 5180[2mms[22m[39m
+     [33m[2m✓[22m[39m 依据芯片与回答正文都在 ai.done 之前进入气泡 [33m 1915[2mms[22m[39m
+     [33m[2m✓[22m[39m 停止后仍显示已流出的部分回答并标注来源 [33m 525[2mms[22m[39m
+     [33m[2m✓[22m[39m 模型失败时用中文错误替换空气泡，不留下无来源的回答 [33m 392[2mms[22m[39m
+     [33m[2m✓[22m[39m 选区提问的回答存回被选中的那个区间 [33m 479[2mms[22m[39m
+     [33m[2m✓[22m[39m 笔记逐字长出来，ai.done 之后按磁盘内容定稿 [33m 455[2mms[22m[39m
+     [33m[2m✓[22m[39m 停止生成把已流出的部分留在界面上，不去回读磁盘 [33m 327[2mms[22m[39m
+     [33m[2m✓[22m[39m 手改过的笔记先问一句：保留就不动，覆盖才重生成 [33m 525[2mms[22m[39m
+     [33m[2m✓[22m[39m 自己写的笔记去头尾空白后保存，空正文按中文报错 [33m 301[2mms[22m[39m
+[90mstdout[2m | src/main/backup.test.ts
+[22m[39mDownloading Electron binary...
+
+ [31m❯[39m src/main/backup.test.ts [2m([22m[2m0 test[22m[2m)[22m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Suites 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/main/backup.test.ts[2m [ src/main/backup.test.ts ][22m
+[31m[1mError[22m: Electron failed to install correctly. Please delete `node_modules/electron` and run "npx install-e
+lectron --no" manually.[39m
+[90m [2m❯[22m getElectronPath node_modules/electron/index.js:[2m43:13[22m[39m
+[90m [2m❯[22m Object.<anonymous> node_modules/electron/index.js:[2m52:18[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m135 passed[39m[22m[90m (136)[39m
+[2m      Tests [22m [1m[32m1276 passed[39m[22m[90m (1276)[39m
+[2m   Start at [22m 16:16:50
+[2m   Duration [22m 475.33s[2m (transform 26.70s, setup 0ms, import 724.71s, tests 167.58s, environment 183.71s)[22m
+
+TEST_EXIT=1
+== build ==
+
+> spbf@0.1.0 build
+> electron-vite build
+
+[36mvite v7.3.6 [32mbuilding ssr environment for production...[36m[39m
+transforming...
+[32m✓[39m 66 modules transformed.
+rendering chunks...
+[2mout/main/[22m[36mindex.js  [39m[1m[33m583.42 kB[39m[22m
+[32m✓ built in 1.78s[39m
+[36mvite v7.3.6 [32mbuilding ssr environment for production...[36m[39m
+transforming...
+[32m✓[39m 1 modules transformed.
+rendering chunks...
+[2mout/preload/[22m[36mindex.mjs  [39m[1m[2m13.73 kB[22m[1m[22m
+[32m✓ built in 32ms[39m
+[36mvite v7.3.6 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 2820 modules transformed.
+rendering chunks...
+[2m../../out/renderer/[22m[32mindex.html                 [39m[1m[2m    0.42 kB[22m[1m[22m
+[2m../../out/renderer/[22m[35massets/index-DbNGVS3o.css  [39m[1m[2m   90.10 kB[22m[1m[22m
+[2m../../out/renderer/[22m[36massets/index-DY-aGTuy.js   [39m[1m[33m3,949.83 kB[39m[22m
+[32m✓ built in 20.80s[39m
+BUILD_EXIT=0
