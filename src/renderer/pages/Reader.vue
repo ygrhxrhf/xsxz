@@ -854,6 +854,21 @@ function closeTopReaderOverlay() {
   else if (activeToolPanel.value) activeToolPanel.value = null
 }
 
+/**
+ * 浮层打开时的 Esc 兜底：焦点落在抽屉里的按钮/输入框时，Naive UI 的焦点陷阱会在容器层
+ * 吃掉气泡阶段的事件，`onReaderKeydown` 里的 `close-drawer` 就轮不到执行。
+ * 捕获阶段先关一次，并阻止冒泡，避免同一次 Esc 被处理两遍。
+ * 输入法组合期间（isComposing）不接管，否则会抢走取消候选词的 Esc。
+ */
+function onOverlayEscapeCapture(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented) return
+  if (!anyDrawerOpen()) return
+  e.preventDefault()
+  e.stopPropagation()
+  closeTopReaderOverlay()
+  revealTools(immersiveMode.value === 'locked')
+}
+
 function toggleTtsFromShortcut() {
   activeToolPanel.value = 'tts'
   revealTools(immersiveMode.value === 'locked')
@@ -2195,6 +2210,7 @@ onMounted(async () => {
   startReaderVisibilityWatch()
   if ('speechSynthesis' in window) window.speechSynthesis.addEventListener?.('voiceschanged', refreshTtsVoices)
   window.addEventListener('keydown', onReaderKeydown)
+  window.addEventListener('keydown', onOverlayEscapeCapture, true)
   window.addEventListener('resize', onReaderResize)
   window.addEventListener('beforeunload', flushPendingReaderWrites)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => {
@@ -2347,6 +2363,7 @@ onMounted(async () => {
 onUnmounted(() => {
   if ('speechSynthesis' in window) window.speechSynthesis.removeEventListener?.('voiceschanged', refreshTtsVoices)
   window.removeEventListener('keydown', onReaderKeydown)
+  window.removeEventListener('keydown', onOverlayEscapeCapture, true)
   window.removeEventListener('resize', onReaderResize)
   window.removeEventListener('beforeunload', flushPendingReaderWrites)
   chapterPrefetch.dispose()
@@ -2518,8 +2535,7 @@ onUnmounted(() => {
         <button class="bottom-button" type="button" aria-label="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')">进度</button>
         <button class="bottom-button" type="button" aria-label="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')">背景</button>
         <button class="bottom-button" type="button" aria-label="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')">字体</button>
-        <Transition name="panel-slide">
-          <div v-if="activeBottomPanel && activeBottomPanel !== 'catalog'" class="bottom-panel" @click.stop>
+        <div v-if="activeBottomPanel && activeBottomPanel !== 'catalog'" class="bottom-panel" @click.stop>
             <template v-if="activeBottomPanel === 'progress'">
               <strong>进度</strong>
               <div class="control-label">{{ bookProgressDetail }}</div>
@@ -2569,7 +2585,6 @@ onUnmounted(() => {
               <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
             </template>
           </div>
-        </Transition>
       </div>
 
       <div
@@ -3921,24 +3936,19 @@ onUnmounted(() => {
   max-height: min(440px, 70vh); transform: translateY(-50%); overflow-y: auto; display: flex;
   flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--r-line);
   border-radius: var(--radius-overlay); background: var(--popover-bg); box-shadow: var(--shadow-overlay);
+  animation: bottom-panel-in 0.16s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.panel-slide-enter-active,
-.panel-slide-leave-active {
-  transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1),
-              transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+/* 入场动效走 CSS keyframes，不再依赖 Transition 的 enter/leave 状态机：
+   面板 DOM 的存在与否必须严格等于 activeBottomPanel，避免离场被打断后留下透明残影。
+   只动 opacity：窄屏样式会给面板加 translateX(-50%)，keyframes 里写 transform 会把它顶掉。 */
+@keyframes bottom-panel-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-.panel-slide-enter-from,
-.panel-slide-leave-to {
-  opacity: 0;
-  transform: translateY(-50%) translateX(8px);
-}
-
-.panel-slide-enter-to,
-.panel-slide-leave-from {
-  opacity: 1;
-  transform: translateY(-50%) translateX(0);
+@media (prefers-reduced-motion: reduce) {
+  .bottom-panel { animation: none; }
 }
 
 .reader-progress-row.panel { height: 6px; overflow: hidden; background: var(--r-surface); }
