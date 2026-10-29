@@ -231,6 +231,94 @@ export function shouldAutoHideReaderTools(context: ReaderToolVisibilityContext):
   )
 }
 
+/** 下载状态里与「顶栏要不要自动露出」相关的字段最小组。 */
+export interface ReaderDownloadSignal {
+  status?: string | null
+  bookId?: string | null
+}
+
+/**
+ * 当前书是否正在下载（未结束）。
+ * awaitingHuman 是 running 的子态：下载停在当章等用户去浏览页处理，进度和取消仍要看得见，
+ * 所以算「还在下载」。只有 done / error / cancelled 才算结束。
+ * 只看状态与书号，不看进度数字——数字随时在变，不该让顶栏抖动。
+ */
+export function isCurrentBookDownloading(
+  progress: ReaderDownloadSignal | null | undefined,
+  currentBookId: string | null | undefined,
+): boolean {
+  if (!progress || !currentBookId) return false
+  if (progress.bookId !== currentBookId) return false
+  return progress.status === 'running' || progress.status === 'awaitingHuman'
+}
+
+/**
+ * 下载 running 时顶栏必须露出：正文没被点过也要能看见「已下 x / y 章」与「取消」。
+ * 这是「自动露出」，不是「钉死」——用户手动收起仍然优先，所以不参与本函数。
+ */
+export function shouldForceToolsForDownload(
+  progress: ReaderDownloadSignal | null | undefined,
+  currentBookId: string | null | undefined,
+): boolean {
+  return isCurrentBookDownloading(progress, currentBookId)
+}
+
+/**
+ * 下载由 running 转为其他状态（done / error / cancelled）的那一次变化。
+ * 只有「曾经在跑、现在停了」才成立；本来就没在跑不算结束，避免每次进度事件都收起。
+ */
+export function isDownloadJustSettled(
+  previous: ReaderDownloadSignal | null | undefined,
+  next: ReaderDownloadSignal | null | undefined,
+  currentBookId: string | null | undefined,
+): boolean {
+  return (
+    isCurrentBookDownloading(previous, currentBookId) &&
+    !isCurrentBookDownloading(next, currentBookId)
+  )
+}
+
+/** 下载期间的顶栏去留意图。untouched = 用户没表态，自动逻辑说了算。 */
+export type ReaderDownloadToolsIntent = 'untouched' | 'revealed' | 'collapsed'
+
+export interface ReaderDownloadToolsDecision {
+  /** true 露出、false 收起、null 这次不动。 */
+  visible: boolean | null
+  intent: ReaderDownloadToolsIntent
+}
+
+/**
+ * 下载状态变化时顶栏该怎么走。三条硬要求的唯一实现点：
+ * 1. 进入 running（新下载或首次拿到状态）就自动露出，正文没点过也看得见进度与取消；
+ * 2. 由 running 变结束，用户没表态过就自动收起，表态过就按用户的选择留着；
+ * 3. running 期间用户可以自己收自己展，自动逻辑不再跟他抢（不点也不会被自动隐藏）。
+ */
+export function resolveDownloadToolsPolicy(opts: {
+  previous: ReaderDownloadSignal | null | undefined
+  next: ReaderDownloadSignal | null | undefined
+  currentBookId: string | null | undefined
+  intent: ReaderDownloadToolsIntent
+}): ReaderDownloadToolsDecision {
+  const wasRunning = isCurrentBookDownloading(opts.previous, opts.currentBookId)
+  const isRunning = isCurrentBookDownloading(opts.next, opts.currentBookId)
+
+  if (isRunning) {
+    // 新一次下载开始：上一次留下的意图作废，重新由自动逻辑露出。
+    if (!wasRunning) return { visible: true, intent: 'untouched' }
+    if (opts.intent === 'collapsed') return { visible: null, intent: 'collapsed' }
+    return { visible: true, intent: opts.intent }
+  }
+
+  if (wasRunning) {
+    const intent: ReaderDownloadToolsIntent = 'untouched'
+    // 用户手动展开过就留着；没表态或只收起过（本来就收着）都回到收起。
+    if (opts.intent === 'revealed') return { visible: null, intent }
+    return { visible: false, intent }
+  }
+
+  return { visible: null, intent: opts.intent === 'collapsed' ? opts.intent : 'untouched' }
+}
+
 /** 解析沉浸阅读快捷键；抽屉关闭等优先级由组件负责。 */
 export function resolveImmersiveKey(
   key: string,

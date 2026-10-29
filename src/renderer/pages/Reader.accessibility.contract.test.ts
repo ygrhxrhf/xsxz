@@ -357,3 +357,76 @@ describe('Reader U1.4 渲染层整段尾巴净化', () => {
     expect(purge).not.toContain('chapterBody.value =')
   })
 })
+
+describe('Reader U1.5 下载运行时自动露出顶栏', () => {
+  /** 捕获 download.onProgress 的订阅者，用来伪造主进程推来的进度事件。 */
+  function installDownloadApi() {
+    installReaderApi()
+    const api = (window as unknown as { api: Record<string, Record<string, unknown>> }).api
+    const handlers: Array<(progress: Record<string, unknown>) => void> = []
+    api.download!.onProgress = (handler: (progress: Record<string, unknown>) => void) => {
+      handlers.push(handler)
+      return () => {}
+    }
+    return handlers
+  }
+
+  async function mountReader() {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp({ render: () => h(NMessageProvider, null, { default: () => h(Reader, { bookId: 'book-1' }) }) })
+    app.mount(host)
+    await nextTick(); await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    return app
+  }
+
+  const toolbarHidden = () => document.querySelector('.reader-toolbar')?.classList.contains('reader-tools-hidden') ?? null
+
+  it('running 时不点正文也能看见「已下 x / y 章」和「取消」', async () => {
+    const handlers = installDownloadApi()
+    const app = await mountReader()
+    // 进来默认收起：没有下载时顶栏不占正文。
+    expect(toolbarHidden()).toBe(true)
+
+    handlers.forEach((handler) => handler({ bookId: 'book-1', title: '验收书', total: 10, done: 3, failed: 0, status: 'running' }))
+    await nextTick()
+
+    // 没点正文，顶栏自己露出来。
+    expect(toolbarHidden()).toBe(false)
+    expect(document.querySelector('[data-reader-dl="progress"]')?.textContent).toContain('已下 3 / 10 章')
+    expect(document.querySelector('[data-reader-dl="cancel"]')?.textContent).toContain('取消')
+    app.unmount()
+  })
+
+  it('下完 / 取消后顶栏自动回到收起（用户没手动展开过）', async () => {
+    const handlers = installDownloadApi()
+    const app = await mountReader()
+    handlers.forEach((handler) => handler({ bookId: 'book-1', title: '验收书', total: 10, done: 10, failed: 0, status: 'running' }))
+    await nextTick()
+    expect(toolbarHidden()).toBe(false)
+
+    handlers.forEach((handler) => handler({ bookId: 'book-1', title: '验收书', total: 10, done: 10, failed: 0, status: 'done', failedChapters: [] }))
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(toolbarHidden()).toBe(true)
+    expect(document.querySelector('[data-reader-dl="progress"]')).toBeNull()
+    app.unmount()
+  })
+
+  it('running 期间 Esc 不把顶栏收走，其他书的下载不惊动这一页', async () => {
+    const handlers = installDownloadApi()
+    const app = await mountReader()
+    handlers.forEach((handler) => handler({ bookId: 'book-2', title: '别的书', total: 5, done: 1, failed: 0, status: 'running' }))
+    await nextTick()
+    // 别的书在下载：本页保持收起。
+    expect(toolbarHidden()).toBe(true)
+
+    handlers.forEach((handler) => handler({ bookId: 'book-1', title: '验收书', total: 10, done: 2, failed: 0, status: 'running' }))
+    await nextTick()
+    expect(toolbarHidden()).toBe(false)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+    expect(toolbarHidden()).toBe(false)
+    app.unmount()
+  })
+})

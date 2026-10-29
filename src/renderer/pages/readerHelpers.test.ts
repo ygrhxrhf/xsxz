@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { ReaderFocusMode } from '@shared/types'
 import { scrollTopForParagraphPage, snapScrollTopToParagraph } from './readerPager'
 import {
@@ -24,6 +26,9 @@ import {
   selectionPopupPosition,
   shouldAutoHideReaderTools,
   shouldResetReaderToolsOnEntry,
+  isCurrentBookDownloading,
+  isDownloadJustSettled,
+  resolveDownloadToolsPolicy,
   scrollTopFromRatio,
   wheelPageDirection,
 } from './readerHelpers'
@@ -194,6 +199,75 @@ describe('immersive reader helpers', () => {
     expect(shouldResetReaderToolsOnEntry(true, true)).toBe(false)
     expect(shouldResetReaderToolsOnEntry(true, false)).toBe(false)
     expect(shouldResetReaderToolsOnEntry(false, false)).toBe(false)
+  })
+})
+
+/** 覆盖完成定义 6：下载 running 时顶栏自动可见，结束后自动收起。 */
+describe('reader download tools policy', () => {
+  const running = { status: 'running', bookId: 'book-1' }
+  const done = { status: 'done', bookId: 'book-1' }
+  const cancelled = { status: 'cancelled', bookId: 'book-1' }
+  const errored = { status: 'error', bookId: 'book-1' }
+
+  it('running 时自动可见：不必等用户点正文', () => {
+    // 从「没有进度」直接进 running，也要立刻露出顶栏。
+    expect(resolveDownloadToolsPolicy({ previous: null, next: running, currentBookId: 'book-1', intent: 'untouched' }))
+      .toEqual({ visible: true, intent: 'untouched' })
+    // 进度 tick（running → running）保持可见，不抖动。
+    expect(resolveDownloadToolsPolicy({ previous: running, next: running, currentBookId: 'book-1', intent: 'untouched' }))
+      .toEqual({ visible: true, intent: 'untouched' })
+    // 撞到登录/付费页暂停等人工时，进度与取消仍要看得见。
+    const awaiting = { status: 'awaitingHuman', bookId: 'book-1' }
+    expect(resolveDownloadToolsPolicy({ previous: running, next: awaiting, currentBookId: 'book-1', intent: 'untouched' }).visible).toBe(true)
+    expect(isCurrentBookDownloading(awaiting, 'book-1')).toBe(true)
+  })
+
+  it('结束后自动收起：done / error / cancelled 三种结束态都收', () => {
+    expect(resolveDownloadToolsPolicy({ previous: running, next: done, currentBookId: 'book-1', intent: 'untouched' }).visible).toBe(false)
+    expect(resolveDownloadToolsPolicy({ previous: running, next: errored, currentBookId: 'book-1', intent: 'untouched' }).visible).toBe(false)
+    expect(resolveDownloadToolsPolicy({ previous: running, next: cancelled, currentBookId: 'book-1', intent: 'untouched' }).visible).toBe(false)
+    // 收起后把意图归零，下一次下载重新由自动逻辑决定。
+    expect(resolveDownloadToolsPolicy({ previous: running, next: done, currentBookId: 'book-1', intent: 'untouched' }).intent).toBe('untouched')
+  })
+
+  it('只认当前书：别的书在下载不动这本书的顶栏', () => {
+    const other = { status: 'running', bookId: 'book-2' }
+    expect(isCurrentBookDownloading(other, 'book-1')).toBe(false)
+    expect(resolveDownloadToolsPolicy({ previous: null, next: other, currentBookId: 'book-1', intent: 'untouched' }))
+      .toEqual({ visible: null, intent: 'untouched' })
+    expect(resolveDownloadToolsPolicy({ previous: other, next: done, currentBookId: 'book-1', intent: 'untouched' }).visible).toBeNull()
+    // 没选中任何书时不下结论。
+    expect(isCurrentBookDownloading(running, null)).toBe(false)
+  })
+
+  it('running 期间手动收起/展开都算数，自动逻辑不再抢', () => {
+    // 用户手动收起后，后续进度 tick 不再把顶栏顶回来。
+    expect(resolveDownloadToolsPolicy({ previous: running, next: running, currentBookId: 'book-1', intent: 'collapsed' }))
+      .toEqual({ visible: null, intent: 'collapsed' })
+    // 用户手动展开过，下载结束后保留他的选择。
+    expect(resolveDownloadToolsPolicy({ previous: running, next: done, currentBookId: 'book-1', intent: 'revealed' }))
+      .toEqual({ visible: null, intent: 'untouched' })
+  })
+
+  it('本来就没在跑不算结束，不误收顶栏', () => {
+    expect(isDownloadJustSettled(null, done, 'book-1')).toBe(false)
+    expect(resolveDownloadToolsPolicy({ previous: null, next: done, currentBookId: 'book-1', intent: 'untouched' }).visible).toBeNull()
+    expect(resolveDownloadToolsPolicy({ previous: done, next: done, currentBookId: 'book-1', intent: 'untouched' }).visible).toBeNull()
+  })
+
+  it('阅读页把自动露出挂进进页面路径，并用中性文案展示进度', async () => {
+    const source = await readFile(join(process.cwd(), 'src/renderer/pages/Reader.vue'), 'utf-8')
+    // 进页面收起后立刻按下载状态露出：不依赖用户点正文。
+    const collapse = source.slice(source.indexOf('function collapseToolsForEntry'), source.indexOf('function currentDownloadSignal'))
+    expect(collapse).toContain('revealToolsForDownload()')
+    // loadBook 里设好 book 就判一次，覆盖「在阅读页内切到正在下载的书」。
+    const loadBook = source.slice(source.indexOf('async function loadBook'), source.indexOf('async function openChapter'))
+    expect(loadBook).toContain('revealToolsForDownload()')
+    // 顶栏进度与取消用同一个判定，且带稳定钩子供端到端定位。
+    expect(source).toContain('<template v-if="isCurrentBookDownloading(downloadProgress, book.id)">')
+    expect(source).toContain('data-reader-dl="progress"')
+    expect(source).toContain('data-reader-dl="cancel"')
+    expect(source).toContain('已下 {{ downloadProgress!.done }} / {{ downloadProgress!.total }} 章')
   })
 })
 

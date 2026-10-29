@@ -54,8 +54,11 @@ import {
   selectionPopupPosition,
   catalogChapterBadge,
   shouldResetReaderToolsOnEntry,
+  isCurrentBookDownloading,
+  shouldForceToolsForDownload,
+  resolveDownloadToolsPolicy,
 } from './readerHelpers'
-import type { ReaderImmersiveMode } from './readerHelpers'
+import type { ReaderDownloadSignal as DownloadSignal, ReaderImmersiveMode, ReaderDownloadToolsIntent } from './readerHelpers'
 import {
   adjacentVisualPage,
   scrollTopForParagraphPage,
@@ -108,6 +111,8 @@ const message = useMessage()
 
 const book = ref<Book | null>(null)
 const downloadProgress = ref<DownloadProgress | null>(null)
+// 下载 running 期间用户自己点过中区（收起或展开）：自动逻辑不再跟他抢，结束后按他的选择收场。
+const downloadToolsIntent = ref<ReaderDownloadToolsIntent>('untouched')
 const chapters = ref<ChapterMeta[]>([])
 const currentChapter = ref<ChapterMeta | null>(null)
 const chapterPrefetch = createChapterPrefetch()
@@ -637,13 +642,59 @@ function scheduleToolHide() {
   // 面板、选区、工具栏焦点仍阻止误收。下载 running 只挡 Esc，不在这里扩大。
 }
 
-/** 进入阅读页时把工具层收回默认态：正文和左侧书脊优先。 */
+/**
+ * 进入阅读页时把工具层收回默认态：正文和左侧书脊优先。
+ * 例外：当前书正在下载，正文没被点过也得让「已下 x / y 章」和「取消」看得见。
+ * 进页面算新的一次进入，上一次下载期留下的显隐意图在这里作废。
+ */
 function collapseToolsForEntry() {
   toolsVisible.value = false
   temporaryToolReveal.value = false
   pointerInToolbar.value = false
   lastToolActivityAt = Date.now()
   clearToolHideTimer()
+  downloadToolsIntent.value = 'untouched'
+  revealToolsForDownload()
+}
+
+/** 当前下载状态里顶栏关心的两个字段，供纯函数判定。 */
+function currentDownloadSignal(): { status: string; bookId: string } | null {
+  const p = downloadProgress.value
+  if (!p) return null
+  return { status: p.status, bookId: p.bookId }
+}
+
+/** 下载 running 期间自动露出顶栏；这不是「禁止收起」，用户点中区照样能收。 */
+function revealToolsForDownload() {
+  if (!shouldForceToolsForDownload(downloadProgress.value, book.value?.id)) return
+  if (downloadToolsIntent.value === 'collapsed') return
+  toolsVisible.value = true
+  temporaryToolReveal.value = false
+  lastToolActivityAt = Date.now()
+  clearToolHideTimer()
+}
+
+/**
+ * 下载状态变化时同步顶栏：
+ * 开始 running → 自动露出；由 running 变结束 → 用户没表态过就回到收起。
+ * 判定集中在 resolveDownloadToolsPolicy，这里只落状态。
+ */
+function applyDownloadToolsPolicy(previous: DownloadSignal | null, next: DownloadSignal | null) {
+  const decision = resolveDownloadToolsPolicy({
+    previous,
+    next,
+    currentBookId: book.value?.id,
+    intent: downloadToolsIntent.value,
+  })
+  downloadToolsIntent.value = decision.intent
+  if (decision.visible === true) {
+    toolsVisible.value = true
+    temporaryToolReveal.value = false
+    lastToolActivityAt = Date.now()
+    clearToolHideTimer()
+  } else if (decision.visible === false) {
+    collapseToolsForEntry()
+  }
 }
 
 /**
@@ -682,19 +733,23 @@ function revealTools(temporary = false) {
   scheduleToolHide()
 }
 
-/** 只用于 Esc：下载 running 时不收顶栏。点按中区不受这条限制。 */
+/** 只用于 Esc 与进页面自动露出：下载 running 时不收顶栏。点按中区不受这条限制。 */
 function downloadKeepsTools(): boolean {
-  return downloadProgress.value?.status === 'running' && downloadProgress.value.bookId === book.value?.id
+  return isCurrentBookDownloading(downloadProgress.value, book.value?.id)
 }
 
 function toggleReaderTools() {
+  const downloading = isCurrentBookDownloading(downloadProgress.value, book.value?.id)
   if (toolsVisible.value) {
     toolsVisible.value = false
     temporaryToolReveal.value = false
     clearToolHideTimer()
+    // 手动收起也算表过态：下载 running 期间不再被自动逻辑顶回来。
+    if (downloading) downloadToolsIntent.value = 'collapsed'
     return
   }
   revealTools(immersiveMode.value === 'locked')
+  if (downloading) downloadToolsIntent.value = 'revealed'
 }
 
 /** 点正文三分区：中区只显隐工具，左右翻屏。选区条仍由 onContentMouseup 自己出。 */
@@ -1175,6 +1230,8 @@ async function loadBook(bookId: string) {
   if (epoch !== navEpoch) return
   if (res.book) {
     book.value = res.book
+    // 这本书正在下载：进阅读页就直接露出顶栏，不必等用户点正文。
+    revealToolsForDownload()
     const frontierResult = await window.api.library.getReadFrontier?.(bookId)
     if (epoch !== navEpoch) return
     legacyReadProposal.value = frontierResult?.ok ? frontierResult.frontier.legacyProposal : null
@@ -2241,8 +2298,11 @@ onMounted(async () => {
   scheduleToolHide()
   if (props.bookId) await loadBook(props.bookId)
   unsubDownload = window.api.download.onProgress((p) => {
-    if (!book.value || p.bookId !== book.value.id) return
+    // 本页常驻挂载：书还没选中时也要记住 running，等点开这本书就能立刻露出顶栏。
+    const previous = currentDownloadSignal()
     downloadProgress.value = p
+    applyDownloadToolsPolicy(previous, currentDownloadSignal())
+    if (!book.value || p.bookId !== book.value.id) return
     if (p.status === 'done' || p.status === 'error' || p.status === 'cancelled') {
       void loadBook(book.value.id)
     }
@@ -2308,9 +2368,9 @@ onUnmounted(() => {
           @click="toggleToolPanel('ai')"
         >{{ backgroundAiLabel }}</button>
         <span class="toolbar-gap" aria-hidden="true"></span>
-        <template v-if="downloadProgress?.status === 'running' && downloadProgress.bookId === book.id">
-          <span class="tool-button tool-text" role="status">已下 {{ downloadProgress.done }} / {{ downloadProgress.total }} 章</span>
-          <button class="tool-button tool-text" type="button" @click="cancelReaderDownload">取消</button>
+        <template v-if="isCurrentBookDownloading(downloadProgress, book.id)">
+          <span class="tool-button tool-text" role="status" data-reader-dl="progress">已下 {{ downloadProgress!.done }} / {{ downloadProgress!.total }} 章</span>
+          <button class="tool-button tool-text" type="button" data-reader-dl="cancel" @click="cancelReaderDownload">取消</button>
         </template>
         <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('go-settings')">设置</button>
         <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('go-browse')">浏览</button>
