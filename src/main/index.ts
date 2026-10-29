@@ -43,7 +43,8 @@ import {
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
 import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
-import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdleSlice, getPausedForHuman } from './download'
+import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setExternalBusyProbe, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdleSlice, getPausedForHuman } from './download'
+import { atomicWriteText } from './atomicFile'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
 import { createSerialQueue } from './serialQueue'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
@@ -576,7 +577,8 @@ async function configureMirrorRuntime(): Promise<void> {
       return { bookId: hit.id, complete: await isBookComplete(hit.id) }
     },
     emit: (progress) => { mainWindow?.webContents.send('mirror.progress', progress) },
-    saveState: (progress) => writeFile(mirrorStatePath(), JSON.stringify(progress), 'utf8'),
+    // 这个文件的唯一用途就是崩溃后续跑：必须原子写，否则截断的 JSON 会让 plan 整段丢掉。
+    saveState: (progress) => atomicWriteText(mirrorStatePath(), JSON.stringify(progress)),
     now: () => Date.now(),
   })
   try {
@@ -591,7 +593,10 @@ async function configureMirrorRuntime(): Promise<void> {
           message: '上次镜像任务被中断，可继续',
         }
         setMirrorLastState(corrected)
-        await writeFile(mirrorStatePath(), JSON.stringify(corrected), 'utf8')
+        // 读盘悬挂期间用户可能已经开了新任务：此时不能把旧快照写回去覆盖它。
+        if (!getMirrorState().running) {
+          await atomicWriteText(mirrorStatePath(), JSON.stringify(corrected))
+        }
       } else {
         setMirrorLastState(saved)
       }
@@ -645,6 +650,9 @@ function createWindow(): void {
   })
 
   setOwnerWindow(mainWindow)
+  // 镜像与下载共用同一个隐藏视图：让下载侧的互斥判定把「镜像运行中」也算成忙。
+  // 否则镜像发现阶段 active 为空，用户点「下载本书」就会和镜像并发驱动同一个 webContents。
+  setExternalBusyProbe(() => getMirrorState().running)
   void configureMirrorRuntime()
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -1262,6 +1270,8 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('mirror.start', async (_e, args: { seedUrl?: string; maxBooks?: number; maxPages?: number; resume?: boolean } | undefined) => {
+    // 先看镜像自己：isDownloadBusy 现在把「镜像运行中」也算忙，混在一起会给出错的提示。
+    if (getMirrorState().running) return { ok: false, message: '已有镜像任务在进行中，请等待完成或取消' }
     if (isDownloadBusy()) return { ok: false, message: '下载任务进行中，等它结束再镜像' }
     const seedUrl = args?.seedUrl?.trim() || browseView?.webContents.getURL() || ''
     resetMirrorPrefetch()
@@ -2523,6 +2533,9 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   cancelDownload()
   cancelCheckAll()
+  // 镜像循环自己也有 cancelled 标志：不显式取消，退出窗口里它还会接着开下一本。
+  cancelMirror()
+  disposeMirrorPrefetch()
   aiQueue.cancelAll()
   bookOverview.stop()
   // 不挡退出：进程马上就走，等在飞的整理写完没意义。原子写是「临时文件 + rename」，

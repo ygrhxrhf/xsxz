@@ -204,7 +204,8 @@
 - 撞墙停批：任何一本下载（本批的或用户手点的）停在站点墙（登录 / 付费 / 拦截）时，本批在 1 秒时间片内看见，该本记 `failed`（带 `code` / `bookId`），整批立即停止（`status: 'error'`，`message` 写明撞在哪个站点墙，处理后可点「继续上次」）；停批时会先取消占着下载锁的那本。等待下载锁期间取消最多 1 秒生效。
 - 已入库跳过：每本开始前用书目地址的规范化值对照书库（`BookListItem.sourceUrl`）。书已完整则记 `skipped`，不加载、不下载；只有一半的书仍交给下载层补章。书库是唯一真值，镜像日志不保存「已下过」的快照。
 - 逐本串行：上一本下载结束才开下一本；单本下载失败只记 `failed`，不终止整批——撞站点墙、以及等锁超过每本 30 分钟预算除外，这两种情况立即停批。`mirror.cancel` 在书目之间生效，正在下载的那本走 `download.cancel` 且不写结果，续跑时重试。
-- 续跑：`resume: true` 只接受与上次相同 `seedUrl` 且仍有未处理书目的任务，继续 `plan` 里没完成的书目；不同种子或没有待办时返回 `{ ok: false, message }`。进程在任务中途退出时，启动阶段把遗留的 `running` 降级为 `cancelled` 并标 `interrupted`，界面据此给「继续上次」。
+- 互斥：镜像与下载共用同一个隐藏视图，所以双向互斥——镜像运行中 `download.preview / confirm / checkUpdate / checkAllUpdates / retryFailed / redownloadChapter` 一律当「忙」拒绝（`isDownloadBusy` 把镜像状态算进来），`mirror.start` 在下载任务进行中也拒绝。界面在镜像运行中禁用「下载本书」，下载进行中禁用「开始镜像」。
+- 续跑：`resume: true` 只接受与上次相同 `seedUrl` 且仍有未处理书目的任务，继续 `plan` 里没完成的书目；不同种子或没有待办时返回 `{ ok: false, message }`。进程在任务中途退出时，启动阶段把遗留的 `running` 降级为 `cancelled` 并标 `interrupted`。界面是否给「继续上次」按 `plan` 与逐本 `results` 推导，`interrupted` 只作展示信息，不承担判断。
 - 结束态为 `done` / `cancelled` / `error`，写入 `userData/mirror-state.json`（只保留最近一次任务，含发现阶段的 `plan`）；`mirror.state` 返回 `{ running, last }`，界面重开可回看。
 - 不做：跨域、站内搜索接口、代登录、并发下载、多列表页并发。列表页是链式「下一页」，没有可预测的分页地址；书目页预取只领先当前书一本，且用独立隐藏视图，不与下载视图互踩导航。
 

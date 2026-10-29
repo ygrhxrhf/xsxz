@@ -77,6 +77,7 @@ import {
   identityFromPage,
   isDownloadBusy,
   resetDownloadStateForTests,
+  setExternalBusyProbe,
   setBrowseView,
   setOwnerWindow,
   setTestHtmlLoader,
@@ -2493,5 +2494,15 @@ describe('章写入只碰一次 book.json', () => {
     const file = await readChapter(started.bookId!, first.id)
     expect(file.status).toBe('ready')
     expect(file.body.length).toBeGreaterThan(0)
+  })
+})
+
+describe('外部占用探针（镜像与下载共用同一个隐藏视图）', () => {
+  it('探针为 true 时 isDownloadBusy 也算忙，探针清掉后恢复', () => {
+    expect(isDownloadBusy()).toBe(false)
+    setExternalBusyProbe(() => true)
+    expect(isDownloadBusy()).toBe(true)
+    setExternalBusyProbe(null)
+    expect(isDownloadBusy()).toBe(false)
   })
 })

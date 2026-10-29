@@ -1243,6 +1243,11 @@ function stop() {
 
 async function startDownload() {
   if (previewing.value || downloading.value) return
+  // 镜像与下载共用同一个隐藏视图：两边同时跑会互相踩导航。
+  if (mirrorRunning.value) {
+    message.warning('整站镜像进行中，等它结束再下载单本')
+    return
+  }
   previewing.value = true
   previewFailure.value = null
   try {
@@ -1312,6 +1317,10 @@ async function openMirror() {
 
 async function startMirrorJob(resume = false) {
   if (mirrorRunning.value) return
+  if (downloading.value) {
+    message.warning('下载任务进行中，等它结束再镜像')
+    return
+  }
   mirrorError.value = ''
   // 续跑用上次保存的种子地址：用户可能已经翻到别的页，任务仍属于原列表页。
   const seedUrl = resume && mirrorProgress.value?.seedUrl
@@ -1502,7 +1511,7 @@ onUnmounted(() => {
           <n-button
             type="primary"
             size="small"
-            :disabled="downloading || !address"
+            :disabled="downloading || mirrorRunning || !address"
             :loading="previewing || downloading"
             @click.prevent="startDownload"
           >
@@ -1714,7 +1723,7 @@ onUnmounted(() => {
             <button
               type="button"
               class="primary"
-              :disabled="previewing || downloading"
+              :disabled="previewing || downloading || mirrorRunning"
               :loading="previewing || downloading"
               @click="downloadFromReadingMode"
             >下载本书</button>
@@ -1935,8 +1944,8 @@ onUnmounted(() => {
             </label>
           </div>
           <div class="mirror-actions">
-            <n-button type="primary" size="small" :loading="mirrorBusy" :disabled="mirrorRunning" @click="startMirrorJob()">开始镜像</n-button>
-            <n-button v-if="mirrorCanResume" size="small" secondary :loading="mirrorBusy" :disabled="mirrorRunning" @click="startMirrorJob(true)">继续上次</n-button>
+            <n-button type="primary" size="small" :loading="mirrorBusy" :disabled="mirrorRunning || downloading" @click="startMirrorJob()">开始镜像</n-button>
+            <n-button v-if="mirrorCanResume" size="small" secondary :loading="mirrorBusy" :disabled="mirrorRunning || downloading" @click="startMirrorJob(true)">继续上次</n-button>
             <n-button size="small" quaternary type="error" :disabled="!mirrorRunning" @click="cancelMirrorJob">取消镜像</n-button>
           </div>
           <div v-if="mirrorError" class="dl-error" role="alert">{{ mirrorError }}</div>

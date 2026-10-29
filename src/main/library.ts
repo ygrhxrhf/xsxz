@@ -449,8 +449,31 @@ async function writeIndex(data: IndexData): Promise<void> {
   await atomicWriteText(indexFile(), JSON.stringify(data, null, 2))
 }
 
-async function upsertIndexItem(book: Book): Promise<void> {
+/**
+ * 读索引，并保证增量补丁的基底是当前版本。
+ *
+ * 旧版索引（v1，缺 `sourceUrl`）不能直接当基底：那样会把缺列的旧行原样以
+ * `version: 2` 写回，而 mtime 缓存仍命中，重建门永远不会再触发。
+ * 遇到旧版本先整体重建一次；重建不出当前版本（书库目录当时读不出来）就跳过这次增量——
+ * 索引只是缓存，book.json 才是真值，下次重建会补上，绝不能只写回一本把其余书目丢掉。
+ */
+type IndexPatchBase = { state: 'ok'; data: IndexData | null } | { state: 'skip' }
+
+async function readIndexForPatch(): Promise<IndexPatchBase> {
   const cached = await readIndex()
+  if (cached === null) return { state: 'ok', data: null }
+  if (cached.version === INDEX_VERSION) return { state: 'ok', data: cached }
+  await rebuildIndex()
+  const rebuilt = await readIndex()
+  return rebuilt !== null && rebuilt.version === INDEX_VERSION
+    ? { state: 'ok', data: rebuilt }
+    : { state: 'skip' }
+}
+
+async function upsertIndexItem(book: Book): Promise<void> {
+  const base = await readIndexForPatch()
+  if (base.state === 'skip') return
+  const cached = base.data
   const books = (cached?.books ?? []).filter((item) => item?.id !== book.id)
   books.push(bookToList(book))
   books.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -462,7 +485,9 @@ async function upsertIndexItem(book: Book): Promise<void> {
 
 /** 从索引里删掉一本书（增量）：书被移入回收站后不必整库重扫，改一条即可。 */
 async function removeIndexItem(bookId: string): Promise<void> {
-  const cached = await readIndex()
+  const base = await readIndexForPatch()
+  if (base.state === 'skip') return
+  const cached = base.data
   if (!cached) return
   const books = cached.books.filter((item) => item?.id !== bookId)
   if (books.length === cached.books.length) return
