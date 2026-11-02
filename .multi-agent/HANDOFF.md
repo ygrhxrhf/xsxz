@@ -2,10 +2,35 @@
 
 ## 当前事实
 
+- **应用内代理（proxy）已提交**：`9d33a5e` feat(proxy): 应用内代理，浏览与下载共用同一出口
 - **挑战页自动重试（challenge-page）已提交**：
   - `053c13c` feat(download): 站点验证挑战页自动重载 + 落人工续跑
   - `ee80288` docs: 计划与实测结论归档
-- master HEAD：ee80288（master 干净；`.qoder/` 未跟踪，属并行 worktree）。
+- master HEAD：9d33a5e（master 干净；`.qoder/` 未跟踪，属并行 worktree）。
+
+## proxy 做了什么
+
+- `src/main/proxy.ts`：`normalizeProxyPrefs` / `buildProxyRules` / `buildProxyBypassList` /
+  `applyProxyToSession` / `judgeProxyProbe`。
+- 三种模式：`off`（`direct://`，连系统代理也不走，**默认**）、`system`、`manual`
+  （http/https/socks4/socks5）。作用于浏览与下载共用的 `persist:novel` 分区。
+- 应用后必调 `closeAllConnections()`；否则 `setProxy` 只影响新连接，会表现为
+  「改了设置但还要开系统代理才生效」。
+- 代理认证走 `app` 级 `login` 事件，只处理 `authInfo.isProxy`；密码经 `safeStorage`，
+  `settings.get` 只回 `passwordConfigured`。
+- 新 IPC `proxy.test`：一次性隐藏视图 + 真会话加载目标，只判有没有 HTTP 响应。
+- 设置界面新增「网络代理」区块。
+
+### 验证证据（代理）
+
+- `npx vitest run src/main/proxy.test.ts` → 29/29
+- `npx vitest run src/main/settings.test.ts` → 45/45（含 6 条代理持久化用例）
+- `npx vitest run src/preload/ipcContract.test.ts` → 5/5；`Settings.ui.test.ts` → 7/7
+- 全量 `npx vitest run src --exclude '.delta/' --exclude '.qoder/'` → 138 文件 / 1359 用例全绿
+- `npm run typecheck` → 0；`npm run build` → 0
+- **真实链路探针**（本地转发型 HTTP 代理）：
+  `resolveProxy → PROXY 127.0.0.1:38084`；`localhost → DIRECT`（`<local>` 生效）；
+  `connects: ["example.com:443"]`；`title: "Example Domain"`；切回 direct → `DIRECT`
 
 ## challenge-page 做了什么
 
