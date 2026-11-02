@@ -1,0 +1,536 @@
+{
+  "generatedAt": "2026-11-02T07:22:10.691Z",
+  "leaveRatio": 0.55,
+  "scenarios": [
+    {
+      "name": "A 字号 18→24",
+      "note": "离开时 18px，重开时 24px：段高变大，同一段位置整体下移",
+      "leave": {
+        "firstVisibleP": 105,
+        "anchorLikeP": 106,
+        "centerP": 110,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7853,
+        "scrollHeight": 14969,
+        "clientHeight": 690,
+        "paneWidth": 566,
+        "scrollRatio": 0.5499544649266406,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 10.6,
+        "fontSize": "18px",
+        "innerWidth": 1266,
+        "innerHeight": 738,
+        "chapterTitle": "第2章"
+      },
+      "disk": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.5499544649266406,
+        "paragraphIndex": 105,
+        "paragraphOffset": 24,
+        "bodyHash": "227ed355",
+        "updatedAt": "2026-11-02T07:22:17.356Z"
+      },
+      "arrive": {
+        "firstVisibleP": 105,
+        "anchorLikeP": 106,
+        "centerP": 108,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 10394,
+        "scrollHeight": 19859,
+        "clientHeight": 690,
+        "paneWidth": 758,
+        "scrollRatio": 0.5422505290116856,
+        "avgParaHeight": 86.4,
+        "parasPerScreen": 8,
+        "fontSize": "24px",
+        "innerWidth": 1266,
+        "innerHeight": 738,
+        "chapterTitle": "第2章"
+      },
+      "verdict": {
+        "leaveAnchorP": 105,
+        "leaveFirstVisibleP": 105,
+        "leaveScrollRatio": 0.55,
+        "arriveFirstVisibleP": 105,
+        "arriveAnchorLikeP": 106,
+        "arriveScrollRatio": 0.542,
+        "deltaParagraphs": 0,
+        "deltaVsExpected": 0,
+        "parasPerScreen": 8,
+        "withinOneScreen": true,
+        "expectedP": 105,
+        "bodyChanged": false,
+        "droppedAnchor": false,
+        "hasBodyHash": true
+      },
+      "error": null,
+      "leaveViewport": null,
+      "arriveSettle": {
+        "firstVisibleP": 105,
+        "stableSamples": 4,
+        "tries": 5
+      },
+      "arriveViewport": null,
+      "diskAfterArrive": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.5499544649266406,
+        "paragraphIndex": 105,
+        "paragraphOffset": 24,
+        "bodyHash": "227ed355",
+        "updatedAt": "2026-11-02T07:22:17.356Z"
+      }
+    },
+    {
+      "name": "B 列宽 窄→宽",
+      "note": "离开时 narrow(32em)，重开时 wide(46em)：行变长、段变矮",
+      "leave": {
+        "firstVisibleP": 105,
+        "anchorLikeP": 106,
+        "centerP": 110,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7853,
+        "scrollHeight": 14969,
+        "clientHeight": 690,
+        "paneWidth": 566,
+        "scrollRatio": 0.5499544649266406,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 10.6,
+        "fontSize": "18px",
+        "innerWidth": 1266,
+        "innerHeight": 738,
+        "chapterTitle": "第2章"
+      },
+      "disk": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.5499544649266406,
+        "paragraphIndex": 105,
+        "paragraphOffset": 24,
+        "bodyHash": "227ed355",
+        "updatedAt": "2026-11-02T07:22:31.227Z"
+      },
+      "arrive": {
+        "firstVisibleP": 105,
+        "anchorLikeP": 106,
+        "centerP": 109,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7810,
+        "scrollHeight": 14969,
+        "clientHeight": 690,
+        "paneWidth": 818,
+        "scrollRatio": 0.5469850761498529,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 10.6,
+        "fontSize": "18px",
+        "innerWidth": 1266,
+        "innerHeight": 738,
+        "chapterTitle": "第2章"
+      },
+      "verdict": {
+        "leaveAnchorP": 105,
+        "leaveFirstVisibleP": 105,
+        "leaveScrollRatio": 0.55,
+        "arriveFirstVisibleP": 105,
+        "arriveAnchorLikeP": 106,
+        "arriveScrollRatio": 0.547,
+        "deltaParagraphs": 0,
+        "deltaVsExpected": 0,
+        "parasPerScreen": 10.6,
+        "withinOneScreen": true,
+        "expectedP": 105,
+        "bodyChanged": false,
+        "droppedAnchor": false,
+        "hasBodyHash": true
+      },
+      "error": null,
+      "leaveViewport": null,
+      "arriveSettle": {
+        "firstVisibleP": 105,
+        "stableSamples": 4,
+        "tries": 5
+      },
+      "arriveViewport": null,
+      "diskAfterArrive": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.5469850761498529,
+        "paragraphIndex": 105,
+        "paragraphOffset": 0,
+        "bodyHash": "227ed355",
+        "updatedAt": "2026-11-02T07:22:38.008Z"
+      }
+    },
+    {
+      "name": "C 窗口 1100×720 → 1920×1080",
+      "note": "渲染视口变化：一屏段落数从少变多",
+      "leave": {
+        "firstVisibleP": 106,
+        "anchorLikeP": 107,
+        "centerP": 110,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7889,
+        "scrollHeight": 14969,
+        "clientHeight": 626,
+        "paneWidth": 566,
+        "scrollRatio": 0.550010444445897,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 9.7,
+        "fontSize": "18px",
+        "innerWidth": 1100,
+        "innerHeight": 720,
+        "chapterTitle": "第2章"
+      },
+      "disk": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.550010444445897,
+        "paragraphIndex": 107,
+        "paragraphOffset": 24,
+        "updatedAt": "2026-11-02T07:22:44.687Z"
+      },
+      "arrive": {
+        "firstVisibleP": 107,
+        "anchorLikeP": 108,
+        "centerP": 114,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7969,
+        "scrollHeight": 14969,
+        "clientHeight": 1032,
+        "paneWidth": 566,
+        "scrollRatio": 0.571772964388857,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 15.9,
+        "fontSize": "18px",
+        "innerWidth": 1920,
+        "innerHeight": 1080,
+        "chapterTitle": "第2章"
+      },
+      "verdict": {
+        "leaveAnchorP": 107,
+        "leaveFirstVisibleP": 106,
+        "leaveScrollRatio": 0.55,
+        "arriveFirstVisibleP": 107,
+        "arriveAnchorLikeP": 108,
+        "arriveScrollRatio": 0.572,
+        "deltaParagraphs": 0,
+        "deltaVsExpected": 0,
+        "parasPerScreen": 15.9,
+        "withinOneScreen": true,
+        "expectedP": 107,
+        "bodyChanged": false,
+        "droppedAnchor": false,
+        "hasBodyHash": false
+      },
+      "error": null,
+      "leaveViewport": {
+        "requested": {
+          "width": 1100,
+          "height": 720
+        },
+        "live": {
+          "w": 1100,
+          "h": 720
+        },
+        "ok": true
+      },
+      "arriveSettle": {
+        "firstVisibleP": 107,
+        "stableSamples": 4,
+        "tries": 5
+      },
+      "arriveViewport": {
+        "requested": {
+          "width": 1920,
+          "height": 1080
+        },
+        "live": {
+          "w": 1920,
+          "h": 1080
+        },
+        "ok": true
+      },
+      "diskAfterArrive": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.571772964388857,
+        "paragraphIndex": 107,
+        "paragraphOffset": 0,
+        "bodyHash": "227ed355",
+        "updatedAt": "2026-11-02T07:22:50.296Z"
+      }
+    },
+    {
+      "name": "C0 锚点 offset=0（段落开头对齐视口顶，真实可达）",
+      "note": "paragraphAnchor 在段落顶部 ≥ 视口顶+4px 时写 offset=0；重开应恢复该段顶部",
+      "leave": {
+        "firstVisibleP": 106,
+        "anchorLikeP": 107,
+        "centerP": 110,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7889,
+        "scrollHeight": 14969,
+        "clientHeight": 626,
+        "paneWidth": 566,
+        "scrollRatio": 0.550010444445897,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 9.7,
+        "fontSize": "18px",
+        "innerWidth": 1100,
+        "innerHeight": 720,
+        "chapterTitle": "第2章"
+      },
+      "disk": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.550010444445897,
+        "paragraphIndex": 107,
+        "paragraphOffset": 0,
+        "updatedAt": "2026-11-02T07:22:57.351Z"
+      },
+      "arrive": {
+        "firstVisibleP": 107,
+        "anchorLikeP": 108,
+        "centerP": 114,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7957,
+        "scrollHeight": 14969,
+        "clientHeight": 1032,
+        "paneWidth": 566,
+        "scrollRatio": 0.570911946953254,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 15.9,
+        "fontSize": "18px",
+        "innerWidth": 1920,
+        "innerHeight": 1080,
+        "chapterTitle": "第2章"
+      },
+      "verdict": {
+        "leaveAnchorP": 107,
+        "leaveFirstVisibleP": 106,
+        "leaveScrollRatio": 0.55,
+        "arriveFirstVisibleP": 107,
+        "arriveAnchorLikeP": 108,
+        "arriveScrollRatio": 0.571,
+        "deltaParagraphs": 0,
+        "deltaVsExpected": 0,
+        "parasPerScreen": 15.9,
+        "withinOneScreen": true,
+        "expectedP": 107,
+        "bodyChanged": false,
+        "droppedAnchor": false,
+        "hasBodyHash": false
+      },
+      "error": null,
+      "leaveViewport": {
+        "requested": {
+          "width": 1100,
+          "height": 720
+        },
+        "live": {
+          "w": 1100,
+          "h": 720
+        },
+        "ok": true
+      },
+      "arriveSettle": {
+        "firstVisibleP": 107,
+        "stableSamples": 4,
+        "tries": 5
+      },
+      "arriveViewport": {
+        "requested": {
+          "width": 1920,
+          "height": 1080
+        },
+        "live": {
+          "w": 1920,
+          "h": 1080
+        },
+        "ok": true
+      },
+      "diskAfterArrive": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.570911946953254,
+        "paragraphIndex": 107,
+        "paragraphOffset": 0,
+        "bodyHash": "227ed355",
+        "updatedAt": "2026-11-02T07:23:03.377Z"
+      }
+    },
+    {
+      "name": "D 清正文（正文变更）后重开",
+      "note": "第 2 章正文被换成另一种内容且段数变少（200→60 段），锚点段可能越界",
+      "leave": {
+        "firstVisibleP": 105,
+        "anchorLikeP": 106,
+        "centerP": 110,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7853,
+        "scrollHeight": 14969,
+        "clientHeight": 690,
+        "paneWidth": 566,
+        "scrollRatio": 0.5499544649266406,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 10.6,
+        "fontSize": "18px",
+        "innerWidth": 1266,
+        "innerHeight": 738,
+        "chapterTitle": "第2章"
+      },
+      "disk": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.5499544649266406,
+        "paragraphIndex": 105,
+        "paragraphOffset": 24,
+        "bodyHash": "227ed355",
+        "updatedAt": "2026-11-02T07:23:10.004Z"
+      },
+      "arrive": {
+        "firstVisibleP": 28,
+        "anchorLikeP": 29,
+        "centerP": 33,
+        "renderedNodes": 60,
+        "minP": 0,
+        "maxP": 59,
+        "scrollTop": 2240,
+        "scrollHeight": 4763,
+        "clientHeight": 690,
+        "paneWidth": 566,
+        "scrollRatio": 0.5499631721090106,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 10.6,
+        "fontSize": "18px",
+        "innerWidth": 1266,
+        "innerHeight": 738,
+        "chapterTitle": "第2章"
+      },
+      "verdict": {
+        "leaveAnchorP": 105,
+        "leaveFirstVisibleP": 105,
+        "leaveScrollRatio": 0.55,
+        "arriveFirstVisibleP": 28,
+        "arriveAnchorLikeP": 29,
+        "arriveScrollRatio": 0.55,
+        "deltaParagraphs": 77,
+        "deltaVsExpected": 5,
+        "parasPerScreen": 10.6,
+        "withinOneScreen": true,
+        "expectedP": 33,
+        "bodyChanged": true,
+        "droppedAnchor": false,
+        "hasBodyHash": true
+      },
+      "error": null,
+      "leaveViewport": null,
+      "arriveSettle": {
+        "firstVisibleP": 28,
+        "stableSamples": 4,
+        "tries": 5
+      },
+      "arriveViewport": null,
+      "diskAfterArrive": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.5499631721090106,
+        "paragraphIndex": 28,
+        "paragraphOffset": 23,
+        "bodyHash": "59cdf7af",
+        "updatedAt": "2026-11-02T07:23:17.164Z"
+      }
+    },
+    {
+      "name": "D2 正文被替换但段数相同（200→200 段，内容全不同）",
+      "note": "最危险形态：旧 paragraphIndex 依然有效，会撞进错段；bodyHash 校验缺失时无从发现",
+      "leave": {
+        "firstVisibleP": 105,
+        "anchorLikeP": 106,
+        "centerP": 110,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7853,
+        "scrollHeight": 14969,
+        "clientHeight": 690,
+        "paneWidth": 566,
+        "scrollRatio": 0.5499544649266406,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 10.6,
+        "fontSize": "18px",
+        "innerWidth": 1266,
+        "innerHeight": 738,
+        "chapterTitle": "第2章"
+      },
+      "disk": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.5499544649266406,
+        "paragraphIndex": 105,
+        "paragraphOffset": 24,
+        "bodyHash": "227ed355",
+        "updatedAt": "2026-11-02T07:23:24.476Z"
+      },
+      "arrive": {
+        "firstVisibleP": 105,
+        "anchorLikeP": 106,
+        "centerP": 110,
+        "renderedNodes": 200,
+        "minP": 0,
+        "maxP": 199,
+        "scrollTop": 7853,
+        "scrollHeight": 14969,
+        "clientHeight": 690,
+        "paneWidth": 566,
+        "scrollRatio": 0.5499544649266406,
+        "avgParaHeight": 64.8,
+        "parasPerScreen": 10.6,
+        "fontSize": "18px",
+        "innerWidth": 1266,
+        "innerHeight": 738,
+        "chapterTitle": "第2章"
+      },
+      "verdict": {
+        "leaveAnchorP": 105,
+        "leaveFirstVisibleP": 105,
+        "leaveScrollRatio": 0.55,
+        "arriveFirstVisibleP": 105,
+        "arriveAnchorLikeP": 106,
+        "arriveScrollRatio": 0.55,
+        "deltaParagraphs": 0,
+        "deltaVsExpected": 5,
+        "parasPerScreen": 10.6,
+        "withinOneScreen": true,
+        "expectedP": 110,
+        "bodyChanged": true,
+        "droppedAnchor": false,
+        "hasBodyHash": true
+      },
+      "error": null,
+      "leaveViewport": null,
+      "arriveSettle": {
+        "firstVisibleP": 105,
+        "stableSamples": 4,
+        "tries": 5
+      },
+      "arriveViewport": null,
+      "diskAfterArrive": {
+        "chapterId": "c0002",
+        "scrollRatio": 0.5499544649266406,
+        "paragraphIndex": 105,
+        "paragraphOffset": 24,
+        "bodyHash": "227ed355",
+        "updatedAt": "2026-11-02T07:23:24.476Z"
+      }
+    }
+  ]
+}
