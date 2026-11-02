@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ReaderFocusMode } from '@shared/types'
 import { scrollTopForParagraphPage, snapScrollTopToParagraph } from './readerPager'
+import { ttsBodyHash } from './ttsPosition'
 import {
   approximateBookRatio,
   approximateBookRatioFromIndex,
@@ -13,6 +14,7 @@ import {
   chapterIndexFromBookRatio,
   isParagraphInFocus,
   paragraphIndexAtViewportCenter,
+  progressAnchorBodyMatches,
   progressScrubLabel,
   progressScrubTarget,
   remainingChapterCount,
@@ -850,5 +852,28 @@ describe('snapScrollTopToParagraph 回吸不跨屏', () => {
   it('pulls a half-shown short paragraph back to its start', () => {
     expect(snapScrollTopToParagraph(paragraphs, 2420, 2, 800)).toBe(2400)
     expect(snapScrollTopToParagraph(paragraphs, 250, 2, 800)).toBe(0)
+  })
+})
+
+describe('progressAnchorBodyMatches 锚点正文指纹校验', () => {
+  it('缺省 bodyHash（旧书）跳过校验，保持锚点恢复兼容', () => {
+    expect(progressAnchorBodyMatches(undefined, '第一段\n\n第二段')).toBe(true)
+  })
+
+  it('bodyHash 与当前正文指纹一致时放行', () => {
+    const body = '第一段\n\n第二段'
+    expect(progressAnchorBodyMatches(ttsBodyHash(body), body)).toBe(true)
+  })
+
+  it('正文被清理/重下后指纹不一致，拒绝按旧锚点恢复', () => {
+    const oldBody = '第一段\n\n第二段'
+    const newBody = '第一段\n\n替换后的第二段'
+    expect(progressAnchorBodyMatches(ttsBodyHash(oldBody), newBody)).toBe(false)
+  })
+
+  it('正文被替换但段数相同（最危险形态）也会被指纹识破', () => {
+    const oldBody = Array.from({ length: 200 }, (_, i) => `旧第${i + 1}段`).join('\n\n')
+    const newBody = Array.from({ length: 200 }, (_, i) => `新第${i + 1}段`).join('\n\n')
+    expect(progressAnchorBodyMatches(ttsBodyHash(oldBody), newBody)).toBe(false)
   })
 })

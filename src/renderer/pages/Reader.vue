@@ -58,6 +58,7 @@ import {
   shouldForceToolsForDownload,
   shouldRevealToolsForPreference,
   resolveDownloadToolsPolicy,
+  progressAnchorBodyMatches,
 } from './readerHelpers'
 import type { ReaderDownloadSignal as DownloadSignal, ReaderImmersiveMode, ReaderDownloadToolsIntent } from './readerHelpers'
 import {
@@ -1563,10 +1564,13 @@ function paragraphTextNodes(paragraph: Element): Text[] {
 function textPoint(nodes: Text[], offset: number): { node: Text; offset: number } | null {
   let left = offset
   for (const node of nodes) {
+    // 空文本节点（元素间空白 / 按钮前后缩进）没有可视字符：不能当锚点，
+    // 否则建出空 range，getBoundingClientRect() 返回全零矩形，恢复会把 scrollTop 钳回章首。
+    if (node.length === 0) continue
     if (left <= node.length) return { node, offset: left }
     left -= node.length
   }
-  const last = nodes.at(-1)
+  const last = nodes.filter((n) => n.length > 0).at(-1)
   return last ? { node: last, offset: last.length } : null
 }
 
@@ -1648,6 +1652,9 @@ function scrollToParagraphAnchor(progress: ReadingProgress): boolean {
   const offset = progress.paragraphOffset
   if (!pane || !Number.isInteger(index) || !Number.isInteger(offset) || index! < 0 || offset! < 0) return false
   if (index! >= paras.value.length || offset! > (paras.value[index!]?.length ?? 0)) return false
+  // 正文指纹校验：这一章正文被清理 / 重新下载过，旧锚点段是另一段内容，不能按它恢复。
+  // 旧书没有 bodyHash 字段（null）跳过校验，保持锚点恢复兼容（回退 scrollRatio 会丢段内精度）。
+  if (!progressAnchorBodyMatches(progress.bodyHash, chapterBody.value)) return false
   const generation = renderGeneration
   void waitForParagraph(index!, generation).then((ready) => {
     if (!ready) return
@@ -1725,6 +1732,8 @@ function captureProgressWrite(): CapturedProgressWrite | null {
     chapterId: chapter.id,
     scrollRatio,
     ...(anchor && scrollRatio < 0.999 ? anchor : {}),
+    // 正文指纹：恢复端靠它判断这一章正文有没有被清理 / 重新下载过（与 TTS 位置同源）。
+    bodyHash: ttsBodyHash(chapterBody.value),
     updatedAt: new Date().toISOString(),
   }
   return async () => {

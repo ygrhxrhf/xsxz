@@ -1,5 +1,17 @@
 import type { ChapterMeta, ChapterStatus, FailCode, ReaderFocusMode } from '@shared/types'
 import { formatChapterOrdinal } from './libraryCard'
+import { ttsBodyHash } from './ttsPosition'
+
+/**
+ * 进度锚点恢复前的正文指纹校验。
+ * - bodyHash 缺省（旧书库进度）→ 跳过校验（返回 true），保持旧书锚点恢复兼容；
+ * - bodyHash 不一致 → 说明这一章正文被清理 / 重新下载过，旧锚点段是另一段内容，不得按它恢复。
+ * 指纹与 TTS 位置同源（ttsBodyHash）。
+ */
+export function progressAnchorBodyMatches(bodyHash: string | undefined, body: string): boolean {
+  if (bodyHash == null) return true
+  return bodyHash === ttsBodyHash(body)
+}
 
 export function chapterIndexOf(chapters: Array<Pick<ChapterMeta, 'id'>>, chapterId?: string | null): number {
   if (!chapterId) return -1
