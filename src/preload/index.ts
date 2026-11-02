@@ -213,6 +213,16 @@ const api = {
     /** 用真会话试一次：只看有没有拿到 HTTP 响应，403 / 挑战页也算通。 */
     test: (args?: { url?: string; prefs?: Partial<ProxyPrefs> }) =>
       ipcRenderer.invoke('proxy.test', args) as Promise<{ ok: boolean; message: string }>,
+    /**
+     * 扫本机常见代理端口。只查回环地址，只回答「在不在监听」；
+     * 能不能真转发要再调 `test` 确认。
+     */
+    scan: () =>
+      ipcRenderer.invoke('proxy.scan') as Promise<{
+        ok: true
+        ports: { port: number; label: string; protocol: 'socks5' | 'http' }[]
+        message: string
+      }>,
   },
   backup: {
     create: (destDir: string) =>

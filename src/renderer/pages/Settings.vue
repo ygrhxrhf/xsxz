@@ -57,6 +57,34 @@ const proxyBypass = ref('')
 const proxyTesting = ref(false)
 const proxyTestResult = ref<{ ok: boolean; message: string } | null>(null)
 const proxySaving = ref(false)
+const proxyScanning = ref(false)
+const proxyScanResult = ref<string>('')
+const proxyFoundPorts = ref<{ port: number; label: string; protocol: 'socks5' | 'http' }[]>([])
+
+/** 扫本机端口：找到的候选列出来，点一下直接填进表单。 */
+async function scanLocalProxy() {
+  proxyScanning.value = true
+  proxyScanResult.value = ''
+  proxyFoundPorts.value = []
+  try {
+    const res = await window.api.proxy.scan()
+    proxyFoundPorts.value = res.ports
+    proxyScanResult.value = res.message
+  } catch (e) {
+    proxyScanResult.value = e instanceof Error ? e.message : '扫描失败'
+  } finally {
+    proxyScanning.value = false
+  }
+}
+
+/** 把扫到的端口填进表单（不保存，等用户确认再点保存）。 */
+function useFoundPort(found: { port: number; protocol: 'socks5' | 'http' }) {
+  proxyMode.value = 'manual'
+  proxyProtocol.value = found.protocol === 'socks5' ? 'socks5' : 'http'
+  proxyHost.value = '127.0.0.1'
+  proxyPort.value = found.port
+  proxyTestResult.value = null
+}
 
 const proxyModeOptions = [
   { label: '直连', value: 'off' },
@@ -992,7 +1020,22 @@ onMounted(async () => {
         <n-space>
           <n-button type="primary" :loading="proxySaving" @click="saveProxy">保存代理</n-button>
           <n-button :loading="proxyTesting" @click="testProxy">测试连通</n-button>
+          <n-button :loading="proxyScanning" @click="scanLocalProxy">扫描本机代理</n-button>
         </n-space>
+
+        <div v-if="proxyScanResult" class="proxy-scan">
+          <p :class="['proxy-scan-msg', proxyFoundPorts.length ? 'ok' : 'warn']">{{ proxyScanResult }}</p>
+          <n-space v-if="proxyFoundPorts.length" size="small">
+            <n-button
+              v-for="found in proxyFoundPorts"
+              :key="found.port"
+              size="tiny"
+              secondary
+              type="primary"
+              @click="useFoundPort(found)"
+            >用 {{ found.port }}（{{ found.protocol.toUpperCase() }}）</n-button>
+          </n-space>
+        </div>
         <p style="color:var(--text-muted);font-size:12px;margin:0">
           「测试连通」按当前表单试一次，不必先保存；能拿到任何 HTTP 响应就算通
           （验证页、403 都说明链路已经过了）。
@@ -1474,6 +1517,25 @@ onMounted(async () => {
   min-height: 40px;
   padding: var(--space-2) 0;
   border-bottom: 1px solid var(--border);
+}
+
+.proxy-scan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.proxy-scan-msg {
+  margin: 0;
+  font-size: 13px;
+}
+
+.proxy-scan-msg.ok {
+  color: var(--text-muted);
+}
+
+.proxy-scan-msg.warn {
+  color: var(--warning-text, var(--text-muted));
 }
 
 .pace-row {

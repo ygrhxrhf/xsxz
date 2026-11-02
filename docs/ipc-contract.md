@@ -267,6 +267,9 @@
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
 | `proxy.test` | invoke | `{ url?: string; prefs?: Partial<ProxyPrefs> }` | `{ ok: boolean; message: string }` |
+| `proxy.scan` | invoke | 无 | `{ ok: true; ports: { port; label; protocol }[]; message: string }` |
+
+`proxy.scan` 只查本机回环地址上的常见代理端口（v2rayN 10808/10809、Clash 7890/7891、1080/1081、Nekoray 2080/2081），超时 400ms。它只回答「端口在不在监听」，**不**判断能否转发——「客户端开着但没选节点」时端口照样监听。真正的可用性由 `proxy.test` 确认，两步分开。
 
 `proxy.test` 用一个一次性隐藏视图、**走真会话**加载目标地址（缺省 `https://www.baidu.com/`），只判「有没有拿到 HTTP 响应」：403、404、验证页都算通，因为那已经证明 TCP + TLS + DNS 全过了。传入 `prefs` 时可试未保存的表单值，试完立即还原成已保存设置，不会把会话留在临时配置上。`settings.set` 带 `proxy` 或 `proxyPassword` 时立即重新应用，不必重启。
 
@@ -484,7 +487,7 @@ window.api = {
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   mirror: { start, cancel, state, onProgress },
   settings: { get, set },
-  proxy: { test },
+  proxy: { test, scan },
   backup: { create, restore, runAuto },
   ocr: { status },
   annotations: { list, add, update, remove },

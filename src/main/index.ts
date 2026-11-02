@@ -47,6 +47,7 @@ import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadCha
 import { atomicWriteText } from './atomicFile'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
 import { applyProxyToSession, judgeProxyProbe } from './proxy'
+import { describeScanResult, findOpenProxyPorts } from './proxyScan'
 import { mainFrameStatus, observeHttpStatus } from './httpStatus'
 import { createSerialQueue } from './serialQueue'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
@@ -1424,6 +1425,33 @@ function registerIpc(): void {
       await applySavedProxy()
     }
     return next
+  })
+
+  /**
+   * 扫本机常见代理端口。
+   *
+   * 用户装了 v2rayN 却不知道本地端口开在哪个数字上；让人一个个试不现实。
+   * 这里只查回环地址上的常见端口，且只回答「在不在监听」——能不能真转发
+   * 由 `proxy.test` 确认，两者分开是因为「端口开着但没选节点」很常见。
+   */
+  ipcMain.handle('proxy.scan', async () => {
+    const net = await import('node:net')
+    const open = await findOpenProxyPorts({
+      isOpen: (port) =>
+        new Promise<boolean>((resolve) => {
+          const socket = new net.Socket()
+          const done = (value: boolean): void => {
+            socket.destroy()
+            resolve(value)
+          }
+          socket.setTimeout(400)
+          socket.once('connect', () => done(true))
+          socket.once('timeout', () => done(false))
+          socket.once('error', () => done(false))
+          socket.connect(port, '127.0.0.1')
+        }),
+    })
+    return { ok: true, ports: open, message: describeScanResult(open) }
   })
 
   /**

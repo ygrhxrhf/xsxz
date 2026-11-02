@@ -35,7 +35,10 @@
 - [x] 8. 真实链路验证：本地起转发型 HTTP 代理，确认 Electron 真的走它
       - 验：探针结果 `resolvedTarget: PROXY 127.0.0.1:38084`、`resolvedLocal: DIRECT`、
         `connects: ["example.com:443"]`、`title: "Example Domain"`、切回 direct 后 `DIRECT`
-- [x] 9. 收工自检
+- [x] 9. 本机端口自动探测（`proxy.scan`）：用户装了客户端却不知道本地端口开在哪
+      - 验：`npx vitest run src/main/proxyScan.test.ts` → 10/10
+      - 验：真实探针（起监听 10808/7890 → 扫到 → 关闭 → 消失）
+- [x] 10. 收工自检
       - 验：`npm run typecheck` → 0；`npm run build` → 0；
         全量 `npx vitest run src --exclude '.delta/' --exclude '.qoder/'` → 138 文件 / 1359 用例全绿
 
