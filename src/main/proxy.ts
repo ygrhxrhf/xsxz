@@ -13,7 +13,7 @@ import { DEFAULT_PROXY_PREFS } from '../shared/types'
  */
 
 const PROXY_PROTOCOLS: readonly ProxyProtocol[] = ['http', 'https', 'socks4', 'socks5']
-const PROXY_MODES: readonly ProxyMode[] = ['off', 'system', 'manual']
+const PROXY_MODES: readonly ProxyMode[] = ['off', 'system', 'manual', 'subscription']
 
 const MAX_HOST_LENGTH = 255
 const MAX_BYPASS_LENGTH = 2000
@@ -43,7 +43,30 @@ export function normalizeProxyPrefs(value: unknown): ProxyPrefs {
     username: typeof raw.username === 'string' ? raw.username.trim().slice(0, 200) : '',
     passwordConfigured: raw.passwordConfigured === true,
     bypass: typeof raw.bypass === 'string' ? raw.bypass.trim().slice(0, MAX_BYPASS_LENGTH) : '',
+    subscriptionUrl: normalizeSubscriptionUrl(raw.subscriptionUrl),
+    subscriptionCached: raw.subscriptionCached === true,
+    nodeIndex: normalizeNodeIndex(raw.nodeIndex),
   }
+}
+
+/**
+ * 订阅地址只收 http(s)。订阅里含节点凭据，允许 `file://` 或裸路径等于让别人
+ * 通过改 settings.json 读本机文件，没有正当用途。
+ */
+export function normalizeSubscriptionUrl(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return ''
+  try {
+    const url = new URL(value.trim())
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
+    return url.toString()
+  } catch {
+    return ''
+  }
+}
+
+/** 节点序号：非负整数，非法回退 0（0 永远是安全的兜底）。 */
+export function normalizeNodeIndex(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
 /** 主机名只留裸地址：用户常把 `http://127.0.0.1:7890` 整串粘进来。 */
@@ -85,6 +108,7 @@ export function normalizeProxyPort(value: unknown): number {
  * 的网络指到一个不存在的地方，用户会以为「整个软件都坏了」。
  */
 export function isProxyConfigured(prefs: ProxyPrefs): boolean {
+  if (prefs.mode === 'subscription') return normalizeSubscriptionUrl(prefs.subscriptionUrl).length > 0
   if (prefs.mode !== 'manual') return true
   return prefs.host.trim().length > 0 && Number.isSafeInteger(prefs.port) && prefs.port >= 1 && prefs.port <= 65535
 }
@@ -102,6 +126,10 @@ export function isProxyConfigured(prefs: ProxyPrefs): boolean {
 export function buildProxyRules(prefs: ProxyPrefs): string {
   if (prefs.mode === 'off') return 'direct://'
   if (prefs.mode === 'system') return ''
+  if (prefs.mode === 'subscription') {
+    // 订阅模式由内核托管，实际端口在运行时才知道；这里只表达「应该走代理」。
+    return ''
+  }
   return `${prefs.protocol}://${prefs.host}:${prefs.port}`
 }
 
@@ -122,6 +150,9 @@ export function buildProxyBypassList(bypass: string): string {
 export function describeProxy(prefs: ProxyPrefs): string {
   if (prefs.mode === 'off') return '直连（不走代理）'
   if (prefs.mode === 'system') return '跟随系统代理'
+  if (prefs.mode === 'subscription') {
+    return prefs.subscriptionUrl ? '内置内核（订阅）' : '订阅地址未填'
+  }
   if (!isProxyConfigured(prefs)) return '代理地址未填完整'
   const auth = prefs.username ? '（已带认证）' : ''
   return `${prefs.protocol}://${prefs.host}:${prefs.port}${auth}`
@@ -155,6 +186,8 @@ export async function applyProxyToSession(
   if (!isProxyConfigured(prefs)) {
     return { ok: false, message: '代理地址没填完整，已保持原设置不变' }
   }
+  // 订阅模式由内核托管（proxyRuntime），这里不能直接 setProxy 到不存在的端口。
+  if (prefs.mode === 'subscription') return { ok: true }
 
   const mode = prefs.mode === 'off' ? 'direct' : prefs.mode === 'system' ? 'system' : 'fixed_servers'
   const config: { mode: 'direct' | 'system' | 'fixed_servers'; proxyRules?: string; proxyBypassRules?: string } = { mode }

@@ -268,6 +268,20 @@
 |---|---|---|---|
 | `proxy.test` | invoke | `{ url?: string; prefs?: Partial<ProxyPrefs> }` | `{ ok: boolean; message: string }` |
 | `proxy.scan` | invoke | 无 | `{ ok: true; ports: { port; label; protocol }[]; message: string }` |
+| `proxy.subscribe` | invoke | `{ url?: string }` | `{ ok: true; port: number; node: { name; protocol }; overview: ProxySubscriptionState } \| { ok: false; message: string }` |
+| `proxy.parseSubscription` | invoke | `{ body: string }` | `{ ok: true; overview: ProxySubscriptionState } \| { ok: false; message: string }` |
+| `proxy.selectNode` | invoke | `{ index: number; body: string }` | `{ ok: true; port: number; node: { name; protocol } } \| { ok: false; message: string }` |
+| `proxy.kernelState` | invoke | 无 | `{ ok: true; state: ProxyKernelState }` |
+| `proxy.stopKernel` | invoke | 无 | `{ ok: true }` |
+
+**订阅模式（内置内核）**：`ProxyMode` 增加 `'subscription'`。这是「用户只有一条订阅链接、没有任何客户端」时的路径——本应用自己拉内核，不依赖外部程序。
+
+- `src/main/subscription.ts`：纯转换。`decodeSubscriptionBody` 识别 base64 / 明文 / JSON 三种正文；`parseNodeUri` 支持 `vless`（含 REALITY 的 `pbk`/`sid`）、`hysteria2`、`tuic`、`anytls`，其余协议跳过并计数；`buildSingBoxConfig` 生成「mixed 入口 + 单节点出站 + direct 兜底」的配置。机场把「剩余流量 / 到期 / 通知」塞成节点的公告行按节点名过滤掉。
+- `src/main/proxyKernel.ts`：内核进程管理。配置写 `userData/proxy-kernel/config.json` 后以 `sing-box run -c` 拉起；只监听 `127.0.0.1`；用「端口是否开始监听」判启动成功，失败时把内核最后几行输出带进错误信息。端口从 20801–20899 里挑空闲的。
+- `src/main/proxyRuntime.ts`：生命周期所有者。解析 → 挑端口 → 拉起 → 把 `persist:novel` 会话指到内核端口（`http://127.0.0.1:<port>` + `<local>` bypass）→ 断旧连接。换节点走「重启内核」，不做热重载。应用退出时必须 `stopSubscriptionProxy()`，否则留下孤儿进程。
+- `ProxyPrefs` 增加 `subscriptionUrl` / `subscriptionCached` / `nodeIndex`。订阅地址只收 `http`/`https`（订阅含节点凭据，允许 `file://` 等于让改 settings.json 的人读本机文件）。
+
+内核可执行文件**不随安装包分发**，从官方 GitHub Release 下载后放到 `userData/proxy-kernel/`。之所以只认官方源：代理内核是整条链路的信任根，从第三方镜像拿等于把凭据交给镜像方。
 
 `proxy.scan` 只查本机回环地址上的常见代理端口（v2rayN 10808/10809、Clash 7890/7891、1080/1081、Nekoray 2080/2081），超时 400ms。它只回答「端口在不在监听」，**不**判断能否转发——「客户端开着但没选节点」时端口照样监听。真正的可用性由 `proxy.test` 确认，两步分开。
 
@@ -487,7 +501,7 @@ window.api = {
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   mirror: { start, cancel, state, onProgress },
   settings: { get, set },
-  proxy: { test, scan },
+  proxy: { test, scan, subscribe, parseSubscription, selectNode, kernelState, stopKernel },
   backup: { create, restore, runAuto },
   ocr: { status },
   annotations: { list, add, update, remove },

@@ -573,7 +573,11 @@ export interface WebReadingPrefs {
  * - `system`：跟随操作系统代理设置（Chromium 的默认行为）。
  * - `manual`：用下面 `ProxyPrefs.server` 指定的代理。
  */
-export type ProxyMode = 'off' | 'system' | 'manual'
+/**
+ * - `subscription`：本应用自己拉 sing-box 内核，用户只贴一条订阅链接。
+ *   不依赖任何外部客户端，是「我只有订阅链接」时唯一可行的模式。
+ */
+export type ProxyMode = 'off' | 'system' | 'manual' | 'subscription'
 
 /** 代理协议。只收这三种：Chromium 的 setProxy 也主要认这几个。 */
 export type ProxyProtocol = 'http' | 'https' | 'socks4' | 'socks5'
@@ -596,6 +600,38 @@ export interface ProxyPrefs {
   passwordConfigured: boolean
   /** 每行一条不走代理的地址，逗号或换行分隔；支持 `*` 通配与 CIDR。 */
   bypass: string
+  /** 订阅地址；`subscription` 模式必填。 */
+  subscriptionUrl: string
+  /** 上次拉到的订阅正文是否还在（缓存命中与否只影响界面提示）。 */
+  subscriptionCached: boolean
+  /** 选中的节点序号；越界时按 0 处理。 */
+  nodeIndex: number
+}
+
+/**
+ * 内置代理内核（sing-box）的运行状态。
+ *
+ * 与 `ProxyPrefs` 是并列的两条来源：`ProxyPrefs` 连用户自己的本地代理，
+ * 这个状态描述的是「本应用自己拉起来的内核」。
+ */
+export interface ProxyKernelState {
+  status: 'stopped' | 'starting' | 'running' | 'error'
+  /** 内核本地 mixed 端口；只有 running 时有值。 */
+  port?: number
+  /** 当前选中的节点名。 */
+  nodeName?: string
+  /** 当前节点的协议。 */
+  nodeProtocol?: string
+  /** 失败原因。 */
+  message?: string
+}
+
+/** 订阅解析结果概览，给界面显示节点数与协议分布。 */
+export interface ProxySubscriptionState {
+  total: number
+  skipped: number
+  byProtocol: Record<string, number>
+  nodes: { name: string; protocol: string }[]
 }
 
 /** 朗读偏好（Web speechSynthesis） */
@@ -1103,6 +1139,9 @@ export const DEFAULT_PROXY_PREFS: ProxyPrefs = {
   username: '',
   passwordConfigured: false,
   bypass: '',
+  subscriptionUrl: '',
+  subscriptionCached: false,
+  nodeIndex: 0,
 }
 
 export const DEFAULT_TTS_PREFS: TtsPrefs = {

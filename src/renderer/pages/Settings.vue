@@ -21,7 +21,7 @@ import {
   NSpin,
   useMessage,
 } from 'naive-ui'
-import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, ProxyMode, ProxyPrefs, ProxyProtocol, Settings, SiteRule, SiteRulePreview, Skin } from '@shared/types'
+import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, ProxyKernelState, ProxyMode, ProxyPrefs, ProxyProtocol, ProxySubscriptionState, Settings, SiteRule, SiteRulePreview, Skin } from '@shared/types'
 import { AI_PROMPT_KINDS, DEFAULT_AI_PREFS } from '@shared/types'
 import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
 import {
@@ -61,6 +61,73 @@ const proxyScanning = ref(false)
 const proxyScanResult = ref<string>('')
 const proxyFoundPorts = ref<{ port: number; label: string; protocol: 'socks5' | 'http' }[]>([])
 
+// —— 订阅模式（内置内核）——
+const subscriptionUrl = ref('')
+const subscriptionLoading = ref(false)
+const subscriptionOverview = ref<ProxySubscriptionState | null>(null)
+const subscriptionError = ref('')
+const kernelState = ref<ProxyKernelState>({ status: 'stopped' })
+const selectedNodeIndex = ref(0)
+
+/**
+ * 连接订阅：拉正文 → 启动内核 → 会话切过去。
+ *
+ * 成功后在本地留一份正文（`subscriptionBody`），换节点时直接复用，
+ * 不用每次都重新拉订阅——机场订阅接口通常有频率限制。
+ */
+async function connectSubscription() {
+  subscriptionLoading.value = true
+  subscriptionError.value = ''
+  try {
+    const res = await window.api.proxy.subscribe({ url: subscriptionUrl.value.trim() })
+    if (!res.ok) {
+      subscriptionError.value = res.message
+      return
+    }
+    subscriptionOverview.value = res.overview
+    selectedNodeIndex.value = 0
+    message.success(`已连上：${res.node.name}`)
+    await refreshKernelState()
+  } catch (e) {
+    subscriptionError.value = e instanceof Error ? e.message : '订阅处理失败'
+  } finally {
+    subscriptionLoading.value = false
+  }
+}
+
+async function refreshKernelState() {
+  try {
+    const res = await window.api.proxy.kernelState()
+    if (res.ok) kernelState.value = res.state
+  } catch {
+    /* 状态读不到不影响使用 */
+  }
+}
+
+/** 内核在跑但用户想换节点：直接切，比重新粘贴订阅快。 */
+async function switchNode(index: number) {
+  subscriptionLoading.value = true
+  try {
+    // 正文由主进程缓存，这里不用回传
+    const res = await window.api.proxy.selectNode({ index })
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    selectedNodeIndex.value = index
+    message.success(`已切换到：${res.node.name}`)
+    await refreshKernelState()
+  } finally {
+    subscriptionLoading.value = false
+  }
+}
+
+async function stopKernel() {
+  await window.api.proxy.stopKernel()
+  await refreshKernelState()
+  message.success('已停止内置内核')
+}
+
 /** 扫本机端口：找到的候选列出来，点一下直接填进表单。 */
 async function scanLocalProxy() {
   proxyScanning.value = true
@@ -88,6 +155,7 @@ function useFoundPort(found: { port: number; protocol: 'socks5' | 'http' }) {
 
 const proxyModeOptions = [
   { label: '直连', value: 'off' },
+  { label: '订阅（内置内核）', value: 'subscription' },
   { label: '跟随系统', value: 'system' },
   { label: '手动指定', value: 'manual' },
 ]
@@ -108,6 +176,8 @@ function syncProxyForm(prefs: ProxyPrefs | undefined) {
   proxyUsername.value = prefs.username
   proxyBypass.value = prefs.bypass
   proxyPassword.value = ''
+  subscriptionUrl.value = prefs.subscriptionUrl
+  selectedNodeIndex.value = prefs.nodeIndex
 }
 
 function proxyFormPayload(): Partial<Omit<ProxyPrefs, 'passwordConfigured'>> {
@@ -118,6 +188,8 @@ function proxyFormPayload(): Partial<Omit<ProxyPrefs, 'passwordConfigured'>> {
     port: proxyPort.value,
     username: proxyUsername.value.trim(),
     bypass: proxyBypass.value,
+    subscriptionUrl: subscriptionUrl.value.trim(),
+    nodeIndex: selectedNodeIndex.value,
   }
 }
 
@@ -976,6 +1048,60 @@ onMounted(async () => {
           </n-radio-group>
         </div>
 
+        <template v-if="proxyMode === 'subscription'">
+          <n-alert type="info" :show-icon="false">
+            贴一条订阅链接即可。本应用自带代理内核（sing-box），不需要另外装 v2rayN 之类的客户端；
+            内核只监听 127.0.0.1，随应用退出。
+          </n-alert>
+
+          <n-input-group>
+            <n-input-group-label style="width:80px">订阅地址</n-input-group-label>
+            <n-input
+              v-model:value="subscriptionUrl"
+              placeholder="https://... （你的订阅链接）"
+              :disabled="subscriptionLoading"
+            />
+            <n-button type="primary" :loading="subscriptionLoading" @click="connectSubscription">
+              连接订阅
+            </n-button>
+          </n-input-group>
+
+          <div class="kernel-bar">
+            <span :class="['kernel-dot', kernelState.status]"></span>
+            <span class="kernel-text">
+              <template v-if="kernelState.status === 'running'">
+                内核运行中 · 端口 {{ kernelState.port }} · 节点 {{ kernelState.nodeName }}
+              </template>
+              <template v-else-if="kernelState.status === 'starting'">内核启动中…</template>
+              <template v-else-if="kernelState.status === 'error'">内核未运行：{{ kernelState.message }}</template>
+              <template v-else>内核未运行</template>
+            </span>
+            <n-button v-if="kernelState.status === 'running'" size="tiny" quaternary @click="stopKernel">
+              停止内核
+            </n-button>
+          </div>
+
+          <n-alert v-if="subscriptionError" type="error" :show-icon="false">{{ subscriptionError }}</n-alert>
+
+          <div v-if="subscriptionOverview" class="sub-overview">
+            <p class="sub-summary">
+              共 {{ subscriptionOverview.total }} 个节点<template v-if="subscriptionOverview.skipped">
+              （跳过 {{ subscriptionOverview.skipped }} 条）</template>：
+              <span v-for="(count, proto) in subscriptionOverview.byProtocol" :key="proto" class="sub-proto">
+                {{ proto }} {{ count }}
+              </span>
+            </p>
+            <n-select
+              :value="selectedNodeIndex"
+              :options="subscriptionOverview.nodes.map((n, i) => ({ label: `${i + 1}. ${n.name}（${n.protocol}）`, value: i }))"
+              size="small"
+              filterable
+              placeholder="选择节点"
+              @update:value="switchNode"
+            />
+          </div>
+        </template>
+
         <template v-if="proxyMode === 'manual'">
           <n-input-group>
             <n-input-group-label style="width:80px">协议</n-input-group-label>
@@ -1517,6 +1643,56 @@ onMounted(async () => {
   min-height: 40px;
   padding: var(--space-2) 0;
   border-bottom: 1px solid var(--border);
+}
+
+.kernel-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+}
+
+.kernel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: none;
+}
+
+.kernel-dot.running {
+  background: var(--success-color, #18a058);
+}
+
+.kernel-dot.starting {
+  background: var(--warning-color, #f0a020);
+}
+
+.kernel-dot.error {
+  background: var(--error-color, #d03050);
+}
+
+.kernel-text {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sub-overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sub-summary {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.sub-proto {
+  margin-right: var(--space-2);
 }
 
 .proxy-scan {

@@ -37,7 +37,9 @@ import type {
   ReadFrontier,
   ReadFrontierPosition,
   TtsPosition,
+  ProxyKernelState,
   ProxyPrefs,
+  ProxySubscriptionState,
   Settings,
   SettingsUpdate,
   SiteRule,
@@ -223,6 +225,25 @@ const api = {
         ports: { port: number; label: string; protocol: 'socks5' | 'http' }[]
         message: string
       }>,
+    /** 拉订阅并启动内置内核（本应用自带 sing-box，不需要外部客户端）。 */
+    subscribe: (args?: { url?: string }) =>
+      ipcRenderer.invoke('proxy.subscribe', args) as Promise<
+        | { ok: true; port: number; node: { name: string; protocol: string }; overview: ProxySubscriptionState }
+        | { ok: false; message: string }
+      >,
+    /** 只解析不启动，先看有多少节点。 */
+    parseSubscription: (args: { body: string }) =>
+      ipcRenderer.invoke('proxy.parseSubscription', args) as Promise<
+        { ok: true; overview: ProxySubscriptionState } | { ok: false; message: string }
+      >,
+    /** 换节点：重启内核。 */
+    selectNode: (args: { index: number; body?: string }) =>
+      ipcRenderer.invoke('proxy.selectNode', args) as Promise<
+        { ok: true; port: number; node: { name: string; protocol: string } } | { ok: false; message: string }
+      >,
+    kernelState: () =>
+      ipcRenderer.invoke('proxy.kernelState') as Promise<{ ok: true; state: ProxyKernelState }>,
+    stopKernel: () => ipcRenderer.invoke('proxy.stopKernel') as Promise<{ ok: true }>,
   },
   backup: {
     create: (destDir: string) =>

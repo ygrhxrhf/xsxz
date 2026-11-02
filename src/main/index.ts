@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, net, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
 import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseReadingChapter, BrowseReadingPage, BrowseState, BrowseChapterLink, MirrorProgress, Settings, SiteRule } from '../shared/types'
@@ -48,6 +48,13 @@ import { atomicWriteText } from './atomicFile'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
 import { applyProxyToSession, judgeProxyProbe } from './proxy'
 import { describeScanResult, findOpenProxyPorts } from './proxyScan'
+import {
+  describeSubscription,
+  getKernelState,
+  selectSubscriptionNode,
+  startFromSubscription,
+  stopSubscriptionProxy,
+} from './proxyRuntime'
 import { mainFrameStatus, observeHttpStatus } from './httpStatus'
 import { createSerialQueue } from './serialQueue'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
@@ -1428,6 +1435,81 @@ function registerIpc(): void {
   })
 
   /**
+   * 拉订阅并启动内置内核。
+   *
+   * 用户只有一条订阅链接时走这条路：本应用自己下载正文、解析节点、拉起 sing-box，
+   * 再把浏览与下载的会话指到内核端口。全程不依赖任何外部客户端。
+   */
+  ipcMain.handle('proxy.subscribe', async (_e, args: { url?: string } | undefined) => {
+    const prefs = (await getSettings()).proxy
+    const url = String(args?.url ?? prefs?.subscriptionUrl ?? '').trim()
+    if (!url) return { ok: false, message: '请先填写订阅地址' }
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return { ok: false, message: '订阅地址不是合法的网址' }
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { ok: false, message: '订阅地址只支持 http / https' }
+    }
+
+    // 拉订阅：走主进程的 net（不是渲染层 fetch），这样不受页面 CORS 限制。
+    let body = ''
+    try {
+      const res = await net.fetch(url, { headers: { 'user-agent': 'spbf/0.1' } })
+      if (!res.ok) return { ok: false, message: `订阅拉取失败：HTTP ${res.status}` }
+      body = await res.text()
+    } catch (e) {
+      return { ok: false, message: `订阅拉取失败：${e instanceof Error ? e.message : String(e)}` }
+    }
+    if (!body.trim()) return { ok: false, message: '订阅内容为空' }
+
+    const overview = describeSubscription(body)
+    if (overview.total === 0) {
+      return {
+        ok: false,
+        message: `订阅里没有可用的节点${overview.skipped ? `（跳过 ${overview.skipped} 条）` : ''}`,
+      }
+    }
+
+    const started = await startFromSubscription({ body, index: prefs?.nodeIndex ?? 0 })
+    if (!started.ok) return started
+
+    // 记下订阅地址与选择，下次启动可直接复现
+    await updateSettings({
+      proxy: { subscriptionUrl: url, subscriptionCached: true, nodeIndex: prefs?.nodeIndex ?? 0 },
+    })
+    return { ok: true, port: started.port, node: started.node, overview }
+  })
+
+  /** 订阅概览：只解析不启动，用来在界面上先看到有多少节点。 */
+  ipcMain.handle('proxy.parseSubscription', async (_e, args: { body?: string } | undefined) => {
+    const body = String(args?.body ?? '')
+    if (!body.trim()) return { ok: false, message: '没有可解析的订阅内容' }
+    return { ok: true, overview: describeSubscription(body) }
+  })
+
+  /** 换节点：重启内核。 */
+  ipcMain.handle('proxy.selectNode', async (_e, args: { index?: number; body?: string } | undefined) => {
+    const index = Number(args?.index)
+    if (!Number.isSafeInteger(index) || index < 0) return { ok: false, message: '节点序号不合法' }
+    // body 可省略：主进程缓存着上次的订阅正文，换节点不必重拉（订阅接口有频率限制）
+    const res = await selectSubscriptionNode(index, args?.body)
+    if (res.ok) await updateSettings({ proxy: { nodeIndex: index } })
+    return res
+  })
+
+  /** 内核状态：界面据此显示「运行中 / 端口 / 当前节点」。 */
+  ipcMain.handle('proxy.kernelState', () => ({ ok: true, state: getKernelState() }))
+
+  /** 停掉内核（切回直连或手填代理前调用）。 */
+  ipcMain.handle('proxy.stopKernel', async () => {
+    await stopSubscriptionProxy()
+    return { ok: true }
+  })
+
+  /**
    * 扫本机常见代理端口。
    *
    * 用户装了 v2rayN 却不知道本地端口开在哪个数字上；让人一个个试不现实。
@@ -2708,6 +2790,8 @@ app.on('before-quit', () => {
   disposeHiddenView()
   // OCR 引擎是独立 worker，退出时收拾掉，别留残留进程
   void shutdownOcrEngine()
+  // 代理内核是我们拉起的子进程：不收掉就会变成孤儿，下次启动还占着端口
+  void stopSubscriptionProxy()
 })
 
 app.on('window-all-closed', () => {
