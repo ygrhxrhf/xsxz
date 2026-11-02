@@ -2,6 +2,9 @@
 
 ## 当前事实
 
+- **Electron 45 升级已合入 master 前的分支**（分支 `worktree-electron-45-upgrade`，计划见 `.multi-agent/plan/electron-45.md`）：
+  - `package.json` electron `^45.2.1` = **Chromium 156.0.8078.75 / Node 24.22.1**。
+  - safeStorage 全部改异步（含订阅代理新增的密码加解密路径）。
 - **订阅代理（内置内核）已提交**：`5f4ebbf` feat(proxy): 订阅模式，内置 sing-box 内核
 - **应用内代理（proxy）已提交**：`9d33a5e` feat(proxy): 应用内代理，浏览与下载共用同一出口
 - **挑战页自动重试（challenge-page）已提交**：
@@ -81,6 +84,62 @@ sing-box 1.14.4 下载成功（32891280 字节，`with_quic`/`with_utls` 齐全�
 - **真实链路探针**（本地转发型 HTTP 代理）：
   `resolveProxy → PROXY 127.0.0.1:38084`；`localhost → DIRECT`（`<local>` 生效）；
   `connects: ["example.com:443"]`；`title: "Example Domain"`；切回 direct → `DIRECT`
+
+## electron-45 做了什么
+
+四个提交（按依赖顺序）：
+
+1. `chore(deps)` Electron 45.2.1 + `.npmrc` 的 `electron_mirror`（npmmirror）。
+   Electron 42+ 取消 install 时下载二进制，必须 `npx install-electron` 补，
+   否则 electron-builder 的 `electronDist` 会把旧内核打进包。
+2. `refactor(settings)` safeStorage 同步 API → 异步。45 弃用、46 删除。
+   `getSettings` 里四把 Key 并发解且每把只解一次（原实现主 Key 解了两遍）。
+3. `build` 显式钉 `build.target`。electron-vite 5 的映射表只到 Electron 39，
+   45 会**静默回退到 chrome142**（已实测复算），不会报错。
+4. `test(cf)` 挑战页在 Chromium 156 上的复测结论与探针。
+
+## 验证证据（全部实跑）
+
+- `npm run typecheck` → exit 0
+- `npx vitest run src` → **136 文件 / 1306 用例全绿**
+- `npm run build` → exit 0；`out/preload/index.mjs` 仍是 CJS 且无 Buffer/setImmediate/events
+- 真 Electron e2e：startup 10/10、ocr 11/11、reader 11/11、mirror 19/19
+- `npm run pack:local` → exit 0，日志 `electronVersion=45.2.1`；
+  `release/win-unpacked/version` = `45.2.1`，`app.asar.unpacked` 含 tesseract.js(-core)
+- 运行时探针：`{"chrome":"156.0.8078.75","node":"24.22.1","electron":"45.2.1"}`，
+  UA 实际变成 `Chrome/156.0.8078.75`
+
+## 升级带来的意外收益（重要）
+
+挑战页战役当时结论是「隐藏下载视图拿不到 `cf_clearance`，只有可见窗口能过」（测于 Electron 43 / Chrome 150）。
+在 Chromium 156 上用三个独立变体复测：
+
+| 变体 | clearance | 首载 | 重载后 | 结论 |
+|---|---|---|---|---|
+| A 可见 BrowserWindow | 4316 ms | 116 字（挑战页） | 14036 字 / 264 链接 | PASS |
+| B 下载视图（不挂窗口，产品配置） | 2338 ms | 14028 字 / 264 链接 | 同上 | PASS |
+| C 下载视图（挂隐藏窗口） | 2578 ms | 13311 字 / 264 链接 | 同上 | PASS |
+
+→ **产品隐藏下载视图在 45 上能拿到 cookie**，`challengePage.ts` 的自动重试是真有效的；
+A 变体首载只有 116 字，证明站点挑战仍在，不是站取消了挑战。
+细节：`.multi-agent/evidence/electron-45-cf-2026-11-02/results.md`
+
+## 下一步
+
+1. **合入前查看**：`git -C .qoder/worktrees/electron-45-upgrade log --oneline master..HEAD`
+2. 合入 master 后需再跑一次全量 + `npm run plan:status`（worktree 的 node_modules 不共用）。
+3. `git push` 需用户点头。
+4. **人工验收（自动化测不出）**：
+   - 常用小说站首页正常出书目（不被新 UA 拦）
+   - 打开章节 / 下载本书 / 阅读器翻页
+   - 设置里存 API Key → **重启** → 仍显示「已配置」→ AI 请求能返回
+
+## 已知边界
+
+- CF 复测单站单次采样，Cloudflare 按指纹动态调难度。
+- 早期一次 B 变体出现 `ERR_FAILED (-2)` 后静默退出；独立 partition 重跑正常，
+  判断为 partition 复用偶发，未纳入结论。
+- 本 worktree 的 `node_modules` 与主工作区独立；主工作区仍是 Electron 43。
 
 ## challenge-page 做了什么
 
