@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   adjacentVisualPage,
+  estimateParagraphHeight,
+  paragraphIndexForRatio,
+  placeholderHeight,
   scrollTopForVisualPage,
   visualPageCount,
   visualPageIndex,
   visualPageIndexFromRatio,
   visualPageLabel,
+  windowBoundsFor,
+  type ReaderParagraphSpan,
 } from './readerPager'
 
 describe('visualPageCount', () => {
@@ -118,5 +123,78 @@ describe('visualPageLabel', () => {
     expect(visualPageLabel(2, -4)).toBe('第 1 / 1 页')
     expect(visualPageLabel(Number.NaN, 3)).toBe('第 1 / 1 页')
     expect(visualPageLabel(1, Number.POSITIVE_INFINITY)).toBe('第 1 / 1 页')
+  })
+})
+
+describe('estimateParagraphHeight', () => {
+  it('averages valid span heights and ignores invalid entries', () => {
+    const spans: ReaderParagraphSpan[] = [
+      { top: 0, bottom: 100 },
+      { top: 100, bottom: 200 },
+      { top: 200, bottom: 350 },
+      { top: 9999, bottom: 0 },
+    ]
+    expect(estimateParagraphHeight(spans, 73)).toBe(350 / 3)
+  })
+
+  it('falls back when there are no valid spans', () => {
+    expect(estimateParagraphHeight([], 73)).toBe(73)
+    expect(estimateParagraphHeight([{ top: 1, bottom: 1 }], 73)).toBe(73)
+    expect(estimateParagraphHeight([{ top: Number.NaN, bottom: 5 }], 73)).toBe(73)
+  })
+
+  it('falls back to 0 when the fallback itself is illegal', () => {
+    expect(estimateParagraphHeight([], Number.NaN)).toBe(0)
+    expect(estimateParagraphHeight([], -5)).toBe(0)
+  })
+})
+
+describe('placeholderHeight', () => {
+  it('multiplies count by average height', () => {
+    expect(placeholderHeight(10, 100)).toBe(1000)
+    expect(placeholderHeight(0, 100)).toBe(0)
+  })
+
+  it('returns 0 for illegal count or height', () => {
+    expect(placeholderHeight(-3, 100)).toBe(0)
+    expect(placeholderHeight(Number.NaN, 100)).toBe(0)
+    expect(placeholderHeight(10, Number.NaN)).toBe(0)
+    expect(placeholderHeight(10, -1)).toBe(0)
+  })
+})
+
+describe('paragraphIndexForRatio', () => {
+  it('maps ratio to a clamped index', () => {
+    expect(paragraphIndexForRatio(0, 2600)).toBe(0)
+    expect(paragraphIndexForRatio(0.5, 2600)).toBe(1300)
+    expect(paragraphIndexForRatio(1, 2600)).toBe(2599)
+    expect(paragraphIndexForRatio(2, 2600)).toBe(2599)
+    expect(paragraphIndexForRatio(-1, 2600)).toBe(0)
+  })
+
+  it('returns 0 when total is illegal', () => {
+    expect(paragraphIndexForRatio(0.5, 0)).toBe(0)
+    expect(paragraphIndexForRatio(0.5, Number.NaN)).toBe(0)
+    expect(paragraphIndexForRatio(0.5, -3)).toBe(0)
+  })
+})
+
+describe('windowBoundsFor', () => {
+  it('renders the whole chapter when size covers it', () => {
+    expect(windowBoundsFor(500, 300, 1000)).toEqual({ start: 0, end: 300 })
+    expect(windowBoundsFor(0, 300, 300)).toEqual({ start: 0, end: 300 })
+  })
+
+  it('centers the window on target and clamps to the edges', () => {
+    expect(windowBoundsFor(1300, 2600, 240)).toEqual({ start: 1180, end: 1420 })
+    expect(windowBoundsFor(0, 2600, 240)).toEqual({ start: 0, end: 240 })
+    expect(windowBoundsFor(2599, 2600, 240)).toEqual({ start: 2360, end: 2600 })
+  })
+
+  it('keeps window size within [0, total] and handles illegal size', () => {
+    expect(windowBoundsFor(100, 2600, 5000)).toEqual({ start: 0, end: 2600 })
+    expect(windowBoundsFor(100, 2600, Number.NaN)).toEqual({ start: 0, end: 0 })
+    expect(windowBoundsFor(100, 2600, 0)).toEqual({ start: 0, end: 0 })
+    expect(windowBoundsFor(100, 0, 240)).toEqual({ start: 0, end: 0 })
   })
 })

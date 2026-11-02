@@ -194,3 +194,44 @@ export function visualPageLabel(pageIndex: number, pageCount: number): string {
   const x = Math.max(1, Math.min(y, Math.trunc(pageIndex) + 1))
   return `第 ${x} / ${y} 页`
 }
+
+/**
+ * 已渲染段落的平均段高（px），用于给未渲染段估算占位高度。
+ * 无有效数据时回退 fallback（调用方传入基于字号的估算值）。
+ */
+export function estimateParagraphHeight(spans: readonly ReaderParagraphSpan[], fallback: number): number {
+  const valid = (spans ?? []).filter(isSpan)
+  if (!valid.length) return Number.isFinite(fallback) && fallback > 0 ? fallback : 0
+  let sum = 0
+  for (const s of valid) sum += s.bottom - s.top
+  const avg = sum / valid.length
+  return avg > 0 ? avg : fallback
+}
+
+/** 未渲染段数的估算总高（px）；count <= 0 或非法返回 0。 */
+export function placeholderHeight(count: number, avgHeight: number): number {
+  if (!isFiniteNumber(count) || count <= 0) return 0
+  const avg = Number.isFinite(avgHeight) && avgHeight > 0 ? avgHeight : 0
+  return count * avg
+}
+
+/** 进度比例对应的目标段下标（0-based，夹紧到 [0, total-1]）。 */
+export function paragraphIndexForRatio(ratio: number, total: number): number {
+  if (!Number.isFinite(total) || total <= 0) return 0
+  return clampIndex(Math.round(clampRatio(ratio) * (total - 1)), total)
+}
+
+/**
+ * 窗口化渲染的段落区间：以 target 为中心、size 为窗口大小，夹紧在 [0, total)。
+ * size >= total 时整章渲染（start=0, end=total）。
+ */
+export function windowBoundsFor(target: number, total: number, size: number): { start: number; end: number } {
+  if (!Number.isFinite(total) || total <= 0) return { start: 0, end: 0 }
+  const win = Number.isFinite(size) && size > 0 ? Math.floor(size) : 0
+  if (win <= 0) return { start: 0, end: 0 }
+  if (win >= total) return { start: 0, end: total }
+  const t = clampIndex(target, total)
+  let start = Math.max(0, t - Math.floor(win / 2))
+  start = Math.min(start, total - win)
+  return { start, end: start + win }
+}
