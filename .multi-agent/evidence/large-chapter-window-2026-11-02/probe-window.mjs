@@ -231,12 +231,17 @@ try {
       pane.scrollTop = f * maxTop;
       const deadline = Date.now() + 5000;
       let hit = -1;
+      // 判定说明：视口中心不必精确落在某段内部——段间距 margin ≈ .45em ≈ 8px，
+      // 中心线压在两段之间的正常间距上不是空白。中心上下 24px 内有段落就算命中；
+      // 真空白（中心上下几十 px 都无内容）必然超过 24px，不会漏报。
+      const TOL = 24;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 120));
         const ps = [...pane.querySelectorAll('.para[data-p]')].map((n) => ({ p: Number(n.dataset.p), top: n.getBoundingClientRect().top, bottom: n.getBoundingClientRect().bottom }));
         const cy = pane.getBoundingClientRect().top + pane.clientHeight / 2;
-        const h = ps.find((s) => s.top <= cy && s.bottom >= cy);
-        if (h) { hit = h.p; break; }
+        const nearest = ps.length ? ps.map((s) => ({ p: s.p, d: Math.min(Math.abs(s.top - cy), Math.abs(s.bottom - cy)) })).sort((a, b) => a.d - b.d)[0] : null;
+        const h = nearest && nearest.d <= TOL ? nearest.p : -1;
+        if (h >= 0) { hit = h; break; }
       }
       results.push({ f: Math.round(f * 100), centerPara: hit });
       // 每点都附带诊断：scrollTop/高度、窗口 bounds、中心是否落在占位间隙
@@ -245,6 +250,26 @@ try {
       const botGap = pane.querySelector('.reader-gap:not(.top)');
       const paneRect = pane.getBoundingClientRect();
       const cy = paneRect.top + pane.clientHeight / 2;
+      const heights = {};
+      for (const s of ps) { const h = Math.round(s.bottom - s.top); heights[h] = (heights[h] || 0) + 1; }
+      const cover = ps.filter((s) => s.top <= cy && s.bottom >= cy).map((s) => s.p);
+      // 决胜诊断（仅 miss 时）：中心处真实元素 / 强制布局后是否自愈 / 中心附近段落状态。
+      // 目的：区分「真实空白」与「探针用估算盒判定导致的假阳性」——
+      // content-visibility:auto 对视口外段返回 contain-intrinsic-size 估算盒（72px 级），
+      // 估算盒位置可能与真实布局错位，让 cy 落在估算缝隙里而实际有文字。
+      let decisive = null;
+      if (hit < 0) {
+        const cx = paneRect.left + pane.clientWidth / 2;
+        const elemAt = (() => { const e = document.elementFromPoint(cx, cy); return e ? e.tagName + '.' + String(e.className).slice(0, 40) : 'null'; })();
+        void pane.offsetHeight;
+        await new Promise((r) => setTimeout(r, 40));
+        const cy2 = pane.getBoundingClientRect().top + pane.clientHeight / 2;
+        const psAfter = [...pane.querySelectorAll('.para[data-p]')].map((n) => ({ p: +n.dataset.p, top: n.getBoundingClientRect().top, bottom: n.getBoundingClientRect().bottom }));
+        const hAfter = psAfter.find((s) => s.top <= cy2 && s.bottom >= cy2);
+        const realAfter = (() => { const e = document.elementFromPoint(cx, cy2); return e && e.classList && e.classList.contains('para') && e.dataset.p != null ? +e.dataset.p : -1; })();
+        const near = ps.map((s) => ({ p: s.p, d: Math.round(Math.min(Math.abs(s.top - cy), Math.abs(s.bottom - cy))) })).sort((a, b) => a.d - b.d).slice(0, 4);
+        decisive = { elemAt, hAfter: hAfter ? hAfter.p : -1, realAfter, near };
+      }
       results[results.length - 1].diag = JSON.stringify({
         f: Math.round(f * 100),
         scrollTop: Math.round(pane.scrollTop), scrollHeight: Math.round(pane.scrollHeight), clientHeight: pane.clientHeight,
@@ -253,6 +278,10 @@ try {
         firstTop: ps.length ? Math.round(ps[0].top) : null, lastBottom: ps.length ? Math.round(ps[ps.length - 1].bottom) : null,
         topGapHeight: topGap ? topGap.offsetHeight : 0, botGapHeight: botGap ? botGap.offsetHeight : 0,
         nodes: ps.length,
+        pSeq: ps.map((s) => s.p).slice(0, 260),
+        heights: Object.entries(heights).sort((a, b) => Number(a[0]) - Number(b[0])),
+        coverCenter: cover,
+        decisive,
       });
     }
     return results;

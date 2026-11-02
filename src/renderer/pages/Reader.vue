@@ -345,6 +345,9 @@ function paragraphSpotAtViewportCenter(el: HTMLElement): { index: number; offset
 /**
  * 把渲染窗口挪到 target 附近，并把原来视口中心那一段钉回视口中心。
  * 占位高度是估算值，不做这一步的话每次迁窗都会让正文向上/向下漂一截。
+ *
+ * 落进占位间隙（spot=null）时同样不能放弃：迁窗后目标段真实 DOM 已就位，
+ * 必须按它的真实几何补偿，否则视口中心会停在两段之间的空白里（滚动后段空白）。
  */
 function recenterWindowTo(target: number) {
   const pane = contentRef.value
@@ -352,17 +355,26 @@ function recenterWindowTo(target: number) {
   if (!pane || !isLargeChapter.value || total <= 0) return
   const bounds = windowBoundsFor(target, total, WINDOW_SIZE)
   if (bounds.start === renderWindowStart.value && bounds.end === renderedCount.value) return
+  // 迁窗前先记下「视口中心段」与「目标段」：前者钉回中心，后者用于 spot=null 时兜底补偿。
   const spot = paragraphSpotAtViewportCenter(pane)
+  const anchorIndex = spot ? spot.index : target
   renderWindowStart.value = bounds.start
   renderedCount.value = bounds.end
-  if (!spot) return
   void nextTick(() => {
     const el = contentRef.value
     if (!el) return
-    const node = el.querySelector<HTMLElement>(`.para[data-p="${spot.index}"]`)
-    if (!node) return
     const centerY = el.getBoundingClientRect().top + el.clientHeight / 2
-    el.scrollTop += node.getBoundingClientRect().top + spot.offset - centerY
+    const anchor = el.querySelector<HTMLElement>(`.para[data-p="${anchorIndex}"]`)
+    if (!anchor) return
+    const anchorTop = anchor.getBoundingClientRect().top
+    // 视口中心原来在那段内的段内偏移；中心落进占位间隙时把它视为段中点（对齐到真实段）。
+    const anchorOffset = spot ? spot.offset : anchor.offsetHeight / 2
+    const shift = anchorTop + anchorOffset - centerY
+    // 迁窗本身就是一次大位移（target 到 bounds 中心的差通常 <= WINDOW_SIZE/2 段），
+    // 但极端情况下（比例估算偏差大）补偿量可能到几千 px：超过 1800px（约一整窗）说明
+    // 估算与真实几何严重脱节，再补偿只会触发「迁窗→scroll→再迁窗」的风暴，直接放弃。
+    if (!Number.isFinite(shift) || Math.abs(shift) >= 1800) return
+    el.scrollTop += shift
     syncVisualPage()
     refreshAvgParaHeight()
   })
