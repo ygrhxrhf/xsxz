@@ -371,7 +371,7 @@ describe('Settings section content visibility', () => {
     await flushUi()
 
     const navLabels = [...document.querySelectorAll('.settings-nav-item')].map((item) => item.textContent?.trim())
-    expect(navLabels).toEqual(['外观', '书库', '听书', 'AI', '站点规则', '备份与恢复', '关于'])
+    expect(navLabels).toEqual(['外观', '书库', '网络代理', '听书', 'AI', '站点规则', '备份与恢复', '关于'])
     const visibleCard = (text: string) => {
       const card = [...document.querySelectorAll('.settings-card')]
         .find((item) => item.textContent?.includes(text)) as HTMLElement | undefined
@@ -389,6 +389,8 @@ describe('Settings section content visibility', () => {
     expect(visibleCard('阅读偏好').textContent).toContain('字体、行距、主题和列宽请在阅读器的“外观”面板中调整。')
     expect((await select('书库')).getAttribute('aria-current')).toBe('page')
     expect(visibleCard('书库路径').textContent).toContain('搬迁书库')
+    await select('网络代理')
+    expect(visibleCard('代理方式').textContent).toContain('直连')
     await select('听书')
     expect(visibleCard('在线听书').textContent).toContain('连接试音')
     await select('AI')

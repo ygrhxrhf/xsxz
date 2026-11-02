@@ -566,6 +566,38 @@ export interface WebReadingPrefs {
   autoSpeed: number
 }
 
+/**
+ * 内置浏览 / 下载的代理方式。
+ *
+ * - `off`：直连（默认）。系统代理也不走——很多人装着 PAC / 全局代理但只想让本站直连。
+ * - `system`：跟随操作系统代理设置（Chromium 的默认行为）。
+ * - `manual`：用下面 `ProxyPrefs.server` 指定的代理。
+ */
+export type ProxyMode = 'off' | 'system' | 'manual'
+
+/** 代理协议。只收这三种：Chromium 的 setProxy 也主要认这几个。 */
+export type ProxyProtocol = 'http' | 'https' | 'socks4' | 'socks5'
+
+/**
+ * 代理配置。作用范围是浏览与下载共用的 `persist:novel` 分区，
+ * 因此「浏览页能打开」与「下载能下」永远走同一条出口。
+ */
+export interface ProxyPrefs {
+  mode: ProxyMode
+  /** `http` / `https` / `socks4` / `socks5`。`manual` 模式才有意义。 */
+  protocol: ProxyProtocol
+  /** 主机名或 IP，不含协议前缀与端口。 */
+  host: string
+  /** 1–65535。 */
+  port: number
+  /** 代理认证用户名；留空表示不需要认证。 */
+  username: string
+  /** 是否已保存密码（渲染进程只拿布尔，明文只在主进程）。 */
+  passwordConfigured: boolean
+  /** 每行一条不走代理的地址，逗号或换行分隔；支持 `*` 通配与 CIDR。 */
+  bypass: string
+}
+
 /** 朗读偏好（Web speechSynthesis） */
 export interface TtsPrefs {
   /** 语速，0.5–2 */
@@ -655,6 +687,8 @@ export interface Settings {
   downloadPace: DownloadPace
   /** 主进程总补齐；可选仅用于兼容旧调用方和测试数据。 */
   autoBackup?: { destDir: string; lastSuccessAt: string; lastError: string }
+  /** 浏览 / 下载代理；主进程始终补齐，缺省直连。 */
+  proxy?: ProxyPrefs
 }
 
 export interface SettingsUpdate {
@@ -678,6 +712,10 @@ export interface SettingsUpdate {
   /** 省略则不改已保存档位。 */
   downloadPace?: DownloadPace
   autoBackup?: { destDir?: string; lastSuccessAt?: string; lastError?: string }
+  /** 代理配置；`password` 单独走明文提交，落盘前加密。 */
+  proxy?: Partial<Omit<ProxyPrefs, 'passwordConfigured'>>
+  /** 空字符串清除已保存的代理密码。 */
+  proxyPassword?: string
 }
 
 /** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */
@@ -1054,6 +1092,17 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
 export const DEFAULT_WEB_READING_PREFS: WebReadingPrefs = {
   autoPage: true,
   autoSpeed: 3,
+}
+
+/** 缺省直连：不改变任何现存用户的网络行为。 */
+export const DEFAULT_PROXY_PREFS: ProxyPrefs = {
+  mode: 'off',
+  protocol: 'http',
+  host: '',
+  port: 7890,
+  username: '',
+  passwordConfigured: false,
+  bypass: '',
 }
 
 export const DEFAULT_TTS_PREFS: TtsPrefs = {

@@ -42,10 +42,12 @@ import {
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
-import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider } from './settings'
+import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider, getProxyPassword } from './settings'
 import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setExternalBusyProbe, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdleSlice, getPausedForHuman } from './download'
 import { atomicWriteText } from './atomicFile'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
+import { applyProxyToSession, judgeProxyProbe } from './proxy'
+import { mainFrameStatus, observeHttpStatus } from './httpStatus'
 import { createSerialQueue } from './serialQueue'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
@@ -302,11 +304,90 @@ async function saveAiDone(
   )
 }
 
+/**
+ * 浏览与下载共用的会话。代理也在这里落地——一个分区一处设置，
+ * 「浏览页能打开」与「下载能下」永远走同一条出口。
+ */
 function novelSession() {
   const ses = session.fromPartition(PARTITION)
   // 浏览 View 和下载 View 共用这个分区，一处覆盖两处
   ses.setUserAgent(browseUserAgent())
   return ses
+}
+
+/**
+ * 代理需要用户名密码时，Chromium 会在 `app` 上发 `login` 事件问一次
+ * （注意这是 app 级事件，不是 session 级）。这里用设置里存的凭据回答。
+ *
+ * 只处理 `isProxy` 的认证请求：站点自己的 401 登录交给网页表单，
+ * 不能被这里抢答成代理凭据。
+ */
+let proxyAuthInstalled = false
+
+function installProxyAuth(): void {
+  if (proxyAuthInstalled) return
+  proxyAuthInstalled = true
+  app.on('login', (event, _webContents, _details, authInfo, callback) => {
+    if (!authInfo.isProxy) return
+    event.preventDefault()
+    void getSettings()
+      .then(async (settings) => {
+        const user = settings.proxy?.username ?? ''
+        const pass = await getProxyPassword()
+        callback(user, pass)
+      })
+      .catch(() => callback('', ''))
+  })
+}
+
+/**
+ * 用一个一次性隐藏视图加载目标地址，返回主框架的 HTTP 状态码。
+ *
+ * 复用 `observeHttpStatus` 那套 webRequest 观察，而不是自己发请求：
+ * 要验证的是「真会话 + 真代理配置」这条链，裸 fetch 走的是 Node 的栈，验不出来。
+ * 拿不到状态码（DNS 失败、代理拒绝、TLS 挂）就返回 undefined，由调用方判失败。
+ */
+async function probeThroughSession(url: string): Promise<number | undefined> {
+  const view = new WebContentsView({
+    webPreferences: {
+      session: novelSession(),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+  view.setVisible(false)
+  view.setBounds({ x: -2400, y: -2400, width: 800, height: 600 })
+  // 观察器是懒安装的（下载视图创建时才装）；探针可能比它先跑，这里补上。
+  observeHttpStatus(view.webContents.session)
+  try {
+    await view.webContents.loadURL(url).catch(() => undefined)
+    // 状态码在导航完成后才落进观察表；给一点收尾时间。
+    await new Promise((r) => setTimeout(r, 300))
+    return mainFrameStatus(url)
+  } finally {
+    try {
+      view.webContents.close()
+    } catch {
+      /* 已销毁 */
+    }
+  }
+}
+
+/**
+ * 把已保存的代理应用到共用会话。启动时调一次，设置改动后再调一次。
+ * 失败不阻断启动：直连也能用，只是访问不了需要代理的站。
+ */
+async function applySavedProxy(): Promise<void> {
+  try {
+    const settings = await getSettings()
+    const prefs = settings.proxy
+    if (!prefs) return
+    const res = await applyProxyToSession(novelSession(), prefs)
+    if (!res.ok) console.warn(`代理未应用：${res.message}`)
+  } catch (e) {
+    console.warn('应用代理设置失败：', e)
+  }
 }
 
 function emitBrowseState(): void {
@@ -1338,7 +1419,51 @@ function registerIpc(): void {
     }
     bookOverview.settingsChanged(next.ai?.autoBookOverview === true)
     void aiReadingFollow.settingsChanged()
+    // 代理改动立即生效：不等重启，也顺手断开旧连接（否则老连接还走原出口）。
+    if (patch.proxy || typeof patch.proxyPassword === 'string') {
+      await applySavedProxy()
+    }
     return next
+  })
+
+  /**
+   * 试一次代理：用当前会话加载目标地址，只看有没有拿到 HTTP 响应。
+   *
+   * 走的是真会话，不是另起一个：只有这样才能验证「浏览与下载共用的那条出口」确实通。
+   * 挑战页 / 403 都算通——那已经证明 TCP + TLS + DNS 全过了。
+   */
+  ipcMain.handle('proxy.test', async (_e, args: { url?: string; prefs?: unknown } | undefined) => {
+    let url = 'https://www.baidu.com/'
+    try {
+      const candidate = typeof args?.url === 'string' && args.url.trim() ? args.url.trim() : url
+      const parsed = new URL(candidate)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { ok: false, message: '只能测试 http / https 地址' }
+      }
+      url = parsed.toString()
+    } catch {
+      return { ok: false, message: '测试地址不是合法的网址' }
+    }
+
+    // 允许先试未保存的设置：用户在填表过程中就想点一下试试。
+    let restore: (() => Promise<void>) | null = null
+    if (args?.prefs) {
+      const { normalizeProxyPrefs } = await import('./proxy')
+      const trial = normalizeProxyPrefs(args.prefs)
+      const res = await applyProxyToSession(novelSession(), trial)
+      if (!res.ok) return { ok: false, message: res.message }
+      // 试完立刻还原成已保存的设置，避免「测一下」把会话留在临时配置上。
+      restore = () => applySavedProxy()
+    }
+
+    try {
+      const status = await probeThroughSession(url)
+      return judgeProxyProbe({ ok: status !== undefined, status })
+    } catch (e) {
+      return judgeProxyProbe({ ok: false, error: e instanceof Error ? e.message : String(e) })
+    } finally {
+      if (restore) await restore().catch(() => {})
+    }
   })
 
   ipcMain.handle('ai.getChat', async (_e, { bookId }: { bookId: string }) => {
@@ -2490,7 +2615,10 @@ app.whenReady().then(async () => {
     return wc && !wc.isDestroyed() ? { id: wc.id, url: wc.getURL() } : null
   })
   browserAdRequestFilter.setSiteRules(await listSiteRules())
+  installProxyAuth()
   browserAdRequestFilter.install(novelSession())
+  // 代理必须在开窗口之前落地：浏览页第一跳就要走对出口。
+  await applySavedProxy()
   registerIpc()
   createWindow()
   bookOverview.start()

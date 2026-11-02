@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { atomicWriteText } from './atomicFile'
 import type {
   AiPrefs,
+  ProxyPrefs,
   AiPromptKind,
   AiProvider,
   AppearancePrefs,
@@ -31,8 +32,10 @@ import {
   DEFAULT_WEB_READING_PREFS,
   DEFAULT_AI_PLACEHOLDER,
   DEFAULT_TIER_SENSE_PREFS,
+  DEFAULT_PROXY_PREFS,
 } from '../shared/types'
 import { defaultLibraryPath } from './libraryPath'
+import { normalizeProxyPrefs } from './proxy'
 
 const SKINS: readonly Skin[] = ['light', 'dark']
 const DOWNLOAD_PACES: readonly DownloadPace[] = ['slow', 'standard', 'fast']
@@ -248,6 +251,25 @@ export function resetSettingsCacheForTests(): void {
   cache = null
 }
 
+/**
+ * 读代理配置。`passwordConfigured` 只由密文实际可解与否决定——
+ * 让渲染层提交的布尔值直接落盘，等于允许伪造「已配密码」。
+ */
+function readProxyPrefs(value: unknown, passwordStored: boolean): ProxyPrefs {
+  return { ...normalizeProxyPrefs(value), passwordConfigured: passwordStored }
+}
+
+/** 取已保存的代理密码明文，供 session 的认证回调使用；没有则空串。 */
+export async function getProxyPassword(): Promise<string> {
+  const raw = await loadRaw()
+  if (typeof raw.proxyPasswordEnc !== 'string' || !raw.proxyPasswordEnc) return ''
+  try {
+    return safeStorage.decryptString(Buffer.from(raw.proxyPasswordEnc, 'base64'))
+  } catch {
+    return ''
+  }
+}
+
 async function loadRaw(): Promise<Record<string, unknown>> {
   if (cache) return cache
   try {
@@ -347,6 +369,7 @@ export async function getSettings(): Promise<Settings> {
     webReading: normalizeWebReadingPrefs(raw.webReading),
     ai: normalizeAiPrefs(raw.ai),
     downloadPace: readDownloadPace(raw.downloadPace),
+    proxy: readProxyPrefs(raw.proxy, hasEncryptedKey(raw.proxyPasswordEnc)),
     autoBackup: {
       destDir: typeof backup.destDir === 'string' ? backup.destDir.trim() : '',
       lastSuccessAt: typeof backup.lastSuccessAt === 'string' ? backup.lastSuccessAt : '',
@@ -447,6 +470,23 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
     raw.webReading = normalizeWebReadingPrefs({ ...readRecord(raw.webReading), ...readRecord(patch.webReading) })
   }
   if ('downloadPace' in patch) raw.downloadPace = readDownloadPace(patch.downloadPace)
+  if (patch.proxy) {
+    const merged = normalizeProxyPrefs({
+      ...readRecord(raw.proxy),
+      ...readRecord(patch.proxy),
+      // passwordConfigured 由主进程根据密文实际存在与否决定，不接受渲染层伪造
+      passwordConfigured: false,
+    })
+    raw.proxy = merged
+  }
+  if (typeof patch.proxyPassword === 'string') {
+    if (patch.proxyPassword) {
+      requireEncryptionAvailable()
+      raw.proxyPasswordEnc = safeStorage.encryptString(patch.proxyPassword).toString('base64')
+    } else {
+      delete raw.proxyPasswordEnc
+    }
+  }
   if (patch.autoBackup) {
     const previous = readRecord(raw.autoBackup)
     const backupPatch = readRecord(patch.autoBackup)

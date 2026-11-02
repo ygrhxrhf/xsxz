@@ -18,12 +18,14 @@ vi.mock('electron', () => ({
 import {
   DEFAULT_AI_PLACEHOLDER,
   DEFAULT_AI_PREFS,
+  DEFAULT_PROXY_PREFS,
   DEFAULT_READER_PREFS,
 } from '../shared/types'
 import {
   AI_CUSTOM_SERVICE_NOTICE,
   assertTrustedAiEndpoint,
   getApiKey,
+  getProxyPassword,
   getSettings,
   isLegacyDeepSeekModel,
   normalizeAiPrefs,
@@ -552,5 +554,60 @@ describe('AI settings compatibility', () => {
     expect(normalizeAiPrefs({ budgetWarningTokens: 100 }).budgetWarningTokens).toBe(1000)
     expect(normalizeAiPrefs({ budgetWarningTokens: 100000 }).budgetWarningTokens).toBe(50000)
     expect(normalizeAiPrefs({ budgetWarningTokens: 'bad' }).budgetWarningTokens).toBe(DEFAULT_AI_PREFS.budgetWarningTokens)
+  })
+})
+
+describe('代理设置持久化', () => {
+  it('默认直连：老 settings.json 没有 proxy 字段时也不改变网络行为', async () => {
+    resetSettingsCacheForTests()
+    const settings = await getSettings()
+    expect(settings.proxy?.mode).toBe('off')
+    expect(settings.proxy?.host).toBe('')
+  })
+
+  it('保存后落盘，重启仍生效', async () => {
+    await updateSettings({
+      proxy: { mode: 'manual', protocol: 'socks5', host: '127.0.0.1', port: 1080, username: 'u', bypass: 'localhost' },
+    })
+    resetSettingsCacheForTests()
+    const settings = await getSettings()
+    expect(settings.proxy?.mode).toBe('manual')
+    expect(settings.proxy?.protocol).toBe('socks5')
+    expect(settings.proxy?.host).toBe('127.0.0.1')
+    expect(settings.proxy?.port).toBe(1080)
+    expect(settings.proxy?.bypass).toBe('localhost')
+  })
+
+  it('部分更新不清掉其它字段', async () => {
+    await updateSettings({ proxy: { mode: 'manual', host: '10.0.0.1', port: 8080, username: 'keep' } })
+    await updateSettings({ proxy: { port: 9090 } })
+    resetSettingsCacheForTests()
+    const settings = await getSettings()
+    expect(settings.proxy?.host).toBe('10.0.0.1')
+    expect(settings.proxy?.username).toBe('keep')
+    expect(settings.proxy?.port).toBe(9090)
+  })
+
+  it('代理密码加密保存，只回布尔值，绝不回明文', async () => {
+    await updateSettings({ proxyPassword: 's3cret-pass' })
+    resetSettingsCacheForTests()
+    const settings = await getSettings()
+    expect(settings.proxy?.passwordConfigured).toBe(true)
+    expect(JSON.stringify(settings)).not.toContain('s3cret-pass')
+    expect(await getProxyPassword()).toBe('s3cret-pass')
+  })
+
+  it('空串清除已保存的代理密码', async () => {
+    await updateSettings({ proxyPassword: 's3cret-pass' })
+    await updateSettings({ proxyPassword: '' })
+    resetSettingsCacheForTests()
+    expect((await getSettings()).proxy?.passwordConfigured).toBe(false)
+    expect(await getProxyPassword()).toBe('')
+  })
+
+  it('渲染层伪造 passwordConfigured 无效', async () => {
+    await updateSettings({ proxy: { mode: 'manual', host: '1.2.3.4', port: 1 } })
+    resetSettingsCacheForTests()
+    expect((await getSettings()).proxy?.passwordConfigured).toBe(false)
   })
 })

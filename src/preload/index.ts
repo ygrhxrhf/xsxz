@@ -37,6 +37,7 @@ import type {
   ReadFrontier,
   ReadFrontierPosition,
   TtsPosition,
+  ProxyPrefs,
   Settings,
   SettingsUpdate,
   SiteRule,
@@ -207,6 +208,11 @@ const api = {
   settings: {
     get: () => ipcRenderer.invoke('settings.get') as Promise<Settings>,
     set: (update: SettingsUpdate) => ipcRenderer.invoke('settings.set', update) as Promise<Settings>,
+  },
+  proxy: {
+    /** 用真会话试一次：只看有没有拿到 HTTP 响应，403 / 挑战页也算通。 */
+    test: (args?: { url?: string; prefs?: Partial<ProxyPrefs> }) =>
+      ipcRenderer.invoke('proxy.test', args) as Promise<{ ok: boolean; message: string }>,
   },
   backup: {
     create: (destDir: string) =>

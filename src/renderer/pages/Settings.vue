@@ -21,7 +21,7 @@ import {
   NSpin,
   useMessage,
 } from 'naive-ui'
-import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, Settings, SiteRule, SiteRulePreview, Skin } from '@shared/types'
+import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, ProxyMode, ProxyPrefs, ProxyProtocol, Settings, SiteRule, SiteRulePreview, Skin } from '@shared/types'
 import { AI_PROMPT_KINDS, DEFAULT_AI_PREFS } from '@shared/types'
 import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
 import {
@@ -43,12 +43,89 @@ const emit = defineEmits<{
 const message = useMessage()
 const rulePreview = ref<SiteRulePreview | null>(null)
 const rulePreviewing = ref(false)
-type SettingsSection = 'appearance' | 'library' | 'tts' | 'ai' | 'siteRules' | 'backup' | 'about'
+type SettingsSection = 'appearance' | 'library' | 'network' | 'tts' | 'ai' | 'siteRules' | 'backup' | 'about'
 const activeSection = ref<SettingsSection>('appearance')
+
+/** 代理表单：单独一份可编辑副本，只有点「保存」才写回设置。 */
+const proxyMode = ref<ProxyMode>('off')
+const proxyProtocol = ref<ProxyProtocol>('http')
+const proxyHost = ref('')
+const proxyPort = ref<number>(7890)
+const proxyUsername = ref('')
+const proxyPassword = ref('')
+const proxyBypass = ref('')
+const proxyTesting = ref(false)
+const proxyTestResult = ref<{ ok: boolean; message: string } | null>(null)
+const proxySaving = ref(false)
+
+const proxyModeOptions = [
+  { label: '直连', value: 'off' },
+  { label: '跟随系统', value: 'system' },
+  { label: '手动指定', value: 'manual' },
+]
+const proxyProtocolOptions = [
+  { label: 'HTTP', value: 'http' },
+  { label: 'HTTPS', value: 'https' },
+  { label: 'SOCKS4', value: 'socks4' },
+  { label: 'SOCKS5', value: 'socks5' },
+]
+
+/** 把设置里的代理同步进表单；保存或重载设置后调用。 */
+function syncProxyForm(prefs: ProxyPrefs | undefined) {
+  if (!prefs) return
+  proxyMode.value = prefs.mode
+  proxyProtocol.value = prefs.protocol
+  proxyHost.value = prefs.host
+  proxyPort.value = prefs.port
+  proxyUsername.value = prefs.username
+  proxyBypass.value = prefs.bypass
+  proxyPassword.value = ''
+}
+
+function proxyFormPayload(): Partial<Omit<ProxyPrefs, 'passwordConfigured'>> {
+  return {
+    mode: proxyMode.value,
+    protocol: proxyProtocol.value,
+    host: proxyHost.value.trim(),
+    port: proxyPort.value,
+    username: proxyUsername.value.trim(),
+    bypass: proxyBypass.value,
+  }
+}
+
+async function saveProxy() {
+  proxySaving.value = true
+  proxyTestResult.value = null
+  try {
+    const next = await window.api.settings.set({ proxy: proxyFormPayload(), proxyPassword: proxyPassword.value })
+    settings.value = next
+    syncProxyForm(next.proxy)
+    message.success('代理设置已保存并立即生效')
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : '保存代理设置失败')
+  } finally {
+    proxySaving.value = false
+  }
+}
+
+/** 试一次：用当前表单（不必先保存），走真会话验证。 */
+async function testProxy() {
+  proxyTesting.value = true
+  proxyTestResult.value = null
+  try {
+    const res = await window.api.proxy.test({ prefs: proxyFormPayload() })
+    proxyTestResult.value = res
+  } catch (e) {
+    proxyTestResult.value = { ok: false, message: e instanceof Error ? e.message : '测试失败' }
+  } finally {
+    proxyTesting.value = false
+  }
+}
 const settingsLoading = ref(true)
 const sectionOptions: { id: SettingsSection; label: string }[] = [
   { id: 'appearance', label: '外观' },
   { id: 'library', label: '书库' },
+  { id: 'network', label: '网络代理' },
   { id: 'tts', label: '听书' },
   { id: 'ai', label: 'AI' },
   { id: 'siteRules', label: '站点规则' },
@@ -193,6 +270,7 @@ async function load() {
   settingsLoading.value = true
   try {
     settings.value = await window.api.settings.get()
+    syncProxyForm(settings.value.proxy)
     baseUrl.value = settings.value.baseUrl
     model.value = settings.value.model
     embeddingBaseUrl.value = settings.value.embedding?.baseUrl ?? ''
@@ -848,6 +926,77 @@ onMounted(async () => {
             <n-radio-button value="fast">快</n-radio-button>
           </n-radio-group>
         </div>
+      </n-space>
+    </n-card>
+
+    <n-card v-show="activeSection === 'network'" title="网络代理" class="settings-card">
+      <n-space vertical :size="12">
+        <p style="color:var(--text-muted);font-size:13px;margin:0">
+          代理只作用于「内置浏览」和「下载」，不影响本机其它软件；两者共用同一条出口，
+          浏览里能打开的页面，下载就走得通。
+        </p>
+
+        <div class="pace-row">
+          <div>
+            <div class="field-label">代理方式</div>
+            <div class="field-help">选「直连」时连系统代理也不走。</div>
+          </div>
+          <n-radio-group v-model:value="proxyMode" size="small">
+            <n-radio-button v-for="opt in proxyModeOptions" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </n-radio-button>
+          </n-radio-group>
+        </div>
+
+        <template v-if="proxyMode === 'manual'">
+          <n-input-group>
+            <n-input-group-label style="width:80px">协议</n-input-group-label>
+            <n-select v-model:value="proxyProtocol" :options="proxyProtocolOptions" style="width:130px" />
+            <n-input-group-label style="width:60px">地址</n-input-group-label>
+            <n-input v-model:value="proxyHost" placeholder="127.0.0.1（直接粘贴整条 URL 也行）" />
+            <n-input-group-label style="width:60px">端口</n-input-group-label>
+            <n-input-number v-model:value="proxyPort" :min="1" :max="65535" :show-button="false" style="width:110px" />
+          </n-input-group>
+
+          <n-input-group>
+            <n-input-group-label style="width:80px">用户名</n-input-group-label>
+            <n-input v-model:value="proxyUsername" placeholder="不需要认证就留空" />
+            <n-input-group-label style="width:80px">密码</n-input-group-label>
+            <n-input
+              v-model:value="proxyPassword"
+              type="password"
+              show-password-on="click"
+              :placeholder="settings?.proxy?.passwordConfigured ? '已加密保存，留空则不修改' : '不需要认证就留空'"
+            />
+          </n-input-group>
+
+          <n-input-group>
+            <n-input-group-label style="width:80px">不走代理</n-input-group-label>
+            <n-input
+              v-model:value="proxyBypass"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 4 }"
+              placeholder="localhost / 192.168.* / *.lan，每行一条或用逗号分隔；默认已跳过内网短名"
+            />
+          </n-input-group>
+
+          <n-alert v-if="proxyProtocol === 'socks5'" type="info" :show-icon="false">
+            SOCKS5 由代理侧解析域名。被 DNS 污染的站必须用这条，否则域名照样解析到错地址。
+          </n-alert>
+        </template>
+
+        <n-alert v-if="proxyTestResult" :type="proxyTestResult.ok ? 'success' : 'error'" :show-icon="false">
+          {{ proxyTestResult.message }}
+        </n-alert>
+
+        <n-space>
+          <n-button type="primary" :loading="proxySaving" @click="saveProxy">保存代理</n-button>
+          <n-button :loading="proxyTesting" @click="testProxy">测试连通</n-button>
+        </n-space>
+        <p style="color:var(--text-muted);font-size:12px;margin:0">
+          「测试连通」按当前表单试一次，不必先保存；能拿到任何 HTTP 响应就算通
+          （验证页、403 都说明链路已经过了）。
+        </p>
       </n-space>
     </n-card>
 

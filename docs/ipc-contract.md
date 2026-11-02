@@ -246,6 +246,32 @@
 
 `settings.get` 另附带可选的 `apiKeyUnreadable?: boolean`（追加字段）：有密文但本机解不开（换了机器、系统密钥库被重置）时为 `true`，此时 `apiKeyConfigured` 仍为 `false`。界面据此提示「重新填写」而不是「未配置」——否则用户会以为自己从没填过。`settings.set` 不接受该字段。
 
+**代理（内置浏览 / 下载）**：`Settings.proxy`（`ProxyPrefs`）由主进程始终补齐，缺省 `mode: 'off'`，即**直连**——不改变任何现存用户的网络行为，也不静默跟随系统代理。字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `mode` | `'off' \| 'system' \| 'manual'` | `off` 用 `direct://`（连系统代理都不走）；`system` 交给 Chromium 跟随系统；`manual` 用下面的地址 |
+| `protocol` | `'http' \| 'https' \| 'socks4' \| 'socks5'` | 仅 `manual` 有意义 |
+| `host` | `string` | 裸主机名 / IP，不含协议前缀与端口；粘贴整条 URL 会自动剥掉 |
+| `port` | `number` | 1–65535，非法回退 7890 |
+| `username` | `string` | 代理认证用户名，空表示不需要认证 |
+| `passwordConfigured` | `boolean` | **只读**，由主进程按密文实际可解与否给出；渲染层提交该字段无效 |
+| `bypass` | `string` | 不走代理的地址，换行 / 逗号 / 分号分隔；主进程恒在前面补 `<local>` |
+
+`SettingsUpdate.proxyPassword` 单独提交明文密码，落盘经 `safeStorage`；空串清除。`settings.get` 永不返回代理密码明文，只给 `passwordConfigured`。
+
+作用范围是浏览与下载共用的 `persist:novel` 分区（`src/main/proxy.ts` 的 `applyProxyToSession`）：一处设置，浏览能打开的页面下载就走得通。应用代理后会调 `closeAllConnections()` 断开在途连接——Chromium 的 `setProxy` 只影响**之后**建立的连接，不断旧连接会出现「改了设置但还要开系统代理才生效」。
+
+代理需要认证时，由主进程在 `app` 的 `login` 事件里用已保存凭据回答，且**只处理 `authInfo.isProxy`**：站点自身的 401 登录仍走网页表单，不会被抢答成代理凭据。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `proxy.test` | invoke | `{ url?: string; prefs?: Partial<ProxyPrefs> }` | `{ ok: boolean; message: string }` |
+
+`proxy.test` 用一个一次性隐藏视图、**走真会话**加载目标地址（缺省 `https://www.baidu.com/`），只判「有没有拿到 HTTP 响应」：403、404、验证页都算通，因为那已经证明 TCP + TLS + DNS 全过了。传入 `prefs` 时可试未保存的表单值，试完立即还原成已保存设置，不会把会话留在临时配置上。`settings.set` 带 `proxy` 或 `proxyPassword` 时立即重新应用，不必重启。
+
+> SOCKS5 由代理侧解析域名（远端 DNS）。被 DNS 污染的站必须用这条——本地解析出的地址本身就是错的，只换 IP 不改解析方式没有用。
+
 在线听书配置仍经 `settings.get/set`：`tts.source` 为 `system | online`，并包含系统音色 URI、在线完整接口地址、模型、音色、语速和自动下一章。`SettingsUpdate.ttsApiKey` 单独设置在线语音密钥，空串清除；主进程加密保存，`settings.get` 仅返回 `tts.onlineKeyConfigured`，绝不返回明文。在线接口按 OpenAI 兼容的 `POST` 语音生成协议发送 `model`、`voice`、`input`、`response_format: mp3`。
 
 | 频道 | 方向 | 请求 | 响应 |
@@ -458,6 +484,7 @@ window.api = {
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   mirror: { start, cancel, state, onProgress },
   settings: { get, set },
+  proxy: { test },
   backup: { create, restore, runAuto },
   ocr: { status },
   annotations: { list, add, update, remove },
