@@ -1,0 +1,28 @@
+{
+  "variant": "B",
+  "electron": "45.2.1",
+  "chrome": "156.0.8078.75",
+  "node": "24.22.1",
+  "partition": "persist:cfprobeFinal",
+  "target": "https://www.uaa001.com/",
+  "at": "2026-11-02T14:07:16.573Z",
+  "loadError": null,
+  "failLoads": [],
+  "renderGone": null,
+  "clearanceAtMs": 2338,
+  "initial": {
+    "url": "https://www.uaa001.com/",
+    "title": "UAA有爱爱，做人有爱，做爱有人",
+    "bodyChars": 14028,
+    "totalAnchors": 264,
+    "chapterish": 0
+  },
+  "reload": {
+    "ms": 2581,
+    "url": "https://www.uaa001.com/",
+    "title": "UAA有爱爱，做人有爱，做爱有人",
+    "bodyChars": 14028,
+    "totalAnchors": 264,
+    "chapterish": 0
+  }
+}

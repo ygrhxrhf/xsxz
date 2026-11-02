@@ -1,0 +1,42 @@
+{
+  "variant": "A",
+  "electron": "45.2.1",
+  "chrome": "156.0.8078.75",
+  "node": "24.22.1",
+  "partition": "persist:cfprobeFinal",
+  "target": "https://www.uaa001.com/",
+  "at": "2026-11-02T14:06:12.378Z",
+  "loadError": null,
+  "failLoads": [
+    {
+      "code": -3,
+      "desc": "",
+      "url": "about:srcdoc",
+      "isMainFrame": false
+    },
+    {
+      "code": -3,
+      "desc": "",
+      "url": "https://www.uaa001.com/",
+      "isMainFrame": true
+    }
+  ],
+  "renderGone": null,
+  "clearanceAtMs": 4316,
+  "initial": {
+    "url": "https://www.uaa001.com/",
+    "title": "请稍候…",
+    "bodyChars": 116,
+    "totalAnchors": 2,
+    "chapterish": 0
+  },
+  "reload": {
+    "error": " (-3) loading 'https://www.uaa001.com/'",
+    "ms": 59143,
+    "url": "https://www.uaa001.com/",
+    "title": "UAA有爱爱，做人有爱，做爱有人",
+    "bodyChars": 14036,
+    "totalAnchors": 264,
+    "chapterish": 0
+  }
+}
