@@ -2,11 +2,49 @@
 
 ## 当前事实
 
+- **订阅代理（内置内核）已提交**：`5f4ebbf` feat(proxy): 订阅模式，内置 sing-box 内核
 - **应用内代理（proxy）已提交**：`9d33a5e` feat(proxy): 应用内代理，浏览与下载共用同一出口
 - **挑战页自动重试（challenge-page）已提交**：
   - `053c13c` feat(download): 站点验证挑战页自动重载 + 落人工续跑
   - `ee80288` docs: 计划与实测结论归档
-- master HEAD：9d33a5e（master 干净；`.qoder/` 未跟踪，属并行 worktree）。
+- master HEAD：订阅代理之后（master 干净；`.qoder/` 未跟踪，属并行 worktree）。
+
+## 订阅代理（内置内核）做了什么
+
+用户只有一条订阅链接、机器上没有任何客户端时走这条路。
+
+- `src/main/subscription.ts`：正文解码（base64 / 明文 / JSON 识别）→ 节点 URI 解析
+  （vless 含 REALITY、hysteria2、tuic、anytls）→ `buildSingBoxConfig`。
+  公告行（剩余流量/到期/通知）按名字过滤。
+- `src/main/proxyKernel.ts`：写配置 + `sing-box run -c` 拉起 + 等端口监听 + 停止。
+  端口 20801–20899 挑空闲；只监听 127.0.0.1。
+- `src/main/proxyRuntime.ts`：解析→挑端口→拉起→把 `persist:novel` 指到内核端口。
+  订阅正文缓存在主进程；换节点 = 重启内核。退出时 `stopSubscriptionProxy()`。
+- IPC：`proxy.subscribe` / `parseSubscription` / `selectNode` / `kernelState` / `stopKernel`。
+- 内核二进制**不随包分发**，放 `userData/proxy-kernel/sing-box.exe`，只认官方 GitHub Release。
+
+### 验证证据（订阅）
+
+- `npx vitest run src/main/subscription.test.ts` → 27/27
+- `npx vitest run src/main/proxyKernel.test.ts` → 12/12
+- `npx vitest run src/main/proxyRuntime.test.ts` → 12/12
+- 全量 `npx vitest run src --exclude '.delta/' --exclude '.qoder/'` → 142 文件 / 1420 用例全绿
+- `npm run typecheck` → 0；`npm run build` → 0
+- **真实订阅**：88 条里解析出 86 个节点（跳过公告行），
+  `hysteria2 30 / tuic 23 / vless 20 / anytls 13`，配置结构正确生成。
+
+### ⚠️ 未验证（下一个人接着做）
+
+**内核没有在本机实际跑起来过。** GitHub 下载 sing-box 32MB 被限速，卡在 75% 后停滞，
+多次断点续传也无法推进。因此：
+
+- 「生成的配置能被 sing-box 1.14 接受」——**未实测**；
+- 「节点能真正穿出去」——**未实测**；
+- REALITY 的 `pbk`/`sid` 映射、hysteria2 / tuic / anytls 三种 UDP 系协议——**未实测**。
+
+要接着验证：弄到 `sing-box.exe` 放到 `%APPDATA%\spbf\proxy-kernel\`，
+然后 `npx electron-vite dev` 起应用 → 设置 → 网络代理 → 订阅 → 连接订阅，
+看内核状态灯是否变绿、节点能否打开目标站。
 
 ## proxy 做了什么
 
