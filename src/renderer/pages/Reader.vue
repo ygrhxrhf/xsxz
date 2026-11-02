@@ -62,12 +62,16 @@ import {
 import type { ReaderDownloadSignal as DownloadSignal, ReaderImmersiveMode, ReaderDownloadToolsIntent } from './readerHelpers'
 import {
   adjacentVisualPage,
+  estimateParagraphHeight,
+  paragraphIndexForRatio,
+  placeholderHeight,
   scrollTopForParagraphPage,
   scrollTopForVisualPage,
   snapScrollTopToParagraph,
   visualPageCount,
   visualPageIndex,
   visualPageLabel,
+  windowBoundsFor,
 } from './readerPager'
 import type { ReaderParagraphSpan } from './readerPager'
 import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
@@ -236,11 +240,63 @@ const visibleParaIndexes = computed(() => {
   return out
 })
 const renderedCount = ref(120)
+/** 窗口化渲染的下界（含）。小章节恒为 0，行为与窗口化之前完全一致。 */
+const renderWindowStart = ref(0)
+/** 大章节判定：超过这个段数就不再一次性全量排版，改用窗口 + 首尾占位。 */
+const LARGE_CHAPTER_PARAS = 2000
+const isLargeChapter = computed(() => paras.value.length > LARGE_CHAPTER_PARAS)
+/** 一次渲染的窗口段数：约 30 屏，够正常阅读期间不抖动，又不会一次塞进上千节点。 */
+const WINDOW_SIZE = 240
+/** 视口中心离窗口边缘不足这么多段就先迁移窗口：余量约 3 屏，光标爬行追不上。 */
+const WINDOW_MARGIN = 30
+/** 已渲染段的平均段高（px）；0 表示还没测到，占位先用字号估算。 */
+const avgParaHeight = ref(0)
+/** 没测到实测段高时的估算：字号 × 行高 × 2.5 行（中文正文常见 2~3 行）。 */
+const fallbackParaHeight = computed(() => {
+  const size = Number(fontSize.value) || 18
+  const height = Number(lineHeight.value) || 1.8
+  return Math.max(24, size * height * 2.5)
+})
+const effectiveParaHeight = computed(() =>
+  avgParaHeight.value > 0 ? avgParaHeight.value : fallbackParaHeight.value,
+)
 let renderGeneration = 0
 let renderTimer: ReturnType<typeof setTimeout> | null = null
+/** 上一次量段高时的窗口签名，避免同一窗口重复强制布局。 */
+let measuredWindowKey = ''
+
+/** visibleParaIndexes 里严格小于 index 的条数（列表升序，二分）。 */
+function visibleCountBefore(index: number): number {
+  const list = visibleParaIndexes.value
+  let low = 0
+  let high = list.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (list[middle]! < index) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+/** 章标题与首段之间的占位：窗口已离开章首时撑出被跳过的段高。 */
+const topGapHeight = computed(() => {
+  if (!isLargeChapter.value || renderWindowStart.value <= 0) return 0
+  return placeholderHeight(visibleCountBefore(renderWindowStart.value), effectiveParaHeight.value)
+})
+
+/** 末尾占位：窗口还没到章末时撑出剩余段高，滚动条长度始终按整章算。 */
+const bottomGapHeight = computed(() => {
+  if (!isLargeChapter.value) return 0
+  const total = paras.value.length
+  if (total <= 0 || renderedCount.value >= total) return 0
+  const shown = visibleParaIndexes.value.length - visibleCountBefore(renderedCount.value)
+  return placeholderHeight(shown, effectiveParaHeight.value)
+})
 
 function scheduleParagraphChunks(generation: number) {
   if (renderTimer) clearTimeout(renderTimer)
+  // 大章节走窗口化：整章节点永不落地，后台爬升只会白烧一次全量重排。
+  if (isLargeChapter.value) return
   if (renderedCount.value >= paras.value.length) return
   renderTimer = setTimeout(() => {
     if (generation !== renderGeneration) return
@@ -251,14 +307,107 @@ function scheduleParagraphChunks(generation: number) {
 
 watch(chapterBody, () => {
   renderGeneration++
+  renderWindowStart.value = 0
+  avgParaHeight.value = 0
+  measuredWindowKey = ''
   renderedCount.value = Math.min(120, paras.value.length)
   scheduleParagraphChunks(renderGeneration)
 }, { flush: 'sync' })
 
+/** 从已渲染段量出平均段高，给首尾占位一个贴合当前字号的估计。 */
+function refreshAvgParaHeight() {
+  const el = contentRef.value
+  if (!isLargeChapter.value || !el) return
+  const key = `${renderWindowStart.value}:${renderedCount.value}`
+  if (key === measuredWindowKey) return
+  const spans = collectParagraphSpans(el)
+  measuredWindowKey = key
+  if (spans.length < 8) return
+  const avg = estimateParagraphHeight(spans, fallbackParaHeight.value)
+  if (avg > 0 && Math.abs(avg - avgParaHeight.value) >= 0.5) avgParaHeight.value = avg
+}
+
+/** 视口中心落在哪一段、段内偏移多少；中心落在占位间隙里返回 null。 */
+function paragraphSpotAtViewportCenter(el: HTMLElement): { index: number; offset: number } | null {
+  const centerY = el.getBoundingClientRect().top + el.clientHeight / 2
+  const nodes = el.querySelectorAll<HTMLElement>('.para[data-p]')
+  for (const node of nodes) {
+    const rect = node.getBoundingClientRect()
+    if (rect.top <= centerY && rect.bottom >= centerY) {
+      const index = Number(node.dataset.p)
+      if (!Number.isSafeInteger(index) || index < 0) return null
+      return { index, offset: centerY - rect.top }
+    }
+  }
+  return null
+}
+
+/**
+ * 把渲染窗口挪到 target 附近，并把原来视口中心那一段钉回视口中心。
+ * 占位高度是估算值，不做这一步的话每次迁窗都会让正文向上/向下漂一截。
+ */
+function recenterWindowTo(target: number) {
+  const pane = contentRef.value
+  const total = paras.value.length
+  if (!pane || !isLargeChapter.value || total <= 0) return
+  const bounds = windowBoundsFor(target, total, WINDOW_SIZE)
+  if (bounds.start === renderWindowStart.value && bounds.end === renderedCount.value) return
+  const spot = paragraphSpotAtViewportCenter(pane)
+  renderWindowStart.value = bounds.start
+  renderedCount.value = bounds.end
+  if (!spot) return
+  void nextTick(() => {
+    const el = contentRef.value
+    if (!el) return
+    const node = el.querySelector<HTMLElement>(`.para[data-p="${spot.index}"]`)
+    if (!node) return
+    const centerY = el.getBoundingClientRect().top + el.clientHeight / 2
+    el.scrollTop += node.getBoundingClientRect().top + spot.offset - centerY
+    syncVisualPage()
+    refreshAvgParaHeight()
+  })
+}
+
+/** 滚动跟窗：视口中心快撞到窗口边缘（或落进占位间隙）时迁窗。 */
+function followRenderWindow() {
+  if (!isLargeChapter.value) return
+  const el = contentRef.value
+  if (!el) return
+  const total = paras.value.length
+  if (total <= 0) return
+  if (renderedCount.value - renderWindowStart.value >= total) return
+  const spot = paragraphSpotAtViewportCenter(el)
+  // 落进占位间隙（拖滚动条跳到未渲染区）：按滚动比例估算目标段，一次跳到位。
+  const center = spot
+    ? spot.index
+    : paragraphIndexForRatio(chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight), total)
+  if (spot && center >= renderWindowStart.value + WINDOW_MARGIN && center < renderedCount.value - WINDOW_MARGIN) return
+  recenterWindowTo(center)
+}
+
+/**
+ * 等到第 index 段真的进了 DOM。
+ * 大章节直接把窗口迁到这段再 flush（毫秒级），小章节照旧等后台分批爬到这里。
+ */
 async function waitForParagraph(index: number, generation = renderGeneration): Promise<boolean> {
-  while (generation === renderGeneration && renderedCount.value <= index && index < paras.value.length) {
+  if (generation !== renderGeneration) return false
+  const total = paras.value.length
+  if (index < 0 || index >= total) return true
+  if (isLargeChapter.value) {
+    const start = renderWindowStart.value
+    const end = renderedCount.value
+    if (index < start || index >= end) {
+      const bounds = windowBoundsFor(index, total, WINDOW_SIZE)
+      renderWindowStart.value = bounds.start
+      renderedCount.value = bounds.end
+    }
+    await nextTick()
+    return generation === renderGeneration
+  }
+  while (generation === renderGeneration && renderedCount.value <= index && index < total) {
     await new Promise<void>((resolve) => setTimeout(resolve, 20))
   }
+  await nextTick()
   return generation === renderGeneration
 }
 const {
@@ -428,15 +577,16 @@ const {
 
 /** 当前章各段的渲染切片：叠加搜索命中与划线 */
 const plainDecoratedParas = computed(() => paras.value.map((text) => decorateText(text, '', [])))
-// 只算「已渲染」的那一段前缀：分批渲染下可见段最多 renderedCount 段，
+// 只算「已渲染」的那一段窗口：分批渲染下可见段最多 renderedCount 段，
 // 对整章（可能上万段）做 map 会在每次滚动/标记变更时白算大半个章节。
 // 净化只从这一段原始下标前缀里挑出要显示的段，下标本身保持原文坐标。
 const renderedParas = computed(() => {
   const count = Math.min(renderedCount.value, paras.value.length)
+  const start = renderWindowStart.value
   const q = searchQuery.value.trim()
   const searchingNow = showSearch.value && !!q
   const highlights = currentHighlightRanges.value
-  const indexes = visibleParaIndexes.value.filter((index) => index < count)
+  const indexes = visibleParaIndexes.value.filter((index) => index >= start && index < count)
   if (!searchingNow && highlights.length === 0) {
     return indexes.map((index) => ({ index, segs: plainDecoratedParas.value[index]! }))
   }
@@ -459,8 +609,6 @@ const renderedParas = computed(() => {
   return out
 })
 const visibleParas = computed(() => renderedParas.value)
-/** 排版提示用：已渲染前缀里真正显示出来的段数（净化掉的不计入）。 */
-const renderedVisibleCount = computed(() => renderedParas.value.length)
 
 /** 把渲染层选区换算成规范化正文里的字符区间 */
 
@@ -1512,6 +1660,29 @@ function scrollToRatio(ratio: number) {
   const el = contentRef.value
   if (!el) return
   const generation = renderGeneration
+  // 大章节：占位让 scrollHeight ≈ 整章高，比例直接映射到目标段，迁窗后真实落点。
+  if (isLargeChapter.value) {
+    const total = paras.value.length
+    if (total <= 0) return
+    const target = paragraphIndexForRatio(ratio, total)
+    void waitForParagraph(target, generation).then((ready) => {
+      if (!ready) return
+      const pane = contentRef.value
+      if (!pane) return
+      const node = pane.querySelector<HTMLElement>(`.para[data-p="${target}"]`)
+      if (node) {
+        // 精确落点：目标段贴近视口顶部（留一点上留白），滚动条在两端自然钳制。
+        pane.scrollTop = Math.max(0, node.offsetTop - 8)
+        syncVisualPage()
+        refreshAvgParaHeight()
+        return
+      }
+      const top = scrollTopFromRatio(ratio, pane.scrollHeight, pane.clientHeight)
+      pane.scrollTop = top
+      syncVisualPage()
+    })
+    return
+  }
   void waitForParagraph(paras.value.length - 1, generation).then((ready) => {
     if (!ready) return
     requestAnimationFrame(() => {
@@ -1564,6 +1735,8 @@ async function confirmLegacyFrontier() {
 
 function currentChapterRatio(el: HTMLElement): number {
   const visibleRatio = chapterScrollRatio(el.scrollTop, el.scrollHeight, el.clientHeight)
+  // 大章节占位把 scrollHeight 撑成整章高，直接按可视比例；小章节照旧换算。
+  if (isLargeChapter.value) return visibleRatio
   return renderedCount.value < paras.value.length && paras.value.length > 0
     ? visibleRatio * renderedCount.value / paras.value.length
     : visibleRatio
@@ -1610,6 +1783,8 @@ function scheduleScrollHeavyWork() {
   scrollHeavyRaf = requestAnimationFrame(() => {
     scrollHeavyRaf = null
     updateViewportFocusAnchor()
+    // 大章节：视口快出窗（或落进占位间隙）就迁窗，保证滚动到任何位置都有内容。
+    followRenderWindow()
     if (showSearch.value && paras.value.length > 2000 &&
         Math.abs(viewportCenterPara.value - searchHighlightCenter.value) > 100) {
       searchHighlightCenter.value = viewportCenterPara.value
@@ -2160,7 +2335,12 @@ watch(
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()
-    void nextTick(() => snapToVisualPage())
+    avgParaHeight.value = 0
+    measuredWindowKey = ''
+    void nextTick(() => {
+      refreshAvgParaHeight()
+      snapToVisualPage()
+    })
   },
 )
 // 打开「工具一直显示」立刻留住顶栏；关掉只记偏好，默认收起留给下一次进入与 Esc，
@@ -2187,7 +2367,10 @@ watch([aiAssistantTab, currentChapter], ([tab]) => {
   if (tab === 'memory') void loadTimeline()
 })
 watch([renderedParas, chapterBody], () => {
-  void nextTick(() => updateViewportFocusAnchor())
+  void nextTick(() => {
+    updateViewportFocusAnchor()
+    refreshAvgParaHeight()
+  })
 })
 watch(renderedCount, (count) => {
   if (count === paras.value.length && contentRef.value) {
@@ -2510,15 +2693,18 @@ onUnmounted(() => {
                 去浏览页
               </n-button>
             </n-space>
+            <!-- 窗口化：窗口已离开章首时，被跳过的开头段用占位撑住标题与正文之间的距离 -->
+            <div v-if="topGapHeight > 0" class="reader-gap top" :style="{ height: `${topGapHeight}px` }" aria-hidden="true"></div>
             <p
               v-for="{ index: i, segs } in visibleParas"
               :key="i"
               :data-p="i"
               :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: paras.length }) }]"
             ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
-            <div v-if="renderedCount < paras.length" class="loading-hint" role="status">正在排版：{{ renderedVisibleCount }} / {{ paras.length }} 段</div>
-            <button v-else-if="chapterReady && followingChapter" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
-            <div v-else-if="chapterReady && currentChapterIndex === chapters.length - 1" class="chapter-end-card finished">
+            <!-- 窗口化：跳到后段时，跳过的段用等高的占位撑住，滚动条始终按整章长度显示 -->
+            <div v-if="bottomGapHeight > 0" class="reader-gap" :style="{ height: `${bottomGapHeight}px` }" aria-hidden="true"></div>
+            <button v-if="chapterReady && followingChapter && renderedCount >= paras.length" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
+            <div v-else-if="chapterReady && currentChapterIndex === chapters.length - 1 && renderedCount >= paras.length" class="chapter-end-card finished">
               <strong>已读完《{{ book.title }}》</strong>
               <n-button size="small" @click="emit('back')">返回书库</n-button>
             </div>
@@ -4136,6 +4322,10 @@ onUnmounted(() => {
 .chapter-end-card.finished { display: flex; flex-direction: column; align-items: center; gap: 12px; cursor: default; }
 .para { position: relative; text-indent: var(--paragraph-indent, 2em); margin-bottom: var(--paragraph-spacing, .45em); }
 .large-chapter .para { content-visibility: auto; contain-intrinsic-size: auto 4em; }
+/* 窗口化占位间隙：不参与段落定位（无 .para/data-p），纯占高，跳过强制布局风暴 */
+.large-chapter .reader-gap { contain: strict; }
+.large-chapter .reader-gap.top { margin-top: var(--paragraph-spacing, .45em); }
+.large-chapter .reader-gap.bottom { margin-bottom: var(--paragraph-spacing, .45em); }
 .para-tts-start {
   position: absolute;
   top: 0;
