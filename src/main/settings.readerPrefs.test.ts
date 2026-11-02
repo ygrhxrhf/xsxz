@@ -6,9 +6,9 @@ const ss = vi.hoisted(() => ({ available: true }))
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp/spbf-settings-readerprefs-test' },
   safeStorage: {
-    isEncryptionAvailable: () => ss.available,
-    encryptString: (value: string) => Buffer.from(value),
-    decryptString: (value: Buffer) => value.toString(),
+    isAsyncEncryptionAvailable: async () => ss.available,
+    encryptStringAsync: async (value: string) => Buffer.from(value),
+    decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }),
   },
 }))
 

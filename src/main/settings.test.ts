@@ -1,16 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 
-const ss = vi.hoisted(() => ({ available: true, decryptFails: false }))
+const ss = vi.hoisted(() => ({
+  available: true,
+  decryptFails: false,
+  /** 前 N 次解密返回 shouldReEncrypt=true，用来模拟密钥轮换。 */
+  reEncryptTimes: 0,
+  decryptCalls: 0,
+}))
 
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp/spbf-settings-test' },
   safeStorage: {
-    isEncryptionAvailable: () => ss.available,
-    encryptString: (value: string) => Buffer.from(value),
-    decryptString: (value: Buffer) => {
+    isAsyncEncryptionAvailable: async () => ss.available,
+    encryptStringAsync: async (value: string) => Buffer.from(value),
+    decryptStringAsync: async (value: Buffer) => {
+      ss.decryptCalls++
       if (ss.decryptFails) throw new Error('Safe storage unable to decrypt')
-      return value.toString()
+      const shouldReEncrypt = ss.reEncryptTimes > 0
+      if (shouldReEncrypt) ss.reEncryptTimes--
+      return { shouldReEncrypt, result: value.toString() }
     },
   },
 }))
@@ -47,6 +56,8 @@ const SETTINGS_FILE = `${TEST_DIR}/settings.json`
 beforeEach(async () => {
   ss.available = true
   ss.decryptFails = false
+  ss.reEncryptTimes = 0
+  ss.decryptCalls = 0
   resetSettingsCacheForTests()
   await rm(TEST_DIR, { recursive: true, force: true })
 })
@@ -89,6 +100,16 @@ describe('settings atomic persistence', () => {
     const settings = await getSettings()
     expect(settings.apiKeyConfigured).toBe(false)
     expect(settings.apiKeyUnreadable).toBe(false)
+  })
+
+  it('密钥轮换时按 shouldReEncrypt 再解一次，只重试一次', async () => {
+    await updateSettings({ apiKey: 'sk-rotated' })
+    resetSettingsCacheForTests()
+    // 两次都要求轮换：实现只该重试一次，不会无限循环
+    ss.reEncryptTimes = 2
+    ss.decryptCalls = 0
+    expect(await getApiKey()).toBe('sk-rotated')
+    expect(ss.decryptCalls).toBe(2)
   })
 
   it('re-resolves the library default instead of baking one into settings.json', async () => {

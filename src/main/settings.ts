@@ -287,10 +287,10 @@ async function saveRaw(raw: Record<string, unknown>): Promise<void> {
 }
 
 /** 密钥库不可用时 Electron 只给一句英文内部错误，这里换成能照做的提示。 */
-function requireEncryptionAvailable(): void {
+async function requireEncryptionAvailable(): Promise<void> {
   let available = false
   try {
-    available = safeStorage.isEncryptionAvailable()
+    available = await safeStorage.isAsyncEncryptionAvailable()
   } catch {
     available = false
   }
@@ -299,14 +299,24 @@ function requireEncryptionAvailable(): void {
   }
 }
 
-/** 「有密文」不等于「能用」：换机或密钥库重置后解密会失败，此时应显示为未配置。 */
-function hasUsableEncryptedKey(ciphertext: unknown): boolean {
-  if (typeof ciphertext !== 'string' || !ciphertext) return false
+/**
+ * 解开一条密文。换机或密钥库重置后解密会失败，返回空串。
+ * 密钥轮换时 Electron 要求再解一次才算拿到轮换后的明文，只重试一次。
+ */
+async function decryptCipher(ciphertext: string): Promise<string> {
   try {
-    return safeStorage.decryptString(Buffer.from(ciphertext, 'base64')).length > 0
+    let decrypted = await safeStorage.decryptStringAsync(Buffer.from(ciphertext, 'base64'))
+    if (decrypted.shouldReEncrypt) decrypted = await safeStorage.decryptStringAsync(Buffer.from(ciphertext, 'base64'))
+    return decrypted.result
   } catch {
-    return false
+    return ''
   }
+}
+
+/** 「有密文」不等于「能用」：换机或密钥库重置后解密会失败，此时应显示为未配置。 */
+async function hasUsableEncryptedKey(ciphertext: unknown): Promise<boolean> {
+  if (typeof ciphertext !== 'string' || !ciphertext) return false
+  return (await decryptCipher(ciphertext)).length > 0
 }
 
 /** 存过密文没有（不代表解不开）。用来把「从没填过」和「填过但本机解不开」分开告诉用户。 */
@@ -317,18 +327,13 @@ function hasEncryptedKey(ciphertext: unknown): boolean {
 export async function getApiKey(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.apiKeyEnc !== 'string' || !raw.apiKeyEnc) return ''
-  try {
-    return safeStorage.decryptString(Buffer.from(raw.apiKeyEnc, 'base64'))
-  } catch {
-    return ''
-  }
+  return decryptCipher(raw.apiKeyEnc)
 }
 
 export async function getEmbeddingApiKey(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.embeddingApiKeyEnc !== 'string' || !raw.embeddingApiKeyEnc) return ''
-  try { return safeStorage.decryptString(Buffer.from(raw.embeddingApiKeyEnc, 'base64')) }
-  catch { return '' }
+  return decryptCipher(raw.embeddingApiKeyEnc)
 }
 
 export async function getSettings(): Promise<Settings> {
@@ -336,6 +341,13 @@ export async function getSettings(): Promise<Settings> {
   const tts = (raw.tts as Partial<TtsPrefs>) || {}
   const appearance = (raw.appearance as Partial<AppearancePrefs>) || {}
   const backup = readRecord(raw.autoBackup)
+  // 每把 Key 只解一次：getSettings 在主进程里被高频调用，重复解密会把 DPAPI 往返翻倍。
+  const [apiKeyUsable, embeddingKeyUsable, tierSenseKeyUsable, ttsKeyUsable] = await Promise.all([
+    hasUsableEncryptedKey(raw.apiKeyEnc),
+    hasUsableEncryptedKey(raw.embeddingApiKeyEnc),
+    hasUsableEncryptedKey(raw.tierSenseApiKeyEnc),
+    hasUsableEncryptedKey(raw.ttsApiKeyEnc),
+  ])
   return {
     libraryPath:
       typeof raw.libraryPath === 'string' && raw.libraryPath.trim()
@@ -343,14 +355,14 @@ export async function getSettings(): Promise<Settings> {
         : defaultLibraryPath(),
     baseUrl: typeof raw.baseUrl === 'string' ? raw.baseUrl : DEFAULT_AI_PLACEHOLDER.baseUrl,
     model: typeof raw.model === 'string' ? raw.model : DEFAULT_AI_PLACEHOLDER.model,
-    apiKeyConfigured: hasUsableEncryptedKey(raw.apiKeyEnc),
-    apiKeyUnreadable: hasEncryptedKey(raw.apiKeyEnc) && !hasUsableEncryptedKey(raw.apiKeyEnc),
+    apiKeyConfigured: apiKeyUsable,
+    apiKeyUnreadable: hasEncryptedKey(raw.apiKeyEnc) && !apiKeyUsable,
     embedding: {
       baseUrl: typeof readRecord(raw.embedding).baseUrl === 'string' ? String(readRecord(raw.embedding).baseUrl).trim() : '',
       model: typeof readRecord(raw.embedding).model === 'string' ? String(readRecord(raw.embedding).model).trim() : '',
-      keyConfigured: hasUsableEncryptedKey(raw.embeddingApiKeyEnc),
+      keyConfigured: embeddingKeyUsable,
     },
-    tierSenseKeyConfigured: hasUsableEncryptedKey(raw.tierSenseApiKeyEnc),
+    tierSenseKeyConfigured: tierSenseKeyUsable,
     reader: normalizeReaderPrefs(raw.reader),
     tts: {
       rate: readFiniteClamped(tts.rate, 0.5, 2, DEFAULT_TTS_PREFS.rate),
@@ -361,7 +373,7 @@ export async function getSettings(): Promise<Settings> {
       onlineEndpoint: typeof tts.onlineEndpoint === 'string' ? tts.onlineEndpoint : '',
       onlineModel: typeof tts.onlineModel === 'string' ? tts.onlineModel : '',
       onlineVoice: typeof tts.onlineVoice === 'string' ? tts.onlineVoice : '',
-      onlineKeyConfigured: hasUsableEncryptedKey(raw.ttsApiKeyEnc),
+      onlineKeyConfigured: ttsKeyUsable,
     },
     appearance: {
       skin: normalizeSkin(appearance.skin),
@@ -381,21 +393,13 @@ export async function getSettings(): Promise<Settings> {
 export async function getTtsApiKey(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.ttsApiKeyEnc !== 'string' || !raw.ttsApiKeyEnc) return ''
-  try {
-    return safeStorage.decryptString(Buffer.from(raw.ttsApiKeyEnc, 'base64'))
-  } catch {
-    return ''
-  }
+  return decryptCipher(raw.ttsApiKeyEnc)
 }
 
 export async function getTierSenseApiKey(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.tierSenseApiKeyEnc !== 'string' || !raw.tierSenseApiKeyEnc) return ''
-  try {
-    return safeStorage.decryptString(Buffer.from(raw.tierSenseApiKeyEnc, 'base64'))
-  } catch {
-    return ''
-  }
+  return decryptCipher(raw.tierSenseApiKeyEnc)
 }
 
 export function normalizeSettingsUpdatePayload(value: unknown): SettingsUpdate {
@@ -415,8 +419,8 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
   if (typeof patch.model === 'string') raw.model = patch.model
   if (typeof patch.apiKey === 'string') {
     if (patch.apiKey) {
-      requireEncryptionAvailable()
-      raw.apiKeyEnc = safeStorage.encryptString(patch.apiKey).toString('base64')
+      await requireEncryptionAvailable()
+      raw.apiKeyEnc = (await safeStorage.encryptStringAsync(patch.apiKey)).toString('base64')
     } else {
       delete raw.apiKeyEnc
     }
@@ -430,8 +434,8 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
   }
   if (typeof patch.embeddingApiKey === 'string') {
     if (patch.embeddingApiKey) {
-      requireEncryptionAvailable()
-      raw.embeddingApiKeyEnc = safeStorage.encryptString(patch.embeddingApiKey).toString('base64')
+      await requireEncryptionAvailable()
+      raw.embeddingApiKeyEnc = (await safeStorage.encryptStringAsync(patch.embeddingApiKey)).toString('base64')
     } else delete raw.embeddingApiKeyEnc
   }
   if (patch.reader) {
@@ -450,14 +454,14 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
   }
   if (typeof patch.ttsApiKey === 'string') {
     if (patch.ttsApiKey) {
-      requireEncryptionAvailable()
-      raw.ttsApiKeyEnc = safeStorage.encryptString(patch.ttsApiKey).toString('base64')
+      await requireEncryptionAvailable()
+      raw.ttsApiKeyEnc = (await safeStorage.encryptStringAsync(patch.ttsApiKey)).toString('base64')
     } else delete raw.ttsApiKeyEnc
   }
   if (typeof patch.tierSenseApiKey === 'string') {
     if (patch.tierSenseApiKey) {
-      requireEncryptionAvailable()
-      raw.tierSenseApiKeyEnc = safeStorage.encryptString(patch.tierSenseApiKey).toString('base64')
+      await requireEncryptionAvailable()
+      raw.tierSenseApiKeyEnc = (await safeStorage.encryptStringAsync(patch.tierSenseApiKey)).toString('base64')
     } else delete raw.tierSenseApiKeyEnc
   }
   if (patch.appearance) {
