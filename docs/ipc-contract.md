@@ -176,6 +176,15 @@
 
 **撞墙暂停（人在环）**：同一类墙（`NeedLogin` / `Paywall` / `Intercepted` 中同一个码）连撞 `WALL_PAUSE_STREAK`（当前 3）章后不再逐章硬撞：当章仍记为 `failed`，`DownloadProgress.status` 置 `awaitingHuman`（非结束态，不带 `failedChapters`），并推送一次 `download.blocked`（`DownloadBlocked`：`bookId` / `chapterId` / `chapterTitle` / `url` / `failCode` / `message`）。`download.openUnblock` 把内置浏览页导航到该章 URL。`download.resumeUnblock` 唤醒停在当章的循环：把所有因墙码 `failed` 的章退回 `pending`（清 `failCode` / `failMessage`），再从头跑一趟新的串行通道，同类连击计数也随之重置；处理未生效时会再次暂停。等待期间该任务仍占单任务锁，`download.cancel` 可随时打断并保留已下章节。
 
+**站点验证挑战页（Cloudflare / Turnstile）**：这类站在放行前先回一页几乎没内容的「请稍候…」骨架，加载完成后才异步下发 `cf_clearance` cookie，而页面本身不跳转。下载层首次加载拿到的就是骨架，本就无法提取正文。处理分两步：
+
+1. **自动重试**（`src/main/challengePage.ts`）：`loadPageHtml` 拿到 HTML 后先判是不是挑战页（引用 `challenges.cloudflare.com` 或 `cdn-cgi/challenge-platform` 即命中；无脚本时要求页面近乎空白且标题/正文命中 CF 专属话术）。命中则轮询 `persist:novel` 上的 `cf_clearance`（每秒一次，预算 20 秒），拿到后**重载一次**再读 HTML。重载上限 `CHALLENGE_MAX_RELOAD`（当前 1），不做无限重试。重载后仍是挑战页就原样返回，交给正文启发式判成 `Intercepted`。
+2. **落人工**：判成 `Intercepted` 后走上面同一套「撞墙暂停」——`download.blocked` 的 `message` 说明是验证页，界面给「去浏览这一章 / 我已处理好，继续下载」。用户在内置浏览里完成真实验证（会话 `persist:novel` 与下载共用，cookie 天然复用），点继续即可。
+
+自动重试**不解 Turnstile 载荷、不伪造 cookie**，只做「等真实浏览器跑完 + 重载」。要求真人点击的挑战，自动重试无效，只能落人工。
+
+> 实测备注（Electron 43 / Chrome 150，2026-11-02，www.uaa001.com）：项目中 `BrowserWindow` 曾成功过（`cf_clearance` 约 5–11 秒下发，重载后 47 个书目链接），但同一台机器上隐藏 `WebContentsView`（产品下载视图，`sandbox: true` + `setVisible(false)` + 负坐标 bounds）多次尝试均未拿到 cookie；同一时刻 Chrome 156 内核的普通浏览器可正常访问。判断为 Chromium 版本 / 隐藏视图指纹差异，非站点故障，也非本模块逻辑缺陷。因此该站当下**实际会落到人工**，自动重试对更宽松的站点仍然有效。
+
 `RateLimited`（HTTP 429 / 503）不计入撞墙暂停：按站点 `Retry-After` 提示退避（缺失时用默认 30s，上限截到 120s），单章最多重试一次；连续 `RATE_LIMIT_STOP_COUNT` 章被限流则整本停止并提示稍后「重试失败章」，避免对已被限流的站零间隔硬撞。
 
 `download.preview` 不写书库；样本章也用 `persist:novel` 隐藏 webContents 加载。确认令牌一次性、十分钟内有效，当前浏览页 URL 改变后拒绝确认。`download.redownloadChapter` 只提取指定章节，失败时保留原正文与原 URL。

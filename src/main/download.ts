@@ -62,6 +62,12 @@ import {
 } from './chapterApi'
 import { normalizeRecoveredBody, recoverBodyFromText } from './paywallUnlock'
 import { PAGE_OCR_SCRIPT, ocrImages, parseOcrPayload } from './ocrText'
+import {
+  CHALLENGE_COOKIE_NAME,
+  CHALLENGE_MAX_RELOAD,
+  detectChallengePage,
+  waitForChallengeClearance,
+} from './challengePage'
 
 export const DOWNLOAD_SESSION_PARTITION = 'persist:novel'
 /** Off the visible chrome so chapter crawl cannot flash over the guest slot. */
@@ -732,21 +738,67 @@ async function guardHttpStatus(url: string): Promise<void> {
   throw new HttpStatusError(verdict.code, status, `HTTP ${status}`, retryAfterMs)
 }
 
+/**
+ * 等 CF 放行：轮询 partition 上的 `cf_clearance`。
+ *
+ * 不能固定睡一段时间——实测放行要 11 秒左右且随站点难度浮动，固定值要么白等要么不够。
+ * 测试环境不睡也不查真实 cookie，直接当「已放行」放行重载：夹具用「第一次给挑战页、
+ * 第二次给正文」来模拟真实时序。
+ */
+async function waitChallengeClearance(): Promise<void> {
+  if (testHtmlLoader) return
+  await waitForChallengeClearance({
+    hasClearance: async () => {
+      const cookies = await session.fromPartition('persist:novel').cookies.get({ name: CHALLENGE_COOKIE_NAME })
+      return cookies.length > 0
+    },
+    wait: (ms) => interruptibleDelay(ms),
+  })
+}
+
+/**
+ * 站点验证挑战页（Cloudflare / Turnstile）的补救：挑战脚本跑完后 cookie 才落定，
+ * 但页面本身不会自己刷新，于是下载层只能拿到那份空白骨架。
+ * 等一会儿重载一次，正常内容页就回来了。
+ *
+ * 只重载 `CHALLENGE_MAX_RELOAD` 次；仍拿不到内容就原样返回，交给上面的
+ * 正文启发式判成 `Intercepted` 墙，落到「人在环」让用户自己点。
+ */
+async function retryIfChallengePage(
+  load: () => Promise<string>,
+  url: string,
+): Promise<string> {
+  let html = await load()
+  for (let i = 0; i < CHALLENGE_MAX_RELOAD; i++) {
+    if (!detectChallengePage(html, url).challenge) return html
+    if (anyActiveCancelled()) throw new Error('已取消')
+    // cookie 没拿到也照样重载一次：有的站靠 reload 本身触发放行。
+    await waitChallengeClearance()
+    if (anyActiveCancelled()) throw new Error('已取消')
+    html = await load()
+  }
+  return html
+}
+
 async function loadAndGetHtml(view: WebContentsView, url: string, forceView = false): Promise<string> {
   if (testHtmlLoader && !forceView) {
     if (anyActiveCancelled()) throw new Error('已取消')
     await guardHttpStatus(url)
-    return testHtmlLoader(url)
+    return retryIfChallengePage(() => testHtmlLoader!(url), url)
   }
 
   const wc = view.webContents
-  await waitForNavigationSettle(wc, url)
-  await guardHttpStatus(wc.getURL() || url)
-  if (anyActiveCancelled()) throw new Error('已取消')
   const rule = await ruleForPage(url)
-  const html = await waitUntilHydrated(() => wc.executeJavaScript('document.documentElement.outerHTML') as Promise<string>, url, {
-    rule,
-  })
+  // 挑战页没有正文：水合轮询会白等，所以每次都重新导航读一遍，比硬等更快。
+  const loadOnce = async (): Promise<string> => {
+    await waitForNavigationSettle(wc, url)
+    await guardHttpStatus(wc.getURL() || url)
+    if (anyActiveCancelled()) throw new Error('已取消')
+    return waitUntilHydrated(() => wc.executeJavaScript('document.documentElement.outerHTML') as Promise<string>, url, {
+      rule,
+    })
+  }
+  const html = await retryIfChallengePage(loadOnce, url)
   // 不像正常章节 / 目录的页面（墙页、SPA 骨架）：Shadow DOM、iframe、window 上的数据
   // 都不在 outerHTML 里，让页面自己报一次。正常章节不付这份开销。
   if (isHydratedHtml(html, url, rule)) return html
@@ -789,7 +841,8 @@ export async function loadPageHtml(url: string): Promise<string> {
   if (testHtmlLoader) {
     if (anyActiveCancelled()) throw new Error('已取消')
     await guardHttpStatus(url)
-    return testHtmlLoader(url)
+    // 夹具路径也要走挑战页重试：否则测试覆盖不到真实链路。
+    return retryIfChallengePage(() => testHtmlLoader!(url), url)
   }
   return loadAndGetHtml(getHiddenView(), url)
 }

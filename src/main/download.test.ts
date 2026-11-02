@@ -486,6 +486,52 @@ describe('startDownloadFromPage', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
+  it('挑战页只出现一次时，自动重载后照常下载（不让用户白点）', async () => {
+    // 站点第一回给 Cloudflare 挑战骨架，reload 后给真页面。
+    const seen: string[] = []
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.endsWith('/book/') || url.includes('index.html')) return fixture('catalog.html')
+      // 每章第一次加载给挑战页，第二次给正文。
+      if (!seen.includes(url)) {
+        seen.push(url)
+        return fixture('challenge-cf.html')
+      }
+      return fixture('chapter.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    await waitForIdle()
+    const book = await loadBook(started.bookId!)
+    // 全部章节都该拿到正文，而不是被记成 Intercepted 墙。
+    expect(book.chapters.every((c) => c.status === 'ready')).toBe(true)
+  })
+
+  it('挑战页一直不放行时，仍按 Intercepted 墙落人工，而不是无限重试', async () => {
+    const events: Array<{ status?: string }> = []
+    const blocked: unknown[] = []
+    setOwnerWindow(progressWindow(events, blocked) as never)
+    const urlHits = new Map<string, number>()
+    setTestHtmlLoader(async (url) => {
+      loadedUrls.push(url)
+      if (url.endsWith('/book/') || url.includes('index.html')) return fixture('catalog.html')
+      urlHits.set(url, (urlHits.get(url) ?? 0) + 1)
+      return fixture('challenge-cf.html')
+    })
+    const started = await startDownloadFromPage(fixture('catalog.html'), 'https://example.com/book/')
+    expect(started.ok).toBe(true)
+    if (!started.ok) return
+    const payload = await waitForBlocked(blocked)
+    expect(payload).toMatchObject({ failCode: 'Intercepted' })
+    expect(payload.message).toMatch(/拦截|验证/)
+    expect(events.at(-1)?.status).toBe('awaitingHuman')
+    // 每章最多重载一次：再撞不上就落人工，不能无限重试。
+    for (const [, count] of urlHits) expect(count).toBeLessThanOrEqual(2)
+    cancelDownload(started.bookId!)
+    await waitForIdle()
+  })
+
   it('rejects a new download while the library is restoring', async () => {
     const release = beginLibraryRestore()
     try {

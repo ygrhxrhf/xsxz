@@ -559,8 +559,31 @@ function isPaywall(doc: Document, bodyText: string, fromContainer: boolean): boo
   return fromContainer && hitsPaywall(bodyText, PAYWALL_AMBIGUOUS)
 }
 
-const INTERCEPT_TITLE = ['安全验证', '人机验证', 'Access Denied', 'Just a moment', 'Attention Required']
-const INTERCEPT_TEXT = ['请完成人机验证', '检测到异常访问', '点击按钮继续', 'Cloudflare', 'Access Denied']
+/**
+ * 验证页标题。后两条是 Cloudflare / Turnstile 的挑战页标题：站点先回一页「请稍候…」，
+ * 脚本跑完才对，下载层若把这份骨架当正文就会记成 UnknownPage。
+ * 只按标题认是安全的——真内容页不会用「请稍候…」当章节标题。
+ */
+const INTERCEPT_TITLE = [
+  '安全验证',
+  '人机验证',
+  'Access Denied',
+  'Just a moment',
+  'Attention Required',
+  '请稍候',
+  'Checking your browser',
+  'Verifying you are human',
+]
+const INTERCEPT_TEXT = [
+  '请完成人机验证',
+  '检测到异常访问',
+  '点击按钮继续',
+  'Cloudflare',
+  'Access Denied',
+  '正在进行安全验证',
+  '正在验证您是否是真人',
+  '验证您不是自动程序',
+]
 
 /**
  * 正文长到这个程度就当真：页面里再冒出拦截话术，也只是站点脚本 / 页脚的噪音。
