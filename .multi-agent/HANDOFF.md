@@ -2,6 +2,15 @@
 
 ## 当前事实
 
+- **CF 挑战在 Electron 45 上已解决**：`6b5a4f8` + `a164083` + `2c7d8ee`
+  - 根因：会话 UA 被覆盖成纯 Chrome，抹掉 `Electron/45.2.1` 与完整版本号，
+    造成「UA 与指纹不一致」，Cloudflare 判为伪装（比原生 UA 更严）。
+  - 修法：`sessionUserAgent()` 默认返回空串 = 不覆盖，保留 Chromium 原生 UA。
+  - 实测（全新分区 + 隐藏视图 + 订阅代理）：uaa001 **26.0s / 54 链接**，
+    alicesw **13.8s / 259 链接**，两个站都自动进入正文。
+- 工作区有**别人未提交的 agent-integration 改动**（`src/main/agent*.ts`、`src/main/ipc/`、
+  `docs/agent-integration-design.md` 等）。不要动，也不要在全量测试里把它算进结论。
+
 - **Electron 45 升级已 rebase 到 master `c8b93b5` 之上，待合入 master**（分支 `worktree-electron-45-upgrade`，计划见 `.multi-agent/plan/electron-45.md`）：
   - `package.json` electron `^45.2.1` = **Chromium 156.0.8078.75 / Node 24.22.1**。
   - safeStorage 全部改异步，包括订阅代理新增的密码加解密路径。
