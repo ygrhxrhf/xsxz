@@ -2,9 +2,13 @@
 
 ## 当前事实
 
-- **Electron 45 升级已合入 master 前的分支**（分支 `worktree-electron-45-upgrade`，计划见 `.multi-agent/plan/electron-45.md`）：
+- **Electron 45 升级已 rebase 到 master `c8b93b5` 之上，待合入 master**（分支 `worktree-electron-45-upgrade`，计划见 `.multi-agent/plan/electron-45.md`）：
   - `package.json` electron `^45.2.1` = **Chromium 156.0.8078.75 / Node 24.22.1**。
-  - safeStorage 全部改异步（含订阅代理新增的密码加解密路径）。
+  - safeStorage 全部改异步，包括订阅代理新增的密码加解密路径。
+  - rebase 时发现：应用内代理在 `settings.ts` 里新增了同步 safeStorage 调用，
+    且 `requireEncryptionAvailable()` 漏了 `await`（等于跳过密钥库检查）。已在 `8e6aef6` 修复。
+  - 合并后验证：typecheck 通过；全量 142 文件 / 1428 用例全绿；build 通过；
+    e2e startup 10/10、ocr 11/11、reader 11/11、mirror 19/19。
 - **订阅代理（内置内核）已提交**：`5f4ebbf` feat(proxy): 订阅模式，内置 sing-box 内核
 - **应用内代理（proxy）已提交**：`9d33a5e` feat(proxy): 应用内代理，浏览与下载共用同一出口
 - **挑战页自动重试（challenge-page）已提交**：

@@ -63,3 +63,15 @@ Electron 从 43.4.0 升到 45.2.1 —— Chromium 156.0.8078.75 首次出现在�
 - 状态：已完成（待合入 master 与推送确认）
 - 下一步第一条命令：`git log --oneline master..HEAD`（核对 5 个提交）
 - 未验证项：真实小说站的浏览/下载/登录态、API Key 跨重启解密（需人工）
+
+## 合并到 master 时追加
+
+- [x] 11. rebase 到 master `c8b93b5`（应用内代理 9 个提交）
+      - 验：`git log --oneline master..HEAD` 只剩本次 6 个提交
+      - 发现：代理密码路径仍用同步 safeStorage，且 `requireEncryptionAvailable()` 漏 await → 已在 `8e6aef6` 修
+      - 验：`grep -rn "isEncryptionAvailable\|encryptString(\|decryptString(" src` → 无输出
+- [x] 12. 合并后全量验证
+      - 验：`npm run typecheck` → exit 0
+      - 验：`npx vitest run src` → 142 文件 / 1428 用例全绿
+      - 验：`npm run build` → exit 0；preload 仍为 CJS 且无 Buffer/setImmediate
+      - 验：e2e startup 10/10、ocr 11/11、reader 11/11、mirror 19/19
