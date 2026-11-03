@@ -47,10 +47,10 @@
 | `browse.readingPage` | invoke | `{ url?: string }` | `{ ok: true; page: BrowseReadingPage } \| { ok: false; message: string }` |
 | `browse.setReadingMode` | invoke | `{ enabled: boolean }` | `{ ok: true }` |
 | `browse.chapter` | invoke | `{ direction: 'previous' \| 'next' }` | `{ ok: boolean; message?: string }` |
-| `browse.prefetchChapter` | invoke | `{ url: string }` | `{ ok: boolean; cached: boolean }` |
+| `browse.prefetchChapter` | invoke | `{ url?: string }`（payload 也可省略） | `{ ok: boolean; cached: boolean }` |
 | `browse.chapterCatalog` | invoke | `{ catalogUrl?: string; url?: string }` | `{ ok: true; catalogUrl: string; chapters: WebShelfChapter[]; currentIndex: number } \| { ok: false; message: string }` |
-| `browse.saveReadingPos` | invoke | `{ url: string; title?: string; paragraphIndex: number; scrollRatio: number }` | `{ ok: boolean }` |
-| `browse.getReadingPos` | invoke | `{ url: string }` | `{ ok: true; position: WebShelfProgress \| null }` |
+| `browse.saveReadingPos` | invoke | `{ url?: string; title?: string; paragraphIndex?: number; scrollRatio?: number }`（payload 也可省略） | `{ ok: boolean }` |
+| `browse.getReadingPos` | invoke | `{ url?: string }`（payload 也可省略） | `{ ok: true; position: WebShelfProgress \| null }` |
 | `browse.find` | invoke | `{ query: string; forward: boolean; findNext: boolean }` | `{ ok: boolean }` |
 | `browse.stopFind` | invoke | 无 | `{ ok: true }` |
 | `browse.hide` | invoke | `{ action: 'start' \| 'stop' \| 'undo' \| 'count' }` | `{ ok: true; remaining: number } \| { ok: false; message: string }` |
@@ -66,9 +66,9 @@
 阅读模式契约补充：
 
 - `browse.readingPage` 不带 `url` 时抓当前可见网页（返回 `BrowseReadingPage`）；带 `url` 时用阅读会话的隐藏视图取该章，不改动可见网页，用于续章、目录跳章与书架续读。返回的 `page.chapter` 带当前章在目录里的位置、上/下一章链接与来源书架 id。
-- `browse.prefetchChapter` 只预热缓存，不返回正文；缓存为内存 LRU（正文 6 条 / 目录 4 条），不进磁盘，退出时释放。
+- `browse.prefetchChapter` 的 payload 与 `url` 在 handler 类型中均可省略；省略或空 URL 时返回 `{ ok:false, cached:false }`，给出有效 URL 才预热。它只预热缓存，不返回正文；缓存为内存 LRU（正文 6 条 / 目录 4 条），不进磁盘，退出时释放。
 - `browse.chapterCatalog` 优先用网页书架里的目录快照；没有快照或传了 `catalogUrl` 时抓目录页并解析。`currentIndex` 为当前可见章节在该目录中的 0 基序号，找不到为 `-1`。
-- `browse.saveReadingPos` / `browse.getReadingPos` 读写按规范化 URL 的阅读位置（段落锚点 + 滚动比例），存放在 `browse-state.json` 的 `readingByUrl`，最多 200 条。
+- `browse.saveReadingPos` / `browse.getReadingPos` 的 payload 与字段按 handler 类型可省略。缺少/空 `url` 时，`saveReadingPos` 返回 `{ ok:false }`，`getReadingPos` 返回 `{ ok:true, position:null }`；保存仍需有效 URL，缺少 `paragraphIndex` / `scrollRatio` 时转成 `NaN` 并由位置校验拒绝。有效位置按规范化 URL 存在 `browse-state.json` 的 `readingByUrl`，最多 200 条。
 - 阅读模式内的续章、目录跳章与位置读写都走上面的频道；`browse.chapter` 仍只在非阅读模式下驱动可见网页的上一章 / 下一章。
 
 ---
@@ -81,11 +81,11 @@
 |---|---|---|---|
 | `shelf.list` | invoke | 无 | `{ ok: true; books: WebShelfBook[] }` |
 | `shelf.add` | invoke | `{ url?: string }` | `{ ok: true; book: WebShelfBook } \| { ok: false; message: string }` |
-| `shelf.remove` | invoke | `{ id: string }` | `{ ok: boolean }` |
-| `shelf.refresh` | invoke | `{ id: string }` | `{ ok: true; added: number; book: WebShelfBook } \| { ok: false; message: string }` |
+| `shelf.remove` | invoke | `{ id?: string }`（payload 也可省略） | `{ ok: boolean }` |
+| `shelf.refresh` | invoke | `{ id?: string }` | `{ ok: true; added: number; book: WebShelfBook } \| { ok: false; message: string }` |
 | `shelf.refreshAll` | invoke | 无 | `{ ok: true; checked: number; updated: number }` |
-| `shelf.setProgress` | invoke | `{ id: string; chapter: WebShelfChapter; paragraphIndex: number; scrollRatio: number }` | `{ ok: boolean }` |
-| `shelf.chapters` | invoke | `{ id: string }` | `{ ok: true; chapters: WebShelfChapter[]; currentIndex: number } \| { ok: false; message: string }` |
+| `shelf.setProgress` | invoke | `{ id?: string; chapter?: { title?: string; url?: string }; paragraphIndex?: number; scrollRatio?: number }`（payload 也可省略） | `{ ok: boolean }` |
+| `shelf.chapters` | invoke | `{ id?: string }`（payload 也可省略） | `{ ok: true; chapters: WebShelfChapter[]; currentIndex: number } \| { ok: false; message: string }` |
 | `shelf.changed` | 主→渲染 | — | `{ reason: 'add' \| 'remove' \| 'refresh' \| 'progress' }` |
 
 - `shelf.add` 省略 `url` 时用当前浏览页；目录抓取失败也允许加入，此时 `chapters` 为空数组，书架卡片显示「目录待识别」。
@@ -99,7 +99,7 @@
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
 | `library.list` | invoke | 无 | `{ books: BookListItem[] }` |
-| `bookOverview.retry` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
+| `bookOverview.retry` | invoke | `{ bookId?: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `bookOverview.changed` | 主→渲染 | — | 无；提示刷新书库概览状态 |
 | `library.get` | invoke | `{ bookId: string }` | `{ book: Book } \| { ok: false; message: string }` |
 | `library.readChapter` | invoke | `{ bookId: string; chapterId: string }` | `{ chapter: ChapterFile } \| { ok: false; message: string }` |
@@ -183,7 +183,18 @@
 
 自动重试**不解 Turnstile 载荷、不伪造 cookie**，只做「等真实浏览器跑完 + 重载」。要求真人点击的挑战，自动重试无效，只能落人工。
 
-> 实测备注（Electron 43 / Chrome 150，2026-11-02，www.uaa001.com）：项目中 `BrowserWindow` 曾成功过（`cf_clearance` 约 5–11 秒下发，重载后 47 个书目链接），但同一台机器上隐藏 `WebContentsView`（产品下载视图，`sandbox: true` + `setVisible(false)` + 负坐标 bounds）多次尝试均未拿到 cookie；同一时刻 Chrome 156 内核的普通浏览器可正常访问。判断为 Chromium 版本 / 隐藏视图指纹差异，非站点故障，也非本模块逻辑缺陷。因此该站当下**实际会落到人工**，自动重试对更宽松的站点仍然有效。
+**UA 必须用原生串（2026-11-03 实测，Electron 45 / Chromium 156，经订阅代理）**：
+
+| 会话 UA | alicesw | uaa001（CF 挑战） |
+|---|---|---|
+| 原生（`Chrome/156.0.8078.75 Electron/45.2.1`） | 正常 | **能过**，26s 拿到 `cf_clearance`，54 个链接 |
+| 覆盖成 `Chrome/156.0.0.0` | 正常 | **过不了**，26–60s 卡在挑战页，无 cookie |
+
+覆盖后的 UA 自称纯 Chrome，但 `navigator` 等指纹仍暴露 Chromium 真实版本与 Electron 标记；这种「UA 与指纹不一致」在 Cloudflare 眼里是伪装，判得比如实暴露更严。因此 `userAgent.ts` 的 `sessionUserAgent()` 默认返回空串表示**不覆盖**，保留 Chromium 自带的完整 UA。`browseUserAgent()` 降级为可选伪装，仅用于「只读 UA 字符串、不校验指纹」的站。
+
+实测端到端（全新分区 + 隐藏 `WebContentsView` + 订阅代理，与产品同路径）：uaa001 首次挑战页 → 26.0s 拿到 cookie → 54 个链接；alicesw 13.8s → 259 个链接。
+
+> 历史备注（Electron 43 / Chrome 150，2026-11-02，www.uaa001.com）：项目中 `BrowserWindow` 曾成功过（`cf_clearance` 约 5–11 秒下发，重载后 47 个书目链接），但同一台机器上隐藏 `WebContentsView`（产品下载视图，`sandbox: true` + `setVisible(false)` + 负坐标 bounds）多次尝试均未拿到 cookie；同一时刻 Chrome 156 内核的普通浏览器可正常访问。判断为 Chromium 版本 / 隐藏视图指纹差异，非站点故障，也非本模块逻辑缺陷。因此该站当下**实际会落到人工**，自动重试对更宽松的站点仍然有效。
 
 `RateLimited`（HTTP 429 / 503）不计入撞墙暂停：按站点 `Retry-After` 提示退避（缺失时用默认 30s，上限截到 120s），单章最多重试一次；连续 `RATE_LIMIT_STOP_COUNT` 章被限流则整本停止并提示稍后「重试失败章」，避免对已被限流的站零间隔硬撞。
 
@@ -271,10 +282,12 @@
 | `proxy.test` | invoke | `{ url?: string; prefs?: Partial<ProxyPrefs> }` | `{ ok: boolean; message: string }` |
 | `proxy.scan` | invoke | 无 | `{ ok: true; ports: { port; label; protocol }[]; message: string }` |
 | `proxy.subscribe` | invoke | `{ url?: string }` | `{ ok: true; port: number; node: { name; protocol }; overview: ProxySubscriptionState } \| { ok: false; message: string }` |
-| `proxy.parseSubscription` | invoke | `{ body: string }` | `{ ok: true; overview: ProxySubscriptionState } \| { ok: false; message: string }` |
-| `proxy.selectNode` | invoke | `{ index: number; body: string }` | `{ ok: true; port: number; node: { name; protocol } } \| { ok: false; message: string }` |
+| `proxy.parseSubscription` | invoke | `{ body?: string }`（args 也可省略） | `{ ok: true; overview: ProxySubscriptionState } \| { ok: false; message: string }` |
+| `proxy.selectNode` | invoke | `{ index?: number; body?: string }`（args 也可省略） | `{ ok: true; port: number; node: { name; protocol } } \| { ok: false; message: string }` |
 | `proxy.kernelState` | invoke | 无 | `{ ok: true; state: ProxyKernelState }` |
 | `proxy.stopKernel` | invoke | 无 | `{ ok: true }` |
+
+`proxy.parseSubscription` 的 args 与 `body` 在 handler 类型中可省略；缺少或空正文返回「没有可解析的订阅内容」。`proxy.selectNode` 的 args、`index` 与 `body` 类型可选，但要成功选择节点仍需非负安全整数 `index`；省略 `body` 时使用主进程缓存的上次订阅正文。
 
 **订阅模式（内置内核）**：`ProxyMode` 增加 `'subscription'`。这是「用户只有一条订阅链接、没有任何客户端」时的路径——本应用自己拉内核，不依赖外部程序。
 
@@ -399,12 +412,12 @@
 
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
-| `webAnnotations.list` | invoke | `{ url: string }` | `{ ok: true; items: WebAnnotation[] } \| { ok: false; message: string }` |
+| `webAnnotations.list` | invoke | `{ url?: string }` | `{ ok: true; items: WebAnnotation[] } \| { ok: false; message: string }` |
 | `webAnnotations.add` | invoke | `WebAnnotation` 草稿（无 id/createdAt） | `{ ok: true; item: WebAnnotation } \| { ok: false; message: string }` |
 | `webAnnotations.update` | invoke | `{ url: string; annotationId: string; patch: { note?; noteSource?; start?; end? } }` | `{ ok: true; item: WebAnnotation } \| { ok: false; message: string }` |
 | `webAnnotations.remove` | invoke | `{ url: string; annotationId: string }` | `{ ok: true; removed: boolean } \| { ok: false; message: string }` |
 
-落盘单文件 `<userData>/web-annotations.json`，不进书库备份。坐标空间、`excerpt` 漂移校正、`noteSource` 语义与本地 `Annotation` **完全一致**；差别只有归属键（`url` 取代 `bookId`+`chapterId`）。地址非法、坐标非法、划线无摘录都返回中文错误。`url` 一律先经 `canonicalizeUrl` 归一后再比较与存储，避免同一章不同参数（`?page=`、`utm_*`）算成两条。
+落盘单文件 `<userData>/web-annotations.json`，不进书库备份。坐标空间、`excerpt` 漂移校正、`noteSource` 语义与本地 `Annotation` **完全一致**；差别只有归属键（`url` 取代 `bookId`+`chapterId`）。地址非法、坐标非法、划线无摘录都返回中文错误。`webAnnotations.list` 的 `url` 在 handler 类型中可省略；省略时按空地址查询并返回空数组。`url` 一律先经 `canonicalizeUrl` 归一后再比较与存储，避免同一章不同参数（`?page=`、`utm_*`）算成两条。
 
 ---
 
@@ -490,10 +503,19 @@ A1.1 只冻结以上类型、频道与白名单形状；handler 与 preload 方�
 
 ---
 
+## Agent 调用审计
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `agentAudit.list` | invoke | `{ limit?: number }` | `{ ok: true; entries: AgentAuditEntry[] }`（最多 500 条；仅调用元数据与参数哈希，不含参数值、正文、Key、`*Enc` 字段或令牌） |
+
+该只读频道与设置页「Agent 调用记录」共用审计存储；主进程按固定字段白名单重建响应对象。
+
 ## preload 白名单形状（与 `src/preload/index.ts` 一致）
 
 ```ts
 window.api = {
+  agentAudit: { list },
   dialog: { openFile, openDirectory, openZip },
   tts: { getPosition, setPosition, synthesize, cancel },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, resume, zoom, readingPage, setReadingMode, chapter, prefetchChapter, chapterCatalog, saveReadingPos, getReadingPos, find, stopFind, hide, onFindResult, onShortcut, onUrl, onState, onReadingChapter },
