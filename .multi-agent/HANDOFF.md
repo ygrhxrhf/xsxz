@@ -23,7 +23,16 @@
 - **挑战页自动重试（challenge-page）已提交**：
   - `053c13c` feat(download): 站点验证挑战页自动重载 + 落人工续跑
   - `ee80288` docs: 计划与实测结论归档
-- master HEAD：订阅代理之后（master 干净；`.qoder/` 未跟踪，属并行 worktree）。
+- **agent 集成（MCP 桥接）已提交并推送**：`5a6d4bf..7fe37f3`（10 个提交，origin/master = 7fe37f3）
+  - 能力清单 `src/shared/agentCapabilities.ts` + 两份机器化契约测试
+  - 路径预检 `agentPaths.ts`、审计 `agentAudit.ts`、任务注册表 `agentJobs.ts`
+  - 协议核心 `agentBridgeCore.ts`、命名管道服务器 `agentBridge.ts`
+  - 接线：`index.ts`（注册表 → registerIpc → 开管道、单实例锁、job 事件旁路）、
+    `preload` 加 `agentAudit.list`、设置页「Agent 调用记录」
+  - MCP 服务端与冒烟脚本：`scripts/agent-mcp-server.mjs`、`scripts/agent-bridge-smoke.mjs`
+- 推送注意：本机 `credential.helper-selector` 会让 `git push` 卡在等待凭据，
+  用 `git -c credential.helper=manager push origin master` 可非交互推成功。
+- master HEAD：`7fe37f3`（master 干净；`.qoder/`、`.probe-cf/` 未跟踪，属并行工作/探针产物）。
 
 ## 订阅代理（内置内核）做了什么
 
