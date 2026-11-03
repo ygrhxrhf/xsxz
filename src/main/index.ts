@@ -83,7 +83,7 @@ import { auditBook } from './quality'
 import { createBackup, restoreBackup, runAutoBackupIfDue, recoverInterruptedRestore } from './backup'
 import { cleanupInterruptedMigration, migrateLibrary } from './libraryMigration'
 import { ensureLibraryPathAtStartup, scriptedStartupDialogs } from './startupGuard'
-import { browseUserAgent } from './userAgent'
+import { sessionUserAgent } from './userAgent'
 import { addAnnotation, listAnnotations, removeAnnotation, updateAnnotation } from './annotations'
 import { addWebAnnotation, listWebAnnotations, removeWebAnnotation, updateWebAnnotation } from './webAnnotations'
 import type { AiExclusiveResult, AiJobPolicy } from './aiScheduler'
@@ -318,8 +318,11 @@ async function saveAiDone(
  */
 function novelSession() {
   const ses = session.fromPartition(PARTITION)
-  // 浏览 View 和下载 View 共用这个分区，一处覆盖两处
-  ses.setUserAgent(browseUserAgent())
+  // 浏览 View 和下载 View 共用这个分区，一处覆盖两处。
+  // 默认不覆盖 UA（返回空串 = 保留 Chromium 原生串）：
+  // 实测覆盖成「纯 Chrome」会让 Cloudflare 判为伪装，挑战过不去，见 userAgent.ts。
+  const ua = sessionUserAgent()
+  if (ua) ses.setUserAgent(ua)
   return ses
 }
 
