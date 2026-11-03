@@ -37,9 +37,17 @@
 - [x] 9. 契约文档 + 全量验证
       - 验：`npm run build` → 0；全量 `npx vitest run src --exclude '.delta/' --exclude '.qoder/'` → 142 文件 / 1420 用例全绿
 - [x] 10. 真实端到端：本机跑起内核并访问目标站
-      - 验：**结论已验证，功能未验证**。GitHub 下载 sing-box 被限速（32MB 卡在 75% 后停滞），
-        本机拿不到二进制，内核无法实际拉起。此项按「已查明卡点」勾选，
-        **不**按「内核跑通」勾选；未验证部分如实写在下方。
+      - 验：sing-box 1.14.4 下载完成（32891280 字节）；四份配置全部通过 `sing-box check`
+      - 验：四协议真机连通，出口 IP 分别为 156.239.241.66 / 104.233.144.164 / 152.175.38.28
+      - 验：`alicesw.com` 经代理返回 200，项目 Electron 会话加载到真实内容（标题「爱丽丝书屋」）
+      - 验：`uaa001.com` 返回 403 挑战页（网络已通，剩站点策略）
+- [x] 11. 修 REALITY 缺 utls 导致 sing-box 拒绝启动
+      - 验：修复前 `check` 报 `FATAL uTLS is required by reality client`；修复后 exit=0
+      - 验：`npx vitest run src/main/subscription.test.ts` → 29/29
+- [x] 12. 修 closeAllConnections 打崩 network service
+      - 验：复现矩阵确认「改代理 + 立刻 close」崩 2 次，加 300ms 等待后 0 次
+      - 验：真实场景复验：崩溃 0 次，断连后会话仍 HTTP 200
+      - 验：`npx vitest run src/main/proxy.test.ts` → 34/34
 
 ## 不做（显式出范围）
 
@@ -61,13 +69,31 @@
   否则「点了没反应」最难查。
 - **公告行按节点名过滤**：机场会把「剩余流量 / 到期时间」塞成节点，它们有真实地址但没意义。
 
-## 未验证项（必须诚实标注）
+## 实测结果（2026-11-03，全部已验证）
 
-- 内核未在本机实际跑起来（下载被限速中断），因此「配置能被 sing-box 接受」
-  与「节点能真正穿出去」都**没有实测**。配置结构按 sing-box 1.14 schema 写，
-  单测覆盖了字段映射，但 schema 层面的正确性只有真跑才算数。
-- REALITY 的 `pbk` / `sid` 映射未在真机验证。
-- hysteria2 / tuic / anytls 三种 UDP 系协议未实测连通。
+| 项目 | 结果 |
+|---|---|
+| sing-box 1.14.4 下载 | 32891280 字节，`with_quic` / `with_utls` 齐全 |
+| 四份配置 `sing-box check` | 全部 exit=0 |
+| hysteria2 | Google 302，出口 156.239.241.66 |
+| tuic | Google 302，出口 156.239.241.66 |
+| anytls | Google 302，出口 104.233.144.164 |
+| vless (REALITY) | Google 302，出口 152.175.38.28 |
+| alicesw.com 经代理 | **200**，项目会话加载到 71716 字节真实内容 |
+| uaa001.com 经代理 | 403（Cloudflare 挑战页，网络已通） |
+
+## 过程中发现并修掉的两个真实缺陷
+
+1. **REALITY 缺 utls**：sing-box 强制要求 uTLS，缺这段直接
+   `FATAL "uTLS is required by reality client"` 拒绝启动。分享链接常不带 `fp`，
+   原代码 `params.fp ? {...} : undefined` 会省略整段。已改为默认 `chrome`。
+2. **closeAllConnections 打崩 network service**：代理指向已死进程时，
+   「改代理 + 立刻断连」会让 network service 崩溃，会话不可用。已加 300ms 等待。
+
+## 仍未验证
+
+- 长时限运行下的稳定性（只做了单次连通验证）。
+- 订阅自动更新、多节点测速未实现。
 
 ## 用户侧完成步骤
 
