@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
 async function channelsOf(file: string, call: string): Promise<Set<string>> {
@@ -9,9 +9,31 @@ async function channelsOf(file: string, call: string): Promise<Set<string>> {
   return found
 }
 
+/** 主进程的 handler 现在有两种写法：index.ts 的 ipcMain.handle 与 core 模块的 register。 */
+async function mainHandlers(): Promise<Set<string>> {
+  const found = new Set<string>()
+  const walk = async (url: URL): Promise<void> => {
+    const entries = await readdir(url, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.name.includes('.test.')) continue
+      const child = new URL(entry.isDirectory() ? `${entry.name}/` : entry.name, url)
+      if (entry.isDirectory()) {
+        await walk(child)
+        continue
+      }
+      if (!entry.name.endsWith('.ts')) continue
+      const source = await readFile(child, 'utf-8')
+      for (const match of source.matchAll(/ipcMain\.handle\(\s*['"`]([^'"`]+)['"`]/g)) found.add(match[1]!)
+      for (const match of source.matchAll(/\bregister\(\s*['"`]([^'"`]+)['"`]/g)) found.add(match[1]!)
+    }
+  }
+  await walk(new URL('./', import.meta.url))
+  return found
+}
+
 describe('preload ↔ main IPC channel alignment', () => {
   const invoked = channelsOf('../preload/index.ts', 'ipcRenderer\\.invoke')
-  const handled = channelsOf('./index.ts', 'ipcMain\\.handle')
+  const handled = mainHandlers()
   const pushed = channelsOf('./index.ts', '\\.send')
   const listened = channelsOf('../preload/index.ts', '\\bon')
 

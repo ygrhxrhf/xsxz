@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 
 const INVOKE = /ipcRenderer\.invoke\(\s*(["'])([\w.]+)\1/g
 const LISTEN = /\bon\(\s*(["'])([\w.]+)\1/g
-const HANDLE = /ipcMain\.handle\(\s*(["'])([\w.]+)\1/g
+// 主进程注册有两种写法：index.ts 的 ipcMain.handle，以及抽到 core 模块的 register（见 src/main/ipc/）。
+const HANDLE = /(?:ipcMain\.handle|register)\(\s*(["'])([\w.]+)\1/g
 const SEND = /\.send\(\s*(["'])([\w.]+)\1/g
 const DOC_ROW = /^\|\s*`([\w.]+)`\s*\|\s*(invoke|主→渲染)/gm
 
@@ -56,10 +57,20 @@ function sorted(groups: Record<string, string[]>): [string, string[]][] {
     .sort((a, b) => a[0].localeCompare(b[0]))
 }
 
+async function collectSources(dir: URL): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true })
+  const sources: string[] = []
+  for (const entry of entries) {
+    if (entry.name.includes('.test.')) continue
+    const child = new URL(entry.isDirectory() ? `${entry.name}/` : entry.name, dir)
+    if (entry.isDirectory()) sources.push(...(await collectSources(child)))
+    else if (entry.name.endsWith('.ts')) sources.push(await readFile(child, 'utf-8'))
+  }
+  return sources
+}
+
 async function mainSource(): Promise<string> {
-  const dir = new URL('../main/', import.meta.url)
-  const files = (await readdir(dir)).filter((f) => f.endsWith('.ts') && !f.includes('.test.'))
-  return (await Promise.all(files.map((f) => readFile(new URL(f, dir), 'utf-8')))).join('\n')
+  return (await collectSources(new URL('../main/', import.meta.url))).join('\n')
 }
 
 const preload = () => readFile(new URL('./index.ts', import.meta.url), 'utf-8')
