@@ -57,6 +57,10 @@ import {
 } from './proxyRuntime'
 import { mainFrameStatus, observeHttpStatus } from './httpStatus'
 import { createSerialQueue } from './serialQueue'
+import { installAgentRegistry, startAgentBridge, stopAgentBridge } from './agentBridge'
+import { registerLibraryIpc } from './ipc/libraryIpc'
+import { readAgentAudit, type AgentAuditEntry } from './agentAudit'
+import { installJobEventTap } from './agentJobs'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
 import { ocrEngineReady, shutdownOcrEngine } from './ocrText'
@@ -742,6 +746,9 @@ function createWindow(): void {
   })
 
   setOwnerWindow(mainWindow)
+  // job_* 工具的数据源：主窗口是全部长任务推送（ai.* / download.* / mirror.progress）的必经点，
+  // 在这里旁路一份给任务注册表，业务代码与渲染协议都不用改（设计 §3.6）。
+  installJobEventTap(mainWindow.webContents)
   // 镜像与下载共用同一个隐藏视图：让下载侧的互斥判定把「镜像运行中」也算成忙。
   // 否则镜像发现阶段 active 为空，用户点「下载本书」就会和镜像并发驱动同一个 webContents。
   setExternalBusyProbe(() => getMirrorState().running)
@@ -1025,180 +1032,15 @@ function registerIpc(): void {
     return { filePaths: result.filePaths }
   })
 
-  ipcMain.handle('library.list', async () => {
-    const books = await listBooks()
-    return { books: await bookOverview.decorate(books, await getSettings()) }
-  })
-  ipcMain.handle('bookOverview.retry', async (_e, payload: { bookId?: string }) => {
-    try {
-      const bookId = payload?.bookId
-      if (typeof bookId !== 'string' || !/^[a-z0-9_]+$/i.test(bookId)) return { ok: false, message: '书籍编号无效' }
-      await bookOverview.retry(bookId)
-      return { ok: true }
-    } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : String(error) }
-    }
-  })
-  ipcMain.handle('library.get', async (_e, { bookId }: { bookId: string }) => {
-    try {
-      const book = await getBook(bookId)
-      return { book }
-    } catch (e: unknown) {
-      return { ok: false, message: String(e) }
-    }
-  })
-  ipcMain.handle('library.readChapter', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {
-    try {
-      const chapter = await readChapter(bookId, chapterId)
-      // 正文刚落盘就补索引：不 await，读章返回不该为检索加速件等待。
-      wakeEvidenceIndex(bookId)
-      return { chapter }
-    } catch (e: unknown) {
-      return { ok: false, message: String(e) }
-    }
-  })
-  ipcMain.handle('library.delete', async (_e, { bookId }: { bookId: string }) => {
-    try {
-      await deleteBook(bookId)
-      return { ok: true }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
-  ipcMain.handle('library.listTrash', async () => {
-    try {
-      const items = await listTrash()
-      return { ok: true, items }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
-  ipcMain.handle('library.restoreTrash', async (_e, { name }: { name: string }) => {
-    try {
-      await restoreFromTrash(name)
-      return { ok: true }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
-  ipcMain.handle('library.purgeTrash', async (_e, payload?: { name?: string }) => {
-    try {
-      const purged = await purgeTrash(payload?.name)
-      return { ok: true, purged }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
-  ipcMain.handle('library.import', async (_e, { filePath }: { filePath: string }) => {
-    let started = false
-    try {
-      if (isLibraryRestoring()) return { ok: false, message: '书库正在恢复，请稍后再试' }
-      // 导入是长任务：重复点击会同时开两个导入，写同一份索引
-      if (activeImports > 0) return { ok: false, message: '已经有一个导入在进行，请等它完成' }
-      activeImports++
-      started = true
-      const guard = assertImportable(filePath)
-      if (!guard.ok) return guard
-      const ext = filePath.toLowerCase().split('.').pop()
-      const result = ext === 'epub' ? await importEpub(filePath) : await importTxt(filePath)
-      bookOverview.wake()
-      return { ok: true, bookId: result.bookId }
-    } catch (e: unknown) {
-      return { ok: false, message: String(e) }
-    } finally {
-      if (started) activeImports--
-    }
-  })
-  ipcMain.handle('library.setProgress', async (_e, { bookId, progress }: { bookId: string; progress: unknown }) => {
-    try {
-      await setProgress(bookId, progress as import('../shared/types').ReadingProgress)
-      return { ok: true }
-    } catch (e: unknown) {
-      return { ok: false, message: String(e) }
-    }
-  })
-  ipcMain.handle('library.getReadFrontier', async (_e, payload: { bookId: string }) => {
-    try { return { ok: true, frontier: await getReadFrontier(payload.bookId) } }
-    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
-  })
-  ipcMain.handle('library.markReadFrontier', async (_e, payload: { bookId: string; chapterId: string; paragraphIndex: number; characterOffset: number }) => {
-    try {
-      const position = await markReadFrontier(payload.bookId, payload.chapterId, payload.paragraphIndex, payload.characterOffset)
-      wakeSemanticIndex(payload.bookId)
-      return { ok: true, position }
-    }
-    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
-  })
-  ipcMain.handle('library.confirmLegacyReadRange', async (_e, payload: { bookId: string }) => {
-    try { return { ok: true, frontier: await confirmLegacyReadRange(payload.bookId) } }
-    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
-  })
-  ipcMain.handle('library.getReadingStats', async (_e, payload?: { limitDays?: number }) => {
-    try {
-      const limit = typeof payload?.limitDays === 'number' ? payload.limitDays : 30
-      return { ok: true, stats: await readReadingStats(limit) }
-    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
-  })
-  ipcMain.handle(
-    'library.updateMeta',
-    async (_e, payload: { bookId: string; title: string; author: string; tags: string[] }) => {
-      try {
-        return await updateMeta(payload)
-      } catch (e: unknown) {
-        return { ok: false, message: e instanceof Error ? e.message : String(e) }
-      }
+  // 书库域注册已抽到 core 模块（src/main/ipc/libraryIpc.ts）：频道名、入参与返回结构不变。
+  registerLibraryIpc((channel, listener) => ipcMain.handle(channel, listener), {
+    bookOverview,
+    imports: {
+      current: () => activeImports,
+      begin: () => { activeImports++ },
+      end: () => { activeImports-- },
     },
-  )
-  ipcMain.handle('library.setCover', async (_e, payload: { bookId: string; sourcePath: string }) => {
-    try {
-      return await setCover(payload)
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
-  })
-  ipcMain.handle('library.pickCoverFile', async () => {
-    if (!mainWindow) return null
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: '选择封面图片',
-      filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }],
-      properties: ['openFile'],
-    })
-    return result.canceled ? null : (result.filePaths[0] ?? null)
-  })
-  ipcMain.handle('library.updateChapterBody', async (_e, args: { bookId: string; chapterId: string; body: string; restoreRaw?: boolean }) => {
-    try {
-      await updateChapterBody(args.bookId, args.chapterId, args.body, args.restoreRaw)
-      bookOverview.wake()
-      return { ok: true }
-    } catch (e: unknown) {
-      return { ok: false, message: String(e) }
-    }
-  })
-  ipcMain.handle('library.repairChapterBody', async (_e, args: { bookId: string; chapterId: string; body: string }) => {
-    try { await repairChapterBody(args.bookId, args.chapterId, args.body); bookOverview.wake(); return { ok: true } }
-    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
-  })
-  ipcMain.handle('library.audit', async (_e, args: { bookId: string }) => {
-    try { return { ok: true, report: await auditBook(args.bookId) } }
-    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
-  })
-  ipcMain.handle(
-    'library.export',
-    async (_e, args: { bookId: string; format: 'txt' | 'epub'; destDir: string }) => {
-      try {
-        return await exportBook(args.bookId, args.format, args.destDir)
-      } catch (e: unknown) {
-        return { ok: false, message: e instanceof Error ? e.message : String(e) }
-      }
-    },
-  )
-  ipcMain.handle('library.searchInBook', async (_e, { bookId, query }: { bookId: string; query: string }) => {
-    try {
-      const hits = await searchInBook(bookId, query || '')
-      return { ok: true, hits }
-    } catch (e: unknown) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) }
-    }
+    getParentWindow: () => mainWindow,
   })
 
   ipcMain.handle('backup.create', async (_e, args: { destDir: string }) => {
@@ -1412,6 +1254,24 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('settings.get', async () => getSettings())
+  ipcMain.handle('agentAudit.list', async (_e, payload?: { limit?: number }) => {
+    const limit = typeof payload?.limit === 'number' ? Math.min(500, Math.max(1, Math.floor(payload.limit))) : 100
+    // Rebuild from the narrow audit schema: never spread arbitrary disk values to the renderer.
+    const entries = await readAgentAudit(limit)
+    return { ok: true, entries: entries.map((entry: AgentAuditEntry) => ({
+      ts: entry.ts,
+      client: entry.client,
+      tool: entry.tool,
+      channel: entry.channel,
+      tier: entry.tier,
+      dryRun: entry.dryRun,
+      confirmed: entry.confirmed,
+      ok: entry.ok,
+      ...(entry.code ? { code: entry.code } : {}),
+      ms: entry.ms,
+      argsHash: entry.argsHash,
+    })) }
+  })
   ipcMain.handle('tts.getPosition', async (_e, { bookId }: { bookId: string }) => readTtsPosition(bookId))
   ipcMain.handle('tts.setPosition', async (_e, args: { bookId: string; position: unknown }) => {
     await writeTtsPosition(args.bookId, args.position)
@@ -2685,6 +2545,21 @@ function registerIpc(): void {
 
 app.setName('spbf')
 
+// 单实例锁：双开时两个进程都写书库，而书库的写锁只在进程内有效
+// （docs/agent-integration-design.md §6）。第二个实例直接退出；
+// 已在跑的实例收到 second-instance 后把窗口带到前台。
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  })
+}
+
 /** 启动入口：书库就绪后修正中断状态、装广告过滤、注册 IPC、再开窗口。 */
 
 app.whenReady().then(async () => {
@@ -2732,8 +2607,11 @@ app.whenReady().then(async () => {
   browserAdRequestFilter.install(novelSession())
   // 代理必须在开窗口之前落地：浏览页第一跳就要走对出口。
   await applySavedProxy()
+  // agent 桥接：先装注册表（让 ipcMain.handle 同时登记给桥接），注册完再开命名管道。
+  installAgentRegistry()
   registerIpc()
   createWindow()
+  void startAgentBridge()
   bookOverview.start()
   aiReadingFollow.start()
   // 启动后检查到期备份；维护锁使压缩期间的书库快照保持一致。
@@ -2795,6 +2673,8 @@ app.on('before-quit', () => {
   void shutdownOcrEngine()
   // 代理内核是我们拉起的子进程：不收掉就会变成孤儿，下次启动还占着端口
   void stopSubscriptionProxy()
+  // agent 桥接的令牌文件指向本进程：退出时删掉，别留下失效的连接信息。
+  void stopAgentBridge()
 })
 
 app.on('window-all-closed', () => {

@@ -57,6 +57,24 @@ function on<T>(channel: string, handler: (payload: T) => void): Unsub {
 }
 
 const api = {
+  agentAudit: {
+    list: (limit = 100) => ipcRenderer.invoke('agentAudit.list', { limit }) as Promise<{
+      ok: true
+      entries: Array<{
+        ts: string
+        client: string
+        tool: string
+        channel: string
+        tier: string
+        dryRun: boolean
+        confirmed: boolean
+        ok: boolean
+        code?: string
+        ms: number
+        argsHash: string
+      }>
+    }>,
+  },
   dialog: {
     openFile: () => ipcRenderer.invoke('dialog.openFile') as Promise<{ filePaths: string[] }>,
     openDirectory: (title?: string) => ipcRenderer.invoke('dialog.openDirectory', { title }) as Promise<{ filePaths: string[] }>,
