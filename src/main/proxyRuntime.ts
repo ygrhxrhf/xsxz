@@ -7,6 +7,8 @@ import {
   startKernel,
   type KernelHandle,
 } from './proxyKernel'
+import { applyProxyToSession } from './proxy'
+import { DEFAULT_PROXY_PREFS } from '../shared/types'
 
 /**
  * 订阅代理的运行时：订阅 → 节点 → 内核 → 会话。
@@ -147,12 +149,17 @@ export async function startFromSubscription(
   if (options.applyToSession !== false) {
     try {
       const ses = session.fromPartition('persist:novel')
-      await ses.setProxy({
-        mode: 'fixed_servers',
-        proxyRules: `http://127.0.0.1:${port}`,
-        proxyBypassRules: '<local>',
+      // 走 applyProxyToSession 而不是裸 setProxy：它带着「先等再断连」的保护，
+      // 否则内核刚换过时留在死端口上的连接会把 network service 打崩。
+      const applied = await applyProxyToSession(ses as never, {
+        ...DEFAULT_PROXY_PREFS,
+        mode: 'manual',
+        protocol: 'http',
+        host: '127.0.0.1',
+        port,
+        bypass: '',
       })
-      await ses.closeAllConnections?.().catch(() => {})
+      if (!applied.ok) throw new Error(applied.message ?? '切换代理失败')
     } catch (e) {
       await stopSubscriptionProxy()
       const message = `内核已启动但会话没能切过去：${e instanceof Error ? e.message : String(e)}`

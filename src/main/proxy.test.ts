@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  PROXY_SETTLE_BEFORE_CLOSE_MS,
   applyProxyToSession,
   buildProxyBypassList,
   buildProxyRules,
@@ -150,14 +151,14 @@ describe('applyProxyToSession', () => {
 
   it('off 传 direct 模式', async () => {
     const ses = fakeSession()
-    const res = await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'off' })
+    const res = await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'off' }, { settleMs: 0 })
     expect(res.ok).toBe(true)
     expect(ses.calls[0]).toEqual({ mode: 'direct' })
   })
 
   it('system 传 system 模式', async () => {
     const ses = fakeSession()
-    await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'system' })
+    await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'system' }, { settleMs: 0 })
     expect(ses.calls[0]).toEqual({ mode: 'system' })
   })
 
@@ -178,15 +179,81 @@ describe('applyProxyToSession', () => {
     })
   })
 
-  it('每次应用都断开旧连接（否则改完还要靠系统代理）', async () => {
+  it('应用后会断开旧连接（否则改完还要靠系统代理）', async () => {
     const ses = fakeSession()
-    await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'manual', host: '127.0.0.1', port: 1 })
+    await applyProxyToSession(
+      ses,
+      { ...DEFAULT_PROXY_PREFS, mode: 'manual', host: '127.0.0.1', port: 1 },
+      { settleMs: 0 },
+    )
     expect(ses.closed).toBe(1)
+  })
+
+  it('断连前先等一段：指向死代理的旧连接先自然失败，避免打崩 network service', async () => {
+    const order: string[] = []
+    const ses = {
+      async setProxy() {
+        order.push('setProxy')
+      },
+      async closeAllConnections() {
+        order.push('close')
+      },
+    }
+    await applyProxyToSession(
+      ses,
+      { ...DEFAULT_PROXY_PREFS, mode: 'off' },
+      {
+        settleMs: 300,
+        sleep: async (ms) => {
+          order.push(`sleep:${ms}`)
+        },
+      },
+    )
+    expect(order).toEqual(['setProxy', 'sleep:300', 'close'])
+  })
+
+  it('等待被打断也继续断连，不把换代理判成失败', async () => {
+    const ses = fakeSession()
+    const res = await applyProxyToSession(
+      ses,
+      { ...DEFAULT_PROXY_PREFS, mode: 'off' },
+      {
+        settleMs: 100,
+        sleep: async () => {
+          throw new Error('被打断')
+        },
+      },
+    )
+    expect(res.ok).toBe(true)
+    expect(ses.closed).toBe(1)
+  })
+
+  it('setProxy 抛错时给出失败，不当成已切换', async () => {
+    const ses = {
+      async setProxy() {
+        throw new Error('network service 不可用')
+      },
+      async closeAllConnections() {},
+    }
+    const res = await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'off' }, { settleMs: 0 })
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.message).toContain('network service 不可用')
+  })
+
+  it('断连抛错不算失败（代理已经切过去了）', async () => {
+    const ses = {
+      async setProxy() {},
+      async closeAllConnections() {
+        throw new Error('busy')
+      },
+    }
+    const res = await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'off' }, { settleMs: 0 })
+    expect(res.ok).toBe(true)
   })
 
   it('manual 没填地址时不动会话，避免把整机指向不存在的代理', async () => {
     const ses = fakeSession()
-    const res = await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'manual', host: '' })
+    const res = await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'manual', host: '' }, { settleMs: 0 })
     expect(res.ok).toBe(false)
     expect(res.message).toContain('没填完整')
     expect(ses.calls).toHaveLength(0)
@@ -198,7 +265,7 @@ describe('applyProxyToSession', () => {
       async setProxy(config: unknown) { calls.push(config) },
       async closeAllConnections() { throw new Error('busy') },
     }
-    const res = await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'off' })
+    const res = await applyProxyToSession(ses, { ...DEFAULT_PROXY_PREFS, mode: 'off' }, { settleMs: 0 })
     expect(res.ok).toBe(true)
   })
 })
@@ -217,5 +284,10 @@ describe('judgeProxyProbe', () => {
 
   it('没有状态码也算失败', () => {
     expect(judgeProxyProbe({ ok: true }).ok).toBe(false)
+  })
+
+  it('默认等待 300ms：够让死端口的连接自然失败，又不至于让用户觉得卡', () => {
+    expect(PROXY_SETTLE_BEFORE_CLOSE_MS).toBeGreaterThanOrEqual(200)
+    expect(PROXY_SETTLE_BEFORE_CLOSE_MS).toBeLessThanOrEqual(1000)
   })
 })

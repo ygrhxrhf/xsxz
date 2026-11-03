@@ -107,7 +107,10 @@ function buildVless(uri: URL, params: Record<string, string>, name: string): Sin
         public_key: params.pbk ?? '',
         short_id: params.sid ?? '',
       },
-      utls: params.fp ? { enabled: true, fingerprint: params.fp } : undefined,
+      // sing-box 的 REALITY 客户端**强制**要求 uTLS：没有 utls 段会直接
+      // FATAL "uTLS is required by reality client"。分享链接里常不带 fp，
+      // 所以这里必须给默认指纹，不能因为缺参数就省略整个 utls。
+      utls: { enabled: true, fingerprint: params.fp || 'chrome' },
     }
   } else if (tlsEnabled) {
     outbound.tls = { enabled: true, server_name: params.sni || params.servername || undefined }

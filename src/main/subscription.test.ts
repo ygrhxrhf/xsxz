@@ -74,6 +74,22 @@ describe('parseNodeUri：vless', () => {
     })
   })
 
+  it('REALITY 永远带 utls（缺 fp 时默认 chrome）——sing-box 强制要求', () => {
+    // 分享链接里常不带 fp；没有 utls 段时 sing-box 报
+    // FATAL "uTLS is required by reality client" 并拒绝启动
+    const node = parseNodeUri(VLESS_REALITY)!
+    const tls = (node.outbound as { tls: Record<string, unknown> }).tls
+    expect(tls.utls).toEqual({ enabled: true, fingerprint: 'chrome' })
+  })
+
+  it('REALITY 带 fp 时用分享链接里的指纹', () => {
+    const node = parseNodeUri(
+      'vless://11111111-2222-3333-4444-555555555555@e.com:443?security=reality&type=tcp&pbk=PK&sid=S&sni=b.com&fp=firefox#n',
+    )!
+    const tls = (node!.outbound as { tls: Record<string, unknown> }).tls
+    expect((tls.utls as Record<string, unknown>).fingerprint).toBe('firefox')
+  })
+
   it('缺 uuid 视为无效', () => {
     expect(parseNodeUri('vless://@example.com:443?security=tls')).toBeNull()
   })

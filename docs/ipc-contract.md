@@ -262,6 +262,8 @@
 
 作用范围是浏览与下载共用的 `persist:novel` 分区（`src/main/proxy.ts` 的 `applyProxyToSession`）：一处设置，浏览能打开的页面下载就走得通。应用代理后会调 `closeAllConnections()` 断开在途连接——Chromium 的 `setProxy` 只影响**之后**建立的连接，不断旧连接会出现「改了设置但还要开系统代理才生效」。
 
+**断连前必须先等一小段**（`PROXY_SETTLE_BEFORE_CLOSE_MS`，当前 300ms）。实测（Electron 43 / Chrome 150，2026-11-03）：当代理指向一个**已经死掉**的本地进程（内核被 kill 但配置还指着它）时，网络层积压着大量到死端口的连接，此时「改代理 + **立刻** `closeAllConnections`」会让 network service 崩掉（`Network service crashed or was terminated`），会话随即不可用，用户看到的是「整个软件的网络坏了」。复现矩阵：只 close 不改代理 → 不崩；改 direct 不 close → 不崩；改 direct + 立刻 close → **崩 2 次**；改 direct + 等 300ms + close → **不崩且会话可用**。断连本身失败不当作换代理失败（代理已经切过去了），`setProxy` 失败才返回 `{ ok: false }`。
+
 代理需要认证时，由主进程在 `app` 的 `login` 事件里用已保存凭据回答，且**只处理 `authInfo.isProxy`**：站点自身的 401 登录仍走网页表单，不会被抢答成代理凭据。
 
 | 频道 | 方向 | 请求 | 响应 |
@@ -276,7 +278,7 @@
 
 **订阅模式（内置内核）**：`ProxyMode` 增加 `'subscription'`。这是「用户只有一条订阅链接、没有任何客户端」时的路径——本应用自己拉内核，不依赖外部程序。
 
-- `src/main/subscription.ts`：纯转换。`decodeSubscriptionBody` 识别 base64 / 明文 / JSON 三种正文；`parseNodeUri` 支持 `vless`（含 REALITY 的 `pbk`/`sid`）、`hysteria2`、`tuic`、`anytls`，其余协议跳过并计数；`buildSingBoxConfig` 生成「mixed 入口 + 单节点出站 + direct 兜底」的配置。机场把「剩余流量 / 到期 / 通知」塞成节点的公告行按节点名过滤掉。
+- `src/main/subscription.ts`：纯转换。`decodeSubscriptionBody` 识别 base64 / 明文 / JSON 三种正文；`parseNodeUri` 支持 `vless`（含 REALITY 的 `pbk`/`sid`）、`hysteria2`、`tuic`、`anytls`，其余协议跳过并计数；REALITY **强制**带 `utls`（缺 `fp` 时默认 `chrome`）——sing-box 对 REALITY 客户端要求 uTLS，缺这段会 `FATAL "uTLS is required by reality client"` 拒绝启动（已用 `sing-box check` 实测）；`buildSingBoxConfig` 生成「mixed 入口 + 单节点出站 + direct 兜底」的配置。机场把「剩余流量 / 到期 / 通知」塞成节点的公告行按节点名过滤掉。
 - `src/main/proxyKernel.ts`：内核进程管理。配置写 `userData/proxy-kernel/config.json` 后以 `sing-box run -c` 拉起；只监听 `127.0.0.1`；用「端口是否开始监听」判启动成功，失败时把内核最后几行输出带进错误信息。端口从 20801–20899 里挑空闲的。
 - `src/main/proxyRuntime.ts`：生命周期所有者。解析 → 挑端口 → 拉起 → 把 `persist:novel` 会话指到内核端口（`http://127.0.0.1:<port>` + `<local>` bypass）→ 断旧连接。换节点走「重启内核」，不做热重载。应用退出时必须 `stopSubscriptionProxy()`，否则留下孤儿进程。
 - `ProxyPrefs` 增加 `subscriptionUrl` / `subscriptionCached` / `nodeIndex`。订阅地址只收 `http`/`https`（订阅含节点凭据，允许 `file://` 等于让改 settings.json 的人读本机文件）。

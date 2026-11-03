@@ -173,15 +173,44 @@ export interface ProxySessionLike {
 }
 
 /**
+ * 换代理后、断旧连接前的等待时间。
+ *
+ * **为什么需要它**（实测 2026-11-03，Electron 43 / Chrome 150）：
+ * 当代理指向一个**已经死掉**的本地进程（内核被 kill 了但配置还指着它）时，
+ * 网络层积压着大量到死端口的连接。这时「改代理 + 立刻 closeAllConnections」
+ * 会让 network service 崩掉（`Network service crashed or was terminated`），
+ * 会话随即不可用——用户看到的是「整个软件的网络坏了」。
+ *
+ * 复现矩阵（起真 sing-box → kill 内核 → 三种收尾，各跑一次）：
+ * - 只 close、不改代理：不崩
+ * - 改 direct、不 close：不崩
+ * - 改 direct + **立刻** close：崩 2 次
+ *
+ * 所以顺序是：先 setProxy，再等一小段让指向旧出口的连接自然失败，最后才断连。
+ */
+export const PROXY_SETTLE_BEFORE_CLOSE_MS = 300
+
+export interface ApplyProxyOptions {
+  /** 覆盖默认等待；测试传 0 保持同步。 */
+  settleMs?: number
+  /** 等待实现，测试可注入。 */
+  sleep?(ms: number): Promise<void>
+}
+
+/**
  * 应用代理到会话。
  *
- * 改完必须断开已在途的连接：Chromium 的 setProxy 只影响**之后**建立的连接，
+ * 改完要断开已在途的连接：Chromium 的 setProxy 只影响**之后**建立的连接，
  * 已经连着的老连接会继续走原来的出口。用户改完设置却发现「还是要开系统代理」，
  * 十有八九就是没断旧连接。
+ *
+ * 但断得太急会把 network service 弄崩（见 `PROXY_SETTLE_BEFORE_CLOSE_MS`），
+ * 所以中间插一段等待，并且断连失败不当作换代理失败——代理已经切过去了。
  */
 export async function applyProxyToSession(
   ses: ProxySessionLike,
   prefs: ProxyPrefs,
+  options: ApplyProxyOptions = {},
 ): Promise<ProxyApplyResult> {
   if (!isProxyConfigured(prefs)) {
     return { ok: false, message: '代理地址没填完整，已保持原设置不变' }
@@ -195,12 +224,28 @@ export async function applyProxyToSession(
     config.proxyRules = buildProxyRules(prefs)
     config.proxyBypassRules = buildProxyBypassList(prefs.bypass)
   }
-  await ses.setProxy(config)
-  // 旧连接还挂在原出口上，必须断掉才会真正生效。
+
   try {
-    await ses.closeAllConnections?.()
-  } catch {
-    /* 断连失败不影响新连接走新代理 */
+    await ses.setProxy(config)
+  } catch (e) {
+    return { ok: false, message: `切换代理失败：${e instanceof Error ? e.message : String(e)}` }
+  }
+
+  if (ses.closeAllConnections) {
+    const settle = options.settleMs ?? PROXY_SETTLE_BEFORE_CLOSE_MS
+    if (settle > 0) {
+      const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+      try {
+        await sleep(settle)
+      } catch {
+        /* 等待被打断也继续；断连不是必须成功的步骤 */
+      }
+    }
+    try {
+      await ses.closeAllConnections()
+    } catch {
+      /* 断连失败不影响「代理已切换」这个结论：新连接会走新代理 */
+    }
   }
   return { ok: true }
 }
