@@ -263,11 +263,7 @@ function readProxyPrefs(value: unknown, passwordStored: boolean): ProxyPrefs {
 export async function getProxyPassword(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.proxyPasswordEnc !== 'string' || !raw.proxyPasswordEnc) return ''
-  try {
-    return safeStorage.decryptString(Buffer.from(raw.proxyPasswordEnc, 'base64'))
-  } catch {
-    return ''
-  }
+  return decryptCipher(raw.proxyPasswordEnc)
 }
 
 async function loadRaw(): Promise<Record<string, unknown>> {
@@ -485,8 +481,8 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
   }
   if (typeof patch.proxyPassword === 'string') {
     if (patch.proxyPassword) {
-      requireEncryptionAvailable()
-      raw.proxyPasswordEnc = safeStorage.encryptString(patch.proxyPassword).toString('base64')
+      await requireEncryptionAvailable()
+      raw.proxyPasswordEnc = (await safeStorage.encryptStringAsync(patch.proxyPassword)).toString('base64')
     } else {
       delete raw.proxyPasswordEnc
     }
