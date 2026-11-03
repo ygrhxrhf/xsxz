@@ -33,18 +33,30 @@
 - **真实订阅**：88 条里解析出 86 个节点（跳过公告行），
   `hysteria2 30 / tuic 23 / vless 20 / anytls 13`，配置结构正确生成。
 
-### ⚠️ 未验证（下一个人接着做）
+### ✅ 已全部实测（2026-11-03）
 
-**内核没有在本机实际跑起来过。** GitHub 下载 sing-box 32MB 被限速，卡在 75% 后停滞，
-多次断点续传也无法推进。因此：
+sing-box 1.14.4 下载成功（32891280 字节，`with_quic`/`with_utls` 齐全）。
 
-- 「生成的配置能被 sing-box 1.14 接受」——**未实测**；
-- 「节点能真正穿出去」——**未实测**；
-- REALITY 的 `pbk`/`sid` 映射、hysteria2 / tuic / anytls 三种 UDP 系协议——**未实测**。
+| 项目 | 结果 |
+|---|---|
+| 四份配置 `sing-box check` | 全部 exit=0 |
+| hysteria2 / tuic / anytls / vless | 四种都拿到境外出口 IP（302） |
+| alicesw.com 经代理 | **200**，项目 Electron 会话加载到 71716 字节真实内容 |
+| uaa001.com 经代理 | 403 挑战页（网络已通，剩站点策略） |
 
-要接着验证：弄到 `sing-box.exe` 放到 `%APPDATA%\spbf\proxy-kernel\`，
-然后 `npx electron-vite dev` 起应用 → 设置 → 网络代理 → 订阅 → 连接订阅，
-看内核状态灯是否变绿、节点能否打开目标站。
+### 过程中修掉的两个真实缺陷（`b49a8a1`）
+
+1. **REALITY 缺 utls**：sing-box 强制要求 uTLS，缺这段 `FATAL "uTLS is required
+   by reality client"` 拒绝启动。分享链接常不带 `fp`，原代码会省略整段。已改默认 `chrome`。
+2. **closeAllConnections 打崩 network service**：代理指向已死进程时，
+   「改代理 + 立刻断连」让 network service 崩溃、会话不可用。复现矩阵确认崩 2 次，
+   加 300ms 等待后 0 次且会话可用。`proxyRuntime` 也改走 `applyProxyToSession`。
+
+### 剩余边界
+
+- 长时限运行稳定性未测（只做单次连通验证）。
+- 订阅自动更新、多节点测速未实现。
+- uaa001 这类站仍需用户在浏览页手动过一次 Cloudflare 验证。
 
 ## proxy 做了什么
 
