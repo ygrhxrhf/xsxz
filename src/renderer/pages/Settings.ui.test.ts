@@ -371,7 +371,7 @@ describe('Settings section content visibility', () => {
     await flushUi()
 
     const navLabels = [...document.querySelectorAll('.settings-nav-item')].map((item) => item.textContent?.trim())
-    expect(navLabels).toEqual(['外观', '书库', '网络代理', '听书', 'AI', '站点规则', '备份与恢复', '关于'])
+    expect(navLabels).toEqual(['外观', '书库', '网络代理', '听书', 'AI', '站点规则', '备份与恢复', 'Agent 调用记录', '关于'])
     const visibleCard = (text: string) => {
       const card = [...document.querySelectorAll('.settings-card')]
         .find((item) => item.textContent?.includes(text)) as HTMLElement | undefined
@@ -402,6 +402,9 @@ describe('Settings section content visibility', () => {
     await select('备份与恢复')
     expect(visibleCard('备份与恢复').textContent).toContain('备份书库…')
     expect(visibleCard('备份与恢复').textContent).toContain('从备份恢复…')
+    await select('Agent 调用记录')
+    expect(visibleCard('Agent 调用记录').textContent).toContain('暂无 agent 调用记录')
+    expect(visibleCard('Agent 调用记录').textContent).not.toMatch(/apiKeyEnc|proxyPassword|sk-/)
     await select('关于')
     expect(visibleCard('技术栈：Electron + Vue 3 + Naive UI').textContent).toContain('技术栈：Electron + Vue 3 + Naive UI')
   })

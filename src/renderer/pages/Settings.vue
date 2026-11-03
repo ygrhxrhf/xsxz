@@ -43,7 +43,7 @@ const emit = defineEmits<{
 const message = useMessage()
 const rulePreview = ref<SiteRulePreview | null>(null)
 const rulePreviewing = ref(false)
-type SettingsSection = 'appearance' | 'library' | 'network' | 'tts' | 'ai' | 'siteRules' | 'backup' | 'about'
+type SettingsSection = 'appearance' | 'library' | 'network' | 'tts' | 'ai' | 'siteRules' | 'backup' | 'agentAudit' | 'about'
 const activeSection = ref<SettingsSection>('appearance')
 
 /** 代理表单：单独一份可编辑副本，只有点「保存」才写回设置。 */
@@ -230,6 +230,7 @@ const sectionOptions: { id: SettingsSection; label: string }[] = [
   { id: 'ai', label: 'AI' },
   { id: 'siteRules', label: '站点规则' },
   { id: 'backup', label: '备份与恢复' },
+  { id: 'agentAudit', label: 'Agent 调用记录' },
   { id: 'about', label: '关于' },
 ]
 
@@ -831,6 +832,27 @@ function removeCurrentRule() {
 const backingUp = ref(false)
 const restoring = ref(false)
 const configuringAutoBackup = ref(false)
+const agentAuditLoading = ref(false)
+const agentAuditEntries = ref<NonNullable<Awaited<ReturnType<typeof window.api.agentAudit.list>>['entries']>>([])
+const agentAuditError = ref('')
+
+async function refreshAgentAudit() {
+  agentAuditLoading.value = true
+  agentAuditError.value = ''
+  try {
+    const result = await window.api.agentAudit.list(200)
+    agentAuditEntries.value = result.entries
+  } catch (error) {
+    agentAuditError.value = error instanceof Error ? error.message : '读取 agent 调用记录失败'
+  } finally {
+    agentAuditLoading.value = false
+  }
+}
+
+function formatAuditTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
 
 async function enableAutoBackup() {
   const { filePaths } = await window.api.dialog.openDirectory('选择自动备份目录')
@@ -901,6 +923,10 @@ watch(
     else promptUndo.value = {}
   },
 )
+
+watch(activeSection, (section) => {
+  if (section === 'agentAudit') void refreshAgentAudit()
+})
 
 watch(
   () => props.prefillNonce,
@@ -1466,6 +1492,38 @@ onMounted(async () => {
       </div>
     </n-card>
 
+    <n-card v-show="activeSection === 'agentAudit'" title="Agent 调用记录" class="settings-card">
+      <n-space vertical :size="12">
+        <p style="color:var(--text-muted);font-size:13px;margin:0">
+          显示最近 200 条经 MCP 桥接的调用元数据。为保护隐私，此处不会展示调用参数、正文、API Key、密文或令牌。
+        </p>
+        <n-space align="center">
+          <n-button :loading="agentAuditLoading" @click="refreshAgentAudit">刷新记录</n-button>
+          <span style="color:var(--text-muted);font-size:12px">{{ agentAuditEntries.length }} 条</span>
+        </n-space>
+        <n-alert v-if="agentAuditError" type="error" :show-icon="false">{{ agentAuditError }}</n-alert>
+        <n-spin v-if="agentAuditLoading" size="small" />
+        <n-empty v-else-if="agentAuditEntries.length === 0" description="暂无 agent 调用记录" />
+        <div v-else class="agent-audit-list">
+          <article v-for="(entry, index) in agentAuditEntries" :key="`${entry.ts}-${index}`" class="agent-audit-row">
+            <div class="agent-audit-main">
+              <strong>{{ entry.tool }}</strong>
+              <n-tag size="small" :type="entry.ok ? 'success' : 'error'">{{ entry.ok ? '成功' : '失败' }}</n-tag>
+              <n-tag size="small" :type="entry.dryRun ? 'warning' : 'default'">{{ entry.dryRun ? 'dry-run' : entry.tier }}</n-tag>
+            </div>
+            <div class="agent-audit-meta">
+              <span>{{ formatAuditTime(entry.ts) }}</span>
+              <span>{{ entry.client || '未知客户端' }}</span>
+              <span>{{ entry.channel }}</span>
+              <span>{{ entry.ms }} ms</span>
+              <span v-if="entry.confirmed">已确认</span>
+              <span v-if="entry.code">{{ entry.code }}</span>
+            </div>
+          </article>
+        </div>
+      </n-space>
+    </n-card>
+
     <n-card v-show="activeSection === 'appearance'" title="阅读偏好" class="settings-card">
       <p style="color:var(--text-muted);font-size:13px">字体、行距、主题和列宽请在阅读器的“外观”面板中调整。</p>
     </n-card>
@@ -1809,6 +1867,35 @@ onMounted(async () => {
 .skin-desc {
   font-size: 11px;
   color: var(--muted);
+}
+
+.agent-audit-list {
+  display: grid;
+  gap: 8px;
+  max-height: 560px;
+  overflow: auto;
+}
+
+.agent-audit-row {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.agent-audit-main,
+.agent-audit-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.agent-audit-meta {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .form-msg {
