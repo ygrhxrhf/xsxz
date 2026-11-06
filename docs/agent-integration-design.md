@@ -45,8 +45,8 @@
 
 | 事实 | 证据 |
 |---|---|
-| 主进程注册 **128** 个 `ipcMain.handle` 频道 | P4 新增 `agentAudit.list` 后为 128（能力清单同步 128 条）。数量与两端一致性由 `agentCapabilities.contract.test.ts` 与 `ipcChannels.contract.test.ts` 递归扫描 `src/main` 校验，不再依赖手写行号 |
-| 契约文档已覆盖全部 127 个 invoke 频道，另记录 15 条主→渲染推送事件（表内共 142 行） | `docs/ipc-contract.md`；可复现的比对脚本与输出见 §7.1 |
+| 主进程注册 **150** 个 `ipcMain.handle` 频道 | 在 137 条清单基础上新增 `ai.extractPlaces`、8 个 `map.*`、`map.addManualPlace`、4 个 `proxy.*` 与 8 个 `ruleMarket.*`/`sync.*` 频道（能力清单同步 150 条）。数量与两端一致性由 `agentCapabilities.contract.test.ts` 与 `ipcChannels.contract.test.ts` 递归扫描 `src/main` 校验，不再依赖手写行号 |
+| 契约文档已覆盖全部 150 个 invoke 频道，另记录 15 条主→渲染推送事件（表内共 165 行） | `docs/ipc-contract.md`；可复现的比对脚本与输出见 §7.1 |
 | 应用**有单实例锁**（P5 已落地） | `app.requestSingleInstanceLock()` 在 `src/main/index.ts`，第二个实例直接退出，`second-instance` 聚焦已有窗口 |
 | 书库写锁只在**进程内**有效 | `src/main/library.ts:199` 的 `bookLocks` 是模块级 `Map`；`withBookLock` 在 `src/main/library.ts:213-230` |
 | 恢复期间的写互斥也只在进程内 | `src/main/libraryMaintenance.ts` 共 33 行（末尾有 LF）；`withLibraryWrite` 在 `:15-23`，`beginLibraryRestore` 在 `:25-29`，`runAsLibraryRestore` 在 `:31-33` |
@@ -164,7 +164,7 @@ sequenceDiagram
 
 ### 3.4 单一真源：能力清单
 
-实现已新增 `src/shared/agentCapabilities.ts` 元数据清单（128 条）；它不是业务服务层，不包含 handler 实现。关键导出为 `CAPABILITIES`、`EXPOSED_CAPABILITIES`、`CORE_CAPABILITIES`、`capabilitiesForToolset()` 与 `capabilityForTool()`。
+实现已新增 `src/shared/agentCapabilities.ts` 元数据清单（150 条）；它不是业务服务层，不包含 handler 实现。关键导出为 `CAPABILITIES`、`EXPOSED_CAPABILITIES`、`CORE_CAPABILITIES`、`capabilitiesForToolset()` 与 `capabilityForTool()`。
 
 ```ts
 export interface AgentCapability {
@@ -227,7 +227,7 @@ export interface AgentCapability {
 
 ---
 
-## 4. 能力清单（128 个频道）
+## 4. 能力清单（150 个频道）
 
 图例：
 
@@ -287,7 +287,7 @@ export interface AgentCapability {
 | 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
 |---|---|---|---|---|---|
 | `library.list` | `library_list` | 读 | — | disk | 返回 `{ books }`（无 `ok` 包裹） |
-| `bookOverview.retry` | `book_overview_retry` | 费 | — | key | 清除失败标记并唤醒后台队列；自动生成关闭时不发模型请求 |
+| `bookOverview.retry` | `book_overview_retry` | 费 | — | key | 只清除生成失败标记并唤醒后台队列；已有概览不再重跑，自动生成关闭时不发模型请求 |
 | `library.get` | `library_get` | 读 | — | disk | 含章节列表与进度 |
 | `library.readChapter` | `library_read_chapter` | 读 | — | disk | 单章正文 |
 | `library.delete` | `library_delete` | 破 | dry | disk | 移入 `__trash__/<bookId>-<ms>`，可还原 |
@@ -363,6 +363,19 @@ export interface AgentCapability {
 | `siteRules.upsert` | `site_rules_upsert` | 写 | dry | disk | 整条替换；保存后重载当前页 |
 | `siteRules.remove` | `site_rules_remove` | 写 | dry | disk | |
 
+### 4.9.1 规则市场与账号同步（8）
+
+| 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
+|---|---|---|---|---|---|
+| `ruleMarket.list` | `rule_market_list` | 读 | — | disk | 列出市场里的共享抽取规则（只含 CSS，不含凭据） |
+| `ruleMarket.apply` | `rule_market_apply` | 写 | dry | disk | 把市场条目写进本机规则，整条替换同 host 规则 |
+| `ruleMarket.subscribe` | `rule_market_subscribe` | 网 | dry | disk | 拉取规则清单来源；只存地址与条目快照 |
+| `ruleMarket.unsubscribe` | `rule_market_unsubscribe` | 写 | dry | disk | 只删订阅关系，不动已应用的规则 |
+| `sync.status` | `sync_status` | 读 | — | disk | 读取登录状态；未登录时 signedIn=false |
+| `sync.signIn` | `sync_sign_in` | 写 | — | key | 令牌存本机 safeStorage，不进同步包 |
+| `sync.signOut` | `sync_sign_out` | 写 | — | disk | 只清本机令牌，不动云端数据 |
+| `sync.run` | `sync_run` | 网 | dry | disk | 只同步设置白名单与站点规则；正文与 Key 不参与 |
+
 ### 4.10 设置与 TTS（7）
 
 | 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
@@ -375,7 +388,7 @@ export interface AgentCapability {
 | `tts.synthesize` | `tts_synthesize` | 网 | — | key | 输入 ≤ 500 字；返回本地 MP3 缓存路径，不返回字节流 |
 | `tts.cancel` | `tts_cancel` | 写 | — | 无 | |
 
-### 4.11 代理（7）
+### 4.11 代理（11）
 
 | 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
 |---|---|---|---|---|---|
@@ -386,8 +399,12 @@ export interface AgentCapability {
 | `proxy.selectNode` | `proxy_select_node` | 网 | dry | view | 换节点=重启内核，不做热重载 |
 | `proxy.kernelState` | `proxy_kernel_state` | 读 | — | 无 | |
 | `proxy.stopKernel` | `proxy_stop_kernel` | 写 | — | 无 | 应用退出时必须调用，否则留孤儿进程 |
+| `proxy.autoUpdateState` | `proxy_auto_update_state` | 读 | — | disk | 读取定时重拉的开关、间隔与上次结果 |
+| `proxy.setAutoUpdate` | `proxy_set_auto_update` | 写 | dry | disk | 开关定时重拉；**不自动换节点**（换节点要重启内核） |
+| `proxy.refreshSubscription` | `proxy_refresh_subscription` | 网 | — | 无 | 立刻重拉一次订阅，不切换当前节点 |
+| `proxy.speedTest` | `proxy_speed_test` | 网 | — | 无 | 并发探测各节点延迟，返回最快节点序号 |
 
-### 4.12 AI 与 OCR（34 = 33 个 `ai.*` + `ocr.status`）
+### 4.12 AI 与 OCR（35 = 34 个 `ai.*` + `ocr.status`）
 
 | 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
 |---|---|---|---|---|---|
@@ -425,18 +442,33 @@ export interface AgentCapability {
 | `ai.retrySave` | `ai_retry_save` | 写 | — | disk | 只接受主进程内存中的一次性令牌 |
 | `ai.cancel` | `ai_cancel` | 写 | — | 无 | 带 `jobId` 取消单个；省略则收交互车道 |
 | `ocr.status` | `ocr_status` | 读 | — | disk | 本机 OCR 引擎是否可用 |
+| `ai.extractPlaces` | `ai_extract_places` | 费 | dry | key | 从已读正文抽取真实地名并按书落盘；坐标由 `map.geocodePlaces` 补齐 |
 
-**统计**：128 个 handler = 121 个 MCP tool + 7 个不暴露（3 个 `dialog.*`、`library.pickCoverFile`、`browse.setBounds`、`browse.setVisible`、`browse.zoom`）。
+### 4.12.1 地图（9 个 `map.*`）
+
+| 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
+|---|---|---|---|---|---|
+| `map.getKey` | `map_get_key` | 读 | — | key | 返回已配置的腾讯地图 Key |
+| `map.getImage` | `map_get_image` | 读 | — | disk | 读取书籍地图底图的本地地址 |
+| `map.setImage` | `map_set_image` | 写 | dry | disk | 覆盖书籍地图底图，需先 dryRun |
+| `map.searchPlaceCandidates` | `map_search_place_candidates` | 读 | — | key | 同名地点的候选坐标搜索，消耗配额，不落盘 |
+| `map.choosePlaceCandidate` | `map_choose_place_candidate` | 写 | — | disk | 把候选坐标写为该地点的定位 |
+| `map.confirmPlace` | `map_confirm_place` | 写 | — | disk | 对存疑地点人工确认或拒绝 |
+| `map.getPlaces` | `map_get_places` | 读 | — | disk | 读取全书地点词条与坐标状态 |
+| `map.geocodePlaces` | `map_geocode_places` | 费 | dry | key | 批量地理编码并写回坐标状态，消耗配额 |
+| `map.addManualPlace` | `map_add_manual_place` | 写 | — | disk | 手工标注坐标，不消耗配额；可附正文锚点以便跳回原文 |
+
+**统计**：150 个 handler = 143 个 MCP tool + 7 个不暴露（3 个 `dialog.*`、`library.pickCoverFile`、`browse.setBounds`、`browse.setVisible`、`browse.zoom`）。
 
 **本节完整性复核**（对 §4 正文表格，不含 §5.3 与 §7 的交叉引用表）：
 
 ```
-sec4Rows=128 unique=128 missing=0 extra=0
-per-section: 4.1=19 4.2=7 4.3=3 4.4=22 4.5=4 4.6=8 4.7=10 4.8=3 4.9=4 4.10=7 4.11=7 4.12=34 => 128
-4.12 内部: 33 个 ai.* + ocr.status = 34
+sec4Rows=150 unique=150 missing=0 extra=0
+per-section: 4.1=19 4.2=7 4.3=3 4.4=22 4.5=4 4.6=8 4.7=10 4.8=3 4.9=4 4.9.1=8 4.10=7 4.11=11 4.12=35 4.12.1=9 => 150
+4.12 内部: 34 个 ai.* + ocr.status = 35；4.12.1: 9 个 map.* = 9
 ```
 
-即 128 行、128 个唯一频道，与 `ipcMain.handle` 集合完全相等。§4.13 是 Electron 耦合说明表，不是频道清单，不参与计数。
+即 150 行、150 个唯一频道，与 `ipcMain.handle` 集合完全相等。§4.13 是 Electron 耦合说明表，不是频道清单，不参与计数。
 
 ### 4.13 Electron 耦合面与 agent 侧处理
 
@@ -614,12 +646,15 @@ else app.on('second-instance', () => { mainWindow?.show(); mainWindow?.focus() }
 
 ### 7.1 覆盖情况（H1 结论）
 
-比对脚本（PowerShell，`grep` 在本机不可用；等价于 `grep -n "ipcMain.handle('ai\."` 的集合比对）：
+比对脚本（PowerShell，`grep` 在本机不可用；等价于 `grep -n "ipcMain.handle('ai\."` 的集合比对）。handler 已不只在 `index.ts`：书库域在 `src/main/ipc/libraryIpc.ts`，代理在 `src/main/proxyIpc.ts`，规则市场与同步在 `src/main/ruleMarketIpc.ts`，都通过 `register(channel, listener)` 注册，因此脚本要递归扫 `src/main`：
 
 ```powershell
-$t = Get-Content -Raw src/main/index.ts
-$code = [regex]::Matches($t, "ipcMain\.handle\(\s*'([a-zA-Z]+\.[a-zA-Z]+)'") |
-  ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$code = Get-ChildItem -Recurse src/main -Filter *.ts |
+  Where-Object { $_.Name -notlike '*.test.ts' } |
+  ForEach-Object {
+    [regex]::Matches((Get-Content -Raw $_.FullName), "(?:ipcMain\.handle|register)\(\s*'([a-zA-Z]+\.[a-zA-Z]+)'") |
+      ForEach-Object { $_.Groups[1].Value }
+  } | Sort-Object -Unique
 $d = Get-Content -Raw docs/ipc-contract.md
 $doc = [regex]::Matches($d, '(?m)^\| `([a-zA-Z]+(?:\.[a-zA-Z]+)+)`') |
   ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
@@ -633,7 +668,7 @@ Compare-Object $code $doc | Where-Object SideIndicator -eq '<=' | ForEach-Object
 实际输出：
 
 ```
-code=127 doc=142
+code=150 doc=165
 --- doc-only ---
 ai.budget
 ai.chunk
@@ -655,22 +690,26 @@ shelf.changed
 
 读法：
 
-- 代码侧 **127** 个 handler。
-- 契约文档表格里 **142** 个唯一频道名 = 127 个 invoke + **15** 个主→渲染推送事件（上面列出的 15 条）。
+- 代码侧 **150** 个 handler。
+- 契约文档表格里 **165** 个唯一频道名 = 150 个 invoke + **15** 个主→渲染推送事件（上面列出的 15 条）。
 - **`code-only` 为空**：没有任何 handler 未登记。
 - 文档多出的 15 条全部是推送事件，本就不该出现在 `ipcMain.handle` 集合里。
 
-因此 **H1 被证伪**：AI 频道没有缺失条目。33 个 `ai.*` 频道与 `ocr.status` 全部已在文档中登记；`docs/ipc-contract.md` 的 AI 章节（`:413-447`）与代码逐条对得上。这条结论要写进评审记录，避免后续按"补缺口"做重复工作。
+因此 **H1 被证伪**：AI 频道没有缺失条目。34 个 `ai.*` 频道与 `ocr.status` 全部已在文档中登记；`docs/ipc-contract.md` 的 AI 章节与代码逐条对得上。这条结论要写进评审记录，避免后续按"补缺口"做重复工作。
 
-同一脚本再对本文档 §4 表格跑一遍，得到 `sec4Rows=128 unique=128 missing=0 extra=0`（见 §4 末尾），说明能力清单与代码同源。
+同一脚本再对本文档 §4 表格跑一遍，得到 `sec4Rows=150 unique=150 missing=0 extra=0`（见 §4 末尾），说明能力清单与代码同源。
 
-计数口径的独立核验（`Select-String` 报的是文件真实行号，不依赖上面对 `webContents.send` 的抽取）：
+计数口径的独立核验（按文件聚合 handler 数，`Select-String` 报的是文件真实行号）：
 
 ```powershell
 $hits = Select-String -Path src/main/index.ts -Pattern "ipcMain\.handle\("
-"handlers=$($hits.Count) first=$($hits[0].LineNumber) last=$($hits[-1].LineNumber)"
-$upto = @($hits | Where-Object { $_.LineNumber -le 1418 })
-"le1418=$($upto.Count) gt1418=$($hits.Count - $upto.Count)"
+"index.ts=$($hits.Count)"
+Get-ChildItem -Recurse src/main -Filter *.ts |
+  Where-Object { $_.Name -notlike '*.test.ts' } |
+  ForEach-Object {
+    $n = (Select-String -Path $_.FullName -Pattern "(?:ipcMain\.handle|register)\(").Count
+    if ($n) { "$($_.Name)=$n" }
+  }
 $c = Get-Content -Raw docs/ipc-contract.md
 $inv = [regex]::Matches($c, '(?m)^\| `([a-zA-Z]+(?:\.[a-zA-Z]+)+)` \| invoke \|')
 $non = [regex]::Matches($c, '(?m)^\| `([a-zA-Z]+(?:\.[a-zA-Z]+)+)` \| (?!invoke)')
@@ -678,15 +717,16 @@ $non = [regex]::Matches($c, '(?m)^\| `([a-zA-Z]+(?:\.[a-zA-Z]+)+)` \| (?!invoke)
 ```
 
 ```
-handlers=127 first=785 last=2644
-le1418=85 gt1418=42
-line1418=  ipcMain.handle('tts.cancel', ...)
-docInvoke=127 docNonInvoke=15 docTotal=142
+index.ts=116
+libraryIpc.ts=22
+proxyIpc.ts=4
+ruleMarketIpc.ts=8
+docInvoke=150 docNonInvoke=15 docTotal=165
 ```
 
-三组数字与 §2、§4 的表述一致：127 = 85（`785-1418`，最后一条是 `tts.cancel`）+ 42（`1419-2669`）；文档 142 = 127 个 invoke + 15 个推送事件。
+三组数字与 §2、§4 的表述一致：150 = 116（`index.ts`）+ 22（书库域）+ 4（代理）+ 8（规则市场与同步）；文档 165 = 150 个 invoke + 15 个推送事件。
 
-> 一个容易踩的坑：按**行**跑的 `grep -n "ipcMain.handle('ai\."` 只能数出 **32** 条，因为 `ai.test` 的 handler 写成 `ipcMain.handle(` + 换行 + `'ai.test',`（`index.ts:2644-2645`）。跨行正则才拿到 **33** 个 `ai.*`。所以本文的“33 个 `ai.*`”是跨行计数结果，与 §4.12 的 34 行（+`ocr.status`）对得上。
+> 一个容易踩的坑：按**行**跑的 `grep -n "ipcMain.handle('ai\."` 只能数出 **32** 条，因为 `ai.test` 的 handler 写成 `ipcMain.handle(` + 换行 + `'ai.test',`。跨行正则才拿到 **34** 个 `ai.*`。所以本文的“34 个 `ai.*`”是跨行计数结果，与 §4.12 的 35 行（+`ocr.status`）对得上。
 
 ### 7.2 参数必填性不一致（5 条，需修文档）
 
@@ -721,9 +761,9 @@ docInvoke=127 docNonInvoke=15 docTotal=142
 
 | 阶段 | 内容 | 不改代码？ | 验证 |
 |---|---|---|---|
-| **P0** 能力清单 | 新增 `src/shared/agentCapabilities.ts`（128 条，含 P4 新增的 `agentAudit.list`）+ `agentCapabilities.contract.test.ts`（与 `ipcMain.handle`、preload 白名单、本文档表格三方比对） | 改代码（仅新增文件） | `npm test` 通过；断言数量 === 128 |
+| **P0** 能力清单 | 新增 `src/shared/agentCapabilities.ts`（150 条，含后续新增的 `agentAudit.list`、`ai.extractPlaces`、`map.*`、`proxy.*`、`ruleMarket.*`/`sync.*`）+ `agentCapabilities.contract.test.ts`（与 `ipcMain.handle`、preload 白名单、本文档表格三方比对） | 改代码（仅新增文件） | `npm test` 通过；断言数量 === 150 |
 | **P1** core 抽层 | 把 `index.ts` 里与视图无关的流程移入 core，`app.getPath` 改为注入；`settings.ts` / `siteRules.ts` / `webAnnotations.ts` / `tts.ts` / `browseState.ts` 的路径参数化 | 改代码（重构，不改频道） | `npm run typecheck`；既有单测全绿；`ipcContract.test.ts` 不变 |
-| **P2** 桥接层 | 命名管道 + 令牌握手 + 长度前缀帧 + 串行写队列 + 分级/dry-run/令牌 + 审计 | 改代码（主进程新增） | `scripts/agent-bridge-smoke.mjs`：握手成功/失败、127 个工具各调用一次只读路径、`dryRun` 不产生文件 mtime 变化 |
+| **P2** 桥接层 | 命名管道 + 令牌握手 + 长度前缀帧 + 串行写队列 + 分级/dry-run/令牌 + 审计 | 改代码（主进程新增） | `scripts/agent-bridge-smoke.mjs`：握手成功/失败、暴露的工具各调用一次只读路径、`dryRun` 不产生文件 mtime 变化 |
 | **P3** MCP 服务 | stdio JSON-RPC（`initialize` → `tools/list` → `tools/call`）、schema 生成、toolset 过滤、`job_status/wait/cancel` | 改代码（新增入口） | 用 `claude mcp add` 连接；`tools/list` 数量与 manifest 一致；一次真实 `library_list` |
 | **P4** 安全收口 | Key 白名单剥离、`ai_test` 拒绝 `apiKey`、路径校验、审计轮转、界面「agent 调用记录」 | 改代码 | 审计日志断言无 `Enc` 字段、无正文；路径用例表覆盖 UNC/相对/不存在 |
 | **P5** 单实例锁 | `requestSingleInstanceLock` + `second-instance` 聚焦 | 改代码 | 双开时第二个实例退出；`e2e:startup` 通过 |
@@ -732,19 +772,21 @@ docInvoke=127 docNonInvoke=15 docTotal=142
 每阶段的共同验收：
 
 ```powershell
-# 频道总数（应为 127）
-(Select-String -Path src/main/index.ts -Pattern "ipcMain\.handle\(" -AllMatches).Matches.Count
-# 全部频道名
-Select-String -Path src/main/index.ts -Pattern "ipcMain\.handle\(\s*'([^']+)'" -AllMatches |
-  ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+# 频道总数（应为 150；handler 分散在 index.ts 与 src/main/ipc/、proxyIpc.ts、ruleMarketIpc.ts）
+Get-ChildItem -Recurse src/main -Filter *.ts |
+  Where-Object { $_.Name -notlike '*.test.ts' } |
+  ForEach-Object {
+    [regex]::Matches((Get-Content -Raw $_.FullName), "(?:ipcMain\.handle|register)\(\s*'([^']+)'") |
+      ForEach-Object { $_.Groups[1].Value }
+  } | Sort-Object -Unique
 ```
 
 ### 8.0 实施状态（本轮收口）
 
 | 阶段 | 状态 | 证据 |
 |---|---|---|
-| P0 | 完成 | 128 条能力清单；`agentCapabilities.contract.test.ts` 与 handler / preload / §4 表格三方比对 |
-| P1 | **部分完成（纯内部重构，不影响能力）** | 书库域 22 个频道已迁到 `src/main/ipc/libraryIpc.ts`（注入 `bookOverview` / 导入计数 / 父窗口）；其余 106 个仍在 `index.ts`，`app.getPath` 注入未做。桥接层直接复用既有 handler，因此 agent 能力不依赖这一步完成；而现有 9 个契约测试按 `ipcMain.handle('<频道>'` 的源码文本断言 handler 块，搬动 handler 体要先改测试 |
+| P0 | 完成 | 150 条能力清单；`agentCapabilities.contract.test.ts` 与 handler / preload / §4 表格三方比对 |
+| P1 | **部分完成（纯内部重构，不影响能力）** | 书库域 22 个频道已迁到 `src/main/ipc/libraryIpc.ts`（注入 `bookOverview` / 导入计数 / 父窗口）；代理 4 个频道在 `src/main/proxyIpc.ts`；规则市场与同步 8 个频道在 `src/main/ruleMarketIpc.ts`；其余 116 个仍在 `index.ts`，`app.getPath` 注入未做。桥接层直接复用既有 handler，因此 agent 能力不依赖这一步完成；而现有 9 个契约测试按 `ipcMain.handle('<频道>'` 的源码文本断言 handler 块，搬动 handler 体要先改测试 |
 | P2 | 完成 | 命名管道 + 令牌 + 长度前缀帧 + 分级/令牌/串行写；`agentBridge.test.ts` 走真实管道 |
 | P3 | 完成 | `scripts/agent-mcp-server.mjs` 透传桥接清单与调用；`job_status/job_wait/job_cancel` 在 `src/main/agentJobs.ts`，两个 toolset 都带 |
 | P4 | 完成 | `agentAudit.ts` 写/读均走字段白名单；设置页「Agent 调用记录」列表 |
@@ -755,7 +797,7 @@ Select-String -Path src/main/index.ts -Pattern "ipcMain\.handle\(\s*'([^']+)'" -
 
 ### 8.1 工具数量与上下文预算
 
-当前 manifest 实测 **128 条能力、121 个暴露工具**，其中 `coreToolset=true` 为 **44 个**；桥接层另有 3 个不占频道的工具（`job_status` / `job_wait` / `job_cancel`），因此 `tools/list` 实际数量为 **core 47 / all 124**。MCP 服务按 `SPBF_TOOLSET=core|all` 过滤；`scripts/agent-bridge-smoke.mjs` 的真实模式断言 all = 124。
+当前 manifest 实测 **150 条能力、143 个暴露工具**，其中 `coreToolset=true` 为 **44 个**；桥接层另有 3 个不占频道的工具（`job_status` / `job_wait` / `job_cancel`），因此 `tools/list` 实际数量为 **core 47 / all 146**。MCP 服务按 `SPBF_TOOLSET=core|all` 过滤；`scripts/agent-bridge-smoke.mjs` 的真实模式断言 all = 146。
 
 ---
 
@@ -763,7 +805,7 @@ Select-String -Path src/main/index.ts -Pattern "ipcMain\.handle\(\s*'([^']+)'" -
 
 | 假设 | 结论 | 证据 |
 |---|---|---|
-| **H1** AI 频道有部分未在契约文档记录 | **证伪** | `code=127 doc=142`，`code-only` 为空；文档多出的 15 条全是推送事件。AI 33 条 + `ocr.status` 均已在册（§7.1 有可复现脚本与原始输出） |
+| **H1** AI 频道有部分未在契约文档记录 | **证伪** | `code=150 doc=165`，`code-only` 为空；文档多出的 15 条全是推送事件。AI 34 条 + `ocr.status` 均已在册（§7.1 有可复现脚本与原始输出） |
 | **H2** 无头进程直接写书库有丢更新风险，锁只在进程内，且无单实例锁 | **成立** | `library.ts:199` 模块级 `Map`、`:213-230`；`libraryMaintenance.ts` 共 33 行，`:15-23` 与 `:25-29` 为进程内锁；`atomicFile.ts:46-73` rename 无合并；`requestSingleInstanceLock` 无命中 |
 | **H3** Key 只能经 `safeStorage` 解密，AI 能力必须经应用执行 | **成立** | `settings.ts:1` 引入 `safeStorage`；`:317-322` `getApiKey`；`ai.ts` 只接收参数化 Key；`index.ts` 中 10 处 `getApiKey()` 全在 handler 内 |
 | **H4** 4 个对话框频道都能被已有参数化频道替代 | **成立** | `library.import({filePath})`、`backup.create({destDir})`、`backup.restore({zipPath})`、`library.export({destDir})`、`library.setCover({sourcePath})` 的参数已覆盖；`library.restoreTrash` 冲突时拒绝（`library.ts:718-731`） |

@@ -245,7 +245,7 @@ async function runCases(pipe, token, { real }) {
       reply.ok === true && toolCount > 0,
       reply.ok ? `${toolCount} 个工具` : `code=${reply.code}`,
     )
-    if (real) report('工具清单为暴露的全部能力 + 3 个桥接层 job 工具', toolCount === 124, `实际 ${toolCount}`)
+    if (real) report('工具清单为暴露的全部能力 + 3 个桥接层 job 工具', toolCount === 146, `实际 ${toolCount}`)
   }
 
   // 用例 5：一次真实的只读调用。

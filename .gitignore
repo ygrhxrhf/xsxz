@@ -19,3 +19,27 @@ electron.vite.config.*.mjs
 .sock.lock
 
 fixtures/ux/site-root/
+
+# 一次性探针与诊断产物（不入库）
+.probe-cf/
+.probe-cf_*.html
+.probe-overview.log
+$null
+grp.json
+jina.txt
+node_tsc.log
+runB.log
+web_tsc.log
+tmp-diag/
+vibe_images/
+
+# 工具自己的工作区
+.breezell/
+.qoder/
+
+# 用户素材：电子书本体、需求原文 docx、参考截图、书单数据（不入库，仅本地保留）
+docs/63331-*/
+docs/*.docx
+docs/pikt/
+docs/书目清单.csv
+docs/书目清单.md

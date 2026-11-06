@@ -17,6 +17,8 @@
     origin\                 # 导入时保留的源文件
     chapters\
       0001.json
+    map\
+      original.jpg         # 可选的「书中原图」，每本书一张，jpg/png/webp
     ai\
       summaries.json
       bookOverview.json     # AI 全书概览与逐章处理缓存；可含未读剧情和结局
@@ -30,6 +32,7 @@
       semantic-index.json  # 可重建的已读原文向量缓存
       resume-card.json     # 手动生成的断点续读卡缓存
       timeline.json        # 随记忆更新写入的人物与伏笔变化
+      places.json          # AI 抽取的书中地名与腾讯地理编码缓存
       index\               # 问答检索剪枝用的按章布隆过滤器，见「ai/index/」
 ```
 
@@ -37,11 +40,17 @@
 
 `tts-position.json` 为可选文件：`{ "chapterId": "c0001", "paragraphIndex": 0, "bodyHash": "1234abcd", "updatedAt": "<ISO-8601>" }`。正文指纹或章节不匹配时，阅读器回退到当前阅读位置。文件随书库备份和搬迁。在线 MP3 缓存位于应用 `userData/tts-cache`，总量上限 500 MB，不属于书库备份。
 
-`ai/bookOverview.json` 为可选文件，版本 1。`text` 保存含剧透的全书概览；`source` 记录各章节文件大小与修改时间；`chapterSummaries` 按章节 ID 保存正文 SHA-256 和章节摘要，用于中断续做及增量生成。`error` 与 `failedSignature` 记录当前章节版本的失败，手动重试时清除。文件缺失或损坏视为尚未生成，不影响阅读器。
+`ai/bookOverview.json` 为可选文件，版本 1。`text` 保存含剧透的全书概览，**一本书只生成一次**：`text` 一旦写入就是最终结果，之后书本卡片与渲染层一律从该文件读，正文改过、新章入库都不再调模型。`chapterSummaries` 按章节 ID 保存正文 SHA-256 和章节摘要，`reduceCache` 保存归并分段结果，二者只用于一次生成中途失败或被打断后的续做。`error` 记录当前失败，手动重试时清除。文件缺失或损坏视为尚未生成，不影响阅读。
+
+`ai/overview-request.json` 是「加入书架、等待生成概览」的登记标记（`{ "requestedAt": "<ISO>" }`）。启动时只续做带该标记、且还没有 `text` 的书，存量旧书不会被排进生成队列；生成成功或记录失败时删除标记。它单独成文件，以免和生成过程反复读改写的 `bookOverview.json` 互相覆盖。
+
+`map/original.<ext>` 是每本书可选的「书中原图」，只接受 jpg/png/webp、最大 8MB，由 `map.setImage` 写入；换图时清掉旧后缀，不写入 book.json，缺图为空态。
 
 `reading-frontier.json` v1 保存 `legacyConfirmed`、按章节 ID 的 `{paragraphIndex, characterOffset, bodyHash, updatedAt}` 和最近阅读会话。旧书 `progress` 只显示为待确认范围；读者确认后才补记以前章节。正文指纹变化时对应位置不能用于 AI。文件原子写入，损坏视为未读。
 
 `ai/semantic-settings.json` v1 保存 `{enabled}`，每书默认关闭。`ai/semantic-index.json` v1 保存向量模型键与已读原文片段、向量及正文哈希；缺失、损坏或模型更换时按未生成重建。只对新增已读片段增量调用 Embeddings API，不保存 Key；Key 加密保存在应用设置存储。`ai/monthly-usage.json` v1 保存自然月、已用估算 tokens 与请求预留；自动概览、自动整理和索引共享每书默认 100000 tokens 上限。未知服务用量按预留计入；此上限不等于服务商账单金额。
+
+`ai/places.json` v1 保存 AI 从已读正文抽取的地名词条：名称、别名、类型、章节与段落锚点、原文引文，以及腾讯地理编码返回的坐标、可信度、城市（`region`）、来源（`geocoder / district / search / country`）与解析状态（`pending / resolved / ambiguous / not-found / ignored`）。坐标只来自腾讯 WebService，模型不产出；可信度低于 6 记为 `ambiguous`，由用户确认后改为 `resolved`，忽略则撤掉坐标记为 `ignored`。同名地点只请求一次，已解析、待确认与“未找到/已忽略”的条目复用缓存。文件缺失或损坏按未抽取处理，重新抽取时按地名 id 保留已有坐标与状态。
 
 `ai/resume-card.json` 保存上次会话结束时间、来源哈希、关键变化/冲突/疑问和原文引用；来源或已读范围变化后视为过期。`ai/timeline.json` 保存记忆更新产生的“出现/变化”记录；当前状态从最新记忆读取。来源失效的条目不显示，重建记忆时从受影响章节重建。所有新增缓存原子写入，损坏按未生成处理。旧聊天、摘要与记忆文件继续可读；旧回答无可核验引用时隐藏内容。
 
@@ -286,6 +295,8 @@
 
 `note` 可空；`noteSource` 只允许 `"user"` 或 `"ai"`，缺省视为 `"user"`。它记的是「这段批注的话是谁写的」：读者自己敲的、或在选区里让 AI 解释后存回来的。只有 AI 来源的批注在界面上标「AI 解释」，改了 `note` 正文就必须同时把 `noteSource` 落回 `"user"`，否则读者改过的话会一直顶着 AI 的名。书签不带 `note`，也就永远不带 `noteSource`。
 
+`tags` 与 `color` 均可选，旧文件缺字段即无标签 / 默认黄色（`yellow`），无需迁移。`tags` 是 `#tag` 去 `#` 后的小写词（最多 50 个、每个 32 字符），读盘与写入都归一化去重；`color` 只接受 `yellow` / `green` / `blue` / `red` / `purple` 白名单，脏值丢弃。
+
 ---
 
 ## web-annotations.json
@@ -412,7 +423,7 @@
 { "version": 1, "sig": "48123:1728350000000.5", "bits": 16384, "k": 4, "filter": "base64 位图" }
 ```
 
-- `sig` 是该章 `chapters/NNNN.json` 的 `size:mtimeMs`，与 `ai/bookOverview.json` 的 `source` 同一口径。正文变了只有那一章重算，其余不动；备份恢复后时间戳全变只会触发重建，不影响正确性。
+- `sig` 是该章 `chapters/NNNN.json` 的 `size:mtimeMs`。正文变了只有那一章重算，其余不动；备份恢复后时间戳全变只会触发重建，不影响正确性。
 - 位图里只有该章的词形哈希（归一化视图的相邻二元窗 + 二元组与拉丁词），**不含任何连续正文**，因此不可能泄漏未读剧情；`bits: 0` 表示空章或解析不出正文，不写侧挂。
 - 只索引 `index ≤ book.progress.chapterId` 的章。构建点：读章成功后 `wakeEvidenceIndex(bookId)` 后台补建，不阻塞读章返回；提问时只读清单、不建索引。
 - 缺文件、坏 JSON、清单损坏、没建完、书库正在恢复 —— 一律按「不知道」处理，调用方照旧全量读盘。**索引坏掉的后果只能是问答变慢，绝不可能是漏引用**；剪枝只在布隆过滤器判「一定不含」时跳过读盘，判「可能含」仍要读原文复核。
@@ -509,7 +520,8 @@
 - `autoBackup.destDir` 为空表示关闭；主进程启动时距上次成功满七天则创建 `spbf-auto-*.zip`，仅保留最近五份自动备份。旧设置缺失时按关闭读取。备份包不含设置与 API Key。
 - `appearance.skin` 取值 `light`（浅色，默认）/ `dark`（深色）。旧 `paper`、`white`、`sakura`、`minimal` 读入为 `light`，旧 `night` 读入为 `dark`；非法值回退 `light`。读取迁移不改动其他设置，下一次保存外观时写入正式值。
 - `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。
-- `reader.theme` 取值 `paper`（默认）/ `sepia` / `gray` / `night`；`reader.fontFamily` 取值 `serif`（默认）/ `system` / `mono`；`reader.contentWidth` 取值 `narrow` / `medium`（默认）/ `wide`；`reader.paragraphSpacing` 取值 `compact` / `normal`（默认）/ `relaxed`；`reader.paragraphIndent` 为布尔值，默认 `true`；`reader.focusMode` 取值 `off`（默认）/ `one` / `three` / `five`；`reader.readingMode` 取值 `scroll`（默认）/ `screen`。非法字段逐项回退，不影响其他合法设置。缺失或非法的 `focusMode` 回退 `off`。缺失或非法的 `readingMode` 回退 `scroll`。
+- `reader.theme` 取值 `paper`（默认）/ `sepia` / `gray` / `night`；`reader.fontFamily` 取值 `serif`（默认）/ `system` / `mono`；`reader.contentWidth` 取值 `narrow` / `medium`（默认）/ `wide`；`reader.paragraphSpacing` 取值 `compact` / `normal`（默认）/ `relaxed`；`reader.paragraphIndent` 为布尔值，默认 `true`；`reader.focusMode` 取值 `off`（默认）/ `one` / `three` / `five`；`reader.readingMode` 取值 `scroll`（默认）/ `screen`；`reader.bookView` 取值 `classic`（默认）/ `sheet` / `realbook`；`reader.sheetColumns` 取值 `single` / `double`（默认 `double`，只影响 `bookView === 'sheet'`）。非法字段逐项回退，不影响其他合法设置。缺失或非法的 `focusMode` 回退 `off`。缺失或非法的 `readingMode` 回退 `scroll`。缺失或非法的 `bookView` 回退 `classic`（旧设置文件无此字段即经典模式）。缺失或非法的 `sheetColumns` 回退 `double`（旧设置文件无此字段即双栏）。
+- `reader.handwritingFont` 取值 `none`（默认，批注与正文同体）/ `kai` / `xingshu`，只影响批注呈现，不参与正文字体与分页量测；缺失或非法回退 `none`。
 - `reader.dim` 为护眼压暗百分比（正文区黑色遮罩的不透明度），有限数值四舍五入并夹紧到 0–70，默认 `0`（关）；缺失/非数值回退 `0`。旧设置无此字段时按 `0` 启动，不改变其他偏好。
 - 向后兼容：有效的新 `theme` 优先；新主题缺失或非法时，旧 `nightMode: true` 迁移为 `night`、`false` 迁移为 `paper`。首次成功保存新偏好后写入新字段；未知旧字段允许继续保留，但读取逻辑不再依赖它们。设置文件整体损坏时按默认值启动，不重建书库、章节、进度或标记数据。
 
@@ -534,6 +546,65 @@
 - `bodyCleanPatterns` 可选，每行一条正则，命中整段正文即删除（阅读模式与下载共用）。最多 20 行、每行 200 字符；非法正则忽略该行，不影响其它行与内置噪音规则。
 - 文件内不得存 API Key。
 - `%APPDATA%/spbf/adguard-network.bin` 是从 [AdGuard Base filter](https://filters.adtidy.org/extension/chromium/filters/2.txt) 编译出的本地网络规则缓存；只解析网络规则，不加载浏览器扩展或脚本注入规则。`adguard-network.json` 记录来源和更新时间。应用启动后后台加载缓存，并在缓存超过 8 天时从官方 HTTPS 地址更新。下载或解析失败时保留上次有效缓存；首次离线时只有本地 CSS 隐藏生效。缓存不含浏览历史或 API Key。
+
+---
+
+## 规则市场
+
+路径：`%APPDATA%/spbf/rule-market.json`（与 `settings.json` 同目录），**不属于**书库备份。
+
+```json
+{
+  "version": 1,
+  "subscriptions": [
+    { "url": "https://example.com/rules.json", "entries": [], "updatedAt": "<ISO-8601>" }
+  ]
+}
+```
+
+- 缺省文件视为 `{ version: 1, subscriptions: [] }`；损坏按无订阅处理，不影响本机已装的站点规则。
+- 每条订阅只存**清单地址**与上次拉回的条目快照（CSS 选择器），不存账号凭据、API Key 或正文。
+- 取消订阅只删这条订阅关系，已经应用到本机的规则不动。
+- 条目按 host 去重，同 host 以更新时间新者为准；应用一条就是把它写进 `site-rules.json`（整条替换同 host 的本机规则）。
+
+---
+
+## 账号与云同步
+
+路径：`%APPDATA%/spbf/sync-account.json`（与 `settings.json` 同目录），**不属于**书库备份。
+
+```json
+{
+  "version": 1,
+  "account": "<账号标识>",
+  "endpoint": "https://sync.spbf.app",
+  "tokenEnc": "<safeStorage 密文>"
+}
+```
+
+- `account` 与 `endpoint` 是明文的登录状态；`tokenEnc` 是 `safeStorage` 加密后的令牌，**只在主进程可解**，不返回渲染层、不写进同步数据包。
+- `sync.signOut` 只清本机令牌与登录状态，不动云端已存的数据。
+- 同步数据包 `SyncBundle` 只含设置白名单字段与站点规则；任一字段名带凭据形状（Key / token / password / `*Enc`）时在主进程被剔除。书库正文、批注、书签一律不上云。
+
+---
+
+## 代理订阅自动更新
+
+路径：`%APPDATA%/spbf/proxy-auto-update/proxy-auto-update.json`（`userData` 下的子目录，与 `settings.json` 同级但单独一层），**不属于**书库备份。
+
+```json
+{
+  "enabled": false,
+  "intervalMinutes": 60,
+  "lastUpdatedAt": "",
+  "lastError": ""
+}
+```
+
+- `intervalMinutes` 只接受 1–1440 的整数，非法值回退 60。
+- `lastUpdatedAt` 是上次成功重拉的时间；`lastError` 是上次失败的中文原因，成功时清空。
+- 自动更新**只更新缓存的订阅正文**，不切换节点、不重启内置内核（换节点会掐断在途下载）；换节点仍由本人点。
+- 缺失或损坏时按「未开启、间隔 60 分钟」读取，不影响浏览与下载。
 
 ---
 

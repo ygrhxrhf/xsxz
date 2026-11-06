@@ -130,9 +130,9 @@
 
 `Book.tags` / `BookListItem.tags` 始终是 `string[]`，缺省 `[]`。磁盘上旧书没有 `tags` 时按空数组读取，不得因此失败。`BookListItem.coverPath` 可选，有封面时给出相对书目录的路径。`BookListItem.sourceUrl` 可选，下载来的书带原始目录地址；整站镜像用它判断「这本已在书库」。索引版本 2 起写入该字段，旧索引会重建一次。`library.updateMeta` 只改书名、作者和标签；`library.setCover` 用本机图片写入封面并返回 `coverPath`。`library.pickCoverFile` 打开本机选图对话框，取消时返回 `null`。
 
-`BookListItem.overview` 是列表读取时附加的可选视图状态，包含 `status`、可选 `text` 和 `message`。状态为 `off | waiting | pending | running | ready | stale | failed`。`bookOverview.retry` 清除本书当前失败标记并唤醒后台队列；自动生成设置关闭时不发起模型调用。
+`BookListItem.overview` 是列表读取时附加的可选视图状态，包含 `status`、可选 `text` 和 `message`。状态为 `off | waiting | pending | running | ready | failed`；`ready` 表示磁盘上已有概览，直接读文件，不再发起模型调用。`bookOverview.retry` 只在生成曾经失败时清除失败标记并唤醒后台队列；自动生成设置关闭时不发起模型调用。
 
-`Settings.ai.autoBookOverview` 缺省为 `false`，只能由用户在设置页保存开启。开启后后台逐本处理已完整入库的书；无 API Key 或自定义服务地址未获信任时等待。概览使用全书正文，可能包含未读剧情与结局；各次 AI 调用计入该书用量。
+`Settings.ai.autoBookOverview` 缺省为 `true`，用户可在设置页关闭。开启后只处理「加入书架时登记过」的书：下载确认与导入各登记一本，成功生成后全部从盘读，不因章节变化重新生成；失败要等 `bookOverview.retry`。存量旧书不会被自动排进生成队列（启动只续做带 `requested` 标记但未完成的书）。无 API Key 或自定义服务地址未获信任时等待。概览使用全书正文，可能包含未读剧情与结局；各次 AI 调用计入该书用量。
 
 `Settings.ai.autoReadingFollow` 缺省为 `false`，同样只能由用户显式开启。`Settings.ai.followMaxChaptersPerRun` 缺省 `12`，是增量记忆与自动追剧单次运行最多处理的章节数（记忆仍按每 5 章一批送模型），主进程只接受 `1..50` 的安全整数，其它值回退缺省。两者都由 `normalizeAiPrefs` 白名单补齐；设置页保存时省略这两个键表示保持磁盘上的原值，不得当成 `false` / 缺省清零。
 
@@ -257,6 +257,24 @@
 
 `settings.get` 另附带可选的 `apiKeyUnreadable?: boolean`（追加字段）：有密文但本机解不开（换了机器、系统密钥库被重置）时为 `true`，此时 `apiKeyConfigured` 仍为 `false`。界面据此提示「重新填写」而不是「未配置」——否则用户会以为自己从没填过。`settings.set` 不接受该字段。
 
+`Settings.browseFavorites` / `SettingsUpdate.browseFavorites` 是浏览页的「常用网站」，同样走现有 `settings.get` / `settings.set`，不新增频道：`{ url: string; title: string; addedAt: string }[]`。主进程只收 `http` / `https` 绝对地址（`URL.toString()` 规范化），按地址去重，最多 40 条；`title` 去空白后截到 60 字，为空时退回去掉 `www.` 的域名。同一域名在界面里只算一个站点，站内翻章不会重复收藏。
+
+**书中地图（腾讯地图 Key）**：`settings.set` 的 `tencentMapKey` 落盘经 `safeStorage`（空串清除），`settings.get` 只给 `tencentMapKeyConfigured` / `tencentMapKeyUnreadable`，不返回明文。地图页打开时经 `map.getKey` 按需取解密后的 Key 拼脚本地址；未配置或本机解不开时返回空串。渲染层不缓存 Key、不写日志，Key 不进入书库与备份。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `map.getKey` | invoke | 无 | `string`（空串表示未配置或不可解） |
+| `map.getImage` | invoke | `{ bookId: string }` | `{ ok: true; url: string \| null } \| { ok: false; message: string }` |
+| `map.setImage` | invoke | `{ bookId: string; sourcePath: string }` | `{ ok: true; url: string } \| { ok: false; message: string }` |
+| `map.getPlaces` | invoke | `{ bookId: string }` | `{ ok: true; places: AiPlaceGeo[] } \| { ok: false; message: string }` |
+| `map.geocodePlaces` | invoke | `{ bookId: string; retryNotFound?: boolean }` | `{ ok: true; view: AiPlaceGeocodeView } \| { ok: false; message: string }` |
+| `map.confirmPlace` | invoke | `{ bookId: string; placeId: string; accepted: boolean }` | `{ ok: true; places: AiPlaceGeo[] } \| { ok: false; message: string }` |
+| `map.searchPlaceCandidates` | invoke | `{ bookId: string; placeId: string }` | `{ ok: true; view: AiPlaceCandidateView } \| { ok: false; message: string }` |
+| `map.choosePlaceCandidate` | invoke | `{ bookId: string; placeId: string; candidate: { latitude: number; longitude: number } }` | `{ ok: true; places: AiPlaceGeo[] } \| { ok: false; message: string }` |
+| `map.addManualPlace` | invoke | `{ bookId: string; name: string; latitude: number; longitude: number; kind?: AiPlaceKind; paragraphIndex?: number; paragraphOffset?: number }` | `{ ok: true; places: AiPlaceGeo[] } \| { ok: false; message: string }` |
+
+`map.getImage` / `map.setImage` 管理每本书的「书中原图」：图片存到书目录 `map/original.<ext>`，只接受 jpg/png/webp、最大 8MB，返回 `file://` URL；不写入 book.json，缺图为空态。`map.getPlaces` 读取按书缓存的地名词条（含已解析坐标）。`map.geocodePlaces` 用腾讯 WebService 地理编码把尚未定位的地名补上坐标：同名地点只请求一次，已解析与已判定“未找到”的条目直接复用缓存（`retryNotFound: true` 时重试“未找到”，已忽略的永不重试）。解析走回退链：地理编码 → 行政区划 → 加省/市后缀 → 国家中心点；国名结果标为低可信度待确认。Key 须在腾讯控制台开启 WebService API，未配置时返回中文提示。坐标只来自腾讯返回，模型不产出；请求失败不会回显带 Key 的 URL。腾讯可信度低于 6 的地点标为 `ambiguous`（坐标保留但需在列表里确认），`map.confirmPlace` 确认后改为 `resolved`，忽略则撤掉坐标并记为 `ignored`，两态都不会再重复请求。
+
 **代理（内置浏览 / 下载）**：`Settings.proxy`（`ProxyPrefs`）由主进程始终补齐，缺省 `mode: 'off'`，即**直连**——不改变任何现存用户的网络行为，也不静默跟随系统代理。字段：
 
 | 字段 | 类型 | 说明 |
@@ -286,8 +304,20 @@
 | `proxy.selectNode` | invoke | `{ index?: number; body?: string }`（args 也可省略） | `{ ok: true; port: number; node: { name; protocol } } \| { ok: false; message: string }` |
 | `proxy.kernelState` | invoke | 无 | `{ ok: true; state: ProxyKernelState }` |
 | `proxy.stopKernel` | invoke | 无 | `{ ok: true }` |
+| `proxy.autoUpdateState` | invoke | 无 | `{ ok: true; prefs: ProxyAutoUpdatePrefs }` |
+| `proxy.setAutoUpdate` | invoke | `{ enabled?: boolean; intervalMinutes?: number }` | `{ ok: true; prefs: ProxyAutoUpdatePrefs } \| { ok: false; message: string }` |
+| `proxy.refreshSubscription` | invoke | 无 | `{ ok: true; overview: ProxySubscriptionState; prefs: ProxyAutoUpdatePrefs } \| { ok: false; message: string }` |
+| `proxy.speedTest` | invoke | 无 | `{ ok: true; result: ProxySpeedTestResult } \| { ok: false; message: string }` |
 
 `proxy.parseSubscription` 的 args 与 `body` 在 handler 类型中可省略；缺少或空正文返回「没有可解析的订阅内容」。`proxy.selectNode` 的 args、`index` 与 `body` 类型可选，但要成功选择节点仍需非负安全整数 `index`；省略 `body` 时使用主进程缓存的上次订阅正文。
+
+`proxy.autoUpdateState` / `proxy.setAutoUpdate` 管的是**定时重拉订阅**：`enabled` 缺省 `false`，`intervalMinutes` 是 1–1440 的整数（非法回退 60）。自动更新**不自动换节点**——换节点要重启内核，会掐断正在进行的下载，所以仍由本人点。
+
+`proxy.refreshSubscription` 立刻重拉一次订阅正文并刷新节点概览，不切换当前节点。`proxy.speedTest` 并发探测订阅里各节点的延迟，返回每个节点的毫秒数与最快节点序号（`fastestIndex`，无成功节点时为 `-1`）；探测失败不影响其它节点，单节点失败记为 `latencyMs: -1` 且带中文原因。测速同样不切换当前节点。
+
+`ProxyAutoUpdatePrefs.lastUpdatedAt` / `lastError` 记录上一次重拉的成功时间与失败原因；成功时 `lastError` 清空。
+
+`map.addManualPlace` 是**手工标注**路径：不消耗腾讯地图配额，坐标由本人给定。`latitude` 须在 -90–90、`longitude` 在 -180–180，`name` 非空；越界或缺字段时返回中文错误。`paragraphIndex` / `paragraphOffset` 可选，给了就能从地图跳回正文对应位置；`kind` 缺省 `other`。
 
 **订阅模式（内置内核）**：`ProxyMode` 增加 `'subscription'`。这是「用户只有一条订阅链接、没有任何客户端」时的路径——本应用自己拉内核，不依赖外部程序。
 
@@ -332,6 +362,9 @@
 | `paragraphIndent` | `boolean` | `true` | 非布尔值回退默认 |
 | `focusMode` | `'off' \| 'one' \| 'three' \| 'five'` | `'off'` | 缺失或非法值回退 `'off'`；合法 `'one'/'three'/'five'` 保留 |
 | `readingMode` | `'scroll' \| 'screen'` | `'scroll'` | 缺失或非法值回退 `'scroll'`；合法 `'scroll'/'screen'` 保留 |
+| `bookView` | `'classic' \| 'sheet' \| 'realbook'` | `'classic'` | 阅读界面（经典模式 / 书页模式 / 真实书籍）；与 `readingMode` 正交，缺失或非法回退 `'classic'` |
+| `sheetColumns` | `'single' \| 'double'` | `'double'` | 书页模式的每页栏数；只影响 `bookView === 'sheet'`，缺失或非法回退 `'double'` |
+| `handwritingFont` | `'none' \| 'kai' \| 'xingshu'` | `'none'` | 批注手写字体；只影响批注呈现，缺失或非法回退 `'none'` |
 | `dim` | `number` | `0` | 护眼压暗百分比，有限数值四舍五入并夹紧到 0–70；缺失/非数值回退 `0`（关） |
 
 读取设置时逐字段校验，一个字段损坏不会丢弃其他合法字段。旧 `nightMode: true` 迁移为 `theme: 'night'`，`false` 迁移为 `'paper'`；未知旧字段可继续留在磁盘，但返回的正式 `ReaderPrefs` 不再包含或依赖 `nightMode`。
@@ -374,6 +407,45 @@
 - 落盘 `%APPDATA%/spbf/site-rules.json`（与 `settings.json` 同目录），不是 `settings.json`。
 - `siteRules.*` 不返回 API Key；文件内不得存 Key。
 
+---
+
+## 站点规则市场
+
+站点 CSS 选择器市场：别人写好的抽取规则可以共享、订阅、应用。**市场条目只含 CSS 选择器，不含任何凭据。**
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `ruleMarket.list` | invoke | 无 | `{ entries: RuleMarketEntry[]; sources: Record<string, RuleMarketSource> }` |
+| `ruleMarket.apply` | invoke | `{ id: string }` | `{ ok: true; rule: SiteRule } \| { ok: false; message: string }` |
+| `ruleMarket.subscribe` | invoke | `{ url: string }` | `{ ok: true; entries: RuleMarketEntry[] } \| { ok: false; message: string }` |
+| `ruleMarket.unsubscribe` | invoke | `{ url: string }` | `{ ok: true } \| { ok: false; message: string }` |
+
+- `id` 是市场条目的稳定标识（通常是规范化域名）；`sources` 逐条标明来源（`builtin` 内置 / `remote` 远端订阅 / `local` 本机自建）。
+- `ruleMarket.apply` 把条目写进本机 `site-rules.json`，**整条替换**同 host 的本机规则（与 `siteRules.upsert` 同语义）。
+- `ruleMarket.subscribe` 拉取的清单地址必须是 http(s) 绝对地址；拉回的条目按 host 去重，同 host 以更新时间新者为准。
+- 市场清单里的选择器同样**不保证有效**；应用后可在设置页用「试运行」验证，失效的条目直接删除。
+- 订阅来源只存地址与条目快照，落盘在 `%APPDATA%/spbf/rule-market.json`（与 `settings.json` 同目录）。
+- 市场条目与订阅清单**不得包含 API Key、令牌或正文**。
+
+---
+
+## 账号与云同步
+
+账号只用于「把设置与站点规则同步到自己的云端」。**书库正文、API Key、书签与批注不上云。**
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `sync.status` | invoke | 无 | `{ ok: true; state: SyncAccountState }` |
+| `sync.signIn` | invoke | `{ token: string; endpoint?: string; account?: string }` | `{ ok: true; state: SyncAccountState } \| { ok: false; message: string }` |
+| `sync.signOut` | invoke | 无 | `{ ok: true; state: SyncAccountState }` |
+| `sync.run` | invoke | 无 | `{ ok: true; result: SyncResult } \| { ok: false; message: string }` |
+
+- 未登录也能用全部功能；`signedIn` 为 false 时 `sync.run` 返回「未登录」的中文提示，不做静默上传。
+- 令牌只存在本机（`safeStorage` 加密，与 `apiKeyEnc` 同一条路径），**不写入同步数据包，也不返回给渲染层**。
+- 同步数据包 `SyncBundle` 只含设置白名单字段与站点规则；任一字段含凭据形状（Key / token / password）时在主进程被剔除。
+- `sync.signOut` 只清本机令牌，不动云端已存的数据。
+- 登录与同步状态落盘在 `%APPDATA%/spbf/sync-account.json`（与 `settings.json` 同目录）。
+
 ## 付费墙自动解锁
 
 下载与预览共用，实现在 `src/main/paywallUnlock.ts`，只处理「正文已经发到浏览器、只是被页面挡住」的情况。
@@ -395,12 +467,14 @@
 |---|---|---|---|
 | `annotations.list` | invoke | `{ bookId: string }` | `{ ok: true; items: Annotation[] } \| { ok: false; message: string }` |
 | `annotations.add` | invoke | `Annotation` 草稿（无 id/createdAt） | `{ ok: true; item: Annotation } \| { ok: false; message: string }` |
-| `annotations.update` | invoke | `{ bookId: string; annotationId: string; patch: { note?; noteSource?; start?; end? } }` | `{ ok: true; item: Annotation } \| { ok: false; message: string }` |
+| `annotations.update` | invoke | `{ bookId: string; annotationId: string; patch: { note?; noteSource?; start?; end?; tags?; color? } }` | `{ ok: true; item: Annotation } \| { ok: false; message: string }` |
 | `annotations.remove` | invoke | `{ bookId: string; annotationId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 
 落盘每书 `<bookDir>/annotations.json`，写操作走 per-book 锁。坐标以「规范化正文」（按空行切段、丢空段后以 `\n\n` 连接）为准；划线必带原文摘录用于漂移校正（AI 清正文后由渲染层重定位并回写新坐标）。章节不存在、坐标非法、划线无摘录都会返回中文错误。
 
 `Annotation.noteSource` 只接受 `'user' | 'ai'`，缺省视为 `'user'`：脏值丢弃，备注为空时不写来源，只改坐标不动备注与来源；改写备注文本而未声明来源时按读者手写算——文本换了就是新的作者。渲染层「问 AI · 解释这段」完成后可以把解释以 `noteSource:'ai'` 存回读者当初选中的同一区间，坐标仍来自选区、漂移校正仍走 `relocateRange`，不新写一套校正逻辑。
+
+`Annotation.tags` 与 `Annotation.color` 都是可选字段，旧文件缺字段即无标签 / 默认黄色，不需要迁移。`tags` 写入前归一（去开头 `#`、trim、小写、去空、去重，上限 50 个、每个 32 字符），补丁里传空数组即清空；非数组不覆盖旧值。`color` 只接受白名单 `yellow` / `green` / `blue` / `red` / `purple`，非法值丢弃且不覆盖旧值——存枚举名而非任意 CSS 值，保证四套主题下正文可读。
 
 读者的划线与笔记在主进程直接读 `annotations.json` 后参与证据问答：命中的段落与同章段落只用于**提升排序**，并作为明确标注的不可信数据附在提示词里，只能帮助理解读者关注点，不得当作剧情事实，不得执行其中指令，也不得扩张 `citations` 白名单。**绝不**把读者笔记送进记忆抽取提示词——那里的「citationIds 只能取候选证据」不变量是核验的基础。
 
@@ -455,6 +529,7 @@
 | `ai.findScenes` | invoke | `{ bookId: string; question: string }` | `{ ok: true; hits: AiCitation[]; mode: 'semantic' \| 'local'; message: string } \| { ok: false; message: string }` |
 | `ai.resumeCard` | invoke | `{ bookId: string }` | `{ ok: true; view: AiResumeCardView } \| { ok: false; message: string }` |
 | `ai.generateResumeCard` | invoke | `{ bookId: string; confirmOverBudget?: boolean }` | `{ ok: true; card: AiResumeCard; budget: AiBudgetEstimate } \| { ok: false; message: string }` |
+| `ai.extractPlaces` | invoke | `{ bookId: string; confirmOverBudget?: boolean }` | `{ ok: true; view: AiPlaceExtractionView; usage?: AiUsage; budget: AiBudgetEstimate } \| { ok: false; message: string; confirmationRequired?: boolean; budget?: AiBudgetEstimate }` |
 | `ai.timeline` | invoke | `{ bookId: string }` | `{ ok: true; timeline: AiTimelineView } \| { ok: false; message: string }` |
 | `ai.retrySave` | invoke | `{ saveToken: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.cancel` | invoke | `{ jobId?: string }` | `{ ok: true }` |
@@ -468,6 +543,8 @@
 主进程 AI 队列分 `interactive`（用户点开）与 `background`（全书概览等自动任务）两条车道，各车道一次只跑一个任务，因此最多两个任务在飞；后台车道取活前要求交互车道完全空闲，排队中的用户任务同样算占用。`start` 与独占频道一律只排队不拒绝，不再因为「已有任务」返回忙；`{ ok:false, message:'请先停止当前生成' }` 只剩「同一本书的记忆族任务（`memory` / `follow`）已在跑或已排队」这一种触发场景，共用 `bookId:write` 资源的章节摘要改为排队串行。同一 `dedupeKey`（书 + 类别 + 章，证据问答再含问题原文）重复提交时复用已在跑或已排队的任务并返回同一 `jobId`，连点不再重复花额度。
 
 `ai.test` 发一条最小 chat completions 探活。401/403、429、超时、5xx 返回中文分级文案。
+
+`ai.extractPlaces` 只扫描已读边界内的正文：模型只允许引用候选段落 id 并给出逐字引文，段号与段内偏移由主进程按引文在段内的真实位置计算，模型不返回坐标；引文不在原文、地点名不在引文、候选 id 不认识的条目直接丢弃。结果按书落盘到书目录 `ai/places.json`，供书中地图页列出地名、后续地理编码与跳回原文复用，不重复花模型配额；达到输入预算提醒阈值时先返回 `confirmationRequired`。
 
 `ai.findScenes` 在本书明确开启语义索引后，将已读原文向量与本地字面结果合并，服务失败时返回本地结果。索引按本书增量建立，缺 Key、损坏或暂停原因由状态频道显示。`ai.resumeCard` 只在上次阅读间隔至少 24 小时且附近有读完章节时提供缓存或生成入口；`ai.generateResumeCard` 由读者手动触发，来源变化时缓存过期。`ai.timeline` 读取现有记忆更新顺带记录的人物与伏笔状态，来源变化的条目隐藏并提示重建。问答 `AiDoneEvent.claims` 与聊天 v2 的 `claims` 逐条列结论和引用 ID；引用坐标经主进程校验，语义支持关系仍需读者核查。
 
@@ -525,13 +602,16 @@ window.api = {
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   mirror: { start, cancel, state, onProgress },
   settings: { get, set },
-  proxy: { test, scan, subscribe, parseSubscription, selectNode, kernelState, stopKernel },
+  map: { getKey, getImage, setImage, getPlaces, geocodePlaces, confirmPlace, searchPlaceCandidates, choosePlaceCandidate, addManualPlace },
+  proxy: { test, scan, subscribe, parseSubscription, selectNode, kernelState, stopKernel, autoUpdateState, setAutoUpdate, refreshSubscription, speedTest },
+  ruleMarket: { list, apply, subscribe, unsubscribe },
+  sync: { status, signIn, signOut, run },
   backup: { create, restore, runAuto },
   ocr: { status },
   annotations: { list, add, update, remove },
   webAnnotations: { list, add, update, remove },
   siteRules: { list, preview, upsert, remove },
-  ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
+  ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
 }
 ```
 
