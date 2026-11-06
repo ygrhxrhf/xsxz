@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, net, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
-import { readFile, writeFile } from 'node:fs/promises'
+import { appendFile, readFile, writeFile } from 'node:fs/promises'
 import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseReadingChapter, BrowseReadingPage, BrowseState, BrowseChapterLink, MirrorProgress, Settings, SiteRule } from '../shared/types'
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import { canonicalizeUrl } from '../shared/urlHash'
+import { installCoverProtocol, registerCoverScheme } from './coverProtocol'
 import {
   listBooks,
   getBook,
@@ -42,14 +43,19 @@ import {
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
-import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider, getProxyPassword } from './settings'
+import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, getTencentMapKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider, getProxyPassword } from './settings'
+import { parsePlaceExtraction, placeExtractionPlan } from './aiPlaces'
+import { choosePlaceCandidate, confirmPlace as confirmMapPlace, geocodePlaces, readPlaces, savePlaces, searchPlaceCandidates } from './mapPlaces'
+import { getMapImage, setMapImage } from './mapImage'
 import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setExternalBusyProbe, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdleSlice, getPausedForHuman } from './download'
 import { atomicWriteText } from './atomicFile'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
 import { applyProxyToSession, judgeProxyProbe } from './proxy'
 import { describeScanResult, findOpenProxyPorts } from './proxyScan'
 import {
+  cacheSubscriptionBody,
   describeSubscription,
+  getCachedSubscriptionBody,
   getKernelState,
   selectSubscriptionNode,
   startFromSubscription,
@@ -61,6 +67,11 @@ import { installAgentRegistry, startAgentBridge, stopAgentBridge } from './agent
 import { registerLibraryIpc } from './ipc/libraryIpc'
 import { readAgentAudit, type AgentAuditEntry } from './agentAudit'
 import { installJobEventTap } from './agentJobs'
+import { registerProxyIpc } from './proxyIpc'
+import { createProxyAutoUpdate, type ProxyAutoUpdateRuntime } from './proxyAutoUpdate'
+import { registerRuleMarketIpc, createAccountStore, createSafeStorageCredentialStore } from './ruleMarketIpc'
+import { readMarketSubscriptions, removeMarketSubscription, saveMarketSubscription } from './ruleMarketStore'
+import { addManualPlace } from './mapManualPlace'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
 import { listSiteRules, upsertSiteRule, removeSiteRule, findSiteRuleForUrl, normalizeHost } from './siteRules'
 import { ocrEngineReady, shutdownOcrEngine } from './ocrText'
@@ -105,6 +116,7 @@ import {
   planChapterSummaryRequest,
   planCleanChapterRequest,
   streamAiTaskCompletion,
+  parseAiJsonObject,
   runAiSaveStage,
   runAiTaskCompletion,
   testConnection,
@@ -186,6 +198,13 @@ const MEMORY_WRITE_CLASSES = ['memory', 'follow']
 const bookOverview = new BookOverviewService(aiQueue, () => {
   mainWindow?.webContents.send('bookOverview.changed')
 })
+/**
+ * 订阅自动更新运行时：定时重拉订阅正文。
+ *
+ * 只换缓存里的正文，**不换节点、不重启内核**——换节点会掐断在途下载。
+ * 真正的换节点仍然由本人在设置页点。
+ */
+let proxyAutoUpdate: ProxyAutoUpdateRuntime | null = null
 const aiPendingSaves = new AiPendingSaveStore()
 /** 后台追剧：单元跑在同一条 background 车道上，下载忙或书库恢复时自动退让。 */
 const aiReadingFollow = new AiReadingFollowService(aiQueue, { isDownloadBusy: () => isDownloadBusy() })
@@ -1043,6 +1062,48 @@ function registerIpc(): void {
     getParentWindow: () => mainWindow,
   })
 
+  // 订阅自动更新与多节点测速（src/main/proxyIpc.ts）：四个频道的形状与
+  // docs/ipc-contract.md 的「网络代理」一节逐字一致。
+  registerProxyIpc((channel, listener) => ipcMain.handle(channel, listener), {
+    autoUpdate: proxyAutoUpdate!,
+    getCachedBody: getCachedSubscriptionBody,
+  })
+
+  // 站点规则市场与账号云同步（src/main/ruleMarketIpc.ts）：八个频道的形状与
+  // docs/ipc-contract.md 的「站点规则市场」「账号与云同步」两节逐字一致。
+  registerRuleMarketIpc((channel, listener) => ipcMain.handle(channel, listener), {
+    listLocalRules: listSiteRules,
+    applyLocalRule: upsertSiteRule,
+    listSubscriptions: readMarketSubscriptions,
+    saveSubscription: saveMarketSubscription,
+    removeSubscription: removeMarketSubscription,
+    fetchText: async (url: string) => {
+      const res = await net.fetch(url, { headers: { 'user-agent': 'spbf/0.1' } })
+      if (!res.ok) throw new Error(`规则清单拉取失败：HTTP ${res.status}`)
+      return res.text()
+    },
+    readSettings: async () => getSettings(),
+    credentials: createSafeStorageCredentialStore(),
+    account: createAccountStore(),
+  })
+
+  /** 手工标注一个地名坐标：不消耗腾讯地图配额，坐标由本人给定。 */
+  ipcMain.handle('map.addManualPlace', async (_e, payload: { bookId?: unknown; name?: unknown; latitude?: unknown; longitude?: unknown; kind?: unknown; paragraphIndex?: unknown; paragraphOffset?: unknown } | undefined) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      if (!bookId) return { ok: false, message: '请先选择一本书' }
+      const result = await addManualPlace(bookId, {
+        name: payload?.name,
+        latitude: payload?.latitude,
+        longitude: payload?.longitude,
+        kind: payload?.kind,
+        paragraphIndex: payload?.paragraphIndex,
+        paragraphOffset: payload?.paragraphOffset,
+      })
+      return { ok: true, places: result.places }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+
   ipcMain.handle('backup.create', async (_e, args: { destDir: string }) => {
     try {
       // 与 restore/runAuto/migrate 同一道闸门：否则会一边下载/导入一边重建索引、逐文件读取，
@@ -1185,7 +1246,12 @@ function registerIpc(): void {
     try { return await previewDownload() }
     catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
   })
-  ipcMain.handle('download.confirm', async (_e, args: { token: string }) => confirmDownload(args.token))
+  ipcMain.handle('download.confirm', async (_e, args: { token: string }) => {
+    const result = await confirmDownload(args.token)
+    // 加入书架的那一刻就排队生成概览；只登记这一本，不扫全库。
+    if (result.ok) bookOverview.request(result.bookId)
+    return result
+  })
   ipcMain.handle('download.redownloadChapter', async (_e, args: { bookId: string; chapterId: string; url: string }) =>
     redownloadChapter(args.bookId, args.chapterId, args.url))
   ipcMain.handle('download.cancel', async (_e, { bookId }: { bookId?: string }) => {
@@ -1254,6 +1320,68 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('settings.get', async () => getSettings())
+  // Key 明文只在打开地图页时按需下发；不写日志、不进 Settings。
+  ipcMain.handle('map.getKey', async () => getTencentMapKey())
+  ipcMain.handle('map.getImage', async (_e, payload?: { bookId?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      if (!bookId) return { ok: false, message: '缺少书籍标识' }
+      return { ok: true, url: await getMapImage(bookId) }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('map.setImage', async (_e, payload?: { bookId?: unknown; sourcePath?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      const sourcePath = typeof payload?.sourcePath === 'string' ? payload.sourcePath.trim() : ''
+      if (!bookId) return { ok: false, message: '缺少书籍标识' }
+      return await setMapImage(bookId, sourcePath)
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('map.searchPlaceCandidates', async (_e, payload?: { bookId?: unknown; placeId?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      const placeId = typeof payload?.placeId === 'string' ? payload.placeId.trim() : ''
+      if (!bookId || !placeId) return { ok: false, message: '缺少书籍或地点标识' }
+      return { ok: true, view: await searchPlaceCandidates(bookId, placeId) }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('map.choosePlaceCandidate', async (_e, payload?: { bookId?: unknown; placeId?: unknown; candidate?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      const placeId = typeof payload?.placeId === 'string' ? payload.placeId.trim() : ''
+      const candidate = payload?.candidate
+      if (!bookId || !placeId || !candidate || typeof candidate !== 'object') {
+        return { ok: false, message: '缺少书籍、地点或候选坐标' }
+      }
+      const result = await choosePlaceCandidate(bookId, placeId, candidate as { latitude: number; longitude: number })
+      if (!result) return { ok: false, message: '候选坐标无效' }
+      return { ok: true, places: result.places }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('map.confirmPlace', async (_e, payload?: { bookId?: unknown; placeId?: unknown; accepted?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      const placeId = typeof payload?.placeId === 'string' ? payload.placeId.trim() : ''
+      if (!bookId || !placeId) return { ok: false, message: '缺少书籍或地点标识' }
+      const result = await confirmMapPlace(bookId, placeId, payload?.accepted === true)
+      if (!result) return { ok: false, message: '这条地名没有可确认的坐标' }
+      return { ok: true, places: result.places }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('map.getPlaces', async (_e, payload?: { bookId?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      if (!bookId) return { ok: false, message: '缺少书籍标识' }
+      return { ok: true, places: await readPlaces(bookId) }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('map.geocodePlaces', async (_e, payload?: { bookId?: unknown; retryNotFound?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      if (!bookId) return { ok: false, message: '缺少书籍标识' }
+      return { ok: true, view: await geocodePlaces(bookId, { retryNotFound: payload?.retryNotFound === true }) }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
   ipcMain.handle('agentAudit.list', async (_e, payload?: { limit?: number }) => {
     const limit = typeof payload?.limit === 'number' ? Math.min(500, Math.max(1, Math.floor(payload.limit))) : 100
     // Rebuild from the narrow audit schema: never spread arbitrary disk values to the renderer.
@@ -1288,7 +1416,7 @@ function registerIpc(): void {
       // 换库后旧库的布隆位图留着没用：缓存键含路径不会串库，但白占内存，顺手清掉。
       clearEvidenceIndexCache()
     }
-    bookOverview.settingsChanged(next.ai?.autoBookOverview === true)
+    bookOverview.settingsChanged(next.ai?.autoBookOverview !== false)
     void aiReadingFollow.settingsChanged()
     // 代理改动立即生效：不等重启，也顺手断开旧连接（否则老连接还走原出口）。
     if (patch.proxy || typeof patch.proxyPassword === 'string') {
@@ -1770,6 +1898,56 @@ function registerIpc(): void {
     try { return { ok: true, ...await findScenes(payload.bookId, payload.question) } }
     catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
   })
+  ipcMain.handle('ai.extractPlaces', async (_e, payload?: { bookId?: unknown; confirmOverBudget?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      if (!bookId) return { ok: false, message: '缺少书籍标识' }
+      const plan = await placeExtractionPlan(bookId)
+      if (!plan.candidates.length) return { ok: false, message: '还没有已读正文可用于抽取地名' }
+      const settings = await getSettings()
+      const messages = [
+        { role: 'system' as const, content: plan.system },
+        { role: 'user' as const, content: plan.user },
+      ]
+      const budget = promptBudget([messages.map((message) => message.content)], plan.chapters, plan.paragraphCount)
+      const warning = aiBudgetWarning(budget, settings.ai?.budgetWarningTokens ?? DEFAULT_AI_PREFS.budgetWarningTokens)
+      if (warning && payload?.confirmOverBudget !== true) {
+        return { ok: false, confirmationRequired: true, message: warning, budget }
+      }
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置聊天 API Key' }
+      const result = await aiExclusive(
+        { lane: 'interactive', cls: 'recap', bookId, dedupeKey: `places:${bookId}` },
+        async (signal) => {
+          const completion = await runAiTaskCompletion(trustedAiConfig(settings, apiKey), messages, { task: 'places', signal })
+          await persistAiUsage(bookId, completion.usage)
+          let raw: Record<string, unknown>
+          try {
+            raw = completion.json ?? parseAiJsonObject(completion.text)
+          } catch {
+            throw new Error('模型返回的地名 JSON 无法识别')
+          }
+          const places = parsePlaceExtraction(raw, plan.candidates)
+          // 抽取结果按书落盘，后续地理编码与地图标记都读这一份，不重复花模型配额。
+          await savePlaces(bookId, places)
+          return {
+            view: {
+              places,
+              chapterCount: plan.chapters.length,
+              paragraphCount: plan.paragraphCount,
+              truncated: plan.truncated,
+              message: places.length ? '' : '模型没有从已读正文中识别出地点',
+            },
+            usage: completion.usage,
+          }
+        },
+      )
+      return result.ok ? { ok: true, view: result.value.view, usage: result.value.usage, budget } : result
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
   ipcMain.handle('ai.resumeCard', async (_e, payload: { bookId: string }) => {
     try { return { ok: true, view: await readResumeCard(payload.bookId) } }
     catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
@@ -2544,6 +2722,8 @@ function registerIpc(): void {
 }
 
 app.setName('spbf')
+// 封面协议的 scheme 注册必须早于 app ready（见 coverProtocol.ts）
+registerCoverScheme()
 
 // 单实例锁：双开时两个进程都写书库，而书库的写锁只在进程内有效
 // （docs/agent-integration-design.md §6）。第二个实例直接退出；
@@ -2561,6 +2741,30 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 /** 启动入口：书库就绪后修正中断状态、装广告过滤、注册 IPC、再开窗口。 */
+
+/**
+ * 一次性补做存量书的概览（抽样章节）。只有带 `--overview-batch` 启动才跑，
+ * 完成后用正常参数重开应用：批处理不该留下一个持续后台任务。
+ */
+async function runOverviewBatch(): Promise<void> {
+  const logPath = join(app.getPath('userData'), 'overview-batch.log')
+  const log = (line: string) => {
+    const text = `[${new Date().toISOString()}] ${line}`
+    console.log(text)
+    void appendFile(logPath, `${text}\n`, 'utf-8').catch(() => {})
+  }
+  log('批处理开始：存量书抽样概览（每书额度 40 万，不修改设置）')
+  try {
+    const result = await bookOverview.runBacklog({ sampleEvery: 10, budgetTokens: 400_000, log })
+    log(`批处理完成：${JSON.stringify(result)}`)
+  } catch (error) {
+    log(`批处理失败：${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    log('重开应用')
+    app.relaunch({ args: process.argv.slice(1).filter((arg) => arg !== '--overview-batch') })
+    app.quit()
+  }
+}
 
 app.whenReady().then(async () => {
   // 恢复书库若在「移走旧库」与「移入新库」之间被杀，书库目录会整体消失、只剩 .spbf-previous-*。
@@ -2609,11 +2813,31 @@ app.whenReady().then(async () => {
   await applySavedProxy()
   // agent 桥接：先装注册表（让 ipcMain.handle 同时登记给桥接），注册完再开命名管道。
   installAgentRegistry()
+  // 去掉 Electron 自动生成的默认菜单栏（File/Edit/View/Window）：业务入口都在界面里，
+  // 这套英文菜单只白占一条标题栏空间。代价是菜单自带的刷新/DevTools 快捷键不再生效。
+  Menu.setApplicationMenu(null)
+  installCoverProtocol()
+  // 订阅自动更新：建运行时再注册频道，因为 registerIpc 要用到它。
+  proxyAutoUpdate = createProxyAutoUpdate({
+    dir: join(app.getPath('userData'), 'proxy-auto-update'),
+    readSubscriptionUrl: async () => (await getSettings()).proxy?.subscriptionUrl ?? '',
+    fetch: async (url: string) => {
+      const res = await net.fetch(url, { headers: { 'user-agent': 'spbf/0.1' } })
+      if (!res.ok) throw new Error(`订阅拉取失败：HTTP ${res.status}`)
+      return res.text()
+    },
+    applyBody: (body: string) => {
+      cacheSubscriptionBody(body)
+    },
+  })
   registerIpc()
   createWindow()
   void startAgentBridge()
   bookOverview.start()
   aiReadingFollow.start()
+  // 订阅自动更新：启动定时器（开关关着时它只读偏好、不拉订阅）。
+  void proxyAutoUpdate?.start()
+  if (process.argv.includes('--overview-batch')) void runOverviewBatch()
   // 启动后检查到期备份；维护锁使压缩期间的书库快照保持一致。
   setTimeout(() => {
     void (async () => {
@@ -2657,6 +2881,8 @@ app.on('before-quit', () => {
   disposeMirrorPrefetch()
   aiQueue.cancelAll()
   bookOverview.stop()
+  // 订阅自动更新的定时器：退出时收掉，不然进程不退。
+  proxyAutoUpdate?.stop()
   // 不挡退出：进程马上就走，等在飞的整理写完没意义。原子写是「临时文件 + rename」，
   // 中途被杀最多留一个 .tmp，不会写坏 follow.json；启动时的 recoverInterruptedStatus 兜底。
   void aiReadingFollow.stop()

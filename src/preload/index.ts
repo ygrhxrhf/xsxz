@@ -19,12 +19,18 @@ import type {
   AiMemoryCharacter,
   AiMemoryFile,
   AiMaterialCoverage,
+  AiPlaceCandidateView,
+  AiPlaceExtractionView,
+  AiPlaceGeo,
+  AiPlaceGeocodeView,
+  MapManualPlaceInput,
   AiProvider,
   AiResumeCard,
   AiResumeCardView,
   AiStageEvent,
   AiSummaries,
   AiTimelineView,
+  AiUsage,
   BookListItem,
   BrowseState,
   BrowseFindResult,
@@ -35,14 +41,20 @@ import type {
   DownloadProgress,
   ReadingProgress,
   ReadFrontier,
+  RuleMarketEntry,
+  RuleMarketListing,
   ReadFrontierPosition,
   TtsPosition,
+  ProxyAutoUpdatePrefs,
   ProxyKernelState,
   ProxyPrefs,
+  ProxySpeedTestResult,
   ProxySubscriptionState,
   Settings,
   SettingsUpdate,
   SiteRule,
+  SyncAccountState,
+  SyncResult,
   WebShelfBook,
   WebShelfChapter,
   WebShelfProgress,
@@ -229,6 +241,40 @@ const api = {
     get: () => ipcRenderer.invoke('settings.get') as Promise<Settings>,
     set: (update: SettingsUpdate) => ipcRenderer.invoke('settings.set', update) as Promise<Settings>,
   },
+  map: {
+    /** 打开地图页时按需取解密后的 Key；未配置或本机解不开时返回空串。 */
+    getKey: () => ipcRenderer.invoke('map.getKey') as Promise<string>,
+    getImage: (bookId: string) => ipcRenderer.invoke('map.getImage', { bookId }) as Promise<
+      { ok: true; url: string | null } | { ok: false; message: string }
+    >,
+    setImage: (payload: { bookId: string; sourcePath: string }) => ipcRenderer.invoke('map.setImage', payload) as Promise<
+      { ok: true; url: string } | { ok: false; message: string }
+    >,
+    getPlaces: (bookId: string) => ipcRenderer.invoke('map.getPlaces', { bookId }) as Promise<
+      { ok: true; places: AiPlaceGeo[] } | { ok: false; message: string }
+    >,
+    confirmPlace: (bookId: string, placeId: string, accepted: boolean) =>
+      ipcRenderer.invoke('map.confirmPlace', { bookId, placeId, accepted }) as Promise<
+        { ok: true; places: AiPlaceGeo[] } | { ok: false; message: string }
+      >,
+    searchPlaceCandidates: (bookId: string, placeId: string) =>
+      ipcRenderer.invoke('map.searchPlaceCandidates', { bookId, placeId }) as Promise<
+        { ok: true; view: AiPlaceCandidateView } | { ok: false; message: string }
+      >,
+    choosePlaceCandidate: (bookId: string, placeId: string, candidate: { latitude: number; longitude: number }) =>
+      ipcRenderer.invoke('map.choosePlaceCandidate', { bookId, placeId, candidate }) as Promise<
+        { ok: true; places: AiPlaceGeo[] } | { ok: false; message: string }
+      >,
+    geocodePlaces: (bookId: string, retryNotFound = false) =>
+      ipcRenderer.invoke('map.geocodePlaces', { bookId, retryNotFound }) as Promise<
+        { ok: true; view: AiPlaceGeocodeView } | { ok: false; message: string }
+      >,
+    /** 手工标注一个地名坐标（不消耗腾讯配额）。 */
+    addManualPlace: (payload: MapManualPlaceInput) =>
+      ipcRenderer.invoke('map.addManualPlace', payload) as Promise<
+        { ok: true; places: AiPlaceGeo[] } | { ok: false; message: string }
+      >,
+  },
   proxy: {
     /** 用真会话试一次：只看有没有拿到 HTTP 响应，403 / 挑战页也算通。 */
     test: (args?: { url?: string; prefs?: Partial<ProxyPrefs> }) =>
@@ -262,6 +308,24 @@ const api = {
     kernelState: () =>
       ipcRenderer.invoke('proxy.kernelState') as Promise<{ ok: true; state: ProxyKernelState }>,
     stopKernel: () => ipcRenderer.invoke('proxy.stopKernel') as Promise<{ ok: true }>,
+    /** 订阅自动更新的开关与上次结果。 */
+    autoUpdateState: () =>
+      ipcRenderer.invoke('proxy.autoUpdateState') as Promise<{ ok: true; prefs: ProxyAutoUpdatePrefs }>,
+    /** 开关订阅自动更新；间隔分钟数非法时回退 60。 */
+    setAutoUpdate: (payload: { enabled?: boolean; intervalMinutes?: number }) =>
+      ipcRenderer.invoke('proxy.setAutoUpdate', payload) as Promise<
+        { ok: true; prefs: ProxyAutoUpdatePrefs } | { ok: false; message: string }
+      >,
+    /** 立刻重拉一次订阅（不换节点）。 */
+    refreshSubscription: () =>
+      ipcRenderer.invoke('proxy.refreshSubscription') as Promise<
+        { ok: true; overview: ProxySubscriptionState; prefs: ProxyAutoUpdatePrefs } | { ok: false; message: string }
+      >,
+    /** 多节点测速：并发探测各节点，返回每个节点的延迟。 */
+    speedTest: () =>
+      ipcRenderer.invoke('proxy.speedTest') as Promise<
+        { ok: true; result: ProxySpeedTestResult } | { ok: false; message: string }
+      >,
   },
   backup: {
     create: (destDir: string) =>
@@ -318,6 +382,40 @@ const api = {
       ipcRenderer.invoke('webAnnotations.remove', { url, annotationId }) as Promise<
         { ok: true; removed: boolean } | { ok: false; message: string }
       >,
+  },
+  /** 站点 CSS 选择器市场：只含 CSS 规则，不含任何凭据。 */
+  ruleMarket: {
+    /** 列出市场里的共享规则（内置 + 远端）。 */
+    list: () => ipcRenderer.invoke('ruleMarket.list') as Promise<RuleMarketListing>,
+    /** 把市场规则应用到本机（写进 site-rules.json）。 */
+    apply: (payload: { id: string }) =>
+      ipcRenderer.invoke('ruleMarket.apply', payload) as Promise<
+        { ok: true; rule: SiteRule } | { ok: false; message: string }
+      >,
+    /** 订阅某个来源的规则列表（按 URL 拉取远端清单）。 */
+    subscribe: (payload: { url: string }) =>
+      ipcRenderer.invoke('ruleMarket.subscribe', payload) as Promise<
+        { ok: true; entries: RuleMarketEntry[] } | { ok: false; message: string }
+      >,
+    /** 取消订阅某个来源。 */
+    unsubscribe: (payload: { url: string }) =>
+      ipcRenderer.invoke('ruleMarket.unsubscribe', payload) as Promise<
+        { ok: true } | { ok: false; message: string }
+      >,
+  },
+  /** 账号与云同步：只同步设置与站点规则，书库正文不上云。 */
+  sync: {
+    /** 当前登录状态；未登录时 signedIn 为 false。 */
+    status: () => ipcRenderer.invoke('sync.status') as Promise<{ ok: true; state: SyncAccountState }>,
+    /** 用令牌登录（令牌由本人提供，保存在本机）。 */
+    signIn: (payload: { token: string; endpoint?: string; account?: string }) =>
+      ipcRenderer.invoke('sync.signIn', payload) as Promise<
+        { ok: true; state: SyncAccountState } | { ok: false; message: string }
+      >,
+    signOut: () => ipcRenderer.invoke('sync.signOut') as Promise<{ ok: true; state: SyncAccountState }>,
+    /** 与云端同步设置与站点规则。 */
+    run: () =>
+      ipcRenderer.invoke('sync.run') as Promise<{ ok: true; result: SyncResult } | { ok: false; message: string }>,
   },
   siteRules: {
     list: () => ipcRenderer.invoke('siteRules.list') as Promise<{ rules: SiteRule[] }>,
@@ -450,6 +548,11 @@ const api = {
       { ok: true; view: AiResumeCardView } | { ok: false; message: string }>,
     timeline: (bookId: string) => ipcRenderer.invoke('ai.timeline', { bookId }) as Promise<
       { ok: true; timeline: AiTimelineView } | { ok: false; message: string }>,
+    extractPlaces: (bookId: string, confirmOverBudget = false) =>
+      ipcRenderer.invoke('ai.extractPlaces', { bookId, confirmOverBudget }) as Promise<
+        | { ok: true; view: AiPlaceExtractionView; usage?: AiUsage; budget: AiBudgetEstimate }
+        | { ok: false; message: string; confirmationRequired?: boolean; budget?: AiBudgetEstimate }
+      >,
     generateResumeCard: (bookId: string, confirmOverBudget = false) => ipcRenderer.invoke('ai.generateResumeCard', { bookId, confirmOverBudget }) as Promise<
       { ok: true; card: AiResumeCard; budget: AiBudgetEstimate } |
       { ok: false; message: string; confirmationRequired?: boolean; budget?: AiBudgetEstimate }>,

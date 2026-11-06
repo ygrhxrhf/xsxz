@@ -35,6 +35,7 @@ export type AiTaskKind =
   | 'queryRewrite'
   | 'recap'
   | 'memory'
+  | 'places'
   | 'evidenceQa'
 
 export interface AiTaskPolicy {
@@ -52,6 +53,8 @@ export interface AiTransportHooks {
 
 export interface AiTaskOptions {
   task: AiTaskKind
+  /** 覆盖任务策略的输出 token 上限：推理型模型的 reasoning 也占这份预算。 */
+  maxTokens?: number
   stream?: boolean
   signal?: AbortSignal
   onDelta?: (delta: string) => void
@@ -235,6 +238,10 @@ export function getAiTaskPolicy(
     }
     case 'memory':
       return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 3_000, mode: 'high', structured: true }
+    case 'places':
+      // 地名抽取只依赖提示词里的 JSON 约束：不强制 response_format/reasoning_effort，
+      // 兼容不支持这些扩展参数的自定义模型；返回文本由 parseAiJsonObject 兜底解析。
+      return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 3_000, mode: 'fast', structured: false }
     case 'evidenceQa':
       return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 2_000, mode: 'high', structured: true }
     default:
@@ -516,6 +523,9 @@ export async function runAiTaskCompletion(
   options: AiTaskOptions,
 ): Promise<AiCompletionResult> {
   let policy = getAiTaskPolicy(options.task, options)
+  if (typeof options.maxTokens === 'number' && options.maxTokens > 0) {
+    policy = { ...policy, maxTokens: options.maxTokens }
+  }
   const stream = options.stream === true
   const hooks = options.hooks ?? {}
   const signal = requestSignal(options.signal, policy.timeoutMs)

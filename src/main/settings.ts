@@ -8,12 +8,16 @@ import type {
   AiPromptKind,
   AiProvider,
   AppearancePrefs,
+  BrowseFavorite,
   DownloadPace,
+  ReaderBookView,
   ReaderContentWidth,
   ReaderFocusMode,
   ReaderFontFamily,
+  ReaderHandwritingFont,
   ReaderReadingMode,
   ReaderParagraphSpacing,
+  ReaderSheetColumns,
   ReaderPrefs,
   ReaderTheme,
   Settings,
@@ -45,10 +49,15 @@ const READER_CONTENT_WIDTHS: readonly ReaderContentWidth[] = ['narrow', 'medium'
 const READER_PARAGRAPH_SPACINGS: readonly ReaderParagraphSpacing[] = ['compact', 'normal', 'relaxed']
 const READER_FOCUS_MODES: readonly ReaderFocusMode[] = ['off', 'one', 'three', 'five']
 const READER_READING_MODES: readonly ReaderReadingMode[] = ['scroll', 'screen']
+const READER_BOOK_VIEWS: readonly ReaderBookView[] = ['classic', 'sheet', 'realbook']
+const READER_SHEET_COLUMNS: readonly ReaderSheetColumns[] = ['single', 'double']
+const READER_HANDWRITING_FONTS: readonly ReaderHandwritingFont[] = ['none', 'kai', 'xingshu']
 const AI_PROVIDERS: readonly AiPrefs['provider'][] = ['deepseek', 'custom']
 const AI_RECAP_LENGTHS: readonly AiPrefs['recapLength'][] = ['short', 'standard', 'detailed']
 const AI_PROMPT_MODES: readonly AiPrefs['promptMode'][AiPromptKind][] = ['builtin', 'custom']
 const LEGACY_DEEPSEEK_MODELS = new Set(['deepseek-chat', 'deepseek-reasoner'])
+/** 每书每月自动任务估算 token 上限的硬顶；设置页输入框的 :max 必须与之一致。 */
+const AUTO_MONTHLY_TOKEN_LIMIT_MAX = 3_000_000
 
 /** 旧界面外观迁移到明暗两套；阅读正文偏好不受影响。 */
 export function normalizeSkin(value: unknown): Skin {
@@ -61,7 +70,6 @@ export function normalizeSkin(value: unknown): Skin {
 function readDownloadPace(value: unknown): DownloadPace {
   return readEnum(value, DOWNLOAD_PACES, 'standard')
 }
-
 function readRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -157,15 +165,17 @@ export function normalizeAiPrefs(value: unknown): AiPrefs {
       ? Math.max(1000, Math.min(50000, ai.budgetWarningTokens))
       : DEFAULT_AI_PREFS.budgetWarningTokens,
     trustedCustomOrigins: normalizeTrustedCustomOrigins(ai.trustedCustomOrigins),
-    autoBookOverview: ai.autoBookOverview === true,
+    // 默认开启：只有用户显式保存过 false 才关掉。
+    autoBookOverview: ai.autoBookOverview !== false,
     autoReadingFollow: ai.autoReadingFollow === true,
     followMaxChaptersPerRun: typeof ai.followMaxChaptersPerRun === 'number' &&
       Number.isSafeInteger(ai.followMaxChaptersPerRun)
       ? Math.max(1, Math.min(50, ai.followMaxChaptersPerRun))
       : DEFAULT_AI_PREFS.followMaxChaptersPerRun,
     autoMonthlyTokenLimit: typeof ai.autoMonthlyTokenLimit === 'number' && Number.isSafeInteger(ai.autoMonthlyTokenLimit)
-      ? Math.max(10_000, Math.min(1_000_000, ai.autoMonthlyTokenLimit))
+      ? Math.max(10_000, Math.min(AUTO_MONTHLY_TOKEN_LIMIT_MAX, ai.autoMonthlyTokenLimit))
       : DEFAULT_AI_PREFS.autoMonthlyTokenLimit,
+    overviewModel: typeof ai.overviewModel === 'string' ? ai.overviewModel.trim().slice(0, 120) : DEFAULT_AI_PREFS.overviewModel,
     promptMode,
     customPrompts,
     tierSense: normalizeTierSensePrefs(ai.tierSense),
@@ -219,6 +229,17 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
         : DEFAULT_READER_PREFS.paragraphIndent,
     focusMode: readEnum(reader.focusMode, READER_FOCUS_MODES, DEFAULT_READER_PREFS.focusMode),
     readingMode: readEnum(reader.readingMode, READER_READING_MODES, DEFAULT_READER_PREFS.readingMode),
+    bookView: readEnum(reader.bookView, READER_BOOK_VIEWS, DEFAULT_READER_PREFS.bookView ?? 'classic'),
+    sheetColumns: readEnum(
+      reader.sheetColumns,
+      READER_SHEET_COLUMNS,
+      DEFAULT_READER_PREFS.sheetColumns ?? 'double',
+    ),
+    handwritingFont: readEnum(
+      reader.handwritingFont,
+      READER_HANDWRITING_FONTS,
+      DEFAULT_READER_PREFS.handwritingFont ?? 'none',
+    ),
     autoScrollSpeed: Math.round(readFiniteClamped(reader.autoScrollSpeed, 1, 5, DEFAULT_READER_PREFS.autoScrollSpeed!)),
     autoNextChapter: typeof reader.autoNextChapter === 'boolean' ? reader.autoNextChapter : DEFAULT_READER_PREFS.autoNextChapter!,
     dim: Math.round(readFiniteClamped(reader.dim, 0, 70, DEFAULT_READER_PREFS.dim!)),
@@ -232,12 +253,50 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
 }
 
 /** 网页阅读模式偏好：只做夹紧与默认，不因为单项非法丢弃其他设置。 */
-export function normalizeWebReadingPrefs(value: unknown): WebReadingPrefs {
-  const prefs = readRecord(value)
+export function normalizeWebReadingPrefs(value: unknown): WebReadingPrefs {  const prefs = readRecord(value)
   return {
     autoPage: typeof prefs.autoPage === 'boolean' ? prefs.autoPage : DEFAULT_WEB_READING_PREFS.autoPage,
     autoSpeed: Math.round(readFiniteClamped(prefs.autoSpeed, 1, 5, DEFAULT_WEB_READING_PREFS.autoSpeed)),
   }
+}
+
+const BROWSE_FAVORITES_LIMIT = 40
+const BROWSE_FAVORITE_TITLE_LIMIT = 60
+
+/**
+ * 常用网站：只收 http(s) 绝对地址，按地址去重，最多 40 条。
+ * 标题缺失或为空时退回域名，免得书签条上出现一条没有名字的空条。
+ */
+export function normalizeBrowseFavorites(value: unknown): BrowseFavorite[] {
+  if (!Array.isArray(value)) return []
+  const items: BrowseFavorite[] = []
+  const seen = new Set<string>()
+  for (const entry of value) {
+    const record = readRecord(entry)
+    const rawUrl = typeof record.url === 'string' ? record.url.trim() : ''
+    if (!rawUrl) continue
+    let url: URL
+    try {
+      url = new URL(rawUrl)
+    } catch {
+      continue
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') continue
+    // toString() 会补上末尾斜杠并规范化大小写，同一地址不会再存成两条。
+    const normalizedUrl = url.toString()
+    if (seen.has(normalizedUrl)) continue
+    seen.add(normalizedUrl)
+    const title = typeof record.title === 'string' && record.title.trim()
+      ? record.title.trim().slice(0, BROWSE_FAVORITE_TITLE_LIMIT)
+      : url.hostname.replace(/^www\./i, '')
+    items.push({
+      url: normalizedUrl,
+      title: title || url.hostname,
+      addedAt: typeof record.addedAt === 'string' ? record.addedAt : '',
+    })
+    if (items.length >= BROWSE_FAVORITES_LIMIT) break
+  }
+  return items
 }
 
 function settingsPath(): string {
@@ -338,11 +397,12 @@ export async function getSettings(): Promise<Settings> {
   const appearance = (raw.appearance as Partial<AppearancePrefs>) || {}
   const backup = readRecord(raw.autoBackup)
   // 每把 Key 只解一次：getSettings 在主进程里被高频调用，重复解密会把 DPAPI 往返翻倍。
-  const [apiKeyUsable, embeddingKeyUsable, tierSenseKeyUsable, ttsKeyUsable] = await Promise.all([
+  const [apiKeyUsable, embeddingKeyUsable, tierSenseKeyUsable, ttsKeyUsable, tencentMapKeyUsable] = await Promise.all([
     hasUsableEncryptedKey(raw.apiKeyEnc),
     hasUsableEncryptedKey(raw.embeddingApiKeyEnc),
     hasUsableEncryptedKey(raw.tierSenseApiKeyEnc),
     hasUsableEncryptedKey(raw.ttsApiKeyEnc),
+    hasUsableEncryptedKey(raw.tencentMapKeyEnc),
   ])
   return {
     libraryPath:
@@ -359,6 +419,8 @@ export async function getSettings(): Promise<Settings> {
       keyConfigured: embeddingKeyUsable,
     },
     tierSenseKeyConfigured: tierSenseKeyUsable,
+    tencentMapKeyConfigured: tencentMapKeyUsable,
+    tencentMapKeyUnreadable: hasEncryptedKey(raw.tencentMapKeyEnc) && !tencentMapKeyUsable,
     reader: normalizeReaderPrefs(raw.reader),
     tts: {
       rate: readFiniteClamped(tts.rate, 0.5, 2, DEFAULT_TTS_PREFS.rate),
@@ -375,7 +437,7 @@ export async function getSettings(): Promise<Settings> {
       skin: normalizeSkin(appearance.skin),
     },
     webReading: normalizeWebReadingPrefs(raw.webReading),
-    ai: normalizeAiPrefs(raw.ai),
+    browseFavorites: normalizeBrowseFavorites(raw.browseFavorites),    ai: normalizeAiPrefs(raw.ai),
     downloadPace: readDownloadPace(raw.downloadPace),
     proxy: readProxyPrefs(raw.proxy, hasEncryptedKey(raw.proxyPasswordEnc)),
     autoBackup: {
@@ -396,6 +458,13 @@ export async function getTierSenseApiKey(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.tierSenseApiKeyEnc !== 'string' || !raw.tierSenseApiKeyEnc) return ''
   return decryptCipher(raw.tierSenseApiKeyEnc)
+}
+
+/** 腾讯地图 Key 明文只供打开地图页时按需取用；不在 getSettings 里下发。 */
+export async function getTencentMapKey(): Promise<string> {
+  const raw = await loadRaw()
+  if (typeof raw.tencentMapKeyEnc !== 'string' || !raw.tencentMapKeyEnc) return ''
+  return decryptCipher(raw.tencentMapKeyEnc)
 }
 
 export function normalizeSettingsUpdatePayload(value: unknown): SettingsUpdate {
@@ -460,6 +529,13 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
       raw.tierSenseApiKeyEnc = (await safeStorage.encryptStringAsync(patch.tierSenseApiKey)).toString('base64')
     } else delete raw.tierSenseApiKeyEnc
   }
+  if (typeof patch.tencentMapKey === 'string') {
+    const mapKey = patch.tencentMapKey.trim()
+    if (mapKey) {
+      await requireEncryptionAvailable()
+      raw.tencentMapKeyEnc = (await safeStorage.encryptStringAsync(mapKey)).toString('base64')
+    } else delete raw.tencentMapKeyEnc
+  }
   if (patch.appearance) {
     const next = { ...readRecord(raw.appearance), ...readRecord(patch.appearance) }
     if ('skin' in next) next.skin = normalizeSkin(next.skin)
@@ -468,6 +544,9 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
   if (patch.ai) raw.ai = mergeAiPrefs(raw.ai, patch.ai)
   if (patch.webReading) {
     raw.webReading = normalizeWebReadingPrefs({ ...readRecord(raw.webReading), ...readRecord(patch.webReading) })
+  }
+  if (Array.isArray(patch.browseFavorites)) {
+    raw.browseFavorites = normalizeBrowseFavorites(patch.browseFavorites)
   }
   if ('downloadPace' in patch) raw.downloadPace = readDownloadPace(patch.downloadPace)
   if (patch.proxy) {

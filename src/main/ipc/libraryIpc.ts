@@ -37,6 +37,7 @@ export interface LibraryIpcDeps {
   bookOverview: {
     decorate(books: Awaited<ReturnType<typeof listBooks>>, settings: Awaited<ReturnType<typeof getSettings>>): Promise<unknown>
     retry(bookId: string): Promise<void>
+    request(bookId: string): void
     wake(): void
   }
   /** 导入互斥计数由 index.ts 持有，backup.* 的守卫也读它，所以注入而不是复制。 */
@@ -133,7 +134,8 @@ export function registerLibraryIpc(register: IpcRegistrar, deps: LibraryIpcDeps)
       if (!guard.ok) return guard
       const ext = filePath.toLowerCase().split('.').pop()
       const result = ext === 'epub' ? await importEpub(filePath) : await importTxt(filePath)
-      bookOverview.wake()
+      // 导入即入架：登记这本书的概览生成，不靠全库扫描。
+      bookOverview.request(result.bookId)
       return { ok: true, bookId: result.bookId }
     } catch (e: unknown) {
       return { ok: false, message: String(e) }

@@ -146,7 +146,7 @@ export interface BookListItem {
 }
 
 export interface BookOverviewView {
-  status: 'off' | 'waiting' | 'pending' | 'running' | 'ready' | 'stale' | 'failed'
+  status: 'off' | 'waiting' | 'pending' | 'running' | 'ready' | 'failed'
   text?: string
   message?: string
 }
@@ -387,10 +387,20 @@ export interface Annotation {
    * 也让 AI 知道这段关注点是读者本人的判断还是模型自己的上一轮输出。
    */
   noteSource?: AnnotationNoteSource
+  /** `#tag` 标签：去 `#` 后的小写词，按书聚类笔记用；缺省不参与任何分组。 */
+  tags?: string[]
+  /** 划线颜色；缺省黄色。书签不渲染底色，可以不存。 */
+  color?: AnnotationColor
   createdAt: string
 }
 
 export type AnnotationNoteSource = 'user' | 'ai'
+
+/**
+ * 划线颜色：白名单枚举而非任意 CSS 值，四套阅读主题下都能保证正文可读。
+ * 缺省按 `yellow`，即引入该字段之前的观感。
+ */
+export type AnnotationColor = 'yellow' | 'green' | 'blue' | 'red' | 'purple'
 
 export interface AnnotationUpdate {
   note?: string
@@ -399,6 +409,10 @@ export interface AnnotationUpdate {
   /** 漂移校正后的新坐标（成对提供才生效） */
   start?: number
   end?: number
+  /** 标签全量替换；传空数组即清空标签。 */
+  tags?: string[]
+  /** 划线颜色；非法值丢弃，不覆盖旧值。 */
+  color?: AnnotationColor
 }
 
 /**
@@ -495,6 +509,16 @@ export interface BrowseReadingPage {
 }
 export interface BrowseFindResult { matches: number; activeMatch: number }
 
+/**
+ * 浏览页的常用网站。地址是身份：同一地址只存一条，按收藏顺序排列。
+ * 不依赖站点图标（离线、跨域都拿不到），首字色块由界面按地址散列生成。
+ */
+export interface BrowseFavorite {
+  url: string
+  title: string
+  addedAt: string
+}
+
 /** 网页书的一章：只用标题 + 绝对地址，不保存正文。 */
 export interface WebShelfChapter { title: string; url: string }
 
@@ -535,6 +559,16 @@ export type ReaderContentWidth = 'narrow' | 'medium' | 'wide'
 export type ReaderParagraphSpacing = 'compact' | 'normal' | 'relaxed'
 export type ReaderFocusMode = 'off' | 'one' | 'three' | 'five'
 export type ReaderReadingMode = 'scroll' | 'screen'
+/**
+ * 阅读界面（与 `ReaderReadingMode` 正交）：`classic` 是现有的滚动/翻屏，
+ * `sheet` 是单张书页的分页排版（单栏或双栏），`realbook` 是双页 3D 的「真实书籍」。
+ * 对外文案只用「经典模式 / 书页模式 / 真实书籍」。
+ */
+export type ReaderBookView = 'classic' | 'sheet' | 'realbook'
+/** 书页模式的每页栏数：`single` 一栏到底，`double` 左右两栏续排。 */
+export type ReaderSheetColumns = 'single' | 'double'
+/** 批注手写字体：只影响批注呈现，不改正文字体与分页量测。 */
+export type ReaderHandwritingFont = 'none' | 'kai' | 'xingshu'
 
 export interface ReaderPrefs {
   fontSize: number
@@ -546,6 +580,12 @@ export interface ReaderPrefs {
   paragraphIndent: boolean
   focusMode: ReaderFocusMode
   readingMode: ReaderReadingMode
+  /** 阅读界面；缺省 `classic`（连续滚动），旧设置文件缺字段同样落到经典模式。 */
+  bookView?: ReaderBookView
+  /** 书页模式的每页栏数；缺省 `double`，旧设置文件缺字段即双栏。 */
+  sheetColumns?: ReaderSheetColumns
+  /** 批注手写字体；缺省 `none`（与正文同体）。 */
+  handwritingFont?: ReaderHandwritingFont
   /** 自动滚屏速度档，1–5（越界夹紧）；缺省按 DEFAULT_READER_PREFS。 */
   autoScrollSpeed?: number
   /** 连续滚动到章末时自动接下一章；缺省按 DEFAULT_READER_PREFS。 */
@@ -634,6 +674,119 @@ export interface ProxySubscriptionState {
   nodes: { name: string; protocol: string }[]
 }
 
+/**
+ * 订阅自动更新：定时重新拉订阅、比对节点、失败原因留给人看。
+ *
+ * 一期只做「定时重拉」——自动更新不等于自动换节点：换节点要重启内核，
+ * 而重启会掐断正在进行的下载，所以换节点仍由本人点。
+ */
+export interface ProxyAutoUpdatePrefs {
+  /** 是否开启定时重拉订阅。缺省 false。 */
+  enabled: boolean
+  /** 重拉间隔（分钟）。整数，1–1440；缺省 60。 */
+  intervalMinutes: number
+  /** 上次成功重拉的时间（ISO 字符串）；从未成功过为空串。 */
+  lastUpdatedAt: string
+  /** 上次重拉的失败原因；成功过或从未跑过为空串。 */
+  lastError: string
+}
+
+/** 单个节点的测速结果。 */
+export interface ProxyNodeSpeed {
+  /** 节点序号，对应 `ProxySubscriptionState.nodes` 的下标。 */
+  index: number
+  name: string
+  protocol: string
+  /** 握手到首字节的毫秒数；探测失败为 -1。 */
+  latencyMs: number
+  /** 探测是否成功。 */
+  ok: boolean
+  /** 失败原因；成功时为空串。 */
+  message: string
+}
+
+/** 一次多节点测速的完整结果。 */
+export interface ProxySpeedTestResult {
+  /** 各节点的测速结果，按节点序号升序。 */
+  nodes: ProxyNodeSpeed[]
+  /** 成功测速的节点数。 */
+  succeeded: number
+  /** 参与测速的节点总数。 */
+  total: number
+  /** 最快的节点序号；没有成功节点时为 -1。 */
+  fastestIndex: number
+}
+
+/**
+ * 账号与云同步的状态。本机自用优先：没有账号也能用全部功能。
+ *
+ * 账号只用于「把设置与站点规则同步到自己的云端」，书库正文不上云。
+ */
+export interface SyncAccountState {
+  /** 是否已登录（已保存访问令牌）。 */
+  signedIn: boolean
+  /** 显示用的账号标识（邮箱或用户名）；未登录为空串。 */
+  account: string
+  /** 令牌所在存储的同步端点；未登录为空串。 */
+  endpoint: string
+}
+
+/** 一次同步的结果摘要。 */
+export interface SyncResult {
+  ok: boolean
+  /** 同步完成时间（ISO 字符串）。 */
+  updatedAt: string
+  /** 本次上传的条目数。 */
+  pushed: number
+  /** 本次拉回的条目数。 */
+  pulled: number
+  /** 失败原因；成功时为空串。 */
+  message: string
+}
+
+/** 云同步传输的数据包：设置快照 + 站点规则 + 标注摘要。 */
+export interface SyncBundle {
+  version: 1
+  updatedAt: string
+  /** 同步的设置字段（只取白名单字段，不含 API Key 与正文）。 */
+  settings: Record<string, unknown>
+  /** 同步的站点规则（按 host 唯一）。 */
+  rules: SiteRule[]
+}
+
+/**
+ * 站点规则市场里的一条共享规则。
+ *
+ * 市场的规则是「别人写好的抽取规则」：只含 CSS 选择器，不含任何凭据。
+ */
+export interface RuleMarketEntry {
+  /** 规则的稳定标识（通常是 host）。 */
+  id: string
+  /** 规范化后的域名。 */
+  host: string
+  /** 规则适用的站点名，供界面显示。 */
+  title: string
+  /** 抽取规则本体。 */
+  rule: SiteRule
+  /** 规则作者的自述说明。 */
+  note: string
+  /** 更新时间（ISO 字符串）。 */
+  updatedAt: string
+  /** 订阅该规则的人数；本机不上报，仅作展示。 */
+  uses: number
+}
+
+/** 市场里某条规则的来源渠道。 */
+export type RuleMarketSource = 'builtin' | 'remote' | 'local'
+
+/** 市场列表的一次查询结果。 */
+export interface RuleMarketListing {
+  /** 规则条目。 */
+  entries: RuleMarketEntry[]
+  /** 每条规则的来源。 */
+  sources: Record<string, RuleMarketSource>
+}
+
 /** 朗读偏好（Web speechSynthesis） */
 export interface TtsPrefs {
   /** 语速，0.5–2 */
@@ -684,7 +837,7 @@ export interface AiPrefs {
   budgetWarningTokens: number
   /** 已由用户确认信任的规范化 origin；不含路径、query 或 fragment。 */
   trustedCustomOrigins: string[]
-  /** 用户主动开启后，完整入库的书在后台串行生成含剧透的全书概览。 */
+  /** 默认开启：书一进书架就在后台生成一次全书概览，之后只读磁盘结果，不再调模型。 */
   autoBookOverview: boolean
   /** 自动追剧：读完一章后自动整理本章摘要与记忆。默认关闭，必须由用户明确开启。 */
   autoReadingFollow: boolean
@@ -692,6 +845,8 @@ export interface AiPrefs {
   followMaxChaptersPerRun: number
   /** 每书每自然月的自动任务估算 token 门禁；不代表服务商账单金额。 */
   autoMonthlyTokenLimit: number
+  /** 全书概览专用模型；留空沿用 Settings.model。只影响概览，不影响聊天、证据问答等其他功能。 */
+  overviewModel: string
   promptMode: Record<AiPromptKind, AiPromptMode>
   customPrompts: Partial<Record<AiPromptKind, string>>
   tierSense: TierSensePrefs
@@ -712,11 +867,17 @@ export interface Settings {
   embedding?: { baseUrl: string; model: string; keyConfigured: boolean }
   /** TierSense API Key 是否已配置；渲染进程只拿布尔值。 */
   tierSenseKeyConfigured: boolean
+  /** 腾讯地图 Key 是否已配置；主进程始终补齐，可选仅为旧调用方与测试兼容。 */
+  tencentMapKeyConfigured?: boolean
+  /** 有密文但本机解不开；界面据此提示「重新填写」而不是「未配置」。 */
+  tencentMapKeyUnreadable?: boolean
   reader: ReaderPrefs
   tts: TtsPrefs
   appearance: AppearancePrefs
   /** 网页阅读模式偏好；主进程始终补齐，缺省按 DEFAULT_WEB_READING_PREFS。 */
   webReading?: WebReadingPrefs
+  /** 浏览页常用网站；主进程始终补齐，缺省空数组。 */
+  browseFavorites?: BrowseFavorite[]
   /** A1.2 起主进程始终补齐；可选用于兼容尚未迁移的旧调用方。 */
   ai?: AiPrefs
   /** 章间间隔档位。getSettings 始终返回；缺省或非法回退 standard。 */
@@ -742,8 +903,12 @@ export interface SettingsUpdate {
   ttsApiKey?: string
   /** 空字符串清除 TierSense 密钥。 */
   tierSenseApiKey?: string
+  /** 空字符串清除腾讯地图 Key。 */
+  tencentMapKey?: string
   appearance?: Partial<AppearancePrefs>
   webReading?: Partial<WebReadingPrefs>
+  /** 整份替换常用网站列表；主进程按地址去重并夹紧上限。 */
+  browseFavorites?: BrowseFavorite[]
   ai?: Partial<AiPrefs>
   /** 省略则不改已保存档位。 */
   downloadPace?: DownloadPace
@@ -815,6 +980,107 @@ export interface AiCitation {
   chapterTitle: string
   paragraphIndex: number
   excerpt: string
+}
+
+export type AiPlaceKind = 'city' | 'region' | 'landmark' | 'other'
+
+/**
+ * 从已读正文抽取的地名词条。锚点与阅读器/标注共用同一坐标：
+ * 段号是渲染段号，`paragraphOffset` 是地点名在该段里的 UTF-16 起始偏移。
+ * 这里没有坐标——经纬度只能由地理编码服务给出。
+ */
+export interface AiPlace {
+  id: string
+  name: string
+  aliases: string[]
+  kind: AiPlaceKind
+  chapterId: string
+  chapterTitle: string
+  paragraphIndex: number
+  paragraphOffset: number
+  /** 支撑该地点的原文引文（逐字来自正文）。 */
+  excerpt: string
+}
+
+export interface AiPlaceExtractionView {
+  places: AiPlace[]
+  /** 本次实际扫描的已读章节数与非空段落数。 */
+  chapterCount: number
+  paragraphCount: number
+  /** 已读正文超过本次抽取上限，结果不是全书全量。 */
+  truncated: boolean
+  message: string
+}
+
+export type AiPlaceGeocodeStatus = 'pending' | 'resolved' | 'ambiguous' | 'not-found' | 'ignored'
+
+/** 腾讯地理编码返回的坐标；坐标只来自服务端，模型不产出。 */
+export interface AiPlaceLocation {
+  latitude: number
+  longitude: number
+  /** 腾讯返回的可信度（1–10），用于提示解析质量。 */
+  reliability?: number
+  /** 腾讯返回的精度等级。 */
+  level?: string
+  /** 坐标来源：地址解析、行政区划、地点搜索或国家中心点回退。 */
+  source?: 'geocoder' | 'district' | 'search' | 'country'
+  /** 解析结果所属城市/省，作为同名地点搜索的 boundary。 */
+  region?: string
+}
+
+/** 腾讯地点搜索返回的一个候选点。 */
+export interface AiPlaceCandidate {
+  id: string
+  title: string
+  address: string
+  latitude: number
+  longitude: number
+  category?: string
+}
+
+export interface AiPlaceCandidateView {
+  candidates: AiPlaceCandidate[]
+  /** 实际使用的 boundary，便于界面说明“在哪个范围里找的”。 */
+  boundary: string
+  message: string
+}
+
+export interface AiPlaceGeo extends AiPlace {
+  location?: AiPlaceLocation
+  geocodeStatus: AiPlaceGeocodeStatus
+}
+
+/**
+ * 手工标注一个地名坐标的入参。
+ *
+ * 与 `map.geocodePlaces` 的区别：不消耗腾讯配额，坐标由本人给定。
+ * 仍然要求地名能落到正文里的某一段——没有锚点的地名在地图上点了也跳不回原文。
+ */
+export interface MapManualPlaceInput {
+  /** 所属书。 */
+  bookId: string
+  /** 地名（必填，非空）。 */
+  name: string
+  /** 纬度，-90–90。 */
+  latitude: number
+  /** 经度，-180–180。 */
+  longitude: number
+  /** 地点类型；缺省 `other`。 */
+  kind?: AiPlaceKind
+  /** 正文锚点：段号与段内偏移；缺省表示该地名只作地图标记、不跳回原文。 */
+  paragraphIndex?: number
+  /** 段内 UTF-16 起始偏移；与 `paragraphIndex` 一起给才有意义。 */
+  paragraphOffset?: number
+}
+
+export interface AiPlaceGeocodeView {
+  places: AiPlaceGeo[]
+  resolved: number
+  /** 可信度低、等待用户确认的地点。 */
+  ambiguous: number
+  notFound: number
+  cached: number
+  message: string
 }
 
 export interface AiMemoryBase {
@@ -1117,7 +1383,10 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   paragraphSpacing: 'normal',
   paragraphIndent: true,
   focusMode: 'off',
-  readingMode: 'scroll',
+  readingMode: 'screen',
+  bookView: 'classic',
+  sheetColumns: 'double',
+  handwritingFont: 'none',
   autoScrollSpeed: 3,
   autoNextChapter: false,
   dim: 0,
@@ -1185,10 +1454,11 @@ export const DEFAULT_AI_PREFS: AiPrefs = {
   recapLength: 'standard',
   budgetWarningTokens: 8000,
   trustedCustomOrigins: [],
-  autoBookOverview: false,
+  autoBookOverview: true,
   autoReadingFollow: false,
   followMaxChaptersPerRun: 12,
   autoMonthlyTokenLimit: 100_000,
+  overviewModel: '',
   promptMode: {
     clean: 'builtin',
     translate: 'builtin',
