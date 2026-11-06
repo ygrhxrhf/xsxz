@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { computeStreak, readReadingStats, recordReadingActivity, MAX_STATS_DAYS } from './readingStats'
 import { setLibraryPath } from './library'
+import { removeTempDir } from './testSupport/tempDir'
 
 let dir = ''
 
@@ -12,7 +13,7 @@ beforeEach(async () => {
   await setLibraryPath(dir)
 })
 
-afterEach(async () => { await rm(dir, { recursive: true, force: true }) })
+afterEach(async () => { await removeTempDir(dir) })
 
 /** 构造某天的本地时间戳（正午，避开时区跨日边界）。 */
 function atNoon(daysAgo: number): number {

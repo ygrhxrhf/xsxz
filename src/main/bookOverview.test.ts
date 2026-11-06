@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,6 +21,7 @@ vi.mock('./ai', async (original) => {
 import { AiQueue } from './aiScheduler'
 import { BookOverviewService } from './bookOverview'
 import { createBookFromBootstrap, listBooks, markChapterStatus, readAiUsage, setLibraryPath, updateChapterBody, writeChapterFile, refreshBookStatus } from './library'
+import { removeTempDir } from './testSupport/tempDir'
 
 let directory = ''
 let service: BookOverviewService
@@ -51,7 +52,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   service.stop()
-  await rm(directory, { recursive: true, force: true })
+  await removeTempDir(directory)
 })
 
 async function seed(): Promise<string> {

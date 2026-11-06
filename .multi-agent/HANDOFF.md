@@ -246,3 +246,49 @@ A 变体首载只有 116 字，证明站点挑战仍在，不是站取消了挑�
 - Emulation 视口下 `readerProgress.schedule()` 写盘链被阻塞（探针环境伪影，非产品缺陷），C/C0 场景 A 段用 `setProgress` IPC 直写代替；真实窗口 resize 走 schedule 正常。
 - 恢复稳定判定：首可见段连续 4 次采样一致（150ms），采样前强制两帧。
 - 计划基线「78 用例」与实测「29 用例」有出入：以实测为准（progress 3 + accessibility 26，全绿）。
+
+## 2026-11-07 收尾复查（回归与覆盖补齐）
+
+上一轮实现收尾后做了一次「实现 vs 覆盖」对账，补掉了三块只有实现没有界面用例的新功能，
+并修掉一处 e2e 断言用了过期文案。
+
+**修掉的真实问题**
+
+- `scripts/map-e2e.mjs` 断言「尚未提供书中地图素材」，但界面实际文案是「尚未选择书中地图图片」
+  （`BookMapPage.vue` 与 `BookMapPage.ui.test.ts` 都是后者）。e2e 假红。改断言，不改界面。
+
+**补上的覆盖**
+
+- `src/renderer/components/RuleMarketPanel.ui.test.ts`（8 例）：条目列表与来源标签、
+  空态、读取失败、应用成功/失败、订阅与取消订阅、空地址不发请求。
+- `src/renderer/components/SyncPanel.ui.test.ts`（9 例）：登录状态、令牌为空不发请求、
+  登录成功/失败、同步结果摘要、同步失败、退出登录、状态读取失败。
+- `src/renderer/components/ProxySubscriptionPanel.ui.test.ts`（9 例）：自动更新状态读取、
+  开关保存、保存失败、立即重拉成功/失败（概览抛给设置页）、测速排序、
+  全部失败时给警告、测速失败、以及「面板不提供自动换节点入口」这条边界。
+- `src/renderer/pages/Library.ui.contract.test.ts`：全书概览入口的契约（剧透提示、
+  失败重试、弹层展示、关闭清状态）。
+- `src/renderer/pages/Settings.ui.contract.test.ts`：三个新面板在设置页的挂载与接线。
+
+**顺手修掉的测试脆弱点**
+
+Windows 上后台任务（原子写 + rename）落盘期间删临时目录会撞 `ENOTEMPTY` / `EBUSY` / `EPERM`，
+全量并行时让 `readingStats` / `bookOverview` / `aiReadingFollow` / `aiEvidenceIndex`
+偶发假红（断言已过，清理失败）。抽出 `src/main/testSupport/tempDir.ts` 的 `removeTempDir()`
+统一带重试，别处错误码照旧抛出。`aiEvidenceIndex.test.ts` 里原先内联的那段重试逻辑改为复用它。
+
+### 验证证据（本轮实跑）
+
+- `npm run typecheck` → 0
+- `npx vitest run src --exclude .delta/ --exclude .qoder/` → **176 文件 / 1805 用例全绿**（默认并发）
+- `npm run build` → exit 0（`out/main/index.js` 798.67 kB、`out/preload/index.mjs` 17.94 kB）
+- e2e（真起 Electron）：map **13/13**、reader **11/11**、startup **10/10**、mirror **19/19**、
+  realbook-selection **18/18**，全部通过
+
+### 已知边界
+
+- 全量并发在 16 核上偶发超时（`readingStats` 405 次写盘、`aiEvidenceIndex` 800 章建索引）。
+  降到 `--maxWorkers=6` 必绿；默认并发已用上面的清理重试消掉了目录锁那一类，剩余超时属负载相关。
+- 规则市场面板的「已订阅来源」只记在本次会话内（契约里没有「列出订阅来源」的频道），
+  重开应用后地址由主机的 `rule-market.json` 保留，重新订阅同址即可。
+

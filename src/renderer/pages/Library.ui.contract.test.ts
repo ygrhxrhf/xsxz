@@ -228,6 +228,27 @@ describe('Library comfortable card contract', () => {
     expect(modal).not.toContain('library.delete')
   })
 
+  it('keeps the book-overview entry with a spoiler notice, a retry, and a read-only dialog', async () => {
+    const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
+    // 概览只在有正文或状态文案时占位，不给每张卡都塞一块空区域。
+    expect(source).toContain('v-if="b.overview?.text || b.overview?.message"')
+    expect(source).toContain('class="book-overview-toggle"')
+    expect(source).toContain('查看全书概览 <span>含剧透</span>')
+    // 没有正文时只给状态文案，并允许手动重试（失败后不再自动重跑）。
+    expect(source).toContain('<div v-else class="book-overview-heading">全书概览 <span>含剧透</span></div>')
+    expect(source).toContain('v-if="b.overview?.status === \'failed\'" size="tiny" @click="retryOverview(b.id)">重试概览')
+    expect(source).toContain('window.api.bookOverview.retry(bookId)')
+    // 弹层展示已生成的结果，关闭时清掉当前书。
+    expect(source).toContain(':show="Boolean(overviewBook?.overview?.text)"')
+    expect(source).toContain('全书概览 · ${overviewBook?.title || \'\'}')
+    expect(source).toContain('class="book-overview-dialog-text"')
+    expect(source).toContain('含剧透，阅读前请注意')
+    expect(source).toContain('@update:show="(open: boolean) => { if (!open) overviewBookId = null }"')
+    // 概览状态由主进程推过来后要重新拉列表。
+    expect(source).toContain('window.api.bookOverview.onChanged(() => { void refresh() })')
+    expect(source).not.toContain('v-html')
+  })
+
   it('lets the user handle a wall in the browse page and resume only after that', async () => {
     const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
     expect(source).toContain('const blockedByBook = ref<Record<string, DownloadBlocked>>({})')

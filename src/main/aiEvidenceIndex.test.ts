@@ -6,6 +6,7 @@ import type { AiMemoryFile, Book, ChapterStatus } from '../shared/types'
 import { bookDir, setLibraryPath } from './library'
 import { MAX_EVIDENCE_CHAPTER_READS, retrieveLocalEvidence } from './aiEvidenceRetrieval'
 import { clearEvidenceIndexCache, ensureEvidenceIndex, planEvidenceReads, wakeEvidenceIndex } from './aiEvidenceIndex'
+import { removeTempDir } from './testSupport/tempDir'
 
 const BOOK = 'b_index'
 const NOW = '2026-10-08T00:00:00.000Z'
@@ -117,16 +118,7 @@ afterEach(async () => {
   clearEvidenceIndexCache()
   // wakeEvidenceIndex 是后台 fire-and-forget（原子写 + rename），断言通过时 manifest 可能还在落盘。
   // Windows 下这会让 rm 撞 ENOTEMPTY/EBUSY/EPERM，等它排空再删，避免偶发红。
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      await rm(directory, { recursive: true, force: true })
-      break
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (attempt === 19 || (code !== 'ENOTEMPTY' && code !== 'EBUSY' && code !== 'EPERM')) throw err
-      await new Promise((resolve) => setTimeout(resolve, 25))
-    }
-  }
+  await removeTempDir(directory)
 })
 
 describe('按章布隆证据索引', () => {

@@ -31,6 +31,22 @@ describe('Settings section framework contract', () => {
     expect(source).not.toContain('v-if="activeSection')
   })
 
+  it('mounts the rule-market, sync, and proxy-subscription panels', async () => {
+    const source = (await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')).replace(/\r\n/g, '\n')
+    expect(source).toContain("import RuleMarketPanel from '../components/RuleMarketPanel.vue'")
+    expect(source).toContain("import SyncPanel from '../components/SyncPanel.vue'")
+    expect(source).toContain("import ProxySubscriptionPanel from '../components/ProxySubscriptionPanel.vue'")
+    expect(source).toContain('<RuleMarketPanel />')
+    expect(source).toContain('<SyncPanel />')
+    expect(source).toContain('<ProxySubscriptionPanel @refreshed="onSubscriptionRefreshed" />')
+    // 面板重拉订阅后，节点列表要跟着更新（不能各说各话）。
+    expect(source).toContain('function onSubscriptionRefreshed(overview: ProxySubscriptionState) {')
+    expect(source).toContain('subscriptionOverview.value = overview')
+    // 边界说明必须留在界面上：市场不含凭据、同步不含正文与 Key。
+    expect(source).toContain('规则市场')
+    expect(source).toContain('账号与云同步')
+  })
+
   it('keeps the responsive shell and semantic first-load feedback', async () => {
     const source = (await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')).replace(/\r\n/g, '\n')
     expect(source).toContain('max-width: 1240px')

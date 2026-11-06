@@ -145,7 +145,7 @@ try {
   check('未配置 Key 时显示「未配置腾讯地图 Key」空态',
     await waitFor(`(document.querySelector('.book-map-overlay')?.textContent || '').includes('未配置腾讯地图 Key')`, 5000))
   check('左侧「书中原图」明确为空态',
-    (await ev(`return document.querySelector('.book-map-original')?.textContent || '';`)).includes('尚未提供书中地图素材'))
+    (await ev(`return document.querySelector('.book-map-original')?.textContent || '';`)).includes('尚未选择书中地图图片'))
   check('未配置 Key 时不会注入腾讯地图脚本', await ev(`return !document.querySelector('#spbf-tencent-map');`))
 
   // 关掉地图抽屉（找包含地图页的那个抽屉的关闭按钮）

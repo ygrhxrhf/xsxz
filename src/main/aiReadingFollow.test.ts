@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -6,6 +6,7 @@ import {
   DEFAULT_AI_PREFS, DEFAULT_APPEARANCE_PREFS, DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS,
   type AiMemoryFile, type Settings,
 } from '../shared/types'
+import { removeTempDir } from './testSupport/tempDir'
 
 const mocks = vi.hoisted(() => ({
   complete: vi.fn(),
@@ -134,7 +135,7 @@ afterEach(async () => {
   // 必须等在飞的整理写完再删目录：stop 只清定时器的话，后台那一轮还会去写
   // follow.json / 摘要 / 记忆，撞上 rm 就是偶发 ENOENT / ENOTEMPTY。
   await service.stop()
-  await rm(directory, { recursive: true, force: true })
+  await removeTempDir(directory)
 })
 
 describe('自动追剧', () => {
