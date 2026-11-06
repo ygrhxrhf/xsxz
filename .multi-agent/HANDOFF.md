@@ -11,8 +11,9 @@
 - 工作区有**别人未提交的 agent-integration 改动**（`src/main/agent*.ts`、`src/main/ipc/`、
   `docs/agent-integration-design.md` 等）。不要动，也不要在全量测试里把它算进结论。
 
-- **Electron 45 升级已 rebase 到 master `c8b93b5` 之上，待合入 master**（分支 `worktree-electron-45-upgrade`，计划见 `.multi-agent/plan/electron-45.md`）：
-  - `package.json` electron `^45.2.1` = **Chromium 156.0.8078.75 / Node 24.22.1**。
+- **Electron 45 升级已合入 master**（原分支 `worktree-electron-45-upgrade`，计划见 `.multi-agent/plan/electron-45.md`）：
+  - `package.json` electron `^45.2.1` = **Chromium 156.0.8078.75 / Node 24.22.1**（master 的 `package.json` 已是此版本）。
+  - 该分支相对 master 无未合入提交（`git log master..worktree-electron-45-upgrade` 为空），升级内容已在 master 上。
   - safeStorage 全部改异步，包括订阅代理新增的密码加解密路径。
   - rebase 时发现：应用内代理在 `settings.ts` 里新增了同步 safeStorage 调用，
     且 `requireEncryptionAvailable()` 漏了 `await`（等于跳过密钥库检查）。已在 `8e6aef6` 修复。
@@ -148,10 +149,7 @@ A 变体首载只有 116 字，证明站点挑战仍在，不是站取消了挑�
 
 ## 下一步
 
-1. **合入前查看**：`git -C .qoder/worktrees/electron-45-upgrade log --oneline master..HEAD`
-2. 合入 master 后需再跑一次全量 + `npm run plan:status`（worktree 的 node_modules 不共用）。
-3. `git push` 需用户点头。
-4. **人工验收（自动化测不出）**：
+1. **人工验收（自动化测不出）**：
    - 常用小说站首页正常出书目（不被新 UA 拦）
    - 打开章节 / 下载本书 / 阅读器翻页
    - 设置里存 API Key → **重启** → 仍显示「已配置」→ AI 请求能返回
@@ -161,7 +159,8 @@ A 变体首载只有 116 字，证明站点挑战仍在，不是站取消了挑�
 - CF 复测单站单次采样，Cloudflare 按指纹动态调难度。
 - 早期一次 B 变体出现 `ERR_FAILED (-2)` 后静默退出；独立 partition 重跑正常，
   判断为 partition 复用偶发，未纳入结论。
-- 本 worktree 的 `node_modules` 与主工作区独立；主工作区仍是 Electron 43。
+- `.qoder/worktrees/electron-45-upgrade` 这个 worktree 目录仍在，但它相对 master
+  没有未合入提交，已无用途，可在确认无未提交改动后删除。
 
 ## challenge-page 做了什么
 

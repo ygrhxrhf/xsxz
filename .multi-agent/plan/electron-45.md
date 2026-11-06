@@ -60,8 +60,8 @@ Electron 从 43.4.0 升到 45.2.1 —— Chromium 156.0.8078.75 首次出现在�
 
 ## 断点记录（每次停下前更新）
 
-- 状态：已完成（待合入 master 与推送确认）
-- 下一步第一条命令：`git log --oneline master..HEAD`（核对 5 个提交）
+- 状态：已完成并已合入 master（`git log master..worktree-electron-45-upgrade` 为空；master 的 `package.json` electron 已是 `^45.2.1`）
+- 下一步第一条命令：无（待人工验收：真实小说站的浏览/下载/登录态、API Key 跨重启解密）
 - 未验证项：真实小说站的浏览/下载/登录态、API Key 跨重启解密（需人工）
 
 ## 合并到 master 时追加

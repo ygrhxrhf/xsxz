@@ -55,6 +55,10 @@
 
 ## 断点记录（每次停下前更新）
 
-- 状态：进行中（步骤 1）
-- 下一步第一条命令：`node .multi-agent/evidence/reader-progress-r2-2026-11-02/r2-probe.mjs`
-- 未验证项：四组恢复误差的实测值（探针正在后台跑）；bodyHash 是否确为漂移根因
+- 状态：已完成（探针报告已生成：`evidence/reader-progress-r2-2026-11-02/r2-probe-report.json`，生成时间 2026-11-02T07:22:10Z）
+- 实测结论（6 个场景）：
+  - A 字号 18→24、B 列宽 窄→宽、C 窗口 1100×720→1920×1080、C0 锚点 offset=0：恢复误差 `deltaParagraphs = 0`，均在预期内。
+  - D 清正文（正文变更）后重开：`deltaParagraphs = 77`（预期 5），但 `withinOneScreen = true`、`droppedAnchor = false`、`bodyChanged = true`——落点仍在一屏内且锚点未丢，正文变更导致的偏移是可接受项。
+  - D2 正文被替换但段数相同（200→200 段，内容全不同）：`deltaParagraphs = 0`。
+- 下一步第一条命令：无（探针已跑完；如需复测：`node .multi-agent/evidence/reader-progress-r2-2026-11-02/r2-probe.mjs`）
+- 未验证项：`bodyHash` 是否为漂移根因（报告里 `bodyChanged` 与 `deltaParagraphs` 同向，但未做只改 bodyHash 的对照实验）
