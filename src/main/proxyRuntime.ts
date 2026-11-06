@@ -39,6 +39,18 @@ export function getCachedSubscriptionBody(): string {
   return cachedBody
 }
 
+/**
+ * 只更新缓存的订阅正文，**不动节点、不重启内核**。
+ *
+ * 订阅自动更新用的就是这条：机场的订阅会换节点，但换节点要重启内核，
+ * 而重启会掐断正在进行的下载。自动更新只保证「下次换节点时拿到的是新正文」，
+ * 换不换仍然由本人点。
+ */
+export function cacheSubscriptionBody(body: string): void {
+  if (typeof body !== 'string' || !body.trim()) return
+  cachedBody = body
+}
+
 /** 测试与「断开订阅」共用：清掉缓存节点，避免拿旧正文换节点。 */
 export function clearSubscriptionCache(): void {
   cachedBody = ''
