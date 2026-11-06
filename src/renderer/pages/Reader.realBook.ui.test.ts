@@ -1,0 +1,435 @@
+// @vitest-environment jsdom
+import { createApp, h, nextTick } from 'vue'
+import { afterEach, describe, expect, it } from 'vitest'
+import { NMessageProvider } from 'naive-ui'
+import Reader from './Reader.vue'
+import { DEFAULT_PITCH_DEG } from './realBookPitch'
+import { FLIP_DURATION_MS } from './realBookFlip'
+import type { Annotation } from '@shared/types'
+
+/**
+ * 真实书籍模式在 Reader 层的接线：位置真源（段落锚点）、进度写盘、划线落位、
+ * 两种模式互转。这些都是 `tsc` 看不出来的（模板与脚本的连线），所以真挂载一次。
+ */
+class ResizeObserverStub { observe() {}; unobserve() {}; disconnect() {} }
+Object.defineProperty(window, 'ResizeObserver', { value: ResizeObserverStub, configurable: true })
+Object.defineProperty(window, 'matchMedia', {
+  value: () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} }),
+  configurable: true,
+})
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { value: () => {}, configurable: true })
+// jsdom 的 Range 没有几何信息，选区工具条定位需要 getBoundingClientRect
+Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+  value: () => ({ top: 120, left: 40, bottom: 140, right: 200, width: 160, height: 20, x: 40, y: 120 }),
+  configurable: true,
+})
+
+afterEach(() => {
+  // 选区是全局的：残留的选区会让后续用例的「点纸面翻页」全部失灵（选字时本就不该翻页）。
+  window.getSelection()?.removeAllRanges()
+  document.body.innerHTML = ''
+})
+
+/** 段落里最长的那个文本节点：段落可能被 <mark> 拆成多段，不能拿 firstChild。 */
+function longestTextNode(el: HTMLElement): Text {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  let best: Text | null = null
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text
+    if (!best || node.textContent!.length > best.textContent!.length) best = node
+  }
+  return best!
+}
+
+/** 够长的正文：分页要能排出第二页，翻页才有得可翻。 */
+const LONG_BODY = Array.from({ length: 60 }, (_, i) => `第${i + 1}段。`).join('\n\n')
+
+type BookView = 'classic' | 'realbook'
+
+type SettingsWrite = { reader?: Record<string, unknown> }
+
+interface ProgressWrite {
+  chapterId: string
+  scrollRatio: number
+  paragraphIndex?: number
+  paragraphOffset?: number
+}
+
+function installReaderApi(options: {
+  settingsWrites?: SettingsWrite[]
+  bookView?: BookView
+  body?: string
+  annotations?: Annotation[]
+  progress?: ProgressWrite | null
+} = {}) {
+  const progressWrites: ProgressWrite[] = []
+  const settingsWrites = options.settingsWrites ?? []
+  const chapters = [{ id: 'c1', index: 1, title: '第一章', file: '0001.json', status: 'ready' as const }]
+  const book = {
+    id: 'book-1', title: '真实书', author: '', tags: [] as string[], importType: 'txt' as const,
+    createdAt: '', updatedAt: '', status: 'ready' as const, chapters,
+    progress: options.progress ?? null,
+  }
+  Object.defineProperty(window, 'api', {
+    configurable: true,
+    value: {
+      library: {
+        get: async () => ({ book }),
+        readChapter: async () => ({
+          chapter: { title: '第一章', body: options.body ?? '第一段。\n\n第二段。', status: 'ready' },
+        }),
+        setProgress: async (_bookId: string, progress: ProgressWrite) => {
+          progressWrites.push(progress)
+          return { ok: true }
+        },
+        markReadFrontier: async () => ({ ok: true }),
+      },
+      settings: {
+        get: async () => ({
+          reader: {
+            fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium',
+            paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll',
+            bookView: options.bookView ?? 'classic', handwritingFont: 'none',
+          },
+          tts: { rate: 1, autoNextChapter: true }, baseUrl: '',
+        }),
+        set: async (patch: SettingsWrite) => { settingsWrites.push(patch); return {} },
+      },
+      annotations: {
+        list: async () => ({ ok: true, items: options.annotations ?? [] }),
+        add: async () => ({ ok: false, message: '测试桩：不新增' }),
+        update: async () => ({ ok: false, message: '测试桩：不更新' }),
+        remove: async () => ({ ok: true }),
+      },
+      download: { onProgress: () => () => {} },
+      ai: {
+        onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {},
+        getMaterialCoverage: async () => ({ ok: true, coverage: null }),
+        getUsage: async () => ({ ok: true, usage: { calls: 0 } }),
+        chapterFinished: async () => ({ ok: false, message: '测试桩：不追剧' }),
+      },
+    },
+  })
+  return { progressWrites, settingsWrites }
+}
+
+async function mountReader() {
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const app = createApp({ render: () => h(NMessageProvider, null, { default: () => h(Reader, { bookId: 'book-1' }) }) })
+  app.mount(host)
+  await nextTick(); await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+  return app
+}
+
+describe('Reader 真实书籍模式接线', () => {
+  it('偏好为真实书籍时不渲染经典滚动容器，改为双页书台', async () => {
+    installReaderApi({ bookView: 'realbook' })
+    const app = await mountReader()
+
+    expect(document.querySelector('.real-book-stage')).not.toBeNull()
+    expect(document.querySelectorAll('.real-book-page')).toHaveLength(2)
+    expect(document.querySelector('.reader-content')).toBeNull()
+    app.unmount()
+  })
+
+  it('经典模式仍渲染滚动容器，书台不出现', async () => {
+    installReaderApi({ bookView: 'classic' })
+    const app = await mountReader()
+
+    expect(document.querySelector('.reader-content')).not.toBeNull()
+    expect(document.querySelector('.real-book-stage')).toBeNull()
+    app.unmount()
+  })
+
+  it('真实书籍下章节正文出现在书台上，带原始段落下标', async () => {
+    installReaderApi({ bookView: 'realbook', body: '第一段。\n\n第二段。' })
+    const app = await mountReader()
+
+    const paras = [...document.querySelectorAll<HTMLElement>('.real-book-para')]
+    expect(paras.length).toBeGreaterThan(0)
+    expect(paras[0]?.dataset.p).toBe('0')
+    expect(document.querySelector('.real-book-stage')?.textContent).toContain('第一段。')
+    app.unmount()
+  })
+
+  it('真实书籍下写进度带段落锚点（位置真源不是页码）', async () => {
+    const { progressWrites } = installReaderApi({ bookView: 'realbook' })
+    const app = await mountReader()
+
+    // 翻一页，触发进度排期；进度写入经 1s 防抖，等它落盘。
+    // 翻页没有按钮了：键盘 → 翻页（分页渲染层里方向键翻页而不是换章）。
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
+    await nextTick()
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+
+    expect(progressWrites.length).toBeGreaterThan(0)
+    const last = progressWrites[progressWrites.length - 1]!
+    expect(last.chapterId).toBe('c1')
+    expect(last.paragraphIndex).toBeGreaterThanOrEqual(0)
+    expect(last.paragraphOffset).toBeGreaterThanOrEqual(0)
+    app.unmount()
+  })
+
+  it('旧书只有比例没有锚点时，真实书籍按比例落位并写回锚点', async () => {
+    const { progressWrites } = installReaderApi({
+      bookView: 'realbook',
+      progress: { chapterId: 'c1', scrollRatio: 0.5 },
+    })
+    const app = await mountReader()
+
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    expect(progressWrites.length).toBeGreaterThan(0)
+    const last = progressWrites[progressWrites.length - 1]!
+    // 比例回退后仍能写出锚点（段落下标），后续恢复就有精确位置。
+    expect(last.paragraphIndex).toBeGreaterThanOrEqual(0)
+    app.unmount()
+  })
+
+  it('划线在书台上以高亮出现', async () => {
+    installReaderApi({
+      bookView: 'realbook',
+      body: '第一段。\n\n第二段。',
+      annotations: [{
+        id: 'a1', bookId: 'book-1', chapterId: 'c1', kind: 'highlight',
+        start: 0, end: 3, excerpt: '第一段', createdAt: '2026-11-03T00:00:00.000Z',
+      }],
+    })
+    const app = await mountReader()
+
+    const hl = document.querySelector('.real-book-stage mark.hl-mark')
+    expect(hl?.textContent).toBe('第一段')
+    app.unmount()
+  })
+
+  it('从经典模式切到真实书籍：经典容器让位，书台接管', async () => {
+    installReaderApi({ bookView: 'classic' })
+    const app = await mountReader()
+    expect(document.querySelector('.reader-content')).not.toBeNull()
+
+    document.querySelector<HTMLElement>('.bottom-button[aria-label="字体"]')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    document.querySelector<HTMLElement>('[aria-label="阅读界面"] button:nth-child(3)')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(document.querySelector('.real-book-stage')).not.toBeNull()
+    expect(document.querySelector('.reader-content')).toBeNull()
+    app.unmount()
+  })
+
+  it('俯仰角跨章节保持，且不写进阅读设置', async () => {
+    const settingsWrites: SettingsWrite[] = []
+    installReaderApi({ bookView: 'realbook', settingsWrites })
+    const app = await mountReader()
+
+    const stage = document.querySelector<HTMLElement>('.real-book-book')
+    stage?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientY: 100, pointerId: 1 }))
+    stage?.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, button: 0, clientY: 200, pointerId: 1 }))
+    stage?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, clientY: 200, pointerId: 1 }))
+    await nextTick()
+
+    // 拖 100px = 10°；初值是默认俯仰角，不是平放。
+    expect(document.querySelector<HTMLElement>('.real-book-stage')?.getAttribute('style')).toContain(`--rb-pitch: ${DEFAULT_PITCH_DEG + 10}deg`)
+    // 模拟换章：当前测试书只有一章，重新打开相同章节仍不得把会话角度重置。
+    document.querySelector<HTMLElement>('[aria-label="字体"]')?.click()
+    await nextTick()
+    expect(settingsWrites.every((write) => !('realBookPitch' in (write.reader ?? {})))).toBe(true)
+    app.unmount()
+  })
+
+  it('经典/真实书籍切换保持俯仰角，且偏好快照不包含俯仰角', async () => {
+    const settingsWrites: SettingsWrite[] = []
+    installReaderApi({ bookView: 'classic', settingsWrites })
+    const app = await mountReader()
+    document.querySelector<HTMLElement>('.bottom-button[aria-label="字体"]')?.click()
+    await nextTick()
+    document.querySelector<HTMLElement>('[aria-label="阅读界面"] button:nth-child(3)')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const stage = document.querySelector<HTMLElement>('.real-book-book')
+    stage?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientY: 100, pointerId: 2 }))
+    stage?.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, button: 0, clientY: 150, pointerId: 2 }))
+    stage?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, clientY: 150, pointerId: 2 }))
+    await nextTick()
+    const before = document.querySelector<HTMLElement>('.real-book-stage')?.getAttribute('style') ?? ''
+
+    document.querySelector<HTMLElement>('[aria-label="阅读界面"] button:nth-child(1)')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    document.querySelector<HTMLElement>('[aria-label="阅读界面"] button:nth-child(3)')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(document.querySelector<HTMLElement>('.real-book-stage')?.getAttribute('style')).toContain(`--rb-pitch: ${DEFAULT_PITCH_DEG + 5}deg`)
+    expect(before).toContain(`--rb-pitch: ${DEFAULT_PITCH_DEG + 5}deg`)
+    expect(settingsWrites.every((write) => !('realBookPitch' in (write.reader ?? {})))).toBe(true)
+    app.unmount()
+  })
+
+  it('真实书籍下键盘 → 翻到下一页，而不是跳到下一章', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    const label = () => document.querySelector('.real-book-page-label')?.textContent ?? ''
+    const before = label()
+    expect(before).toContain('第 1')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 250))
+    await nextTick()
+
+    // 翻页而不是换章：页码往前走，页眉仍是本章章名（换章会把整章跳过去）。
+    expect(label()).not.toBe(before)
+    expect(document.querySelector('.real-book-page-head')?.textContent).toBe('第一章')
+    expect(document.querySelector('.real-book-stage')?.textContent).toContain('第1段。')
+    app.unmount()
+  })
+
+  it('真实书籍下点纸面左右两侧翻页，点中间显隐工具条', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    const paper = document.querySelector<HTMLElement>('.real-book-book')!
+    expect(paper).not.toBeNull()
+    // jsdom 没有真实布局：把纸面宽度与位置钉死，分区才可测。
+    Object.defineProperty(paper, 'clientWidth', { configurable: true, value: 600 })
+    paper.getBoundingClientRect = () => ({ left: 0, width: 600 } as DOMRect)
+
+    const label = () => document.querySelector('.real-book-page-label')?.textContent ?? ''
+    // 只看当前页号：页表是惰性排的，总页数会随排版往下长，拿整个标签比对会假红。
+    const pageNo = () => Number(label().match(/第 (\d+)/)?.[1] ?? '0')
+    const before = pageNo()
+
+    // 右侧三分之一：翻下一页。
+    paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 500 }))
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 250))
+    await nextTick()
+    expect(pageNo()).toBe(before + 1)
+
+    // 左侧三分之一：回上一页。
+    paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 100 }))
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 250))
+    await nextTick()
+    expect(pageNo()).toBe(before)
+
+    // 中间三分之一：只显隐工具条，不翻页。
+    const afterPage = pageNo()
+    const toolbar = () => document.querySelector('.reader-toolbar')
+    const hiddenBefore = toolbar()?.getAttribute('aria-hidden')
+    paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300 }))
+    await nextTick()
+    expect(toolbar()?.getAttribute('aria-hidden')).not.toBe(hiddenBefore)
+    expect(pageNo()).toBe(afterPage)
+    app.unmount()
+  })
+
+  it('真实书籍下点左侧回翻：章首停住，不跳到上一章', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    const paper = document.querySelector<HTMLElement>('.real-book-book')!
+    Object.defineProperty(paper, 'clientWidth', { configurable: true, value: 600 })
+    paper.getBoundingClientRect = () => ({ left: 0, width: 600 } as DOMRect)
+
+    const label = () => document.querySelector('.real-book-page-label')?.textContent ?? ''
+    const pageNo = () => Number(label().match(/第 (\d+)/)?.[1] ?? '0')
+    const before = pageNo()
+
+    // 已经在第一页：点左侧翻不动，也不换章（章首没有上一章）。
+    paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 100 }))
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 250))
+    await nextTick()
+    expect(pageNo()).toBe(before)
+    expect(document.querySelector('.real-book-page-head')?.textContent).toBe('第一章')
+    app.unmount()
+  })
+
+  it('真实书籍下点在按钮上的那一下不算翻页', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    const paper = document.querySelector<HTMLElement>('.real-book-book')!
+    Object.defineProperty(paper, 'clientWidth', { configurable: true, value: 600 })
+    paper.getBoundingClientRect = () => ({ left: 0, width: 600 } as DOMRect)
+
+    const label = () => document.querySelector('.real-book-page-label')?.textContent ?? ''
+    const before = label()
+
+    // 舞台工具条上的缩放按钮在纸面右区：点它不能顺手翻页。
+    const zoom = document.querySelector<HTMLElement>('[aria-label="放大"]')!
+    expect(zoom).not.toBeNull()
+    zoom.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 500 }))
+    await nextTick()
+    expect(label()).toBe(before)
+    app.unmount()
+  })
+
+  it('真实书籍下在纸面拖选文字后松手不翻页', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    const paper = document.querySelector<HTMLElement>('.real-book-book')!
+    Object.defineProperty(paper, 'clientWidth', { configurable: true, value: 600 })
+    paper.getBoundingClientRect = () => ({ left: 0, width: 600 } as DOMRect)
+
+    const label = () => document.querySelector('.real-book-page-label')?.textContent ?? ''
+    const pageNo = () => Number(label().match(/第 (\d+)/)?.[1] ?? '0')
+    const before = pageNo()
+
+    // 拖选：浏览器在拖动过程中就把选区建好，松手那一刻选区已确定且非折叠。
+    const para = document.querySelector<HTMLElement>('.real-book-para')!
+    const text = longestTextNode(para)
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, Math.min(3, text.textContent!.length))
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    expect(selection.isCollapsed).toBe(false)
+
+    // 松手落在右区（会翻页的位置）：选字的那一下不能翻页。
+    para.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 500 }))
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 250))
+    await nextTick()
+
+    expect(pageNo()).toBe(before)
+    // 选区工具条照常出现：这一下仍然是「选字」，不是「翻页」。
+    expect(document.querySelector('.sel-popup')).not.toBeNull()
+    app.unmount()
+  })
+
+  it('真实书籍下拖俯仰角不会顺手翻页', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    const paper = document.querySelector<HTMLElement>('.real-book-book')!
+    Object.defineProperty(paper, 'clientWidth', { configurable: true, value: 600 })
+    paper.getBoundingClientRect = () => ({ left: 0, width: 600 } as DOMRect)
+
+    const label = () => document.querySelector('.real-book-page-label')?.textContent ?? ''
+    const before = label()
+
+    // 拖角：按下 → 移动 → 松手。松手那一下的 mouseup 不该被当成翻页点按。
+    paper.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientY: 100, pointerId: 1 }))
+    paper.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
+    paper.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
+    paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 500 }))
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 250))
+    await nextTick()
+
+    expect(label()).toBe(before)
+    app.unmount()
+  })
+
+  it('真实书籍下字体面板隐藏经典专属的「阅读方式」与自动滚屏', async () => {
+    installReaderApi({ bookView: 'realbook' })
+    const app = await mountReader()
+
+    document.querySelector<HTMLElement>('.bottom-button[aria-label="字体"]')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const panel = document.querySelector('.bottom-panel')?.textContent ?? ''
+    expect(panel).not.toContain('连续滚动')
+    expect(panel).not.toContain('开始自动滚屏')
+    app.unmount()
+  })
+})

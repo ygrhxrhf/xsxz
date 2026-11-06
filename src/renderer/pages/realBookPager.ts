@@ -1,0 +1,277 @@
+/**
+ * 真实书籍的分页引擎：纯逻辑，不碰 DOM。
+ *
+ * 为什么不能复用 `readerPager.ts`：那边的坐标语言全是滚动像素——给定 scrollTop
+ * 给出下一个 scrollTop。真实书籍要回答的是相反的问题：「给定版面尺寸，哪一段文字
+ * 属于哪一页」。正文在真实书籍里没有 scrollHeight，量测只能发生在离屏容器里。
+ *
+ * 坐标真源仍是段落锚点（段落下标 + 段内字符偏移），与 `ReadingProgress` 同构；
+ * 页码只是排版缓存，签名一变（字号、窗口缩放、单双页）就整表重算，不落盘。
+ *
+ * 排版规则：
+ * - 段不腰斩：一段能整段放进本页就放本页；本页放不下但空页放得下，就整体挪到下一页；
+ * - 超长段（高度超过一整页）例外：按行切开续排，续页片段标 `continued`；
+ * - 段间距只在两段之间计一次，续排片段不再重复计。
+ */
+
+export interface RealBookLine {
+  /** 行首字符偏移（含） */
+  start: number
+  /** 行尾字符偏移（不含） */
+  end: number
+}
+
+export interface RealBookLayout {
+  /** 版心高度（px）：一页能放多少行 */
+  pageHeight: number
+  /** 行高（px） */
+  lineHeight: number
+  /** 段间距（px） */
+  paragraphGap: number
+}
+
+/** 页内的一段文字（一个段落的连续片段）。 */
+export interface RealBookPageItem {
+  /** 段落下标（对应分页器输入数组的下标，不是原始段落下标） */
+  paragraph: number
+  /** 段内起始偏移（含） */
+  start: number
+  /** 段内结束偏移（不含） */
+  end: number
+  /** 是否为上一页延续下来的片段 */
+  continued: boolean
+}
+
+export interface RealBookPage {
+  items: RealBookPageItem[]
+  /** 页首锚点：页内第一段的起始位置 */
+  paragraph: number
+  offset: number
+}
+
+/** 位置锚点：段落下标 + 段内字符偏移。 */
+export interface RealBookAnchor {
+  paragraph: number
+  offset: number
+}
+
+export interface RealBookPaginator {
+  /** 已排好的页（快照数组；每次调用返回新数组，便于响应式更新） */
+  readonly pages: RealBookPage[]
+  /** 是否已排完整章 */
+  readonly complete: boolean
+  /** 排到至少第 targetPage 页（0-based）；返回当前页数 */
+  ensure(targetPage: number): number
+  /** 排完第 targetParagraph 段为止的所有页；返回当前页数 */
+  ensureThroughParagraph(targetParagraph: number): number
+}
+
+/**
+ * 惰性分页器：段落按需量测，排到哪里算到哪里。
+ *
+ * 长章有上万段，一次性量测会把首屏拖住；这里只保证「当前页往后一页」已排好，
+ * 读者翻过去时再续排（与经典模式的窗口化同构）。
+ */
+export function createRealBookPaginator(
+  paragraphs: readonly string[],
+  linesOf: (text: string, index: number) => RealBookLine[],
+  layout: RealBookLayout,
+): RealBookPaginator {
+  /** 已排完的页 */
+  const pages: RealBookPage[] = []
+  /** 正在排的页（还没满，可能就是最后一页） */
+  let pageItems: RealBookPageItem[] = []
+  let used = 0
+  let nextParagraph = 0
+  let done = false
+
+  const lineHeight = Number.isFinite(layout.lineHeight) && layout.lineHeight > 0 ? layout.lineHeight : 0
+  const pageHeight = Number.isFinite(layout.pageHeight) && layout.pageHeight > 0 ? layout.pageHeight : 0
+  const gap = Number.isFinite(layout.paragraphGap) && layout.paragraphGap > 0 ? layout.paragraphGap : 0
+
+  function flush(): void {
+    if (!pageItems.length) return
+    const first = pageItems[0]!
+    pages.push({ items: pageItems, paragraph: first.paragraph, offset: first.start })
+    pageItems = []
+    used = 0
+  }
+
+  /** 已排出的页数（含正在排的那页）。 */
+  function pageCount(): number {
+    return pages.length + (pageItems.length ? 1 : 0)
+  }
+
+  /** 当前页剩余能放几行（先扣掉段间距）。 */
+  function remaining(extra: number): number {
+    if (lineHeight <= 0 || pageHeight <= 0) return 0
+    const free = pageHeight - used - extra
+    if (free < 0) return 0
+    return Math.floor(free / lineHeight)
+  }
+
+  /**
+   * 排下一段；返回是否还有段落没排。
+   *
+   * 「段不腰斩」是这里的核心规则：一段要么整段落在某页，要么（它本身就比一整页还高）
+   * 才允许按行切开续排。
+   */
+  function step(): void {
+    if (nextParagraph >= paragraphs.length) {
+      flush()
+      done = true
+      return
+    }
+    const text = paragraphs[nextParagraph] ?? ''
+    const paragraphIndex = nextParagraph
+    nextParagraph += 1
+    const lines = linesOf(text, paragraphIndex)
+    if (!lines.length) return
+
+    const paragraphHeight = lines.length * lineHeight
+    // 这一段要付的段间距：只有它不是本页第一块内容时才付。
+    const extra = pageItems.length ? gap : 0
+
+    if (paragraphHeight + extra <= pageHeight) {
+      // 整段放得下（考虑段间距）：本页放得下就放本页，放不下就整体挪到下一页。
+      if (remaining(extra) < lines.length) flush()
+      const gapNow = pageItems.length ? gap : 0
+      const first = lines[0]!
+      const last = lines[lines.length - 1]!
+      pageItems.push({ paragraph: paragraphIndex, start: first.start, end: last.end, continued: false })
+      used += gapNow + paragraphHeight
+      if (used >= pageHeight) flush()
+      return
+    }
+
+    // 超长段：一页放不下，只能按行切开续排。先把当前页收干净，让超长段从新页开头起排。
+    if (pageItems.length) flush()
+    let line = 0
+    while (line < lines.length) {
+      const continued = line > 0
+      const gapNow = pageItems.length && !continued ? gap : 0
+      let room = remaining(gapNow)
+      if (room <= 0) {
+        if (pageItems.length) {
+          flush()
+          continue
+        }
+        // 版面比一行还矮：强行放一行，避免死循环。
+        room = 1
+      }
+      const take = Math.min(room, lines.length - line)
+      const first = lines[line]!
+      const last = lines[line + take - 1]!
+      pageItems.push({ paragraph: paragraphIndex, start: first.start, end: last.end, continued })
+      used += gapNow + take * lineHeight
+      line += take
+      if (line < lines.length) flush()
+    }
+    if (used >= pageHeight) flush()
+  }
+
+  function ensureEmptyFallback(): void {
+    if (pageCount() || !paragraphs.length) return
+    // 版面异常（页高或行高为 0）时也给一页，别让读者看到空白书台。
+    pageItems.push({ paragraph: 0, start: 0, end: (paragraphs[0] ?? '').length, continued: false })
+    flush()
+  }
+
+  return {
+    get pages() {
+      // 快照：调用方把它塞进 ref 就能触发响应式更新。正在排的那页也算一页（可能不满）。
+      const out = pages.map((page) => ({ items: page.items.slice(), paragraph: page.paragraph, offset: page.offset }))
+      if (pageItems.length) {
+        const first = pageItems[0]!
+        out.push({ items: pageItems.slice(), paragraph: first.paragraph, offset: first.start })
+      }
+      return out
+    },
+    get complete() {
+      return done
+    },
+    ensure(targetPage: number) {
+      let guard = 0
+      // 排到第 targetPage 页已经封页为止：未封的尾页不算「排好」，
+      // 否则读者可能拿到半页内容又被下一段顶开。
+      while (!done && pages.length <= targetPage) {
+        step()
+        guard += 1
+        if (guard > 100000) break
+      }
+      ensureEmptyFallback()
+      return pageCount()
+    },
+    ensureThroughParagraph(targetParagraph: number) {
+      let guard = 0
+      while (nextParagraph <= targetParagraph && !done) {
+        step()
+        guard += 1
+        if (guard > 100000) break
+      }
+      ensureEmptyFallback()
+      return pageCount()
+    },
+  }
+}
+
+/** 页首锚点。 */
+export function anchorForPage(pages: readonly RealBookPage[], pageIndex: number): RealBookAnchor | null {
+  const page = pages[pageIndex]
+  if (!page) return null
+  return { paragraph: page.paragraph, offset: page.offset }
+}
+
+/** 锚点落在哪一页；锚点在正文范围外时钳到最近的页。 */
+export function pageForAnchor(pages: readonly RealBookPage[], anchor: RealBookAnchor): number {
+  if (!pages.length) return 0
+  for (let i = 0; i < pages.length; i += 1) {
+    const page = pages[i]!
+    const first = page.items[0]
+    const last = page.items[page.items.length - 1]
+    if (!first || !last) continue
+    if (anchor.paragraph < first.paragraph) return Math.max(0, i - 1)
+    if (anchor.paragraph > last.paragraph) continue
+    for (const item of page.items) {
+      if (item.paragraph === anchor.paragraph && anchor.offset >= item.start && anchor.offset < item.end) return i
+    }
+    return i
+  }
+  return pages.length - 1
+}
+
+/**
+ * 按「排版输入下标 + 段内偏移」查页。
+ *
+ * 与 pageForAnchor 的区别：这里用的是分页器输入数组的下标（过滤后的段序列），
+ * 而 pageForAnchor 用的是原始段落下标——两者不能混用，否则查到的页会整体偏移。
+ */
+export function findPageForInput(
+  pages: readonly RealBookPage[],
+  inputIndex: number,
+  offset: number,
+): number {
+  for (let i = 0; i < pages.length; i += 1) {
+    for (const item of pages[i]!.items) {
+      if (item.paragraph !== inputIndex) continue
+      if (offset >= item.start && offset < item.end) return i
+      // 段落在这一页但偏移落在段外：取这一页，位置由调用方再微调。
+      return i
+    }
+  }
+  return pages.length ? pages.length - 1 : 0
+}
+
+/** 页码 → 进度比例（0..1），用于与经典模式的 scrollRatio 互换。 */
+export function pageRatio(pageIndex: number, pageCount: number): number {
+  if (!Number.isFinite(pageCount) || pageCount <= 1) return 0
+  const index = Math.max(0, Math.min(pageCount - 1, Math.trunc(pageIndex)))
+  return index / (pageCount - 1)
+}
+
+/** 进度比例 → 页码。 */
+export function pageIndexFromRatio(ratio: number, pageCount: number): number {
+  if (!Number.isFinite(pageCount) || pageCount <= 1) return 0
+  const clamped = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0))
+  return Math.round(clamped * (pageCount - 1))
+}
