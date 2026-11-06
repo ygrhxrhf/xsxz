@@ -12,8 +12,8 @@ import {
   mergeManualPlace,
   validateManualPlace,
 } from './mapManualPlace'
-import { readPlaces } from './mapPlaces'
-import type { AiPlaceGeo } from '../shared/types'
+import { readPlaces, savePlaces } from './mapPlaces'
+import type { AiPlace, AiPlaceGeo } from '../shared/types'
 
 /**
  * 手工标注的契约：
@@ -233,5 +233,103 @@ describe('mapManualPlace 落盘', () => {
     expect(second.place.id).toBe(first.place.id)
     expect(second.places).toHaveLength(1)
     expect(second.places[0]!.location).toMatchObject({ latitude: 34.3, longitude: 109.0 })
+  })
+})
+
+/**
+ * 手工标注 + 重新抽取的真实链路（走 savePlaces 落盘，不只是纯函数合并）：
+ *   手工标注写在同一份 places.json 里，模型再次点「抽取已读地名」时会整体重写这份文件，
+ *   手工条目必须原样留下，且模型条目的坐标要沿用上一次解析出来的结果（不回到待定位）。
+ */
+describe('mapManualPlace 重新抽取后仍保留', () => {
+  const EXTRACTED: AiPlace = {
+    id: 'place-c1-0-8',
+    name: '长安',
+    aliases: [],
+    kind: 'city',
+    chapterId: 'c1',
+    chapterTitle: '第一章',
+    paragraphIndex: 0,
+    paragraphOffset: 8,
+    excerpt: '东行至长安',
+  }
+
+  let lib = ''
+
+  beforeEach(async () => {
+    lib = await mkdtemp(join(tmpdir(), 'spbf-map-manual-reextract-'))
+    await setLibraryPath(lib)
+    await createBookFromBootstrap({ bookId: 'd_manual', title: '手工', author: '', importType: 'txt', chapterTitles: ['第一章'] })
+    // 预置一条已解析过坐标的模型地名（直接写盘，避免联网）。
+    await writeFile(
+      join(bookDir('d_manual'), 'ai', 'places.json'),
+      JSON.stringify({
+        version: 1,
+        places: [{ ...EXTRACTED, geocodeStatus: 'resolved', location: { latitude: 34.2, longitude: 108.9, reliability: 8 } }],
+      }),
+      'utf-8',
+    )
+  })
+
+  afterEach(async () => {
+    await rm(lib, { recursive: true, force: true })
+  })
+
+  it('重新抽取后手工标注仍在盘上且坐标未被改动', async () => {
+    const added = await addManualPlace('d_manual', {
+      name: '洛阳',
+      latitude: 34.6,
+      longitude: 112.4,
+      paragraphIndex: 2,
+      paragraphOffset: 6,
+    })
+    const manualId = added.place.id
+
+    // 模型重新抽取：长安仍在（正文改了名），另有一个新地名。
+    await savePlaces('d_manual', [
+      { ...EXTRACTED, name: '长安城', excerpt: '东行至长安城' },
+      { ...EXTRACTED, id: 'place-c1-1-0', name: '洛阳城', paragraphIndex: 1, paragraphOffset: 0, excerpt: '过洛阳城' },
+    ])
+
+    const stored = await readPlaces('d_manual')
+    const manual = stored.find((place) => place.id === manualId)
+    // 手工条目一条不少，坐标与状态原样保留。
+    expect(manual).toBeDefined()
+    expect(manual!.location).toMatchObject({ latitude: 34.6, longitude: 112.4 })
+    expect(manual!.geocodeStatus).toBe('resolved')
+    expect(manual!.name).toBe('洛阳')
+    expect(manual!.chapterTitle).toBe('手工标注')
+  })
+
+  it('重新抽取后模型条目取最新正文，坐标沿用上一次解析的结果', async () => {
+    await addManualPlace('d_manual', { name: '洛阳', latitude: 34.6, longitude: 112.4, paragraphIndex: 2, paragraphOffset: 6 })
+
+    await savePlaces('d_manual', [
+      { ...EXTRACTED, name: '长安城', excerpt: '东行至长安城' },
+      { ...EXTRACTED, id: 'place-c1-1-0', name: '洛阳城', paragraphIndex: 1, paragraphOffset: 0, excerpt: '过洛阳城' },
+    ])
+
+    const stored = await readPlaces('d_manual')
+    const changan = stored.find((place) => place.id === EXTRACTED.id)
+    // 正文信息取模型这次给的，坐标仍是上次解析出来的（不回到 pending、不再花配额）。
+    expect(changan!.name).toBe('长安城')
+    expect(changan!.excerpt).toBe('东行至长安城')
+    expect(changan!.geocodeStatus).toBe('resolved')
+    expect(changan!.location).toMatchObject({ latitude: 34.2, longitude: 108.9 })
+    // 新地名没有坐标，等地理编码。
+    const fresh = stored.find((place) => place.id === 'place-c1-1-0')
+    expect(fresh!.geocodeStatus).toBe('pending')
+    expect(fresh!.location).toBeUndefined()
+  })
+
+  it('连续两次重新抽取，手工标注都还在', async () => {
+    const added = await addManualPlace('d_manual', { name: '洛阳', latitude: 34.6, longitude: 112.4, paragraphIndex: 2, paragraphOffset: 6 })
+    await savePlaces('d_manual', [{ ...EXTRACTED, id: 'place-c1-1-0', paragraphIndex: 1, paragraphOffset: 0 }])
+    await savePlaces('d_manual', [{ ...EXTRACTED, id: 'place-c1-2-0', paragraphIndex: 2, paragraphOffset: 0 }])
+
+    const stored = await readPlaces('d_manual')
+    expect(stored.find((place) => place.id === added.place.id)?.location)
+      .toMatchObject({ latitude: 34.6, longitude: 112.4 })
+    expect(stored.map((place) => place.id)).toContain(added.place.id)
   })
 })
