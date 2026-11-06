@@ -66,7 +66,7 @@ function installApi(fixture: Fixture) {
       get: async () => ({
         reader: {
           fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium',
-          paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll',
+          paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll', bookView: 'classic',
         },
         tts: { rate: 1, autoNextChapter: false, source: 'system' },
         baseUrl: '', libraryPath: '', ai: { ...DEFAULT_AI_PREFS },
@@ -114,7 +114,7 @@ async function mountReader() {
   return {
     app,
     pane: document.querySelector<HTMLElement>('.reader-content')!,
-    goNextChapter() { document.querySelector<HTMLButtonElement>('[aria-label="下一章"]')?.click() },
+    goNextChapter() { document.querySelector<HTMLButtonElement>('.chapter-end-card')?.click() },
     async openAssistant() {
       document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
       await vi.waitFor(() => expect(document.body.textContent).toContain('AI 助手'))

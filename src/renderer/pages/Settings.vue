@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   NButton,
   NCard,
+  NDivider,
   NInput,
   NInputNumber,
   NInputGroup,
@@ -24,6 +25,9 @@ import {
 import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, ProxyKernelState, ProxyMode, ProxyPrefs, ProxyProtocol, ProxySubscriptionState, Settings, SiteRule, SiteRulePreview, Skin } from '@shared/types'
 import { AI_PROMPT_KINDS, DEFAULT_AI_PREFS } from '@shared/types'
 import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
+import ProxySubscriptionPanel from '../components/ProxySubscriptionPanel.vue'
+import RuleMarketPanel from '../components/RuleMarketPanel.vue'
+import SyncPanel from '../components/SyncPanel.vue'
 import {
   AI_CUSTOM_SERVICE_NOTICE,
   customOriginNeedsConfirmation,
@@ -43,7 +47,7 @@ const emit = defineEmits<{
 const message = useMessage()
 const rulePreview = ref<SiteRulePreview | null>(null)
 const rulePreviewing = ref(false)
-type SettingsSection = 'appearance' | 'library' | 'network' | 'tts' | 'ai' | 'siteRules' | 'backup' | 'agentAudit' | 'about'
+type SettingsSection = 'appearance' | 'library' | 'network' | 'tts' | 'map' | 'ai' | 'siteRules' | 'backup' | 'agentAudit' | 'about'
 const activeSection = ref<SettingsSection>('appearance')
 
 /** 代理表单：单独一份可编辑副本，只有点「保存」才写回设置。 */
@@ -126,6 +130,11 @@ async function stopKernel() {
   await window.api.proxy.stopKernel()
   await refreshKernelState()
   message.success('已停止内置内核')
+}
+
+/** 面板重拉了订阅：把新的节点概览反映到上面的节点列表里。 */
+function onSubscriptionRefreshed(overview: ProxySubscriptionState) {
+  subscriptionOverview.value = overview
 }
 
 /** 扫本机端口：找到的候选列出来，点一下直接填进表单。 */
@@ -227,6 +236,7 @@ const sectionOptions: { id: SettingsSection; label: string }[] = [
   { id: 'library', label: '书库' },
   { id: 'network', label: '网络代理' },
   { id: 'tts', label: '听书' },
+  { id: 'map', label: '书中地图' },
   { id: 'ai', label: 'AI' },
   { id: 'siteRules', label: '站点规则' },
   { id: 'backup', label: '备份与恢复' },
@@ -252,9 +262,12 @@ const ttsVoice = ref('')
 const ttsApiKey = ref('')
 const ttsSaving = ref(false)
 const ttsTesting = ref(false)
+const tencentMapKey = ref('')
+const tencentMapSaving = ref(false)
 const provider = ref<AiProvider>('deepseek')
 const thinkingEnabled = ref(true)
-const autoBookOverview = ref(false)
+const autoBookOverview = ref(true)
+const overviewModel = ref('')
 const autoReadingFollow = ref(false)
 const followMaxChaptersPerRun = ref(DEFAULT_AI_PREFS.followMaxChaptersPerRun)
 const budgetWarningTokens = ref(DEFAULT_AI_PREFS.budgetWarningTokens)
@@ -383,6 +396,7 @@ async function load() {
     provider.value = inferAiProvider(settings.value.baseUrl, ai.provider)
     thinkingEnabled.value = ai.thinkingEnabled
     autoBookOverview.value = ai.autoBookOverview
+    overviewModel.value = ai.overviewModel ?? ''
     autoReadingFollow.value = ai.autoReadingFollow
     followMaxChaptersPerRun.value = ai.followMaxChaptersPerRun
     budgetWarningTokens.value = ai.budgetWarningTokens
@@ -429,6 +443,26 @@ async function clearTtsKey() {
   settings.value = await window.api.settings.set({ ttsApiKey: '' })
   ttsApiKey.value = ''
   message.success('在线语音密钥已清除')
+}
+
+/** 腾讯地图 Key 只经 safeStorage 落盘；空提交即清除。 */
+async function saveTencentMapKey() {
+  const key = tencentMapKey.value.trim()
+  if (!key) { message.warning('请填写腾讯地图 Key'); return }
+  tencentMapSaving.value = true
+  try {
+    settings.value = await window.api.settings.set({ tencentMapKey: key })
+    tencentMapKey.value = ''
+    message.success('腾讯地图 Key 已加密保存')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '腾讯地图 Key 保存失败')
+  } finally { tencentMapSaving.value = false }
+}
+
+async function clearTencentMapKey() {
+  settings.value = await window.api.settings.set({ tencentMapKey: '' })
+  tencentMapKey.value = ''
+  message.success('腾讯地图 Key 已清除')
 }
 
 async function testTts() {
@@ -576,6 +610,7 @@ async function saveAi(): Promise<boolean> {
         provider: provider.value,
         thinkingEnabled: thinkingEnabled.value,
         autoBookOverview: autoBookOverview.value,
+        overviewModel: overviewModel.value.trim(),
         autoReadingFollow: autoReadingFollow.value,
         followMaxChaptersPerRun: followMaxChaptersPerRun.value,
         budgetWarningTokens: budgetWarningTokens.value,
@@ -1126,6 +1161,9 @@ onMounted(async () => {
               @update:value="switchNode"
             />
           </div>
+
+          <!-- 订阅自动更新与多节点测速：只让节点列表保持新鲜，换节点仍然由本人点。 -->
+          <ProxySubscriptionPanel @refreshed="onSubscriptionRefreshed" />
         </template>
 
         <template v-if="proxyMode === 'manual'">
@@ -1212,6 +1250,30 @@ onMounted(async () => {
       </n-space>
     </n-card>
 
+    <n-card v-show="activeSection === 'map'" title="书中地图" class="settings-card">
+      <n-space vertical :size="12">
+        <n-alert type="warning">
+          地图底图来自腾讯位置服务，依赖联网；地名与事件坐标需单独提供，未提供时地图页不显示标注。
+        </n-alert>
+        <n-alert v-if="settings?.tencentMapKeyConfigured" type="success">腾讯地图 Key 已加密保存</n-alert>
+        <n-alert v-else-if="settings?.tencentMapKeyUnreadable" type="warning">
+          已保存的腾讯地图 Key 在本机无法解密（通常是换了机器或系统密钥库被重置），请重新填写。
+        </n-alert>
+        <n-alert v-else type="info">未配置腾讯地图 Key，书中地图页会显示填写提示。</n-alert>
+        <n-input-group>
+          <n-input-group-label style="width:110px">腾讯地图 Key</n-input-group-label>
+          <n-input v-model:value="tencentMapKey" type="password" show-password-on="click" placeholder="留空则不更新" />
+        </n-input-group>
+        <p class="field-help">
+          Key 绑定域名/应用，配额与许可以腾讯位置服务官方文档为准；只加密保存在本机设置，不写入书库与备份。
+        </p>
+        <n-space>
+          <n-button type="primary" :loading="tencentMapSaving" @click="saveTencentMapKey">保存 Key</n-button>
+          <n-button v-if="settings?.tencentMapKeyConfigured" quaternary type="error" @click="clearTencentMapKey">清除 Key</n-button>
+        </n-space>
+      </n-space>
+    </n-card>
+
     <n-card v-show="activeSection === 'ai'" title="AI 配置" class="settings-card">
       <n-alert v-if="settings?.apiKeyConfigured" type="success" style="margin-bottom:12px">
         API Key 已配置（安全存储）
@@ -1271,9 +1333,16 @@ onMounted(async () => {
         <div class="switch-row">
           <div>
             <div class="field-label">自动生成全书概览（含剧透）</div>
-            <div class="field-help">保存并开启后，完整入库的已有书和新书会逐本向当前 AI 服务发送全部章节正文。长篇会产生多次调用并消耗额度；关闭后停止后续调用。</div>
+            <div class="field-help">默认开启：书加入书架后自动生成一次全书概览，之后一直读取已保存的结果；章节变化也不会重新生成。生成时会把全部章节正文发送给当前 AI 服务，长篇会产生多次调用并消耗额度。</div>
           </div>
           <n-switch v-model:value="autoBookOverview" aria-label="自动生成全书概览" />
+        </div>
+        <div class="field-row">
+          <div>
+            <div class="field-label">全书概览模型</div>
+            <div class="field-help">只用于全书概览；留空则沿用上面的「模型」。概览用推理型模型时输出预算容易被推理耗尽，建议选非推理的 flash 档。</div>
+          </div>
+          <n-input v-model:value="overviewModel" placeholder="留空沿用全局模型" aria-label="全书概览模型" />
         </div>
         <div class="switch-row">
           <div>
@@ -1298,7 +1367,7 @@ onMounted(async () => {
         </div>
         <div class="switch-row">
           <div><div class="field-label">每书每月自动任务上限</div><div class="field-help">默认 10 万估算 tokens；自动概览、自动整理和自动语义索引共用。到限后暂停自动任务，手动任务仍可确认执行。实际费用以服务商账单为准。</div></div>
-          <n-input-number v-model:value="autoMonthlyTokenLimit" :min="10000" :max="1000000" :step="10000" style="width:160px" />
+          <n-input-number v-model:value="autoMonthlyTokenLimit" :min="10000" :max="3000000" :step="10000" style="width:160px" />
         </div>
         <n-alert v-if="usesCustomEndpoint" type="warning">
           {{ AI_CUSTOM_SERVICE_NOTICE }}
@@ -1466,6 +1535,14 @@ onMounted(async () => {
           </n-popconfirm>
         </div>
       </div>
+
+      <!-- 规则市场：订阅别人写好的抽取规则并应用到本机。条目只含 CSS 选择器。 -->
+      <n-divider style="margin:20px 0 12px" title-placement="left">规则市场</n-divider>
+      <RuleMarketPanel />
+
+      <!-- 账号与云同步：只同步设置与站点规则，正文与 API Key 不上云。 -->
+      <n-divider style="margin:20px 0 12px" title-placement="left">账号与云同步</n-divider>
+      <SyncPanel />
     </n-card>
 
     <n-card v-show="activeSection === 'backup'" title="备份与恢复" class="settings-card">

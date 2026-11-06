@@ -22,12 +22,15 @@ import type {
   Book,
   ChapterMeta,
   DownloadProgress,
+  ReaderBookView,
   ReaderContentWidth,
   ReaderFocusMode,
   ReaderFontFamily,
+  ReaderHandwritingFont,
   ReaderReadingMode,
   ReaderParagraphSpacing,
   ReaderPrefs,
+  ReaderSheetColumns,
   ReadingProgress,
   TtsPosition,
   ReaderTheme,
@@ -61,6 +64,7 @@ import {
   progressAnchorBodyMatches,
 } from './readerHelpers'
 import type { ReaderDownloadSignal as DownloadSignal, ReaderImmersiveMode, ReaderDownloadToolsIntent } from './readerHelpers'
+import { DEFAULT_PITCH_DEG } from './realBookPitch'
 import {
   adjacentVisualPage,
   estimateParagraphHeight,
@@ -79,13 +83,31 @@ import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { ttsBodyHash, validTtsPosition } from './ttsPosition'
 import { decorateText } from '@shared/paragraphSearch'
 import { isSiteTailParagraph } from './readerTail'
+import RealBookStage from './RealBookStage.vue'
+import type { RealBookAnchor } from './realBookPager'
+
+/** 真实书籍舞台对外暴露的操作（由 defineExpose 决定）。 */
+type RealBookStageHandle = {
+  nextPage: () => void
+  prevPage: () => void
+  /** 纸面元素：分区（左右翻页 / 中区显隐工具）按它的横向位置算。 */
+  paperEl?: HTMLElement | null
+  goToAnchor: (anchor: RealBookAnchor | null) => void
+  zoomIn: () => void
+  zoomOut: () => void
+  resetZoom: () => void
+  currentPage: number
+  pageCount: number
+  readEnd: () => { paragraphIndex: number; characterOffset: number } | null
+}
 import { useReaderMarks } from './readerMarks'
 import { useReaderSelection } from './readerSelection'
 import { useReaderAssistant } from './readerAssistant'
 import { selectionRangeOffsets } from './selectionOffsets'
 import type { Annotation, BookSearchHit } from '@shared/types'
-import { libraryCoverSrc, libraryCoverText } from './libraryCard'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
+import ReaderMindmap from '../components/ReaderMindmap.vue'
+import BookMapPage from './BookMapPage.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
@@ -106,6 +128,7 @@ import { createChapterPrefetch } from './readerPrefetch'
 import { createReaderProgressWriter } from './readerProgressWriter'
 import type { CapturedProgressWrite } from './readerProgressWriter'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
+import { buildMindmapTree, type MindmapAnchor } from './readerMindmap'
 
 const props = defineProps<{ bookId?: string }>()
 const emit = defineEmits<{
@@ -135,6 +158,10 @@ const resumeCardView = ref<AiResumeCardView | null>(null)
 const resumeCardLoading = ref(false)
 const resumeCardWarning = ref('')
 const showDrawer = ref(false)
+/** 书中地图抽屉；两种阅读模式共用同一份入口与内容。 */
+const showMap = ref(false)
+/** 章节抽屉的两个视图：目录（章节列表）与导图（本章结构）。 */
+const drawerTab = ref<'catalog' | 'mindmap'>('catalog')
 const catalogItemRefs = new Map<string, HTMLElement>()
 
 // Reader prefs (from settings)
@@ -147,6 +174,13 @@ const paragraphSpacing = ref<ReaderParagraphSpacing>(DEFAULT_READER_PREFS.paragr
 const paragraphIndent = ref(DEFAULT_READER_PREFS.paragraphIndent)
 const focusMode = ref<ReaderFocusMode>(DEFAULT_READER_PREFS.focusMode)
 const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
+// 阅读界面与批注手写体偏好已持久化；真实书籍渲染层是 M2 的独立组件，数据层与经典模式共用。
+const bookView = ref<ReaderBookView>(DEFAULT_READER_PREFS.bookView ?? 'classic')
+const sheetColumns = ref<ReaderSheetColumns>(DEFAULT_READER_PREFS.sheetColumns ?? 'double')
+/** 分页渲染层：书页模式与真实书籍共用同一套页表舞台，分支点集中在这一个判据上。 */
+const pagedView = computed(() => bookView.value === 'sheet' || bookView.value === 'realbook')
+const handwritingFont = ref<ReaderHandwritingFont>(DEFAULT_READER_PREFS.handwritingFont ?? 'none')
+const handwritingNoteClass = computed(() => `handwriting-${handwritingFont.value}`)
 const autoScrollSpeed = ref(DEFAULT_READER_PREFS.autoScrollSpeed ?? 3)
 const autoNextChapter = ref(DEFAULT_READER_PREFS.autoNextChapter === true)
 const dim = ref(DEFAULT_READER_PREFS.dim ?? 0)
@@ -184,7 +218,6 @@ const temporaryToolReveal = ref(false)
 const pointerInToolbar = ref(false)
 const activeToolPanel = ref<'tts' | 'ai' | 'shortcuts' | null>(null)
 const activeBottomPanel = ref<'catalog' | 'progress' | 'background' | 'font' | null>(null)
-const libraryPath = ref('')
 let lastToolActivityAt = Date.now()
 let toolHideTimer: ReturnType<typeof setTimeout> | null = null
 // 阅读页用 v-show 常驻挂载：靠根元素的真实尺寸判断「是不是又回到这一页」。
@@ -534,6 +567,9 @@ const {
   currentHighlightRanges,
   chapterBookmark,
   sortedMarks,
+  markGroups,
+  markColors,
+  setColor,
   wordbookHighlights,
   wordbookTerms,
   wordbookTrimmed,
@@ -565,7 +601,10 @@ const paraNormStarts = computed(() => {
 const selection = useReaderSelection({
   paragraphStarts: () => paraNormStarts.value,
   normalizedBody: () => normalizedBody.value,
-  hasContent: () => Boolean(contentRef.value),
+  // 真实书籍模式下正文不在滚动容器里，但选区照样有效：判据是「有没有正文可读」。
+  hasContent: () => Boolean(contentRef.value) || pagedView.value,
+  // 俯仰后选区矩形会随透视偏移，几何不可信 → 工具条改贴视口底部居中。
+  fixedAnchor: () => realBookPitch.value > 0,
   message,
   marks,
 })
@@ -616,12 +655,106 @@ const renderedParas = computed(() => {
     const localHl =
       searchingNow && q
         ? []
-        : highlights.map((a) => ({ start: a.start - base, end: a.end - base }))
+        : highlights.map((a) => ({ start: a.start - base, end: a.end - base, color: a.color }))
     out.push({ index: i, segs: decorateText(text, searchingNow ? q : '', localHl) })
   }
   return out
 })
 const visibleParas = computed(() => renderedParas.value)
+
+// 真实书籍渲染层（bookView === 'realbook'）：与经典模式共用数据，渲染层完全分开。
+const realBookStageRef = ref<RealBookStageHandle | null>(null)
+/** 书页 / 真实书籍的宿主容器：舞台还没挂上时，纸面分区退回按它算。 */
+const realBookHostRef = ref<HTMLElement | null>(null)
+/** 真实书籍的当前位置：段落锚点，与经典模式同一套坐标。 */
+const realBookAnchor = ref<RealBookAnchor | null>(null)
+/**
+ * 待落位的锚点（恢复请求）。
+ *
+ * 与 realBookAnchor 分开是必须的：舞台翻页后会把当前锚点回报上来，若把它当恢复请求
+ * 回传给舞台，就会形成「回报 → 落位 → 回报」的递归更新。恢复请求只在换章/切换模式时产生。
+ */
+const realBookRestoreAnchor = ref<RealBookAnchor | null>(null)
+/** 真实书籍的当前页码（0-based）；换算成比例用于旧进度回退。 */
+const realBookPage = ref(0)
+const realBookPageCount = ref(1)
+/**
+ * M3.3 俯仰角：会话内视觉状态，不进入 ReaderPrefs、不写进度。
+ * 初值是默认俯仰角而不是平放：书台一进来就要看得出纸垛厚度和落地投影。
+ */
+const realBookPitch = ref(DEFAULT_PITCH_DEG)
+/** 换章/重进递增：页表重排后据此重新落位。 */
+const realBookRestoreToken = ref(0)
+/** 经典 → 真实书籍切换时待恢复的位置（段落锚点）。 */
+const classicAnchorSnapshot = ref<RealBookAnchor | null>(null)
+/** 从标记抽屉跳转到某条划线时，真实书籍要落的锚点。 */
+const pendingRealBookAnchor = ref<RealBookAnchor | null>(null)
+
+const realBookVisibleParas = computed(() => visibleParaIndexes.value)
+const realBookParagraphTexts = computed(() => realBookVisibleParas.value.map((index) => paras.value[index] ?? ''))
+/** 划线在真实书籍里的落位：段落下标 + 段内局部偏移（与经典模式同一坐标系换算而来）。 */
+const realBookHighlightSpans = computed(() => {
+  const starts = paraNormStarts.value
+  return currentHighlightRanges.value.map((a) => {
+    const index = paragraphIndexOf(a.start)
+    const base = starts[index] ?? 0
+    return {
+      index,
+      start: Math.max(0, a.start - base),
+      end: Math.max(0, a.end - base),
+      color: a.color,
+    }
+  })
+})
+
+/** 规范化正文偏移 → 段落下标。 */
+function paragraphIndexOf(offset: number): number {
+  const starts = paraNormStarts.value
+  for (let i = starts.length - 1; i >= 0; i -= 1) {
+    if (starts[i]! <= offset) return i
+  }
+  return 0
+}
+
+/** 经典模式当前视口顶的锚点（切到真实书籍时用作落位）。 */
+function classicViewportAnchor(): RealBookAnchor | null {
+  const anchor = paragraphAnchor()
+  if (!anchor) return null
+  return { paragraph: anchor.paragraphIndex, offset: anchor.paragraphOffset }
+}
+
+/** 真实书籍当前页在全书比例里的位置（0..1）。 */
+function realBookRatio(): number {
+  const count = Math.max(1, realBookPageCount.value)
+  if (count <= 1) return 0
+  return Math.min(1, Math.max(0, realBookPage.value / (count - 1)))
+}
+
+/**
+ * 分页渲染层没有滚动事件，进度面板与百分比只能跟着页码走。
+ *
+ * 用 computed 而不在翻页事件里回写 scrollRatioView：翻页途中改这个响应式值会让舞台
+ * 提前重渲染，把锚点的上报打断，进度就会写成一个没有段落的空位置。
+ */
+const positionRatio = computed(() => (pagedView.value ? realBookRatio() : scrollRatioView.value))
+
+watch(bookView, (view, previous) => {
+  const wasPaged = previous === 'sheet' || previous === 'realbook'
+  if (view === 'sheet' || view === 'realbook') {
+    // 切进分页渲染层：从经典模式过来先记下当前落点；书页 ↔ 真实书籍之间沿用舞台自己的锚点。
+    realBookRestoreAnchor.value = wasPaged ? realBookAnchor.value : classicViewportAnchor()
+    classicAnchorSnapshot.value = realBookRestoreAnchor.value
+    realBookRestoreToken.value += 1
+    stopAutoScroll()
+    return
+  }
+  // 切回来：用分页页码比例落回经典模式，误差不超过一页。
+  const ratio = realBookRatio()
+  void nextTick(() => {
+    if (!contentRef.value) return
+    scrollToRatio(ratio)
+  })
+})
 
 /** 把渲染层选区换算成规范化正文里的字符区间 */
 
@@ -730,8 +863,14 @@ async function jumpToAnnotation(a: Annotation) {
   if (a.kind === 'highlight') {
     const i = paraNormStarts.value.findIndex((s, idx) => s <= a.start && a.start < s + (paras.value[idx]?.length ?? 0) + 2)
     pendingScrollPara = i >= 0 ? i : 0
+    if (pagedView.value) {
+      // 分页渲染层按锚点落位：段落下标 + 段内偏移，与经典模式同一坐标系。
+      const base = paraNormStarts.value[pendingScrollPara] ?? 0
+      pendingRealBookAnchor.value = { paragraph: pendingScrollPara, offset: Math.max(0, a.start - base) }
+    }
   } else {
     pendingScrollPara = -1
+    pendingRealBookAnchor.value = null
   }
   await openChapter(ch, a.kind === 'highlight' ? 0 : 0)
   if (pendingScrollPara === -1) scrollToRatio(0)
@@ -786,6 +925,7 @@ const FONT_MAX = 36
 function anyDrawerOpen() {
   return (
     showDrawer.value ||
+    showMap.value ||
     showAiAssistant.value ||
     showSearch.value ||
     showMarks.value ||
@@ -949,13 +1089,46 @@ function onContentZoneMouseup(e: MouseEvent) {
     toggleReaderTools()
     return
   }
-  // 工具显示时中区只收起；左右区仍按 readerTapCanPage 翻屏，章首/章末停住。
+  // 章首 / 章末停住：点按只在本章内翻屏，不换章（换章走章末的「下一章」卡片与 ←/→ 快捷键）。
   if (!readerTapCanPage({
     zone,
     scrollTop: el.scrollTop,
     scrollHeight: el.scrollHeight,
     clientHeight: el.clientHeight,
   })) return
+  pageByScreen(zone === 'left' ? -1 : 1)
+}
+
+/**
+ * 书页 / 真实书籍：纸面也分三区——左右区翻页，中区显隐工具条。
+ * 纸面宽度与经典模式不同（书台是整个舞台，书页是那张纸），所以按舞台给的纸面元素分区。
+ * 点按钮或用于选字的那一下不算，否则选完词工具条会自己闪出来。
+ */
+function onPagedZoneMouseup(e: MouseEvent) {
+  if (!book.value || e.button !== 0) return
+  if (window.getSelection()?.isCollapsed === false) return
+  const target = e.target as HTMLElement | null
+  if (target?.closest('button, a, input, textarea, select, label, [contenteditable="true"], [role="button"]')) return
+  const paper = realBookStageRef.value?.paperEl ?? realBookHostRef.value
+  if (!paper) return
+  const rect = paper.getBoundingClientRect()
+  const width = rect.width || paper.clientWidth
+  // 纸面还没量出宽度（首帧、窗口刚打开）时不分区：按中区处理，只显隐工具，
+  // 不能因为量不到宽度就把点击丢掉——那样点纸面什么反应都没有。
+  const zone = width > 0
+    ? readerContentZone({
+      clientX: e.clientX,
+      contentLeft: rect.left,
+      contentWidth: width,
+      target: e.target,
+      selectionCollapsed: true,
+    })
+    : 'center'
+  if (!zone) return
+  if (zone === 'center') {
+    toggleReaderTools()
+    return
+  }
   pageByScreen(zone === 'left' ? -1 : 1)
 }
 
@@ -1007,7 +1180,8 @@ function toggleImmersiveLock() {
 }
 
 function closeTopReaderOverlay() {
-  if (showAiAssistant.value) showAiAssistant.value = false
+  if (showMap.value) showMap.value = false
+  else if (showAiAssistant.value) showAiAssistant.value = false
   else if (showSearch.value) showSearch.value = false
   else if (showMarks.value) showMarks.value = false
   else if (showDrawer.value) showDrawer.value = false
@@ -1103,7 +1277,30 @@ function collectParagraphSpans(el: HTMLElement): ReaderParagraphSpan[] {
   return spans
 }
 
+/**
+ * 「下一页」翻到章末时接管：确实没有下一页了才换章。
+ * 大章节还有段落没排完就先不跳，避免在半截正文处换章。
+ */
+function continueToNextChapter(): boolean {
+  if (!followingChapter.value) return false
+  if (renderedCount.value < paras.value.length) return false
+  nextChapter()
+  return true
+}
+
 function pageByScreen(direction: 1 | -1) {
+  // 分页渲染层没有滚动容器：翻一页就是舞台翻一页（书页版式按整张纸翻）。
+  // 舞台自己知道本章还有没有下一页：没有就发出「下一章」，由父组件换章。
+  if (pagedView.value) {
+    const stage = realBookStageRef.value
+    if (!stage) return
+    if (direction < 0) {
+      stage.prevPage()
+      return
+    }
+    stage.nextPage()
+    return
+  }
   const el = contentRef.value
   if (!el) return
   const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
@@ -1121,6 +1318,8 @@ function pageByScreen(direction: 1 | -1) {
       // 抑制回吸：翻页本身就是在对齐，别让防抖回吸再插一脚。
       suppressSnapUntil = Date.now() + (behavior === 'auto' ? 200 : 520)
       if (Math.abs(el.scrollTop - target) < 1) {
+        // 这一屏已经是章末：再翻就是下一章。
+        if (direction > 0 && continueToNextChapter()) return
         syncVisualPage()
         return
       }
@@ -1132,11 +1331,15 @@ function pageByScreen(direction: 1 | -1) {
     const count = visualPageCount(el.scrollHeight, el.clientHeight)
     const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
     const next = adjacentVisualPage(current, direction, count)
+    // 已到末页且没有可去的下一屏：整章的最后一页，翻过去就是下一章。
+    if (next === current && direction > 0 && continueToNextChapter()) return
     suppressSnapUntil = Date.now() + (behavior === 'auto' ? 200 : 520)
     el.scrollTo({ top: scrollTopForVisualPage(next, el.scrollHeight, el.clientHeight), behavior })
     return
   }
   // 连续滚动：不吸附、不拦截滚轮，只按一屏净高度的一小截前进，留出行间重叠。
+  // 已经贴底（差 2px 容差内）时「下一页」就是下一章，别在原地空转。
+  if (direction > 0 && el.scrollHeight - el.clientHeight - el.scrollTop <= 2 && continueToNextChapter()) return
   el.scrollBy({
     top: direction * el.clientHeight * 0.9,
     behavior,
@@ -1265,6 +1468,9 @@ function onReaderKeydown(e: KeyboardEvent) {
     anyDrawerOpen: anyDrawerOpen(),
     ctrlOrMeta: e.ctrlKey || e.metaKey,
     shift: e.shiftKey,
+    // 分页渲染层（书页 / 真实书籍）里左右键翻页：那里没有滚动条，
+    // 按换章会直接跳过整章，读者根本没法一页一页读。
+    paged: pagedView.value,
   })
   if (!action) return
   switch (action) {
@@ -1340,6 +1546,8 @@ const fontStacks: Record<ReaderFontFamily, string> = {
 }
 const widthValues: Record<ReaderContentWidth, string> = { narrow: '32em', medium: '38em', wide: '46em' }
 const spacingValues: Record<ReaderParagraphSpacing, string> = { compact: '0.2em', normal: '0.45em', relaxed: '0.8em' }
+/** 段间距的数值形式（em）：真实书籍分页要按像素算段间距，不能用 CSS 字符串。 */
+const spacingEmValues: Record<ReaderParagraphSpacing, number> = { compact: 0.2, normal: 0.45, relaxed: 0.8 }
 const readerThemeStyle = computed(() => ({
   '--reader-paper': READER_THEME_COLORS[theme.value].paper,
   '--reader-paper-text': READER_THEME_COLORS[theme.value].text,
@@ -1356,6 +1564,22 @@ const contentStyle = computed(() => ({
   '--paragraph-indent': paragraphIndent.value ? '2em' : '0',
 }))
 const chapterReady = computed(() => Boolean(currentChapter.value && currentChapter.value.status === 'ready' && chapterBody.value))
+/**
+ * 章节导图的数据源：与正文同一套原始段落下标，节点跳转不需要任何坐标换算。
+ *
+ * 超长章只展开到段落层——句组层会让 SVG 一次落下上万节点；经典模式的窗口化
+ * 早就按同一个阈值退让，导图沿用同一判据。
+ */
+const chapterMindmap = computed(() => {
+  if (!chapterReady.value) return null
+  const indexes = visibleParaIndexes.value
+  return buildMindmapTree(
+    currentChapter.value?.title ?? '',
+    indexes.map((index) => paras.value[index] ?? ''),
+    indexes,
+    { expandedThroughLevel: isLargeChapter.value ? 1 : 2 },
+  )
+})
 const canRetryChapter = computed(() => {
   const ch = currentChapter.value
   if (!book.value || !ch) return false
@@ -1376,20 +1600,15 @@ function catalogBadge(ch: { id: string; status: typeof chapters.value[number]['s
 const currentChapterIndex = computed(() => chapters.value.findIndex((chapter) => chapter.id === currentChapter.value?.id))
 const previousChapter = computed(() => currentChapterIndex.value > 0 ? chapters.value[currentChapterIndex.value - 1] : null)
 const followingChapter = computed(() => currentChapterIndex.value >= 0 && currentChapterIndex.value < chapters.value.length - 1 ? chapters.value[currentChapterIndex.value + 1] : null)
-const bookProgressRatio = computed(() => approximateBookRatio(chapters.value, currentChapter.value?.id, scrollRatioView.value))
-const chapterPercent = computed(() => Math.round(scrollRatioView.value * 100))
+const bookProgressRatio = computed(() => approximateBookRatio(chapters.value, currentChapter.value?.id, positionRatio.value))
+const chapterPercent = computed(() => Math.round(positionRatio.value * 100))
 const bookPercent = computed(() => Math.round(bookProgressRatio.value * 100))
 const remainingChapters = computed(() => remainingChapterCount(chapters.value, currentChapter.value?.id))
 const bookProgressDetail = computed(() => `全书约 ${bookPercent.value}% · 本章 ${chapterPercent.value}% · 还剩 ${remainingChapters.value} 章`)
 const progressSummary = computed(() =>
-  readerProgressLabel(chapters.value, currentChapter.value?.id, scrollRatioView.value),
+  readerProgressLabel(chapters.value, currentChapter.value?.id, positionRatio.value),
 )
 const chapterFailHint = computed(() => failAdvice(currentChapter.value?.failCode))
-const spineCoverSrc = computed(() =>
-  book.value ? libraryCoverSrc(libraryPath.value, book.value.id, book.value.coverPath) : null,
-)
-const spineInitial = computed(() => libraryCoverText(book.value?.title || ''))
-
 async function loadBook(bookId: string) {
   assistantBudgets.value = {}
   // 换书也是一次「进入阅读页」：新书不能沿用上一本展开着的工具层。
@@ -1523,7 +1742,15 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
       scrollRatioView.value = scrollRatio
       resolveCurrentAnnotations()
       await nextTick()
-      if (pendingScrollPara >= 0) {
+      if (pagedView.value) {
+        // 分页渲染层的恢复走页表：先把锚点交给舞台，页表重排后自行落位。
+        realBookRestoreAnchor.value = pendingRealBookAnchor.value
+          ?? (progress && progress.paragraphIndex !== undefined
+            ? { paragraph: progress.paragraphIndex, offset: progress.paragraphOffset ?? 0 }
+            : classicAnchorSnapshot.value)
+        pendingRealBookAnchor.value = null
+        realBookRestoreToken.value += 1
+      } else if (pendingScrollPara >= 0) {
         scrollToPendingPara()
       } else if (progress && scrollRatio < 0.999 && scrollToParagraphAnchor(progress)) {
         // Anchor restore is scheduled after layout; old books use the ratio below.
@@ -1646,6 +1873,34 @@ function visibleReadEnd(): { paragraphIndex: number; characterOffset: number } |
   return { paragraphIndex: index, characterOffset: Math.min(low, paras.value[index]!.length) }
 }
 
+/**
+ * 把「段落下标 + 段内偏移」对准视口顶部。
+ *
+ * 导图跳转与进度恢复共用这一条落点路径：先等目标段进 DOM（大章节会先迁渲染窗口），
+ * 再用 Range 找到段内字符的精确位置；目标段落不到时退回比例落点。
+ */
+function scrollToParagraphOffset(index: number, offset: number, fallbackRatio: number): void {
+  const pane = contentRef.value
+  if (!pane) return
+  const generation = renderGeneration
+  void waitForParagraph(index, generation).then((ready) => {
+    if (!ready) return
+    requestAnimationFrame(() => {
+      const paragraph = pane.querySelector<HTMLElement>(`[data-p="${index}"]`)
+      if (!paragraph) { scrollToRatio(fallbackRatio); return }
+      const nodes = paragraphTextNodes(paragraph)
+      const point = textPoint(nodes, offset)
+      if (!point) { scrollToRatio(fallbackRatio); return }
+      const range = document.createRange()
+      range.setStart(point.node, point.offset)
+      range.setEnd(point.node, Math.min(point.offset + 1, point.node.length))
+      const targetTop = range.getBoundingClientRect().top
+      pane.scrollTop += targetTop - pane.getBoundingClientRect().top - 4
+      syncVisualPage()
+    })
+  })
+}
+
 function scrollToParagraphAnchor(progress: ReadingProgress): boolean {
   const pane = contentRef.value
   const index = progress.paragraphIndex
@@ -1655,24 +1910,25 @@ function scrollToParagraphAnchor(progress: ReadingProgress): boolean {
   // 正文指纹校验：这一章正文被清理 / 重新下载过，旧锚点段是另一段内容，不能按它恢复。
   // 旧书没有 bodyHash 字段（null）跳过校验，保持锚点恢复兼容（回退 scrollRatio 会丢段内精度）。
   if (!progressAnchorBodyMatches(progress.bodyHash, chapterBody.value)) return false
-  const generation = renderGeneration
-  void waitForParagraph(index!, generation).then((ready) => {
-    if (!ready) return
-    requestAnimationFrame(() => {
-    const paragraph = pane.querySelector<HTMLElement>(`[data-p="${index}"]`)
-    if (!paragraph) { scrollToRatio(progress.scrollRatio); return }
-    const nodes = paragraphTextNodes(paragraph)
-    const point = textPoint(nodes, offset!)
-    if (!point) { scrollToRatio(progress.scrollRatio); return }
-    const range = document.createRange()
-    range.setStart(point.node, point.offset)
-    range.setEnd(point.node, Math.min(point.offset + 1, point.node.length))
-    const targetTop = range.getBoundingClientRect().top
-    pane.scrollTop += targetTop - pane.getBoundingClientRect().top - 4
-    syncVisualPage()
-    })
-  })
+  scrollToParagraphOffset(index!, offset!, progress.scrollRatio)
   return true
+}
+
+/**
+ * 文本锚点跳转：经典模式滚到节点锚点，真实书籍落到同一锚点所在的真实页。
+ * 导图节点与 AI 抽取的地名共用这条路径——两者都只带原始段落下标与段内偏移。
+ */
+function jumpToTextAnchor(anchor: MindmapAnchor): void {
+  showDrawer.value = false
+  showMap.value = false
+  if (pagedView.value) {
+    const target: RealBookAnchor = { paragraph: anchor.paragraphIndex, offset: anchor.paragraphOffset }
+    // 书台已挂载就翻到那一页；切模式途中还没挂载时登记恢复请求，页表就绪后再落位。
+    if (realBookStageRef.value) realBookStageRef.value.goToAnchor(target)
+    else realBookRestoreAnchor.value = target
+    return
+  }
+  scrollToParagraphOffset(anchor.paragraphIndex, anchor.paragraphOffset, 0)
 }
 
 function scrollToRatio(ratio: number) {
@@ -1719,23 +1975,28 @@ function scrollToRatio(ratio: number) {
   })
 }
 
+/** 真实书籍下的选区：书台不是滚动容器，但段落仍带 data-p，选区坐标照旧能算。 */
+function onRealBookMouseup(e: MouseEvent) {
+  onContentMouseup(e)
+}
+
+/** 真实书籍翻页落定：更新页码并排期写进度（滚动进度在经典模式由 onScroll 排期）。 */
+function onRealBookPage(page: number) {
+  realBookPage.value = page
+  readerProgress.schedule()
+}
+
 /** 排期那一刻就把书、章、位置锁死，写盘排队到什么时候都不会串到别的章。 */
 function captureProgressWrite(): CapturedProgressWrite | null {
   const target = book.value
   const chapter = currentChapter.value
-  const el = contentRef.value
-  if (!target || !chapter || !el) return null
-  const scrollRatio = currentChapterRatio(el)
-  const anchor = paragraphAnchor()
-  const readEnd = visibleReadEnd()
-  const progress: ReadingProgress = {
-    chapterId: chapter.id,
-    scrollRatio,
-    ...(anchor && scrollRatio < 0.999 ? anchor : {}),
-    // 正文指纹：恢复端靠它判断这一章正文有没有被清理 / 重新下载过（与 TTS 位置同源）。
-    bodyHash: ttsBodyHash(chapterBody.value),
-    updatedAt: new Date().toISOString(),
-  }
+  if (!target || !chapter) return null
+  // 两种渲染层给位置的方式不同，但落盘只有这一条路径。
+  const snapshot = pagedView.value
+    ? realBookProgressSnapshot()
+    : classicProgressSnapshot()
+  if (!snapshot) return null
+  const { progress, readEnd } = snapshot
   return async () => {
     target.progress = progress
     const res = await window.api.library.setProgress(target.id, progress)
@@ -1744,6 +2005,57 @@ function captureProgressWrite(): CapturedProgressWrite | null {
       const marked = await window.api.library.markReadFrontier?.(target.id, chapter.id, readEnd.paragraphIndex, readEnd.characterOffset)
       if (marked && !marked.ok) throw new Error(marked.message)
     }
+  }
+}
+
+interface ProgressSnapshot {
+  progress: ReadingProgress
+  readEnd: { paragraphIndex: number; characterOffset: number } | null
+}
+
+/** 经典模式的位置：滚动比例 + 视口顶锚点。 */
+function classicProgressSnapshot(): ProgressSnapshot | null {
+  const el = contentRef.value
+  const chapter = currentChapter.value
+  if (!el || !chapter) return null
+  const scrollRatio = currentChapterRatio(el)
+  const anchor = paragraphAnchor()
+  const readEnd = visibleReadEnd()
+  return {
+    progress: {
+      chapterId: chapter.id,
+      scrollRatio,
+      ...(anchor && scrollRatio < 0.999 ? anchor : {}),
+      // 正文指纹：恢复端靠它判断这一章正文有没有被清理 / 重新下载过（与 TTS 位置同源）。
+      bodyHash: ttsBodyHash(chapterBody.value),
+      updatedAt: new Date().toISOString(),
+    },
+    readEnd,
+  }
+}
+
+/**
+ * 真实书籍的位置：位置真源仍是段落锚点，只是坐标来自页表而不是滚动容器。
+ * 页码只换算成比例（给旧进度/全书百分比用），锚点才是恢复精度的依据。
+ */
+function realBookProgressSnapshot(): ProgressSnapshot | null {
+  const chapter = currentChapter.value
+  if (!chapter) return null
+  const stage = realBookStageRef.value
+  // 页表还没落位（首次渲染、窗口还没量出尺寸）时舞台不会报锚点：此时首屏就是章首，
+  // 写 (0,0) 比让进度退化成只剩比例更可靠；非首屏则不猜，宁可只写比例。
+  const anchor = realBookAnchor.value ?? (realBookPage.value <= 0 ? { paragraph: 0, offset: 0 } : null)
+  const readEnd = stage?.readEnd() ?? null
+  const scrollRatio = realBookRatio()
+  return {
+    progress: {
+      chapterId: chapter.id,
+      scrollRatio,
+      ...(anchor && scrollRatio < 0.999 ? { paragraphIndex: anchor.paragraph, paragraphOffset: anchor.offset } : {}),
+      bodyHash: ttsBodyHash(chapterBody.value),
+      updatedAt: new Date().toISOString(),
+    },
+    readEnd,
   }
 }
 
@@ -2007,6 +2319,9 @@ function currentReaderPrefs(): ReaderPrefs {
     paragraphIndent: paragraphIndent.value,
     focusMode: focusMode.value,
     readingMode: readingMode.value,
+    bookView: bookView.value,
+    sheetColumns: sheetColumns.value,
+    handwritingFont: handwritingFont.value,
     autoScrollSpeed: autoScrollSpeed.value,
     autoNextChapter: autoNextChapter.value,
     dim: dim.value,
@@ -2061,6 +2376,9 @@ function restoreDefaultReaderPrefs() {
   paragraphIndent.value = DEFAULT_READER_PREFS.paragraphIndent
   focusMode.value = DEFAULT_READER_PREFS.focusMode
   readingMode.value = DEFAULT_READER_PREFS.readingMode
+  bookView.value = DEFAULT_READER_PREFS.bookView ?? 'classic'
+  sheetColumns.value = DEFAULT_READER_PREFS.sheetColumns ?? 'double'
+  handwritingFont.value = DEFAULT_READER_PREFS.handwritingFont ?? 'none'
   autoScrollSpeed.value = DEFAULT_READER_PREFS.autoScrollSpeed ?? 3
   autoNextChapter.value = DEFAULT_READER_PREFS.autoNextChapter === true
   dim.value = DEFAULT_READER_PREFS.dim ?? 0
@@ -2088,6 +2406,9 @@ async function loadPrefs() {
   paragraphIndent.value = s.reader.paragraphIndent
   focusMode.value = s.reader.focusMode
   readingMode.value = s.reader.readingMode
+  bookView.value = s.reader.bookView ?? 'classic'
+  sheetColumns.value = s.reader.sheetColumns ?? 'double'
+  handwritingFont.value = s.reader.handwritingFont ?? 'none'
   autoScrollSpeed.value = s.reader.autoScrollSpeed ?? 3
   autoNextChapter.value = s.reader.autoNextChapter === true
   dim.value = s.reader.dim ?? 0
@@ -2101,7 +2422,6 @@ async function loadPrefs() {
   recapLength.value = s.ai?.recapLength ?? 'standard'
   autoFollowEnabled.value = s.ai?.autoReadingFollow ?? false
   aiServiceOrigin.value = displayAiServiceOrigin(s.baseUrl)
-  libraryPath.value = s.libraryPath
 }
 
 // AI actions
@@ -2352,7 +2672,7 @@ const {
 } = assistant
 
 watch(
-  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
+  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()
@@ -2398,10 +2718,11 @@ watch(renderedCount, (count) => {
     scrollRatioView.value = currentChapterRatio(contentRef.value)
   }
 })
-watch(showDrawer, (open) => { if (open) void scrollCatalogToCurrent() })
+watch(showDrawer, (open) => { if (open && drawerTab.value === 'catalog') void scrollCatalogToCurrent() })
+watch(drawerTab, (tab) => { if (tab === 'catalog' && showDrawer.value) void scrollCatalogToCurrent() })
 watch(showAiAssistant, (open) => { if (open) void loadResumeCard() })
 watch(
-  [showDrawer, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel, activeBottomPanel],
+  [showDrawer, showMap, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel, activeBottomPanel],
   () => {
     if (anyDrawerOpen() || selectionOpen()) toolsVisible.value = true
     lastToolActivityAt = Date.now()
@@ -2613,6 +2934,7 @@ onUnmounted(() => {
         <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('back')">书架</button>
         <button class="tool-button tool-icon-text" title="搜索" aria-label="搜索" @click="openSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><span>搜索</span></button>
         <button class="tool-button tool-icon-text" title="标记" aria-label="标记" @click="showMarks = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg><span>标记</span></button>
+        <button class="tool-button tool-icon-text" title="书中地图" aria-label="书中地图" @click="showMap = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg><span>地图</span></button>
         <button class="tool-button tool-icon-text" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg><span>朗读</span></button>
         <button class="tool-button tool-icon-text" title="AI 助手" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg><span>AI</span></button>
         <button
@@ -2674,7 +2996,7 @@ onUnmounted(() => {
           <template v-else-if="activeToolPanel === 'shortcuts'">
             <strong>快捷键</strong>
             <dl class="shortcut-list">
-              <div><dt>← / →</dt><dd>上一章 / 下一章</dd></div>
+              <div><dt>← / →</dt><dd>上一章 / 下一章（书页与真实书籍模式翻页）</dd></div>
               <div><dt>Space / Shift+Space，J / K</dt><dd>下一屏 / 上一屏</dd></div>
               <div><dt>T / A / R</dt><dd>目录 / 外观 / 朗读</dd></div>
               <div><dt>I / N</dt><dd>AI 助手 / 本章笔记</dd></div>
@@ -2690,13 +3012,8 @@ onUnmounted(() => {
       </div>
 
       <div class="reader-stage">
-        <button class="reader-spine" type="button" :title="book.title" aria-label="返回书库" @click="emit('back')">
-          <img v-if="spineCoverSrc" class="reader-spine-cover" :src="spineCoverSrc" alt="" />
-          <span v-else class="reader-spine-initial">{{ spineInitial }}</span>
-        </button>
-        <div class="reader-body">
-        <button class="chapter-hotzone left" :disabled="!previousChapter" :title="previousChapter ? `上一章：${previousChapter.title}` : '已经是第一章'" aria-label="上一章" @click="prevChapter"><span>‹</span></button>
-        <div class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentZoneMouseup">
+        <div class="reader-body" :class="{ 'reader-body-paged': pagedView }">
+        <div v-if="bookView === 'classic'" class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentZoneMouseup">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>
@@ -2721,7 +3038,7 @@ onUnmounted(() => {
               :key="i"
               :data-p="i"
               :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: paras.length }) }]"
-            ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" class="hl-mark">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
+            ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
             <!-- 窗口化：跳到后段时，跳过的段用等高的占位撑住，滚动条始终按整章长度显示 -->
             <div v-if="bottomGapHeight > 0" class="reader-gap" :style="{ height: `${bottomGapHeight}px` }" aria-hidden="true"></div>
             <button v-if="chapterReady && followingChapter && renderedCount >= paras.length" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
@@ -2731,17 +3048,51 @@ onUnmounted(() => {
             </div>
           </template>
         </div>
+        <div v-else ref="realBookHostRef" class="real-book-host" @mouseup="onPagedZoneMouseup">
+          <p v-if="chapterFailHint" class="chapter-hint">{{ chapterFailHint }}</p>
+          <n-space v-if="canRetryChapter || chapterError" justify="center" style="margin-bottom:16px">
+            <n-button v-if="canRetryChapter" size="small" type="warning" :loading="retryingChapter" @click="retryThisChapter">
+              重试失败章
+            </n-button>
+            <n-button v-if="currentChapter?.url || book.sourceUrl" size="small" @click="goBrowseForChapter">
+              去浏览页
+            </n-button>
+          </n-space>
+          <RealBookStage
+            :variant="bookView === 'sheet' ? 'sheet' : 'book'"
+            :columns="sheetColumns === 'double' ? 2 : 1"
+            :pitch="realBookPitch"
+            ref="realBookStageRef"
+            :paragraphs="realBookParagraphTexts"
+            :paragraph-indexes="realBookVisibleParas"
+            :chapter-title="currentChapter?.title ?? ''"
+            :highlights="realBookHighlightSpans"
+            :search-query="showSearch ? searchQuery : ''"
+            :font-size="fontSize"
+            :line-height="lineHeight"
+            :font-family="fontStacks[fontFamily]"
+            :paragraph-gap="spacingEmValues[paragraphSpacing]"
+            :start-anchor="realBookRestoreAnchor"
+            :start-ratio="scrollRatioView"
+            :restore-token="realBookRestoreToken"
+            @update:anchor="realBookAnchor = $event"
+            @update:page="onRealBookPage"
+            @update:page-count="realBookPageCount = $event"
+            @update:pitch="realBookPitch = $event"
+            @select="onRealBookMouseup"
+            @next-chapter="nextChapter"
+          />
+        </div>
         <div v-if="dim > 0" class="reader-dim" :style="{ opacity: dim / 100 }" aria-hidden="true" />
-        <div v-if="readingMode === 'screen'" class="reader-page-indicator">{{ visualPageLabel(visualPageIndexView, visualPageCountView) }}</div>
-        <button class="chapter-hotzone right" :disabled="!followingChapter" :title="followingChapter ? `下一章：${followingChapter.title}` : '已经是最后一章'" aria-label="下一章" @click="nextChapter"><span>›</span></button>
+        <div v-if="readingMode === 'screen' && bookView === 'classic'" class="reader-page-indicator">{{ visualPageLabel(visualPageIndexView, visualPageCountView) }}</div>
         </div>
       </div>
 
       <div class="reader-bottombar" :class="{ 'reader-tools-hidden': !toolsVisible }" :aria-hidden="!toolsVisible" :inert="!toolsVisible" @mouseenter="onToolbarEnter" @mouseleave="onToolbarLeave">
-        <button class="bottom-button" type="button" aria-label="目录" :class="{ active: activeBottomPanel === 'catalog' || showDrawer }" @click="toggleBottomPanel('catalog')">目录</button>
-        <button class="bottom-button" type="button" aria-label="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')">进度</button>
-        <button class="bottom-button" type="button" aria-label="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')">背景</button>
-        <button class="bottom-button" type="button" aria-label="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')">字体</button>
+        <button class="bottom-button" type="button" aria-label="目录" title="目录" :class="{ active: activeBottomPanel === 'catalog' || showDrawer }" @click="toggleBottomPanel('catalog')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span class="bottom-button-text">目录</span></button>
+        <button class="bottom-button" type="button" aria-label="进度" title="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span class="bottom-button-text">进度</span></button>
+        <button class="bottom-button" type="button" aria-label="背景" title="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg><span class="bottom-button-text">背景</span></button>
+        <button class="bottom-button" type="button" aria-label="字体" title="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg><span class="bottom-button-text">字体</span></button>
         <div v-if="activeBottomPanel && activeBottomPanel !== 'catalog'" class="bottom-panel" @click.stop>
             <template v-if="activeBottomPanel === 'progress'">
               <strong>进度</strong>
@@ -2760,6 +3111,43 @@ onUnmounted(() => {
             </template>
             <template v-else>
               <strong>字体</strong>
+              <div class="control-label">阅读界面</div>
+              <div class="option-grid" role="group" aria-label="阅读界面">
+                <button
+                  v-for="item in [{ v: 'classic', l: '经典模式' }, { v: 'sheet', l: '书页模式' }, { v: 'realbook', l: '真实书籍' }]"
+                  :key="item.v"
+                  type="button"
+                  :class="{ active: bookView === item.v }"
+                  :aria-pressed="bookView === item.v"
+                  @click="bookView = item.v as ReaderBookView"
+                >{{ item.l }}</button>
+              </div>
+              <template v-if="bookView === 'sheet'">
+                <div class="control-label">排版</div>
+                <div class="option-grid" role="group" aria-label="排版">
+                  <button
+                    v-for="item in [{ v: 'single', l: '单栏' }, { v: 'double', l: '双栏' }]"
+                    :key="item.v"
+                    type="button"
+                    :class="{ active: sheetColumns === item.v }"
+                    :aria-pressed="sheetColumns === item.v"
+                    @click="sheetColumns = item.v as ReaderSheetColumns"
+                  >{{ item.l }}</button>
+                </div>
+                <div class="control-label">双栏是同一张纸上左右两栏续排，翻页按整张纸走。</div>
+              </template>
+              <div class="control-label">批注手写体</div>
+              <div class="option-grid" role="group" aria-label="批注手写体">
+                <button
+                  v-for="item in [{ v: 'none', l: '跟随正文字体' }, { v: 'kai', l: '楷体' }, { v: 'xingshu', l: '行书' }]"
+                  :key="item.v"
+                  type="button"
+                  :class="{ active: handwritingFont === item.v }"
+                  :aria-pressed="handwritingFont === item.v"
+                  @click="handwritingFont = item.v as ReaderHandwritingFont"
+                >{{ item.l }}</button>
+              </div>
+              <div class="control-label">此设置用于标记抽屉中的批注预览。</div>
               <div class="control-label">字体</div>
               <div class="option-grid"><button v-for="item in [{v:'serif',l:'宋体阅读'},{v:'system',l:'系统黑体'},{v:'mono',l:'等宽'}]" :key="item.v" :class="{ active: fontFamily === item.v }" @click="fontFamily = item.v as ReaderFontFamily">{{ item.l }}</button></div>
               <div class="control-label">字号 {{ fontSize }}</div><n-slider v-model:value="fontSize" :min="12" :max="36" :step="1" />
@@ -2773,16 +3161,20 @@ onUnmounted(() => {
               <div class="option-grid four">
                 <button v-for="item in [{v:'off',l:'关'},{v:'one',l:'1 段'},{v:'three',l:'3 段'},{v:'five',l:'5 段'}]" :key="item.v" :class="{ active: focusMode === item.v }" @click="focusMode = item.v as ReaderFocusMode">{{ item.l }}</button>
               </div>
-              <div class="control-label">阅读方式</div>
-              <div class="option-grid">
-                <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
-              </div>
-              <div class="control-label">
+              <template v-if="bookView === 'classic'">
+                <div class="control-label">阅读方式</div>
+                <div class="option-grid">
+                  <button v-for="item in [{v:'scroll',l:'连续滚动'},{v:'screen',l:'屏幕翻页'}]" :key="item.v" :class="{ active: readingMode === item.v }" @click="readingMode = item.v as ReaderReadingMode">{{ item.l }}</button>
+                </div>
+              </template>
+              <div class="control-label" v-if="bookView === 'classic'">
                 <n-button size="tiny" :type="autoScrolling ? 'warning' : 'default'" @click="toggleAutoScroll">{{ autoScrolling ? '暂停自动滚屏' : '开始自动滚屏' }}</n-button>
               </div>
-              <div class="control-label">滚屏速度 {{ autoScrollSpeed }}</div>
-              <n-slider v-model:value="autoScrollSpeed" :min="1" :max="5" :step="1" />
-              <div class="control-label"><n-switch v-model:value="autoNextChapter" /> 滚到章末自动接下一章</div>
+              <template v-if="bookView === 'classic'">
+                <div class="control-label">滚屏速度 {{ autoScrollSpeed }}</div>
+                <n-slider v-model:value="autoScrollSpeed" :min="1" :max="5" :step="1" />
+                <div class="control-label"><n-switch v-model:value="autoNextChapter" /> 滚到章末自动接下一章</div>
+              </template>
               <div class="control-label"><n-switch v-model:value="hideSiteTail" /> 净化</div>
               <div class="control-label">
                 <n-switch v-model:value="showRawThisChapter" :disabled="!hideSiteTail" /> 本章显示原文
@@ -2828,26 +3220,49 @@ onUnmounted(() => {
       </div>
 
       <!-- Chapter drawer -->
-      <n-drawer v-model:show="showDrawer" placement="left" :width="320">
-        <n-drawer-content title="目录">
-          <n-input v-model:value="catalogQuery" clearable placeholder="过滤目录" style="margin-bottom:12px" />
-          <n-list hoverable clickable>
-            <n-list-item
-              v-for="ch in filteredCatalog"
-              :key="ch.id"
-              @click="goToChapterId(ch.id)"
-            >
-              <div :ref="(element) => setCatalogItemRef(ch.id, element)" :class="['ch-item', { active: ch.id === currentChapter?.id }]">
-                <span>{{ ch.title }}</span>
-                <n-tag v-if="catalogBadge(ch) === 'failed'" size="tiny" type="error">{{ ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败' }}</n-tag>
-                <n-tag v-else-if="catalogBadge(ch) === 'pending'" size="tiny">未下</n-tag>
-                <n-tag v-else-if="catalogBadge(ch) === 'empty'" size="tiny" type="warning">空</n-tag>
-                <n-tag v-else-if="catalogBadge(ch) === 'unlocked'" size="tiny" type="success">恢复</n-tag>
-                <n-tag v-else-if="catalogBadge(ch) === 'current'" size="tiny" type="info">当前</n-tag>
-                <n-tag v-else-if="catalogBadge(ch) === 'read'" size="tiny">已读</n-tag>
-              </div>
-            </n-list-item>
-          </n-list>
+      <n-drawer v-model:show="showDrawer" placement="left" :width="drawerTab === 'mindmap' ? 560 : 320">
+        <n-drawer-content :title="drawerTab === 'mindmap' ? '章节导图' : '目录'">
+          <div class="drawer-tabs" role="tablist" aria-label="章节抽屉视图">
+            <button
+              type="button"
+              role="tab"
+              class="drawer-tab"
+              data-drawer-tab="catalog"
+              :aria-selected="drawerTab === 'catalog'"
+              :class="{ active: drawerTab === 'catalog' }"
+              @click="drawerTab = 'catalog'"
+            >目录</button>
+            <button
+              type="button"
+              role="tab"
+              class="drawer-tab"
+              data-drawer-tab="mindmap"
+              :aria-selected="drawerTab === 'mindmap'"
+              :class="{ active: drawerTab === 'mindmap' }"
+              @click="drawerTab = 'mindmap'"
+            >导图</button>
+          </div>
+          <template v-if="drawerTab === 'catalog'">
+            <n-input v-model:value="catalogQuery" clearable placeholder="过滤目录" style="margin-bottom:12px" />
+            <n-list hoverable clickable>
+              <n-list-item
+                v-for="ch in filteredCatalog"
+                :key="ch.id"
+                @click="goToChapterId(ch.id)"
+              >
+                <div :ref="(element) => setCatalogItemRef(ch.id, element)" :class="['ch-item', { active: ch.id === currentChapter?.id }]">
+                  <span>{{ ch.title }}</span>
+                  <n-tag v-if="catalogBadge(ch) === 'failed'" size="tiny" type="error">{{ ch.failCode ? FAIL_CODE_ZH[ch.failCode] : '失败' }}</n-tag>
+                  <n-tag v-else-if="catalogBadge(ch) === 'pending'" size="tiny">未下</n-tag>
+                  <n-tag v-else-if="catalogBadge(ch) === 'empty'" size="tiny" type="warning">空</n-tag>
+                  <n-tag v-else-if="catalogBadge(ch) === 'unlocked'" size="tiny" type="success">恢复</n-tag>
+                  <n-tag v-else-if="catalogBadge(ch) === 'current'" size="tiny" type="info">当前</n-tag>
+                  <n-tag v-else-if="catalogBadge(ch) === 'read'" size="tiny">已读</n-tag>
+                </div>
+              </n-list-item>
+            </n-list>
+          </template>
+          <ReaderMindmap v-else :root="chapterMindmap" @select="jumpToTextAnchor" />
         </n-drawer-content>
       </n-drawer>
 
@@ -3291,6 +3706,7 @@ onUnmounted(() => {
       <!-- Marks drawer -->
       <n-drawer v-model:show="showMarks" placement="left" :width="340">
         <n-drawer-content title="标记" closable>
+          <n-button block secondary style="margin-bottom:12px" @click="showMap = true">书中地图</n-button>
           <n-popconfirm v-if="chapterBookmark" positive-text="删除" negative-text="取消" @positive-click="toggleBookmark">
             删除这条书签？删除后无法恢复。
             <template #trigger><n-button block type="warning" style="margin-bottom:12px">移除本章书签</n-button></template>
@@ -3300,34 +3716,67 @@ onUnmounted(() => {
             还没有标记。选中正文可添加划线或备注。
           </div>
           <div v-else class="mark-list">
-            <div v-for="a in sortedMarks" :key="a.id" class="mark-row">
-              <div class="mark-main" @click="jumpToAnnotation(a)">
-                <span class="mark-icon">{{ a.kind === 'bookmark' ? '🔖' : '🖍' }}</span>
-                <span class="mark-chapter">{{ chapters.find((c) => c.id === a.chapterId)?.title || a.chapterId }}</span>
-                <span v-if="lostHighlightIds.has(a.id)" class="mark-lost">（原文已变化）</span>
+            <section v-for="group in markGroups" :key="group.key" class="mark-group">
+              <div v-if="markGroups.length > 1 || group.tag" class="mark-group-title">
+                {{ group.tag ? '#' + group.tag : '未分类' }}
+                <span class="mark-group-count">{{ group.items.length }}</span>
               </div>
-              <div v-if="a.kind === 'highlight' && a.excerpt && !lostHighlightIds.has(a.id)" class="mark-excerpt" @click="jumpToAnnotation(a)">
-                {{ a.excerpt }}
+              <div v-for="a in group.items" :key="a.id" class="mark-row">
+                <div class="mark-main" @click="jumpToAnnotation(a)">
+                  <span class="mark-icon">{{ a.kind === 'bookmark' ? '🔖' : '🖍' }}</span>
+                  <span class="mark-chapter">{{ chapters.find((c) => c.id === a.chapterId)?.title || a.chapterId }}</span>
+                  <span v-if="lostHighlightIds.has(a.id)" class="mark-lost">（原文已变化）</span>
+                </div>
+                <div v-if="a.kind === 'highlight' && a.excerpt && !lostHighlightIds.has(a.id)" class="mark-excerpt" @click="jumpToAnnotation(a)">
+                  {{ a.excerpt }}
+                </div>
+                <div v-if="a.note && editingNoteId !== a.id" :class="['mark-note', handwritingNoteClass]" @click="jumpToAnnotation(a)">
+                  <span v-if="a.noteSource === 'ai'" class="mark-note-source">AI</span>备注：{{ a.note }}
+                </div>
+                <div v-if="a.kind === 'highlight'" class="mark-colors" role="group" :aria-label="`划线颜色：${a.excerpt || '本段'}`">
+                  <button
+                    v-for="option in markColors"
+                    :key="option.value"
+                    type="button"
+                    class="mark-color-option"
+                    :class="[{ active: (a.color ?? 'yellow') === option.value }, 'swatch-' + option.value]"
+                    :data-color="option.value"
+                    :title="option.label"
+                    :aria-label="`划线颜色：${option.label}`"
+                    :aria-pressed="(a.color ?? 'yellow') === option.value"
+                    @click.stop="setColor(a, option.value)"
+                  ></button>
+                </div>
+                <div class="mark-actions">
+                  <n-button size="tiny" quaternary @click.stop="editingNoteId = a.id; noteDraft = a.note ?? ''">备注</n-button>
+                  <n-popconfirm positive-text="删除" negative-text="取消" @positive-click="deleteAnnotation(a)">
+                    {{ deleteConfirmText(a) }}
+                    <template #trigger><n-button size="tiny" quaternary type="error" @click.stop>删除</n-button></template>
+                  </n-popconfirm>
+                </div>
+                <div v-if="editingNoteId === a.id" class="mark-note-edit">
+                  <n-input v-model:value="noteDraft" type="textarea" :rows="2" placeholder="写点备注…" />
+                  <n-space justify="end" style="margin-top:4px">
+                    <n-button size="tiny" @click="editingNoteId = ''">取消</n-button>
+                    <n-button size="tiny" type="primary" @click="saveNote(a)">保存</n-button>
+                  </n-space>
+                </div>
               </div>
-              <div v-if="a.note && editingNoteId !== a.id" class="mark-note" @click="jumpToAnnotation(a)">
-                <span v-if="a.noteSource === 'ai'" class="mark-note-source">AI</span>备注：{{ a.note }}
-              </div>
-              <div class="mark-actions">
-                <n-button size="tiny" quaternary @click.stop="editingNoteId = a.id; noteDraft = a.note ?? ''">备注</n-button>
-                <n-popconfirm positive-text="删除" negative-text="取消" @positive-click="deleteAnnotation(a)">
-                  {{ deleteConfirmText(a) }}
-                  <template #trigger><n-button size="tiny" quaternary type="error" @click.stop>删除</n-button></template>
-                </n-popconfirm>
-              </div>
-              <div v-if="editingNoteId === a.id" class="mark-note-edit">
-                <n-input v-model:value="noteDraft" type="textarea" :rows="2" placeholder="写点备注…" />
-                <n-space justify="end" style="margin-top:4px">
-                  <n-button size="tiny" @click="editingNoteId = ''">取消</n-button>
-                  <n-button size="tiny" type="primary" @click="saveNote(a)">保存</n-button>
-                </n-space>
-              </div>
-            </div>
+            </section>
           </div>
+        </n-drawer-content>
+      </n-drawer>
+
+      <!-- Book map drawer -->
+      <n-drawer v-model:show="showMap" placement="right" :width="760">
+        <n-drawer-content title="书中地图" closable>
+          <BookMapPage
+            v-if="showMap"
+            :book-id="book?.id ?? ''"
+            :book-title="book?.title ?? ''"
+            @go-settings="showMap = false; emit('go-settings')"
+            @select-place="jumpToTextAnchor"
+          />
         </n-drawer-content>
       </n-drawer>
 
@@ -3373,6 +3822,12 @@ onUnmounted(() => {
   --r-hover: var(--hover);
   --r-focus: var(--focus);
   --r-panel-bg: var(--surface-2);
+  /* 划线颜色：黄色沿用既有 --hl-bg，其余四色用半透明墨色，四套主题下都不会遮住正文。 */
+  --hl-yellow-bg: var(--hl-bg);
+  --hl-green-bg: color-mix(in srgb, #34a853 34%, transparent);
+  --hl-blue-bg: color-mix(in srgb, #2f7fd0 32%, transparent);
+  --hl-red-bg: color-mix(in srgb, #d64545 30%, transparent);
+  --hl-purple-bg: color-mix(in srgb, #8b5cf6 32%, transparent);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -3459,19 +3914,26 @@ onUnmounted(() => {
 }
 
 .ch-title {
-  font-size: 1.3em;
-  font-weight: 600;
-  margin-bottom: 1em;
-  text-align: center;
+  /* 书页版式的章名：小一号、靠左、弱色，不抢正文 */
+  font-size: 0.82em;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--reader-paper-text) 52%, transparent);
+  margin-bottom: 1.4em;
+  text-align: left;
 }
 
-.ch-title::after {
-  content: var(--title-ornament);
-  display: block;
-  margin-top: 10px;
-  font-size: 0.7em;
-  opacity: 0.55;
+/* 真实书籍的书台容器：占满正文区，页面的排版与边距都由书台自己管。 */
+.real-book-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
+
+/* 书页样式下不再用装饰花符：章名只是一行弱色眉题。 */
+.ch-title::after { content: none; }
 
 .para {
   text-indent: 2em;
@@ -3493,11 +3955,16 @@ onUnmounted(() => {
 }
 
 :deep(mark.hl-mark) {
-  background: var(--hl-bg);
+  background: var(--hl-yellow-bg);
   color: inherit;
   border-radius: 3px;
   padding: 0 1px;
 }
+
+:deep(mark.hl-mark.hl-green) { background: var(--hl-green-bg); }
+:deep(mark.hl-mark.hl-blue) { background: var(--hl-blue-bg); }
+:deep(mark.hl-mark.hl-red) { background: var(--hl-red-bg); }
+:deep(mark.hl-mark.hl-purple) { background: var(--hl-purple-bg); }
 
 .sel-popup {
   position: fixed;
@@ -3561,10 +4028,68 @@ onUnmounted(() => {
   gap: 10px;
 }
 
+/* #tag 聚类视图：分组之间靠间距分隔，标题只用小号弱色文字，不与标记正文争层级。 */
+.mark-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mark-group + .mark-group {
+  margin-top: 14px;
+}
+
+.mark-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--r-muted);
+}
+
+.mark-group-count {
+  font-size: 11px;
+  padding: 0 5px;
+  border: 1px solid var(--r-line);
+  border-radius: 999px;
+}
+
 .mark-row {
   border: 1px solid var(--r-line);
   border-radius: var(--radius-control);
   padding: 8px 10px;
+}
+
+/* 颜色选择器只出现在划线上（书签不渲染底色）；色块本身就是图例，不再另加标签文字。 */
+.mark-colors {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.mark-color-option {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--r-line);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.mark-color-option.swatch-yellow { background: var(--hl-yellow-bg); }
+.mark-color-option.swatch-green { background: var(--hl-green-bg); }
+.mark-color-option.swatch-blue { background: var(--hl-blue-bg); }
+.mark-color-option.swatch-red { background: var(--hl-red-bg); }
+.mark-color-option.swatch-purple { background: var(--hl-purple-bg); }
+
+.mark-color-option.active {
+  border-color: transparent;
+  box-shadow: 0 0 0 2px var(--r-focus);
+}
+
+.mark-color-option:focus-visible {
+  outline: 2px solid var(--r-focus);
+  outline-offset: 2px;
 }
 
 .mark-main {
@@ -3609,6 +4134,10 @@ onUnmounted(() => {
   margin-top: 4px;
   cursor: pointer;
 }
+
+/* 手写字体用于批注预览；系统缺字体时自然回退到浏览器默认字体。 */
+.mark-note.handwriting-kai { font-family: 'KaiTi', '楷体', serif; }
+.mark-note.handwriting-xingshu { font-family: 'STXingkai', '华文行楷', 'KaiTi', serif; }
 
 .mark-note-source {
   display: inline-block;
@@ -3684,6 +4213,37 @@ onUnmounted(() => {
 .ch-item.active {
   color: var(--active-chapter);
   font-weight: 600;
+}
+
+.drawer-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--panel-soft, rgba(127, 127, 127, 0.1));
+}
+
+.drawer-tab {
+  flex: 1;
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.drawer-tab.active {
+  background: var(--r-bar-bg, #fff);
+  font-weight: 600;
+}
+
+.drawer-tab:focus-visible {
+  outline: 2px solid var(--r-focus, #2f7fd0);
+  outline-offset: 2px;
 }
 
 .ai-budget-status {
@@ -4084,6 +4644,9 @@ onUnmounted(() => {
 .tool-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .tool-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .reader-toolbar .reader-book-title { min-width: 0; }
+/* 书页样式：标题靠左当眉题，其余工具靠右，像一张纸的页眉。 */
+.reader-toolbar { border-bottom: 0; }
+.reader-toolbar .reader-book-title { flex: 0 1 auto; text-align: left; padding: 0 12px 0 0; font-size: 15px; color: var(--reader-paper-text); }
 
 .tool-panel {
   position: absolute;
@@ -4103,40 +4666,41 @@ onUnmounted(() => {
 }
 
 .reader-stage { flex: 1 1 auto; min-height: 0; display: flex; background: var(--reader-outer); }
-.reader-spine {
-  /* 阅读模式没有顶栏，这条书脊是唯一的「返回书库」入口，必须一直可见 */
-  display: flex;
-  align-items: flex-start; justify-content: center;
-  flex: 0 0 52px; width: 52px; align-self: stretch; margin: 0; padding: 16px 6px;
-  border: 0; border-right: 1px solid var(--r-line);
-  background: color-mix(in srgb, var(--r-bar-bg) 88%, var(--reader-outer));
-  color: var(--reader-paper-text); cursor: pointer;
-}
-.reader-spine:hover { background: var(--r-hover); }
-.reader-spine:focus-visible { outline: 2px solid var(--r-focus); outline-offset: -3px; }
-.reader-spine-cover { display: block; width: 40px; height: 56px; object-fit: cover; border-radius: 2px; }
-.reader-spine-initial {
-  display: grid; width: 40px; height: 56px; place-items: center; border-radius: 2px;
-  background: color-mix(in srgb, var(--reader-paper-text) 10%, var(--reader-paper));
-  font-size: 18px; line-height: 1;
-}
+/* 书页 / 真实书籍不需要 96px 的书页内边距：纸面自己按舞台尺寸排版，
+   96px 会和舞台的 40px 叠成两道白边，把纸面挤窄一大截。 */
+.reader-body.reader-body-paged { padding-left: 24px; padding-right: 24px; }
 .reader-body {
   position: relative; flex: 1 1 auto; min-width: 0;
   padding: 24px 96px 24px; justify-content: center; overflow: hidden;
   background: var(--reader-outer);
 }
+/* 右侧工具条：一串浮在画布上的圆形按钮，不再是带边框的长胶囊。 */
 .reader-bottombar {
-  position: absolute; z-index: 28; top: 50%; right: 24px; width: 62px;
-  display: flex; flex-direction: column; align-items: stretch; justify-content: center;
-  gap: 4px; padding: 8px 4px; border: 1px solid var(--r-line);
-  border-radius: 999px; transform: translateY(-50%);
-  background: var(--r-bar-bg); box-shadow: var(--shadow-card);
+  position: absolute; z-index: 28; top: 50%; right: 24px; width: auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 0; border: 0;
+  border-radius: 0; transform: translateY(-50%);
+  background: transparent; box-shadow: none;
 }
 .bottom-button {
-  min-width: 0; min-height: 42px; padding: 4px; border: 0; border-radius: 999px;
-  background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer;
+  position: relative; display: grid; place-items: center;
+  width: 46px; height: 46px; min-width: 0; min-height: 0; padding: 0;
+  border: 0; border-radius: 50%;
+  background: color-mix(in srgb, var(--reader-paper) 88%, transparent);
+  box-shadow: var(--shadow-card);
+  color: color-mix(in srgb, var(--reader-paper-text) 72%, transparent);
+  font: inherit; cursor: pointer;
 }
-.bottom-button:hover, .bottom-button.active { background: var(--r-hover); }
+.bottom-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* 图标圈里不排字：文字标签留给读屏与悬浮提示，视觉上只留图形。 */
+.bottom-button-text {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+.bottom-button:hover, .bottom-button.active {
+  background: color-mix(in srgb, var(--reader-paper-text) 9%, var(--reader-paper));
+  color: var(--reader-paper-text);
+}
 .bottom-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .bottom-panel {
   position: absolute; top: 50%; right: calc(100% + 12px); width: min(390px, calc(100vw - 96px));
@@ -4197,12 +4761,13 @@ onUnmounted(() => {
 }
 
 .reader-page-indicator {
-  /* 挂在 .reader-body（不滚动的定位上下文）上，不随正文滚动走掉；
-     z-index 高于 chapter-hotzone，避免被翻章热区盖住。 */
+  /* 挂在 .reader-body（不滚动的定位上下文）上，不随正文滚动走掉。
+     居中放在底边：翻页改由点按正文左右区完成，底边不再占按钮位。 */
   position: absolute;
   z-index: 26;
-  right: 16px;
-  bottom: 12px;
+  right: 50%;
+  transform: translateX(50%);
+  bottom: 14px;
   padding: 2px 8px;
   border-radius: 999px;
   pointer-events: none;
@@ -4291,39 +4856,18 @@ onUnmounted(() => {
 .reader-progress-scrub-title { overflow: hidden; text-overflow: ellipsis; color: var(--r-muted); }
 
 .reader-wrap.immersive-locked .reader-progress-track { opacity: 1; }
-.chapter-hotzone {
-  position: absolute;
-  z-index: 18;
-  top: 0;
-  bottom: 3px;
-  width: 48px;
-  border: 0;
-  background: transparent;
-  color: var(--reader-paper-text);
-  opacity: 0;
-  cursor: pointer;
-  transition: opacity .15s ease, background .15s ease;
-}
-.chapter-hotzone.left { left: 0; }
-.chapter-hotzone.right { right: 0; }
-.chapter-hotzone:not(:disabled):hover, .chapter-hotzone:not(:disabled):focus-visible { opacity: 1; background: var(--r-hover); }
-.chapter-hotzone:disabled { cursor: default; }
-.chapter-hotzone span { font-size: 36px; line-height: 1; }
-.chapter-hotzone:focus-visible { outline: 2px solid var(--r-focus); outline-offset: -3px; }
-
 @media (max-width: 1180px) {
   .reader-body { padding: 16px 16px 78px; }
   .reader-bottombar {
     top: auto; right: auto; bottom: 20px; left: 50%; width: auto;
-    flex-direction: row; padding: 4px 8px; transform: translateX(-50%);
+    flex-direction: row; gap: 8px; padding: 0; transform: translateX(-50%);
   }
-  .bottom-button { min-width: 58px; min-height: 36px; }
+  .bottom-button { width: 42px; height: 42px; }
   .bottom-panel {
     top: auto; right: auto; bottom: calc(100% + 12px); left: 50%;
     width: min(390px, calc(100vw - 32px));
     transform: translateX(-50%);
   }
-  .chapter-hotzone { width: 28px; }
 }
 
 .chapter-end-card {

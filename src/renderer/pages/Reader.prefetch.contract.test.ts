@@ -94,7 +94,7 @@ function installReaderApi() {
             paragraphSpacing: 'normal',
             paragraphIndent: true,
             focusMode: 'off',
-            readingMode: 'scroll',
+            readingMode: 'scroll', bookView: 'classic',
           },
           tts: { rate: 1, autoNextChapter: true },
           baseUrl: '',
@@ -179,7 +179,7 @@ describe('Reader adjacent prefetch contract', () => {
     expect(reads).toEqual(['c1', 'c2'])
     expect(progress).toEqual([])
     expect(forbidden).toEqual([])
-    document.querySelector<HTMLButtonElement>('.chapter-hotzone.right')?.click()
+    document.querySelector<HTMLButtonElement>('.chapter-end-card')?.click()
     await nextTick()
     await nextTick()
     expect(reads).toEqual(['c1', 'c2'])

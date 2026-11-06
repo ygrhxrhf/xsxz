@@ -38,7 +38,7 @@ function installReaderApi() {
       readChapter: async () => ({ chapter: { title: '第一章', body: '第一段。\n\n第二段。', status: 'ready' } }),
       setProgress: async () => ({ ok: true }),
     },
-    settings: { get: async () => ({ reader: { fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium', paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll' }, tts: { rate: 1, autoNextChapter: true }, baseUrl: '' }), set: async () => ({}) },
+    settings: { get: async () => ({ reader: { fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium', paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll', bookView: 'classic' }, tts: { rate: 1, autoNextChapter: true }, baseUrl: '' }), set: async () => ({}) },
     annotations: { list: async () => ({ ok: true, items: [] }) },
     download: { onProgress: () => () => {} },
     ai: { onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {}, getMaterialCoverage: async () => ({ ok: true, coverage: null }), getUsage: async () => ({ ok: true, usage: { calls: 0 } }), chapterFinished: async () => ({ ok: false, message: '测试桩：不追剧' }) },
@@ -96,8 +96,9 @@ describe('Reader P2.4 accessibility wrap-up', () => {
     const app = createApp({ render: () => h(NMessageProvider, null, { default: () => h(Reader, { bookId: 'book-1' }) }) })
     app.mount(host)
     await nextTick(); await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    // 「返回书库」不再是书脊上的独立按钮：返回入口是顶栏的「书架」。
     const labels = [
-      '返回书库',
+      '书架',
       '目录',
       '搜索',
       '标记',
@@ -106,8 +107,6 @@ describe('Reader P2.4 accessibility wrap-up', () => {
       '字体',
       '快捷键说明',
       '沉浸模式',
-      '上一章',
-      '下一章',
     ]
     for (const label of labels) {
       expect(document.querySelector(`[aria-label="${label}"]`)).not.toBeNull()
@@ -237,13 +236,15 @@ describe('Reader U1.1 re-entry', () => {
       // 离开阅读页（v-show 切到 display:none，尺寸归零）。
       emitSize(0, 0)
       await nextTick()
-      // 从书库点书卡回到阅读页：工具必须已收起，正文与书脊仍在。
+      // 从书库点书卡回到阅读页：工具必须已收起，正文仍在。
       emitSize(900, 600)
       await nextTick()
       expect(toolbar()?.getAttribute('aria-hidden')).toBe('true')
       expect(toolbar()?.classList.contains('reader-tools-hidden')).toBe(true)
       expect(document.querySelector('.reader-bottombar')?.getAttribute('aria-hidden')).toBe('true')
-      expect(document.querySelector('.reader-spine')).not.toBeNull()
+      // 左侧书脊已移除：返回书库走顶栏「书架」按钮（工具收起时也在 DOM 里）。
+      expect(document.querySelector('.reader-spine')).toBeNull()
+      expect(document.querySelector('[aria-label="书架"]')).not.toBeNull()
       expect(document.querySelector('.reader-content')?.textContent).toContain('第一段。')
       app.unmount()
     } finally {

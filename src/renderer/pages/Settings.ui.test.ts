@@ -371,7 +371,7 @@ describe('Settings section content visibility', () => {
     await flushUi()
 
     const navLabels = [...document.querySelectorAll('.settings-nav-item')].map((item) => item.textContent?.trim())
-    expect(navLabels).toEqual(['外观', '书库', '网络代理', '听书', 'AI', '站点规则', '备份与恢复', 'Agent 调用记录', '关于'])
+    expect(navLabels).toEqual(['外观', '书库', '网络代理', '听书', '书中地图', 'AI', '站点规则', '备份与恢复', 'Agent 调用记录', '关于'])
     const visibleCard = (text: string) => {
       const card = [...document.querySelectorAll('.settings-card')]
         .find((item) => item.textContent?.includes(text)) as HTMLElement | undefined
@@ -393,6 +393,9 @@ describe('Settings section content visibility', () => {
     expect(visibleCard('代理方式').textContent).toContain('直连')
     await select('听书')
     expect(visibleCard('在线听书').textContent).toContain('连接试音')
+    await select('书中地图')
+    expect(visibleCard('书中地图').textContent).toContain('腾讯地图 Key')
+    expect(visibleCard('书中地图').textContent).toContain('未配置腾讯地图 Key')
     await select('AI')
     expect(visibleCard('AI 配置').textContent).toContain('测试连接')
     expect(visibleCard('AI 配置').textContent).toContain('AI 提示词')

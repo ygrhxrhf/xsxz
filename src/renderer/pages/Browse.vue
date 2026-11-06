@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NInputNumber, NProgress, NTag, useMessage } from 'naive-ui'
+import { NButton, NDrawer, NDrawerContent, NInputNumber, NPopconfirm, NProgress, NTag, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS, DEFAULT_WEB_READING_PREFS } from '@shared/types'
 import { READER_THEME_COLORS } from '@shared/readerTheme'
-import type { BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, MirrorProgress, PreviewPageKind, ReaderPrefs, WebAnnotation, WebReadingPrefs, WebShelfChapter } from '@shared/types'
+import type { BrowseFavorite, BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, MirrorProgress, PreviewPageKind, ReaderPrefs, WebAnnotation, WebReadingPrefs, WebShelfChapter } from '@shared/types'
 import { adjacentVisualPage, scrollTopForVisualPage, visualPageCount, visualPageIndex, visualPageLabel } from './readerPager'
 import { approximateBookRatioFromIndex, clampRatio, paragraphIndexAtViewportCenter, readerScrollBehavior, selectionPopupPosition, shouldAutoHideReaderTools, wheelPageDirection } from './readerHelpers'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
@@ -43,11 +43,36 @@ const webReading = ref<WebReadingPrefs>(DEFAULT_WEB_READING_PREFS)
 const readingPanel = ref(false)
 const readingStage = ref<HTMLElement | null>(null)
 const readingViewport = ref<HTMLElement | null>(null)
+/** 双栏时正文自己就是横向滚动容器，分页与锚点都挂在它身上。 */
+const readingArticle = ref<HTMLElement | null>(null)
 const readingPageIndex = ref(0)
 const readingPageCount = ref(1)
 const readingRatio = ref(0)
 const readingCenterParagraph = ref(-1)
 const readingChapterTitle = ref('')
+/**
+ * 阅读模式一次排进同屏的章节：滚到章末自动接上下一章，整本书在阅读模式里连着读，
+ * 不再一章一个屏。当前章（标题、标注、进度）由视口位置决定，而不是进场时那一章。
+ */
+const readingSections = ref<BrowseReadingPage[]>([])
+/** 同屏章节上限：只丢当前章之前的旧章，DOM 不会跟着整本书线性变重。 */
+const READING_SECTION_LIMIT = 8
+const appendingSection = ref(false)
+const appendError = ref('')
+
+/** 每章自己的段落表；只有当前章会叠加划线、搜索命中与行焦点。 */
+const readingSectionParagraphs = computed(() => {
+  const map = new Map<string, string[]>()
+  for (const section of readingSections.value) {
+    map.set(section.url, section.body.split(/\n\s*\n/).filter(Boolean))
+  }
+  return map
+})
+
+function paragraphsOf(url: string): string[] {
+  return readingSectionParagraphs.value.get(url) ?? []
+}
+
 /** 网页阅读模式的标注（划线/书签/备注）：归属键是当前章的规范化地址。 */
 const webMarks = ref<WebAnnotation[]>([])
 const webMarkLostIds = ref<Set<string>>(new Set())
@@ -173,8 +198,8 @@ const inBookFindHits = computed(() => {
 const readingPaged = computed(() => readerPrefs.value.readingMode === 'screen')
 const readingChapter = computed(() => readingPage.value?.chapter ?? null)
 /** 上一章 / 下一章：阅读页上下文优先，找不到时退回可见网页识别到的链接。 */
-const canPrevChapter = computed(() => Boolean(readingChapter.value?.previous || state.value.previousChapter))
-const canNextChapter = computed(() => Boolean(readingChapter.value?.next || state.value.nextChapter))
+const canPrevChapter = computed(() => Boolean(previousChapterUrlFor(readingPage.value) || state.value.previousChapter))
+const canNextChapter = computed(() => Boolean(nextChapterUrlFor(readingPage.value) || state.value.nextChapter))
 const readingChapterLabel = computed(() => readingChapterTitle.value || readingPage.value?.title || '')
 const autoScrollSpeed = computed(() => autoScrollSpeedPx(webReading.value.autoSpeed))
 /**
@@ -203,6 +228,157 @@ watch(findOpen, (open) => { if (open) void nextTick(() => findInput.value?.focus
 const slot = ref<HTMLElement | null>(null)
 let ro: ResizeObserver | null = null
 const unsubs: Array<() => void> = []
+
+// ---------------------------------------------------------------------------
+// 常用网站：沿用 settings.get / settings.set 落盘，不另开 IPC 频道
+// ---------------------------------------------------------------------------
+
+const browseFavorites = ref<BrowseFavorite[]>([])
+/** 起始页只在没有网页可看时露面；它盖住的是 DOM，原生网页视图得先藏起来。 */
+const showStartPage = ref(true)
+const favoriteDraft = ref<{ url: string; title: string; originalUrl: string } | null>(null)
+/** 首字色块用固定色板：不拉站点图标，也就不受离线与跨域影响。 */
+const FAVORITE_COLORS = ['#4b93dd', '#3b9d77', '#b48436', '#c2689a', '#7c6fd0', '#2f9da8']
+
+const startPageVisible = computed(() => showStartPage.value && !readingPage.value)
+
+function hostOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./i, '') } catch { return url }
+}
+
+function favoriteColor(url: string): string {
+  let hash = 0
+  for (let i = 0; i < url.length; i += 1) hash = (hash * 31 + url.charCodeAt(i)) >>> 0
+  return FAVORITE_COLORS[hash % FAVORITE_COLORS.length]!
+}
+
+function favoriteInitial(item: BrowseFavorite): string {
+  return (item.title || hostOf(item.url)).trim().slice(0, 1).toUpperCase() || '·'
+}
+
+/** 同域名算同一个站点：站内翻章不会让星标一会儿亮一会儿灭。 */
+const currentFavorite = computed<BrowseFavorite | null>(() => {
+  if (startPageVisible.value) return null
+  const host = currentHost()
+  if (!host) return null
+  return browseFavorites.value.find((item) => hostOf(item.url) === host) ?? null
+})
+
+let favoritesLoad: Promise<void> | null = null
+
+/** 收藏只加载一次；写之前先等它落地，免得启动瞬间的点击盖掉已存列表。 */
+async function ensureFavorites(): Promise<void> {
+  if (!favoritesLoad) {
+    favoritesLoad = (async () => {
+      try {
+        const settings = await window.api.settings.get()
+        browseFavorites.value = settings.browseFavorites ?? []
+      } catch { /* 读不到就按空列表起页，不打断浏览 */ }
+    })()
+  }
+  await favoritesLoad
+}
+
+/** 先改本地再落盘：保存失败回滚，界面与磁盘不会各说一套。 */
+async function persistFavorites(next: BrowseFavorite[]): Promise<void> {
+  const previous = browseFavorites.value
+  browseFavorites.value = next
+  try {
+    await window.api.settings.set({ browseFavorites: next })
+  } catch (e: unknown) {
+    browseFavorites.value = previous
+    message.error(e instanceof Error ? e.message : '常用网站保存失败')
+  }
+}
+
+async function toggleCurrentSiteFavorite(): Promise<void> {
+  const host = currentHost()
+  const url = state.value.url
+  if (!host || !url || url === 'about:blank' || startPageVisible.value) {
+    message.warning('先打开一个网页，再把它存成常用网站')
+    return
+  }
+  await ensureFavorites()
+  const existing = currentFavorite.value
+  if (existing) {
+    await persistFavorites(browseFavorites.value.filter((item) => item.url !== existing.url))
+    message.success(`已取消收藏「${existing.title}」`)
+    return
+  }
+  const title = (state.value.title || host).trim().slice(0, 60) || host
+  await persistFavorites([...browseFavorites.value, { url, title, addedAt: new Date().toISOString() }])
+  message.success(`已收藏「${title}」`)
+}
+
+/** 起始页只藏视图、不卸载页面：回来还能接着读，后退也还在。 */
+function openStartPage(): void {
+  favoriteDraft.value = null
+  address.value = ''
+  showStartPage.value = true
+}
+
+function openFavorite(item: BrowseFavorite): void {
+  favoriteDraft.value = null
+  showStartPage.value = false
+  address.value = item.url
+  void go()
+}
+
+function startFavoriteDraft(item?: BrowseFavorite): void {
+  favoriteDraft.value = item
+    ? { url: item.url, title: item.title, originalUrl: item.url }
+    : { url: '', title: '', originalUrl: '' }
+}
+
+function cancelFavoriteDraft(): void {
+  favoriteDraft.value = null
+}
+
+async function saveFavoriteDraft(): Promise<void> {
+  const draft = favoriteDraft.value
+  if (!draft) return
+  await ensureFavorites()
+  let parsed: URL
+  try {
+    parsed = new URL(draft.url.trim())
+  } catch {
+    message.warning('网址要写成完整地址，例如 https://example.com')
+    return
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    message.warning('只支持 http / https 地址')
+    return
+  }
+  const url = parsed.toString()
+  const title = (draft.title.trim() || hostOf(url)).slice(0, 60)
+  const others = browseFavorites.value.filter((item) => item.url !== draft.originalUrl)
+  if (others.some((item) => item.url === url)) {
+    message.info('这个地址已经在常用网站里了')
+    return
+  }
+  const addedAt = browseFavorites.value.find((item) => item.url === draft.originalUrl)?.addedAt
+    || new Date().toISOString()
+  const entry: BrowseFavorite = { url, title, addedAt }
+  // 改名 / 换地址都在原位替换，卡片不会因为编辑一下跳到末尾。
+  await persistFavorites(draft.originalUrl
+    ? browseFavorites.value.map((item) => (item.url === draft.originalUrl ? entry : item))
+    : [...browseFavorites.value, entry])
+  favoriteDraft.value = null
+}
+
+async function removeFavorite(item: BrowseFavorite): Promise<void> {
+  await ensureFavorites()
+  await persistFavorites(browseFavorites.value.filter((entry) => entry.url !== item.url))
+  message.success(`已移除「${item.title}」`)
+}
+
+// App 用 tab 切换控制网页视图显隐；起始页在场时必须把它藏回去。
+watch(showStartPage, (start) => {
+  void window.api.browse.setVisible(!start && props.active).catch(() => {})
+})
+watch(() => props.active, (active) => {
+  if (active) void window.api.browse.setVisible(!showStartPage.value).catch(() => {})
+})
 
 // Download state
 const downloading = ref(false)
@@ -307,6 +483,8 @@ async function toggleAdFilter(): Promise<void> {
 }
 
 const siteLabel = computed(() => {
+  // 起始页上网页视图是藏着的，报「当前站点」会让人以为页面还在眼前。
+  if (startPageVisible.value) return '常用网站'
   const host = currentHost()
   return host ? `当前站点：${host}` : '尚未打开网页'
 })
@@ -369,12 +547,14 @@ watch(
   () => props.prefillNonce,
   () => {
     if (!props.prefillUrl) return
+    showStartPage.value = false
     address.value = props.prefillUrl
     void go({ reading: props.prefillReading })
   },
 )
 
 async function go(options: { reading?: boolean } = {}) {
+  showStartPage.value = false
   if (readingPage.value) await exitReadingMode()
   const target = address.value
   const res = await window.api.browse.load(target)
@@ -393,7 +573,10 @@ async function resumeBrowse() {
   if (!res.ok) {
     address.value = ''
     resumeError.value = res.message || '上次网页无法打开，请检查网络或网址'
+    return
   }
+  // 起始页默认在场；只有真的恢复了上次的页面才把视图让出来。
+  if (res.restored) showStartPage.value = false
 }
 
 function retryResume() {
@@ -442,14 +625,103 @@ function toggleReadingToolsLock() {
   else scheduleReadingTools()
 }
 
+/** 缺字段的旧设置按双栏算，与主进程的归一化默认保持一致。 */
+const sheetDoubleSelected = computed(() => readerPrefs.value.sheetColumns !== 'single')
+/** 双栏只跟翻页模式搭配：连续滚动里两栏的阅读顺序会错位。 */
+const doubleColumns = computed(() => readingPaged.value && sheetDoubleSelected.value)
+
 function readingViewportEl(): HTMLElement | null {
-  return readingViewport.value
+  // 双栏时正文自己横向滚（多栏容器必须是滚动容器，溢出的栏才会成为下一页），其余仍是外层纵向滚。
+  return doubleColumns.value ? readingArticle.value ?? readingViewport.value : readingViewport.value
+}
+
+/** 某一章的章首（h1 带 data-section）：多章同屏时用它定位、切章与补滚动量。 */
+function sectionAnchorEl(url: string | undefined): HTMLElement | null {
+  if (!url) return null
+  return readingArticle.value?.querySelector<HTMLElement>(`h1[data-section="${url}"]`) ?? null
+}
+
+/** 某一章的段落（data-p 是章内序号）：划线、锚点、朗读都按章取。 */
+function sectionParagraphEls(url: string | undefined): HTMLElement[] {
+  const article = readingArticle.value
+  if (!url || !article) return []
+  return [...article.querySelectorAll<HTMLElement>('p[data-p]')]
+    .filter((node) => node.dataset.section === url)
+}
+
+/** 双栏的一页 = 两栏：步长按实际排版量出栏宽与栏距，页数按正文铺开的栏数折算。 */
+/**
+ * 双栏分页的度量：`step` 是一页（两栏 + 栏距）的横向步进，`stride` 是单栏步进。
+ * 栏是连续排下来的，页数 = ⌈栏数 / 2⌉。
+ */
+function columnMetrics(el: HTMLElement): { step: number; stride: number; pages: number } {
+  const style = getComputedStyle(el)
+  const gap = Number.parseFloat(style.columnGap) || 0
+  const padLeft = Number.parseFloat(style.paddingLeft) || 0
+  const padRight = Number.parseFloat(style.paddingRight) || 0
+  const contentWidth = Math.max(1, el.clientWidth - padLeft - padRight)
+  const step = contentWidth + gap
+  const stride = step / 2
+  // 用 scrollWidth 量栏数：子元素的 getBoundingClientRect 会跟着 scrollLeft 左移，
+  // 滚动过程中量出来的页数会越来越小，翻到一半就被判成「末页」。
+  const laidOut = Math.max(contentWidth, el.scrollWidth - padLeft - padRight)
+  const columns = Math.max(1, Math.round((laidOut + gap) / stride))
+  return { step, stride, pages: Math.max(1, Math.ceil(columns / 2)) }
+}
+
+/** 双栏：当前页（两栏）里按阅读顺序的第一段，返回它在所属章里的段落下标。 */
+function resolveColumnAnchor(el: HTMLElement): number {
+  const padLeft = Number.parseFloat(getComputedStyle(el).paddingLeft) || 0
+  const left = el.getBoundingClientRect().left + padLeft
+  let fallback = 0
+  for (const node of el.querySelectorAll<HTMLElement>('p[data-p]')) {
+    const rect = node.getClientRects()[0] ?? node.getBoundingClientRect()
+    if (!rect || rect.width <= 0) continue
+    const isActive = node.dataset.section === readingPage.value?.url
+    if (isActive) fallback = Number(node.dataset.p ?? '0')
+    // 子元素的 rect 会跟着 scrollLeft 左移，所以“这一页的第一段”只能按视口左缘比。
+    if (rect.left < left - 1) continue
+    // 这一页可能已经翻到下一章；段号只能按当前章取，别把邻章的段号写进位置记录。
+    const index = isActive ? fallback : 0
+    readingCenterParagraph.value = index
+    return index
+  }
+  return fallback
 }
 
 /** 页码、滚动比例都从真实滚动容器读，不用位移模拟。 */
 function syncReadingPage() {
   const el = readingViewportEl()
   if (!el) { readingPageIndex.value = 0; readingPageCount.value = 1; readingRatio.value = 0; return }
+  if (doubleColumns.value) {
+    const { step, pages } = columnMetrics(el)
+    readingPageCount.value = pages
+    readingPageIndex.value = Math.min(pages - 1, Math.max(0, Math.round(el.scrollLeft / step)))
+    readingRatio.value = pages > 1 ? readingPageIndex.value / (pages - 1) : 0
+    return
+  }
+  // 多章同屏时「本章 %」按当前章的首尾量；整卷的 scrollHeight 会把后面几章也算进来。
+  if (readingPaged.value) {
+    readingPageCount.value = visualPageCount(el.scrollHeight, el.clientHeight)
+    readingPageIndex.value = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
+    readingRatio.value = clampRatio(el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0)
+    return
+  }
+  const article = readingArticle.value
+  const heading = sectionAnchorEl(readingPage.value?.url)
+  const headings = article ? [...article.querySelectorAll<HTMLElement>('h1[data-section]')] : []
+  const start = heading?.getBoundingClientRect().top
+  const headingIndex = heading ? headings.indexOf(heading) : -1
+  const bottom = headingIndex >= 0 && headings[headingIndex + 1]
+    ? headings[headingIndex + 1]!.getBoundingClientRect().top
+    : article?.getBoundingClientRect().bottom
+  if (start !== undefined && bottom !== undefined && bottom > start) {
+    const offset = Math.max(0, el.getBoundingClientRect().top - start)
+    readingPageCount.value = visualPageCount(bottom - start, el.clientHeight)
+    readingPageIndex.value = visualPageIndex(offset, bottom - start, el.clientHeight)
+    readingRatio.value = clampRatio(offset / Math.max(1, bottom - start - el.clientHeight))
+    return
+  }
   readingPageCount.value = visualPageCount(el.scrollHeight, el.clientHeight)
   readingPageIndex.value = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
   readingRatio.value = clampRatio(el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0)
@@ -460,11 +732,13 @@ function resolveParagraphAnchor(): number {
   const el = readingViewportEl()
   const total = readingParagraphs.value.length
   if (!el || total === 0) return 0
-  const article = el.querySelector('.web-reading-article')
-  if (!article) return Math.round(readingRatio.value * Math.max(0, total - 1))
+  if (doubleColumns.value) return resolveColumnAnchor(el)
+  // 多章同屏：只量当前章自己的段落，段号才是本章内的坐标。
+  const nodes = sectionParagraphEls(readingPage.value?.url)
+  if (!nodes.length) return Math.round(readingRatio.value * Math.max(0, total - 1))
   const containerTop = el.getBoundingClientRect().top
-  const centers = [...article.querySelectorAll('p')].map((node) => {
-    const rect = (node as HTMLElement).getBoundingClientRect()
+  const centers = nodes.map((node) => {
+    const rect = node.getBoundingClientRect()
     return rect.top + rect.height / 2 - containerTop
   })
   const index = paragraphIndexAtViewportCenter({ viewportCenter: el.clientHeight / 2, paragraphCenters: centers })
@@ -477,10 +751,18 @@ function restoreReadingPosition(position: { paragraphIndex: number; scrollRatio:
   const el = readingViewportEl()
   if (!el) { readingRestoring = false; return }
   readingRestoring = true
-  const article = el.querySelector('.web-reading-article')
-  const paragraphs = article ? [...article.querySelectorAll('p')] : []
+  const article = readingArticle.value
+  const paragraphs = sectionParagraphEls(readingPage.value?.url)
   const target = paragraphs[position.paragraphIndex] as HTMLElement | undefined
-  if (target) {
+  if (doubleColumns.value && article) {
+    // 双栏：按目标段落在哪一栏换算成页，直接跳到那一页。
+    const { step, stride } = columnMetrics(el)
+    const padLeft = Number.parseFloat(getComputedStyle(article).paddingLeft) || 0
+    const baseLeft = el.getBoundingClientRect().left + padLeft
+    const rect = target?.getClientRects()[0] ?? target?.getBoundingClientRect()
+    const column = rect ? Math.max(0, Math.round((rect.left - baseLeft) / stride)) : 0
+    el.scrollLeft = Math.floor(column / 2) * step
+  } else if (target) {
     const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - el.clientHeight * 0.28
     el.scrollTop = Math.max(0, top)
   } else if (position.scrollRatio > 0) {
@@ -518,6 +800,14 @@ function pageByScreen(direction: 1 | -1) {
   const el = readingViewportEl()
   if (!el) return
   const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
+  if (doubleColumns.value) {
+    const { step, pages } = columnMetrics(el)
+    const current = Math.round(el.scrollLeft / step)
+    const next = Math.max(0, Math.min(pages - 1, current + direction))
+    el.scrollTo({ left: next * step, behavior })
+    readingPageIndex.value = next
+    return
+  }
   if (readingPaged.value) {
     const count = visualPageCount(el.scrollHeight, el.clientHeight)
     const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
@@ -529,17 +819,21 @@ function pageByScreen(direction: 1 | -1) {
   el.scrollBy({ top: direction * el.clientHeight * 0.9, behavior })
 }
 
-/** 翻页；到本章头尾接着翻章。滚动模式与翻页模式都走真实滚动容器。 */
+/** 翻页；到卷首卷尾接着翻章。整本书都在同一个滚动容器里，翻过末页自动接下一章。 */
 function turnReadingPage(delta: number) {
   const el = readingViewportEl()
   if (!el) return
   stopAutoScroll()
-  if (readingPaged.value) {
+  if (doubleColumns.value) {
+    const { step, pages } = columnMetrics(el)
+    const current = Math.round(el.scrollLeft / step)
+    if (delta < 0 && current <= 0) { void changeChapter('previous'); return }
+    if (delta > 0 && current >= pages - 1) { void continueIntoNextChapter(); return }
+  } else if (readingPaged.value) {
     const count = visualPageCount(el.scrollHeight, el.clientHeight)
     const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
-    const next = current + delta
-    if (next < 0) { void changeChapter('previous'); return }
-    if (next > count - 1) { void changeChapter('next'); return }
+    if (delta < 0 && current <= 0) { void changeChapter('previous'); return }
+    if (delta > 0 && current >= count - 1) { void continueIntoNextChapter(); return }
   } else {
     const atTop = el.scrollTop <= 2
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2
@@ -560,7 +854,9 @@ function onReadingWheel(event: WheelEvent) {
 
 function onReadingScroll() {
   syncReadingPage()
+  trackReadingSection()
   saveReadingPosition()
+  maybeAppendNextSection()
   if (selPopup.value) closeSelectionTools()
 }
 
@@ -591,6 +887,14 @@ function onReadingMouseup(event: MouseEvent) {
   if (!readingPage.value) return
   const target = event.target as HTMLElement | null
   if (target?.closest('button, input, textarea')) return
+  // 多章同屏时先让被选中的那一章当上当前章，划线与备注的坐标才落在它自己的正文上。
+  const anchor = window.getSelection()?.anchorNode
+  const anchorEl = anchor instanceof Element ? anchor : anchor?.parentElement ?? null
+  const sectionUrl = anchorEl?.closest<HTMLElement>('.web-reading-article')?.dataset.url
+  if (sectionUrl && sectionUrl !== readingPage.value.url) {
+    const section = readingSections.value.find((item) => item.url === sectionUrl)
+    if (section) activateReadingSection(section)
+  }
   setTimeout(() => {
     const range = selectionOffsets()
     const selection = window.getSelection()
@@ -824,9 +1128,9 @@ const autoScroll = createAutoScroll(
     },
     onTick: () => syncReadingPage(),
     onReachEnd: () => {
-      // 到底：开了自动翻页且还有下一章就续章，否则停下
-      if (!webReading.value.autoPage || !readingChapter.value?.next) return false
-      void changeChapter('next', { keepAutoScroll: true })
+      // 到底：开了自动续章且还有下一章就把下一章接进同屏，否则停下
+      if (!webReading.value.autoPage || !nextChapterUrlFor(readingPage.value)) return false
+      void appendNextSection()
       return true
     },
   },
@@ -848,6 +1152,8 @@ function autoScrollStep(timestamp: number) {
 
 function startAutoScroll() {
   if (!readingPage.value || autoScrolling.value) return
+  // 自动滚动推的是纵向偏移，双栏是横向翻页：直说不可用，不假装在动。
+  if (doubleColumns.value) { message.info('双栏翻页下不自动滚动，可切回单栏'); return }
   autoScrolling.value = true
   lastAutoTickAt = 0
   autoScroll.start()
@@ -878,12 +1184,22 @@ function toggleAutoScroll() {
 
 function scrollToParagraph(index: number) {
   const el = readingViewportEl()
-  const article = el?.querySelector('.web-reading-article')
-  const paragraphs = article ? [...article.querySelectorAll('p')] : []
+  if (!el) return
+  const paragraphs = sectionParagraphEls(readingPage.value?.url)
   const target = paragraphs[index] as HTMLElement | undefined
-  if (!el || !target) return
+  if (!target) return
+  const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
+  if (doubleColumns.value) {
+    const { step } = columnMetrics(el)
+    const padLeft = Number.parseFloat(getComputedStyle(el).paddingLeft) || 0
+    const baseLeft = el.getBoundingClientRect().left + padLeft
+    const rect = target.getClientRects()[0] ?? target.getBoundingClientRect()
+    const column = Math.max(0, Math.round((rect.left - baseLeft) / step))
+    el.scrollTo({ left: Math.floor(column / 2) * step * 2, behavior })
+    return
+  }
   const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - el.clientHeight * 0.4
-  el.scrollTo({ top: Math.max(0, top), behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true) })
+  el.scrollTo({ top: Math.max(0, top), behavior })
 }
 
 const tts = useTts({
@@ -899,10 +1215,10 @@ const tts = useTts({
 })
 
 async function continueTtsChapter() {
-  const next = readingChapter.value?.next
+  const next = nextChapterUrlFor(readingPage.value)
   if (!next) { message.info('已经是最后一章'); return }
-  await switchReadingChapter(next.url)
-  if (readingPage.value) tts.start(0, true)
+  await changeChapter('next')
+  if (readingPage.value?.url === next) tts.start(0, true)
 }
 
 function toggleTts() {
@@ -930,6 +1246,9 @@ function setTtsSleepMinutes(minutes: number): void {
 // ---------------------------------------------------------------------------
 
 function openReadingPage(page: BrowseReadingPage) {
+  // 进场 / 目录跳章都从「只排这一章」开始，之后靠滚动把后面的章接上来。
+  readingSections.value = [page]
+  appendError.value = ''
   readingPage.value = page
   readingChapterTitle.value = page.chapter?.title || page.title
   readingPageIndex.value = 0
@@ -947,9 +1266,224 @@ function openReadingPage(page: BrowseReadingPage) {
   void ensureReadingCatalog()
 }
 
+/** 下一章地址：页面自己的链接优先；站点没给链接时退回已经取到的目录。 */
+function nextChapterUrlFor(page: BrowseReadingPage | null | undefined): string | null {
+  if (!page) return null
+  const direct = page.chapter?.next?.url
+  if (direct) return direct
+  const index = catalogChapters.value.findIndex((chapter) => chapter.url === page.url)
+  return index >= 0 ? catalogChapters.value[index + 1]?.url ?? null : null
+}
+
+function previousChapterUrlFor(page: BrowseReadingPage | null | undefined): string | null {
+  if (!page) return null
+  const direct = page.chapter?.previous?.url
+  if (direct) return direct
+  const index = catalogChapters.value.findIndex((chapter) => chapter.url === page.url)
+  return index > 0 ? catalogChapters.value[index - 1]?.url ?? null : null
+}
+
+/** 同屏最后一章：自动接章、预取和章末按钮都看它。 */
+const readingTail = computed(() => readingSections.value[readingSections.value.length - 1] ?? null)
+const canContinueReading = computed(() => Boolean(nextChapterUrlFor(readingTail.value)))
+const nextChapterLabel = computed(() => {
+  const next = nextChapterUrlFor(readingTail.value)
+  const title = readingTail.value?.chapter?.next?.title
+    || catalogChapters.value.find((chapter) => chapter.url === next)?.title
+  return title ? `下一章 · ${title}` : '下一章'
+})
+
 function prefetchNeighborChapter() {
-  const next = readingPage.value?.chapter?.next
-  if (next?.url) void window.api.browse.prefetchChapter(next.url)
+  const next = nextChapterUrlFor(readingTail.value ?? readingPage.value)
+  if (next) void window.api.browse.prefetchChapter(next)
+}
+
+/** 滚进了后面那一章：换当前章的身份（标题、标注、进度），但不重排正文。 */
+function activateReadingSection(section: BrowseReadingPage): void {
+  if (readingPage.value?.url === section.url) return
+  saveReadingPosition(true)
+  readingPage.value = section
+  readingChapterTitle.value = section.chapter?.title || section.title
+  readingCenterParagraph.value = -1
+  readingParagraphIndex = 0
+  void reloadWebMarks()
+  void resolveWebBookDownloaded()
+  const index = catalogChapters.value.findIndex((chapter) => chapter.url === section.url)
+  if (index >= 0) catalogIndex.value = index
+  else void ensureReadingCatalog()
+}
+
+/** 双栏：当前页第一段属于哪一章（按页左缘与章首位置比）。 */
+function sectionAtColumnPage(): BrowseReadingPage | null {
+  const el = readingArticle.value
+  if (!el) return null
+  const padLeft = Number.parseFloat(getComputedStyle(el).paddingLeft) || 0
+  const left = el.getBoundingClientRect().left + padLeft
+  let current: BrowseReadingPage | null = null
+  for (const heading of el.querySelectorAll<HTMLElement>('h1[data-section]')) {
+    if (heading.getBoundingClientRect().left > left + 1) break
+    current = readingSections.value.find((section) => section.url === heading.dataset.section) ?? current
+  }
+  return current ?? readingSections.value[0] ?? null
+}
+
+/** 滚动：视口上部那一章就是当前章。 */
+function sectionAtViewportProbe(): BrowseReadingPage | null {
+  const el = readingViewport.value
+  if (!el) return null
+  const probe = el.getBoundingClientRect().top + Math.min(el.clientHeight * 0.35, 240)
+  let current: BrowseReadingPage | null = null
+  for (const heading of el.querySelectorAll<HTMLElement>('h1[data-section]')) {
+    if (heading.getBoundingClientRect().top > probe) break
+    current = readingSections.value.find((section) => section.url === heading.dataset.section) ?? current
+  }
+  return current
+}
+
+/** 当前章跟着滚动 / 翻页走：标题、标注与进度都切到眼前那一章。 */
+function trackReadingSection(): void {
+  if (readingSections.value.length < 2) return
+  if (doubleColumns.value) {
+    const section = sectionAtColumnPage()
+    if (section && section.url !== readingPage.value?.url) activateReadingSection(section)
+    // 双栏的本章比例只能按「当前页第一段在本章的位置」估。
+    const article = readingArticle.value
+    const total = readingParagraphs.value.length
+    if (article && total > 0) {
+      readingRatio.value = clampRatio(resolveColumnAnchor(article) / Math.max(1, total - 1))
+    }
+    return
+  }
+  const section = sectionAtViewportProbe()
+  if (section && section.url !== readingPage.value?.url) activateReadingSection(section)
+}
+
+/** 快到末页 / 末屏时把下一章接上；关掉「自动续章」就留在手动。 */
+function maybeAppendNextSection(): void {
+  if (!readingPage.value || appendingSection.value || appendError.value) return
+  if (!webReading.value.autoPage) return
+  const el = readingViewportEl()
+  if (!el) return
+  if (doubleColumns.value) {
+    const { pages } = columnMetrics(el)
+    if (pages > 1 && readingPageIndex.value < pages - 1) return
+  } else if (readingPaged.value) {
+    const pages = visualPageCount(el.scrollHeight, el.clientHeight)
+    if (pages > 1 && readingPageIndex.value < pages - 1) return
+  } else {
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (remaining > el.clientHeight) return
+  }
+  void appendNextSection()
+}
+
+/** 接下一章；返回是否真的接上了——失败要交给调用方回退到整章切换，不能静默停在原地。 */
+async function appendNextSection(): Promise<boolean> {
+  if (appendingSection.value) return false
+  const last = readingTail.value
+  const nextUrl = nextChapterUrlFor(last)
+  if (!last || !nextUrl) return false
+  if (readingSections.value.some((section) => section.url === nextUrl)) return true
+  appendingSection.value = true
+  appendError.value = ''
+  let appended = false
+  let needMore = false
+  try {
+    const res = await window.api.browse.readingPage(nextUrl)
+    if (!res.ok) { appendError.value = res.message || '下一章没有取到'; return false }
+    if (readingSections.value.some((section) => section.url === res.page.url)) return true
+    readingSections.value = [...readingSections.value, res.page]
+    appended = true
+    trimReadingSections()
+    const after = nextChapterUrlFor(res.page)
+    if (after) void window.api.browse.prefetchChapter(after)
+    // 极短的章接上后仍不足一屏 / 一页，再补一节：读者不会卡在翻不动的页面上。
+    await nextTick()
+    if (doubleColumns.value) {
+      const scroller = readingArticle.value
+      needMore = Boolean(scroller && columnMetrics(scroller).pages <= 1)
+    } else {
+      const viewport = readingViewport.value
+      needMore = Boolean(viewport && viewport.scrollHeight <= viewport.clientHeight + 8)
+    }
+    return true
+  } catch {
+    appendError.value = '下一章没有取到'
+    return false
+  } finally {
+    appendingSection.value = false
+    if (appended && needMore) void appendNextSection()
+  }
+}
+
+/** 只丢当前章之前的旧章；丢掉的那段用锚点位置补回滚动量，正文不会跳。 */
+function trimReadingSections(): void {
+  while (readingSections.value.length > READING_SECTION_LIMIT) {
+    const first = readingSections.value[0]
+    const activeUrl = readingPage.value?.url
+    if (!first || first.url === activeUrl) break
+    const scroller = readingViewportEl()
+    const before = sectionAnchorEl(activeUrl)?.getBoundingClientRect()
+    readingSections.value = readingSections.value.slice(1)
+    if (!scroller || !before) continue
+    void nextTick(() => {
+      const after = sectionAnchorEl(activeUrl)?.getBoundingClientRect()
+      if (!after) return
+      if (doubleColumns.value) scroller.scrollLeft = Math.max(0, scroller.scrollLeft - (before.left - after.left))
+      else scroller.scrollTop = Math.max(0, scroller.scrollTop - (before.top - after.top))
+    })
+  }
+}
+
+/** 把已经在同屏的某一章滚到眼前，并让它当上当前章。forward 表示「下一章 / 下一页」。 */
+function revealReadingSection(section: BrowseReadingPage, options: { forward?: boolean } = {}): void {
+  const scroller = readingViewportEl()
+  const anchor = sectionAnchorEl(section.url)
+  if (!scroller || !anchor) return
+  activateReadingSection(section)
+  const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
+  if (doubleColumns.value) {
+    const { step, stride } = columnMetrics(scroller)
+    const padLeft = Number.parseFloat(getComputedStyle(scroller).paddingLeft) || 0
+    // 章首在正文里的绝对位置 = 当前滚动量 + 视口内偏移；
+    // 直接拿视口内偏移当 scrollLeft，只会滚回卷首附近，看起来就是点了没反应。
+    const inContent = scroller.scrollLeft + anchor.getBoundingClientRect().left - scroller.getBoundingClientRect().left
+    const column = Math.max(0, Math.round((inContent - padLeft) / stride))
+    const page = Math.floor(column / 2)
+    const currentPage = Math.round(scroller.scrollLeft / step)
+    // 章首正好在当前页（常在页脚遮住的位置）时往前翻一页，否则点了像没反应。
+    const targetPage = options.forward && page <= currentPage ? currentPage + 1 : page
+    scroller.scrollTo({ left: targetPage * step, behavior })
+    return
+  }
+  const top = scroller.scrollTop + anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+  scroller.scrollTo({ top: Math.max(0, top), behavior })
+}
+
+/** 章末「下一章」：先把同屏里的下一章滚出来，没接上就整章切换。 */
+async function continueReading(): Promise<void> {
+  const next = nextChapterUrlFor(readingTail.value)
+  if (!next) { message.info('已经是最后一章'); return }
+  const loaded = readingSections.value.find((section) => section.url === next)
+  if (loaded) { revealReadingSection(loaded); return }
+  const appended = await appendNextSection()
+  const section = appended ? readingSections.value.find((item) => item.url === next) : undefined
+  if (section) { revealReadingSection(section, { forward: true }); return }
+  await switchReadingChapter(next)
+}
+
+/** 翻过末页 / 滚到底：接下一章；接不上就整章切换，绝不停在原地。 */
+async function continueIntoNextChapter(): Promise<void> {
+  // 末页之后要接的是「同屏最后一张」的下一章：末页往往已经读到下一章开头，
+  // 按当前章标题去算会滚回刚看过的那一页，看起来就是点了没反应。
+  const target = nextChapterUrlFor(readingTail.value)
+  if (!target) { message.info('已经是最后一章'); return }
+  if (webReading.value.autoPage) {
+    const appended = await appendNextSection()
+    const section = appended ? readingSections.value.find((item) => item.url === target) : undefined
+    if (section) { revealReadingSection(section, { forward: true }); return }
+  }
+  await switchReadingChapter(target)
 }
 
 /** 进阅读模式；带 url 时直接取该章（续读 / 目录跳章），不带时取当前可见网页。 */
@@ -976,6 +1510,7 @@ async function enterReadingMode(url?: string) {
     await window.api.browse.setReadingMode(true)
     await nextTick()
     syncReadingPage()
+    maybeAppendNextSection()
     const saved = await window.api.browse.getReadingPos(res.page.url)
     if (saved.ok && saved.position && (saved.position.paragraphIndex > 0 || saved.position.scrollRatio > 0)) {
       restoreReadingPosition(saved.position)
@@ -994,6 +1529,8 @@ async function exitReadingMode() {
   stopTts()
   saveReadingPosition(true)
   readingPage.value = null
+  readingSections.value = []
+  appendError.value = ''
   readingPanel.value = false
   catalogOpen.value = false
   catalogChapters.value = []
@@ -1014,10 +1551,28 @@ let readingSeq = 0
 /** 阅读模式内换章：走阅读会话，不进原网页；非阅读模式仍驱动可见网页。 */
 async function changeChapter(direction: 'previous' | 'next', options: { keepAutoScroll?: boolean } = {}) {
   if (readingPage.value) {
-    const link = direction === 'previous' ? readingChapter.value?.previous : readingChapter.value?.next
-    const fallback = direction === 'previous' ? state.value.previousChapter?.url : state.value.nextChapter?.url
-    const target = link?.url || fallback
+    const target = direction === 'previous'
+      ? previousChapterUrlFor(readingPage.value) || state.value.previousChapter?.url
+      : nextChapterUrlFor(readingPage.value) || state.value.nextChapter?.url
     if (!target) { message.info(direction === 'previous' ? '已经是第一章' : '已经是最后一章'); return }
+    // 已经接在同屏里的章直接滚过去，不重排正文
+    const loaded = readingSections.value.find((section) => section.url === target)
+    if (loaded) {
+      // 目标章已经是同屏最后一张：再点「下一章」就接它后面那一章，不能停在原地
+      if (direction === 'next' && readingTail.value?.url === loaded.url && nextChapterUrlFor(loaded)) {
+        await continueIntoNextChapter()
+        return
+      }
+      revealReadingSection(loaded, { forward: direction === 'next' })
+      return
+    }
+    // 自动续章开着：往后翻优先把下一章接在同屏末尾，前面读过的章不会被重排掉
+    if (direction === 'next' && webReading.value.autoPage && nextChapterUrlFor(readingTail.value) === target) {
+      const appended = await appendNextSection()
+      const section = appended ? readingSections.value.find((item) => item.url === target) : undefined
+      if (section) { revealReadingSection(section, { forward: true }); return }
+      // 接章失败（站点取不到 / 链接被重定向）：退回整章切换，不能点了没反应
+    }
     await switchReadingChapter(target, { keepAutoScroll: options.keepAutoScroll })
     return
   }
@@ -1043,8 +1598,9 @@ async function switchReadingChapter(url: string, options: { keepAutoScroll?: boo
     scheduleReadingTools()
     await nextTick()
     const el = readingViewportEl()
-    if (el) el.scrollTop = 0
+    if (el) { el.scrollTop = 0; el.scrollLeft = 0 }
     syncReadingPage()
+    maybeAppendNextSection()
     readingRestoring = false
     const saved = await window.api.browse.getReadingPos(url)
     if (seq !== readingSeq) return
@@ -1127,14 +1683,29 @@ async function addCurrentToShelf() {
 }
 
 function setReaderPref<K extends keyof ReaderPrefs>(key: K, value: ReaderPrefs[K]) {
+  // 切栏/切模式都留住当前位置：先记旧比例，新排版量完再按它落回去。
+  const ratio = readingRatio.value
   readerPrefs.value = { ...readerPrefs.value, [key]: value }
   void window.api.settings.set({ reader: { [key]: value } })
   void nextTick(() => {
-    syncReadingPage()
     const el = readingViewportEl()
-    if (el && readingPaged.value) el.scrollTop = scrollTopForVisualPage(readingPageIndex.value, el.scrollHeight, el.clientHeight)
+    if (!el) return
+    if (doubleColumns.value) {
+      const { step, pages } = columnMetrics(el)
+      el.scrollLeft = Math.min(pages - 1, Math.round(ratio * Math.max(0, pages - 1))) * step * 2
+      syncReadingPage()
+      return
+    }
+    syncReadingPage()
+    if (readingPaged.value) el.scrollTop = scrollTopForVisualPage(readingPageIndex.value, el.scrollHeight, el.clientHeight)
   })
   saveReadingPosition()
+}
+
+/** 选「双栏」就一并切到翻页模式：连续滚动里两栏的阅读顺序会错位。 */
+function chooseReadingColumns(value: 'single' | 'double') {
+  if (value === 'double' && !readingPaged.value) setReaderPref('readingMode', 'screen')
+  setReaderPref('sheetColumns', value)
 }
 
 function setWebReading<K extends keyof WebReadingPrefs>(key: K, value: WebReadingPrefs[K]) {
@@ -1182,6 +1753,11 @@ function onKeydown(event: KeyboardEvent) {
     if (!readingPage.value) findOpen.value = true
     return
   }
+  if (event.ctrlKey && event.key.toLowerCase() === 'd' && !readingPage.value && !startPageVisible.value) {
+    event.preventDefault()
+    void toggleCurrentSiteFavorite()
+    return
+  }
   if (event.altKey && event.key === 'ArrowUp') {
     event.preventDefault(); scheduleReadingTools(); void changeChapter('previous'); return
   }
@@ -1223,16 +1799,19 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 async function back() {
+  showStartPage.value = false
   if (readingPage.value) await exitReadingMode()
   void window.api.browse.back()
 }
 
 async function forward() {
+  showStartPage.value = false
   if (readingPage.value) await exitReadingMode()
   void window.api.browse.forward()
 }
 
 async function reload() {
+  showStartPage.value = false
   if (readingPage.value) await exitReadingMode()
   void window.api.browse.reload()
 }
@@ -1404,6 +1983,12 @@ onMounted(async () => {
   if (slot.value) ro.observe(slot.value)
   window.addEventListener('resize', onWindowResize)
   window.addEventListener('keydown', onKeydown)
+  void ensureFavorites()
+  // 子组件的 mounted 早于 App 的 mounted，App 会把网页视图显示出来；
+  // 起始页在场时用微任务补一次隐藏，顺序才确定。
+  void Promise.resolve().then(() => {
+    if (startPageVisible.value) void window.api.browse.setVisible(false).catch(() => {})
+  })
   void resumeBrowse()
   unsubs.push(window.api.browse.onState((s) => {
     state.value = s
@@ -1499,10 +2084,50 @@ onUnmounted(() => {
           <svg v-if="state.loading" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z" /></svg>
           <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66" /><path d="M20 4v7h-7" /></svg>
         </button>
-        <input v-model="address" aria-label="网页地址" placeholder="粘贴或输入网址，回车打开" spellcheck="false" />
+        <div class="address-field">
+          <svg class="address-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg>
+          <input v-model="address" aria-label="网页地址" placeholder="粘贴或输入网址，回车打开" spellcheck="false" />
+          <button
+            class="favorite-star"
+            type="button"
+            :class="{ saved: Boolean(currentFavorite) }"
+            :disabled="!currentHost() || startPageVisible"
+            :title="currentFavorite ? '已收藏本站，点击取消' : '收藏本站（Ctrl+D）'"
+            :aria-label="currentFavorite ? '取消收藏本站' : '收藏本站'"
+            :aria-pressed="Boolean(currentFavorite)"
+            @click.prevent="toggleCurrentSiteFavorite"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.8l2.5 5.1 5.6.8-4 4 1 5.6-5-2.7-5 2.7 1-5.6-4-4 5.6-.8z" /></svg>
+          </button>
+        </div>
         <button class="browser-open-button" type="submit">打开</button>
       </div>
       <div class="browser-action-row">
+        <div class="browser-favorites" aria-label="常用网站">
+          <button type="button" class="favorite-home" :class="{ active: startPageVisible }" @click="openStartPage">常用网站</button>
+          <div class="favorite-strip">
+            <button
+              v-for="item in browseFavorites"
+              :key="item.url"
+              type="button"
+              class="favorite-chip"
+              :class="{ active: currentFavorite?.url === item.url }"
+              :title="item.url"
+              @click="openFavorite(item)"
+            >
+              <span class="favorite-chip-dot" :style="{ '--fav-color': favoriteColor(item.url) }">{{ favoriteInitial(item) }}</span>
+              <span class="favorite-chip-name">{{ item.title }}</span>
+            </button>
+            <button
+              type="button"
+              class="favorite-chip add"
+              :disabled="!currentHost() || startPageVisible"
+              @click="toggleCurrentSiteFavorite"
+            >
+              {{ currentFavorite ? '已收藏本站' : '＋ 收藏本站' }}
+            </button>
+          </div>
+        </div>
         <div class="site-status" :class="{ inactive: !currentHost() }" :title="siteLabel">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg>
           <span>{{ siteLabel }}</span>
@@ -1561,9 +2186,9 @@ onUnmounted(() => {
         <button type="button" @click="state.loading ? stop() : reload()">{{ state.loading ? '停止' : '刷新' }}</button>
         <span class="web-current-site" :title="state.url">{{ currentHost() || '尚未打开网页' }}</span>
       </template>
-      <button type="button" :disabled="!state.previousChapter" :title="state.previousChapter?.title || '未识别到上一章'" @click="changeChapter('previous')">上一章</button>
-      <button type="button" :disabled="!state.nextChapter" :title="state.nextChapter?.title || '未识别到下一章'" @click="changeChapter('next')">下一章</button>
-      <button type="button" :disabled="!state.url || readingBusy" @click="readingPage ? exitReadingMode() : enterReadingMode()">{{ readingPage ? '返回原网页' : '阅读模式' }}</button>
+      <button type="button" :disabled="!state.previousChapter || startPageVisible" :title="state.previousChapter?.title || '未识别到上一章'" @click="changeChapter('previous')">上一章</button>
+      <button type="button" :disabled="!state.nextChapter || startPageVisible" :title="state.nextChapter?.title || '未识别到下一章'" @click="changeChapter('next')">下一章</button>
+      <button type="button" :disabled="!state.url || readingBusy || startPageVisible" @click="readingPage ? exitReadingMode() : enterReadingMode()">{{ readingPage ? '返回原网页' : '阅读模式' }}</button>
       <span class="web-shortcut-hint">Alt＋↑ / Alt＋↓ 翻章</span>
     </div>
     <div v-if="findOpen && !readingPage" class="web-find-row">
@@ -1580,7 +2205,65 @@ onUnmounted(() => {
       <button v-else-if="previewFailure?.pageKind === 'chapter'" type="button" @click="editCurrentSiteRule">配置本站规则</button>
       <button type="button" @click="resumeError ? resumeError = '' : previewFailure = null">关闭</button>
     </div>
-    <div ref="slot" v-show="!readingPage" class="browse-slot" />
+    <div ref="slot" v-show="!readingPage" class="browse-slot">
+      <section v-if="startPageVisible" class="browse-home" aria-label="常用网站">
+        <div class="home-inner">
+          <header class="home-head">
+            <div class="home-head-text">
+              <p class="home-kicker">常用网站</p>
+              <h1>从这里开始读</h1>
+              <p class="home-sub">打开任意小说站后，点地址栏右侧的星标就能把它收进来；下次点一下这些卡片，直接回到上次看的那一页。</p>
+            </div>
+            <button type="button" class="home-add-button" @click="startFavoriteDraft()">＋ 添加网站</button>
+          </header>
+
+          <form v-if="favoriteDraft" class="home-editor" @submit.prevent="saveFavoriteDraft">
+            <label class="home-field name">
+              <span>名称</span>
+              <input v-model="favoriteDraft.title" placeholder="站点或书名" maxlength="60" />
+            </label>
+            <label class="home-field url">
+              <span>网址</span>
+              <input v-model="favoriteDraft.url" placeholder="https://example.com/book/123" spellcheck="false" />
+            </label>
+            <div class="home-editor-actions">
+              <button type="submit" class="primary" :disabled="!favoriteDraft.url.trim()">保存</button>
+              <button type="button" @click="cancelFavoriteDraft">取消</button>
+            </div>
+          </form>
+
+          <ul v-if="browseFavorites.length" class="home-grid">
+            <li v-for="item in browseFavorites" :key="item.url">
+              <article class="home-card">
+                <button type="button" class="home-card-main" :title="item.url" @click="openFavorite(item)">
+                  <span class="home-fav-badge" :style="{ '--fav-color': favoriteColor(item.url) }">{{ favoriteInitial(item) }}</span>
+                  <span class="home-fav-text">
+                    <strong>{{ item.title }}</strong>
+                    <small>{{ hostOf(item.url) }}</small>
+                  </span>
+                </button>
+                <div class="home-card-tools">
+                  <button type="button" @click="startFavoriteDraft(item)">改名</button>
+                  <n-popconfirm @positive-click="removeFavorite(item)">
+                    <template #trigger>
+                      <button type="button">移除</button>
+                    </template>
+                    移除「{{ item.title }}」？
+                  </n-popconfirm>
+                </div>
+              </article>
+            </li>
+          </ul>
+
+          <div v-else-if="!favoriteDraft" class="home-empty">
+            <p class="home-empty-title">还没有常用网站</p>
+            <p>先在地址栏打开一个小说站，再点星标收藏；也可以 <button type="button" @click="startFavoriteDraft()">直接添加一个网址</button>。</p>
+          </div>
+
+          <p class="home-hint">收藏只存在本机，跟着设置一起走；同一个域名不会重复收藏。</p>
+        </div>
+      </section>
+    </div>
     <div
       v-if="readingPage"
       ref="readingStage"
@@ -1672,6 +2355,12 @@ onUnmounted(() => {
           </button>
         </div>
         <div class="web-panel-row">
+          <span>分栏</span>
+          <button type="button" :class="{ active: !sheetDoubleSelected }" @click="chooseReadingColumns('single')">单栏</button>
+          <button type="button" :class="{ active: sheetDoubleSelected }" @click="chooseReadingColumns('double')">双栏</button>
+          <em class="web-panel-note">双栏为翻页排版，一页两栏，左右键翻页</em>
+        </div>
+        <div class="web-panel-row">
           <span>行焦点</span>
           <button type="button" :class="{ active: readerPrefs.focusMode === 'off' }" @click="setReaderPref('focusMode', 'off')">关</button>
           <button type="button" :class="{ active: readerPrefs.focusMode === 'one' }" @click="setReaderPref('focusMode', 'one')">1 段</button>
@@ -1735,23 +2424,38 @@ onUnmounted(() => {
       <div
         ref="readingViewport"
         class="web-reading-viewport"
+        :class="{ 'is-columns': doubleColumns }"
         @scroll.passive="onReadingScroll"
         @wheel="onReadingWheel"
         @mouseup="onReadingMouseup"
         @touchstart.passive="stopAutoScroll"
       >
-        <article class="web-reading-article">
-          <h1>{{ readingPage.title }}</h1>
-          <p
-            v-for="(paragraph, i) in readingParagraphs"
-            :key="i"
-            :data-p="i"
-            :class="{ focused: focusedParagraph(i), speaking: ttsSpeaking && ttsSpokenPara === i }"
-          ><template v-for="(seg, j) in readingParagraphSegments(i)" :key="j"><mark v-if="seg.hit" class="web-hit">{{ seg.text }}</mark><mark v-else-if="seg.hl" class="web-hl">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></p>
+        <article
+          ref="readingArticle"
+          class="web-reading-article"
+          :class="{ 'is-columns': doubleColumns }"
+          @scroll.passive="onReadingScroll"
+        >
+          <template v-for="section in readingSections" :key="section.url">
+            <h1 :data-section="section.url">{{ section.title }}</h1>
+            <p
+              v-for="(paragraph, i) in paragraphsOf(section.url)"
+              :key="`${section.url}#${i}`"
+              :data-p="i"
+              :data-section="section.url"
+              :class="{
+                focused: section.url === readingPage?.url && focusedParagraph(i),
+                speaking: section.url === readingPage?.url && ttsSpeaking && ttsSpokenPara === i,
+              }"
+            ><template v-if="section.url === readingPage?.url"><template v-for="(seg, j) in readingParagraphSegments(i)" :key="j"><mark v-if="seg.hit" class="web-hit">{{ seg.text }}</mark><mark v-else-if="seg.hl" class="web-hl">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template></template><template v-else>{{ paragraph }}</template></p>
+          </template>
           <div class="web-reading-end">
-            <span>{{ autoScrolling ? '自动滚动中…' : '本章完' }}</span>
-            <button v-if="canNextChapter" type="button" :disabled="readingBusy" @click="changeChapter('next')">
-              {{ readingChapter?.next?.title ? `下一章 · ${readingChapter.next.title}` : '下一章' }}
+            <span v-if="autoScrolling">自动滚动中…</span>
+            <span v-else-if="appendingSection">正在接上下一章…</span>
+            <span v-else>{{ appendError || '本章完' }}</span>
+            <button v-if="appendError" type="button" @click="appendNextSection()">重试</button>
+            <button v-else-if="canContinueReading" type="button" :disabled="readingBusy" @click="continueReading()">
+              {{ nextChapterLabel }}
             </button>
             <span v-else>已经是最后一章</span>
           </div>
@@ -1836,7 +2540,9 @@ onUnmounted(() => {
         @mouseenter="clearReadingHideTimer"
       >
         <button type="button" :disabled="readingBusy || !canPrevChapter" @click="changeChapter('previous')">上一章</button>
+        <button v-if="readingPaged" type="button" @click="turnReadingPage(-1)">上一页</button>
         <button type="button" class="web-reading-progress" :title="readingProgressLabel" @click="openCatalog">{{ readingProgressLabel }}</button>
+        <button v-if="readingPaged" type="button" @click="turnReadingPage(1)">下一页</button>
         <button type="button" :disabled="readingBusy || !canNextChapter" @click="changeChapter('next')">下一章</button>
       </footer>
     </div>
@@ -2056,6 +2762,7 @@ onUnmounted(() => {
 }
 .web-panel-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .web-panel-row span { width: 36px; font-size: 12px; opacity: 0.7; }
+.web-panel-note { font-size: 12px; font-style: normal; opacity: 0.6; }
 .web-panel-hint { margin: 0; font-size: 12px; opacity: 0.6; }
 /* AI 面板：文字说明 + 一个主行动，排版沿用 .web-reading-panel 的浮层样式 */
 .web-ai-guide { width: min(460px, calc(100% - 28px)); }
@@ -2076,6 +2783,25 @@ onUnmounted(() => {
 .catalog-item:hover { background: color-mix(in srgb, var(--web-ink) 8%, transparent); }
 .catalog-item.current { background: color-mix(in srgb, var(--web-ink) 15%, transparent); font-weight: 600; }
 .catalog-empty { padding: 16px 14px; font-size: 13px; opacity: 0.75; }
+
+.web-reading-viewport.is-columns { overflow: hidden; }
+.web-reading-article.is-columns {
+  /* 双栏翻页：正文自己横向滚，溢出的栏按顺序成为下一页。
+     宽度放到两倍版心，一页两栏才不会把每行挤成三四字。 */
+  width: min(100%, calc(var(--web-width) * 2));
+  height: 100%;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  column-count: 2;
+  column-gap: 56px;
+  column-fill: auto;
+  padding: 40px clamp(20px, 3vw, 44px) 28px;
+  scrollbar-width: none;
+  overscroll-behavior: contain;
+}
+.web-reading-article.is-columns::-webkit-scrollbar { width: 0; height: 0; }
+.web-reading-article.is-columns h1 { margin-top: 0; margin-bottom: 1.2em; }
 
 .web-reading-article {
   box-sizing: border-box; width: min(100%, var(--web-width)); margin: 0 auto;
@@ -2308,7 +3034,6 @@ onUnmounted(() => {
   color: var(--text-secondary);
   font-size: 12px;
 }
-
 .site-status.inactive {
   color: var(--text-muted);
 }
@@ -2331,6 +3056,432 @@ onUnmounted(() => {
 .browser-more { min-width: 0; }
 .browser-more[open] { flex: 1 0 100%; }
 .browser-more-content { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); padding-top: var(--space-2); }
+
+/* ── 常用网站：地址栏星标 + 收藏条 + 起始页 ─────────────────────────── */
+.address-field {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding: 0 4px 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--input-bg);
+  transition: border-color var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing);
+}
+
+.address-field:hover { border-color: var(--hover-line); }
+.address-field:focus-within { border-color: var(--focus); box-shadow: var(--input-ring); }
+
+.address-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 输入框本体不再自带边框：圆角与焦点环由 .address-field 统一表现。 */
+.browser-nav-row .address-field input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.browser-nav-row .address-field input:hover,
+.browser-nav-row .address-field input:focus {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.favorite-star {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
+}
+
+.favorite-star svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linejoin: round;
+}
+
+.favorite-star:hover:not(:disabled) { background: var(--surface-3); color: var(--text-primary); }
+.favorite-star.saved { color: var(--warning); }
+.favorite-star.saved svg { fill: currentColor; }
+.favorite-star:disabled { opacity: 0.4; cursor: default; }
+.favorite-star:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.browser-favorites {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.favorite-home {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--motion-duration) var(--motion-easing), border-color var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
+}
+
+.favorite-home:hover { border-color: var(--hover-line); color: var(--text-primary); }
+.favorite-home.active {
+  border-color: color-mix(in srgb, var(--focus) 42%, transparent);
+  background: color-mix(in srgb, var(--focus) 12%, transparent);
+  color: var(--focus);
+}
+
+.favorite-strip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.favorite-strip::-webkit-scrollbar { height: 0; }
+
+.favorite-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  height: 32px;
+  padding: 0 10px 0 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--motion-duration) var(--motion-easing), border-color var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
+}
+
+.favorite-chip:hover:not(:disabled) { background: var(--surface-3); color: var(--text-primary); }
+.favorite-chip.active {
+  border-color: color-mix(in srgb, var(--focus) 42%, transparent);
+  background: color-mix(in srgb, var(--focus) 12%, transparent);
+  color: var(--focus);
+}
+.favorite-chip:disabled { opacity: 0.55; cursor: default; }
+
+.favorite-chip-dot {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--fav-color, var(--focus)) 18%, transparent);
+  color: var(--fav-color, var(--focus));
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.favorite-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.favorite-chip.add { border-style: dashed; border-color: var(--border); background: transparent; color: var(--text-muted); }
+.favorite-chip.add:hover:not(:disabled) { border-color: var(--hover-line); color: var(--text-primary); }
+
+/* 起始页盖在网页视图的位置上：视图隐藏时它就是页面本身。 */
+.browse-slot { position: relative; overflow: hidden; }
+
+.browse-home {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  background:
+    radial-gradient(1100px 380px at 50% -140px, color-mix(in srgb, var(--focus) 12%, transparent), transparent 70%),
+    var(--app-bg);
+}
+
+.home-inner {
+  width: min(1080px, calc(100% - 64px));
+  margin: 0 auto;
+  padding: 44px 0 56px;
+}
+
+.home-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-6);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.home-kicker {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+}
+
+.home-head h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.home-sub {
+  margin: var(--space-2) 0 0;
+  max-width: 54em;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.home-add-button {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--focus) 40%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--focus) 12%, transparent);
+  color: var(--focus);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.home-add-button:hover { background: color-mix(in srgb, var(--focus) 20%, transparent); }
+
+.home-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px dashed var(--hover-line);
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
+}
+
+.home-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.home-field.name { flex: 0 0 200px; }
+.home-field.url { flex: 1 1 320px; min-width: 0; }
+
+.home-field input {
+  height: 38px;
+  min-width: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.home-field input:focus {
+  border-color: var(--focus);
+  box-shadow: var(--input-ring);
+  outline: none;
+}
+
+.home-editor-actions { display: flex; gap: var(--space-2); }
+
+.home-editor-actions button {
+  height: 38px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.home-editor-actions button.primary {
+  border-color: transparent;
+  background: var(--focus);
+  color: var(--on-accent);
+}
+
+.home-editor-actions button:disabled { opacity: 0.5; cursor: default; }
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.home-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
+  transition: transform var(--motion-duration) var(--motion-easing), border-color var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing);
+}
+
+.home-card:hover,
+.home-card:focus-within {
+  border-color: var(--hover-line);
+  box-shadow: var(--shadow-card);
+  transform: translateY(-1px);
+}
+
+.home-card-main {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 0;
+  border-radius: var(--radius-card);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.home-card-main:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+.home-fav-badge {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--fav-color, var(--focus)) 16%, transparent);
+  color: var(--fav-color, var(--focus));
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.home-fav-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.home-fav-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.home-fav-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.home-card-tools {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 0 var(--space-3) var(--space-2);
+  opacity: 0.55;
+  transition: opacity var(--motion-duration) var(--motion-easing);
+}
+
+.home-card:hover .home-card-tools,
+.home-card:focus-within .home-card-tools { opacity: 1; }
+
+.home-card-tools button {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.home-card-tools button:hover { background: var(--surface-3); color: var(--text-primary); }
+
+.home-empty {
+  margin-top: var(--space-6);
+  padding: var(--space-8) var(--space-6);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-card);
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.home-empty p { margin: 0; }
+
+.home-empty-title {
+  margin-bottom: 4px !important;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.home-empty button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--focus);
+  font: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.home-hint {
+  margin: var(--space-6) 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 
 .dl-progress {
   padding: var(--space-2) 0;
@@ -2509,8 +3660,15 @@ onUnmounted(() => {
 
 @media (max-width: 900px) {
   .browser-action-row {
-    align-items: flex-start;
-    flex-direction: column;
+    flex-wrap: wrap;
+  }
+
+  .browser-favorites {
+    flex-basis: 100%;
+  }
+
+  .site-status {
+    display: none;
   }
 
   .browser-actions {
@@ -2528,9 +3686,13 @@ onUnmounted(() => {
     flex-wrap: wrap;
   }
 
-  .browser-nav-row input {
+  .browser-nav-row .address-field {
     order: 1;
     flex-basis: calc(100% - 72px);
+  }
+
+  .browser-nav-row .address-field input {
+    flex-basis: auto;
   }
 
   .browser-open-button {

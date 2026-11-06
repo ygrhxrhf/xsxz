@@ -38,7 +38,7 @@ function installApi(fixture: Fixture) {
       get: async () => ({
         reader: {
           fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium',
-          paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll',
+          paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll', bookView: 'classic',
         },
         tts: { rate: 1, autoNextChapter: false, source: 'system' },
         baseUrl: '', libraryPath: '', ai: { ...DEFAULT_AI_PREFS },

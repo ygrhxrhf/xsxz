@@ -38,7 +38,7 @@ function installReaderApi() {
         get: async () => ({
           reader: {
             fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium',
-            paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll',
+            paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll', bookView: 'classic',
           },
           tts: { rate: 1, autoNextChapter: true }, baseUrl: '', apiKeyConfigured: true, model: 'test',
         }),

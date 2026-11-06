@@ -42,7 +42,9 @@ const emit = defineEmits<{
 
 const message = useMessage()
 const books = ref<BookListItem[]>([])
-const expandedOverviews = ref<Set<string>>(new Set())
+/** 当前在弹层里阅读的全书概览所属的书；null 表示弹层关闭。 */
+const overviewBookId = ref<string | null>(null)
+const overviewBook = computed(() => books.value.find((book) => book.id === overviewBookId.value) || null)
 const loading = ref(true)
 const retryingIds = ref<string[]>([])
 const checkingIds = ref<string[]>([])
@@ -248,11 +250,8 @@ const hasActiveFilter = computed(
 )
 const deleteConfirmBook = computed(() => books.value.find((book) => book.id === deleteConfirmId.value) || null)
 
-function toggleOverview(bookId: string) {
-  const next = new Set(expandedOverviews.value)
-  if (next.has(bookId)) next.delete(bookId)
-  else next.add(bookId)
-  expandedOverviews.value = next
+function openOverview(bookId: string) {
+  overviewBookId.value = bookId
 }
 
 async function retryOverview(bookId: string) {
@@ -1249,14 +1248,10 @@ onUnmounted(() => {
             v-if="b.overview?.text"
             class="book-overview-toggle"
             type="button"
-            :aria-expanded="expandedOverviews.has(b.id)"
-            @click="toggleOverview(b.id)"
-          >{{ expandedOverviews.has(b.id) ? '收起全书概览' : '查看全书概览' }} <span>含剧透</span></button>
+            aria-haspopup="dialog"
+            @click="openOverview(b.id)"
+          >查看全书概览 <span>含剧透</span></button>
           <div v-else class="book-overview-heading">全书概览 <span>含剧透</span></div>
-          <p
-            v-if="b.overview?.text && expandedOverviews.has(b.id)"
-            class="book-overview-text"
-          >{{ b.overview.text }}</p>
           <p v-if="b.overview?.message" class="book-overview-status" role="status">{{ b.overview.message }}</p>
           <n-button v-if="b.overview?.status === 'failed'" size="tiny" @click="retryOverview(b.id)">重试概览</n-button>
         </div>
@@ -1386,6 +1381,16 @@ onUnmounted(() => {
           <n-button type="primary" :disabled="!repairBody.trim()" :loading="repairSaving" @click="saveRepairBody">保存正文</n-button>
         </n-space>
       </n-space>
+    </n-modal>
+    <n-modal
+      :show="Boolean(overviewBook?.overview?.text)"
+      preset="card"
+      :title="`全书概览 · ${overviewBook?.title || ''}`"
+      style="width:min(640px, 92vw)"
+      @update:show="(open: boolean) => { if (!open) overviewBookId = null }"
+    >
+      <p class="book-overview-heading">含剧透，阅读前请注意 <span>含剧透</span></p>
+      <p class="book-overview-dialog-text">{{ overviewBook?.overview?.text }}</p>
     </n-modal>
     <n-modal
       :show="Boolean(deleteConfirmBook)"

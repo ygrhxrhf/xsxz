@@ -804,5 +804,5 @@ body,
 .book-overview-heading span, .book-overview-toggle span { margin-left: 5px; font-weight: 400; color: var(--warning-text); }
 .book-overview-toggle { border: 0; padding: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .book-overview-toggle:hover { color: var(--focus); }
-.book-overview-text { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; font-size: 12px; }
+.book-overview-dialog-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: 14px; }
 .book-overview-status { margin: 5px 0; font-size: 11px; color: var(--text-muted); }

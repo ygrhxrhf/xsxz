@@ -36,7 +36,7 @@ function installApi(book: unknown, setProgress: (bookId: string, progress: never
       get: async () => ({
         reader: {
           fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium',
-          paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll',
+          paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll', bookView: 'classic',
         },
         tts: { rate: 1, autoNextChapter: false, source: 'system' }, baseUrl: '', libraryPath: '',
       }),
@@ -64,7 +64,7 @@ async function mountReader() {
   await nextTick()
   return {
     app,
-    goNextChapter() { document.querySelector<HTMLButtonElement>('[aria-label="下一章"]')?.click() },
+    goNextChapter() { document.querySelector<HTMLButtonElement>('.chapter-end-card')?.click() },
     pane: document.querySelector<HTMLElement>('.reader-content')!,
   }
 }
