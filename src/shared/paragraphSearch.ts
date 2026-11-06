@@ -3,6 +3,8 @@
  * 以空行（\n{2,}）切段、丢弃空段。
  */
 
+import type { AnnotationColor } from './types'
+
 export interface ParaRange {
   /** 渲染时的段落下标（空段不计入） */
   index: number
@@ -77,11 +79,14 @@ export interface DecoSegment {
   hit: boolean
   /** 划线笔记 */
   hl: boolean
+  /** 划线颜色；缺省（旧标记）由渲染层按黄色处理 */
+  color?: AnnotationColor
 }
 
 interface Interval {
   start: number
   end: number
+  color?: AnnotationColor
 }
 
 /**
@@ -103,7 +108,11 @@ export function decorateText(
     }
   }
   const hls = hlRanges
-    .map((r) => ({ start: Math.max(0, r.start), end: Math.min(text.length, r.end) }))
+    .map((r) => ({
+      start: Math.max(0, r.start),
+      end: Math.min(text.length, r.end),
+      color: r.color,
+    }))
     .filter((r) => r.end > r.start)
 
   const pts = new Set<number>([0, text.length])
@@ -117,10 +126,12 @@ export function decorateText(
     const s = sorted[i]
     const e = sorted[i + 1]
     if (e <= s) continue
+    const covered = hls.find((r) => r.start <= s && s < r.end)
     out.push({
       text: text.slice(s, e),
       hit: hits.some((r) => r.start <= s && s < r.end),
-      hl: hls.some((r) => r.start <= s && s < r.end),
+      hl: Boolean(covered),
+      ...(covered?.color ? { color: covered.color } : {}),
     })
   }
   return out.filter((s) => s.text.length > 0)

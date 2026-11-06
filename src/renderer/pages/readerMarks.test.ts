@@ -124,6 +124,22 @@ describe('useReaderMarks（阅读器标记域）', () => {
     expect(marks.wordbookTrimmed.value).toBe(false)
   })
 
+  it('改颜色按 update 落盘；失败不动内存颜色', async () => {
+    const marks = makeMarks()
+    const item = annotation()
+    marks.annotations.value = [item]
+
+    api.annotations.update.mockResolvedValueOnce({ ok: true, item: annotation({ color: 'green' }) })
+    await marks.setColor(item, 'green')
+    expect(api.annotations.update).toHaveBeenCalledWith('b1', 'a1', { color: 'green' })
+    expect(item.color).toBe('green')
+
+    api.annotations.update.mockResolvedValueOnce({ ok: false, message: '写盘失败' })
+    await marks.setColor(item, 'red')
+    expect(item.color).toBe('green')
+    expect(notices.at(-1)).toBe('error:写盘失败')
+  })
+
   it('删除确认文案按类型区分', () => {
     const marks = makeMarks()
     expect(marks.deleteConfirmText(annotation({ kind: 'bookmark' }))).toContain('书签')

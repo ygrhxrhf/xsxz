@@ -26,6 +26,7 @@ import {
   resolveReaderKey,
   scrollableDistance,
   selectionPopupPosition,
+  fixedSelectionPopupPosition,
   shouldAutoHideReaderTools,
   shouldResetReaderToolsOnEntry,
   isCurrentBookDownloading,
@@ -315,6 +316,15 @@ describe('resolveReaderKey', () => {
     expect(resolveReaderKey({ key: 'ArrowRight' })).toBe('next-chapter')
   })
 
+  it('in paged views the arrow keys page instead of changing chapter', () => {
+    // 分页渲染层（书页 / 真实书籍）没有滚动条，按换章会直接跳过整章。
+    expect(resolveReaderKey({ key: 'ArrowLeft', paged: true })).toBe('page-up')
+    expect(resolveReaderKey({ key: 'ArrowRight', paged: true })).toBe('page-down')
+    // 换章仍要有键盘入口：Shift+方向键。
+    expect(resolveReaderKey({ key: 'ArrowLeft', paged: true, shift: true })).toBe('prev-chapter')
+    expect(resolveReaderKey({ key: 'ArrowRight', paged: true, shift: true })).toBe('next-chapter')
+  })
+
   it('maps space/J to paging and shift+space/K back up', () => {
     expect(resolveReaderKey({ key: ' ' })).toBe('page-down')
     expect(resolveReaderKey({ key: ' ', shift: true })).toBe('page-up')
@@ -484,6 +494,38 @@ describe('wheelPageDirection', () => {
 
   it('returns 1 for a typical page-wheel delta', () => {
     expect(wheelPageDirection(40)).toBe(1)
+  })
+})
+
+describe('fixedSelectionPopupPosition', () => {
+  const viewport = { width: 1200, height: 800 }
+
+  it('pins the popup to the bottom centre of the viewport', () => {
+    const pos = fixedSelectionPopupPosition({ viewport, popup: { width: 360, height: 88 } })
+    expect(pos).toEqual({ x: 420, y: 616 })
+  })
+
+  it('keeps the default 96px clearance above the bottom edge', () => {
+    const pos = fixedSelectionPopupPosition({ viewport, popup: { width: 360, height: 88 }, bottom: 96 })
+    expect(pos.y).toBe(800 - 88 - 96)
+  })
+
+  it('centres a different popup height (the note editor)', () => {
+    const pos = fixedSelectionPopupPosition({ viewport, popup: { width: 340, height: 220 } })
+    expect(pos.x).toBe(430)
+    expect(pos.y).toBe(484)
+  })
+
+  it('clamps into the viewport when the popup is taller than the space', () => {
+    const pos = fixedSelectionPopupPosition({ viewport: { width: 300, height: 200 }, popup: { width: 360, height: 240 } })
+    expect(pos.x).toBe(8)
+    expect(pos.y).toBe(8)
+  })
+
+  it('falls back to finite numbers for a degenerate viewport', () => {
+    const pos = fixedSelectionPopupPosition({ viewport: { width: 0, height: 0 }, popup: { width: 0, height: 0 } })
+    expect(Number.isFinite(pos.x)).toBe(true)
+    expect(Number.isFinite(pos.y)).toBe(true)
   })
 })
 

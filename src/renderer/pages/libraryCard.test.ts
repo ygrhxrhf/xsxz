@@ -72,22 +72,15 @@ describe('library cover helpers', () => {
     expect(libraryFailureLabel({ status: 'ready', readyCount: 10, chapterCount: 10 })).toBe('')
   })
 
-  it('builds a file:// cover src and maps setCover errors', () => {
+  it('builds a spbf-cover src and maps setCover errors', () => {
     expect(libraryCoverFileName('cover.jpg')).toBe('cover.jpg')
     expect(libraryCoverFileName('cover.PNG')).toBe('cover.png')
     expect(libraryCoverFileName('../cover.jpg')).toBe(null)
     expect(libraryCoverFileName('cover.gif')).toBe(null)
-    expect(libraryCoverSrc('D:\\spbf\\library', 'd_abc', 'cover.jpg')).toBe(
-      'file:///D:/spbf/library/d_abc/cover.jpg',
-    )
-    expect(libraryCoverSrc('/tmp/library', 'd_abc', 'cover.webp')).toBe(
-      'file:///tmp/library/d_abc/cover.webp',
-    )
-    expect(libraryCoverSrc('D:\\spbf\\My Library', 'd_abc', 'cover.png')).toBe(
-      'file:///D:/spbf/My%20Library/d_abc/cover.png',
-    )
-    expect(libraryCoverSrc('/tmp/library', '../escape', 'cover.jpg')).toBe(null)
-    expect(libraryCoverSrc('/tmp/library', 'd_abc', 'cover.jpeg')).toBe(null)
+    expect(libraryCoverSrc('d_abc', 'cover.jpg')).toBe('spbf-cover://c/d_abc/cover.jpg')
+    expect(libraryCoverSrc('d_abc', 'cover.webp')).toBe('spbf-cover://c/d_abc/cover.webp')
+    expect(libraryCoverSrc('../escape', 'cover.jpg')).toBe(null)
+    expect(libraryCoverSrc('d_abc', 'cover.jpeg')).toBe(null)
     expect(mapLibraryCoverError('封面超过 8MB')).toBe('封面不能超过 8MB')
     expect(mapLibraryCoverError('封面不能超过 8MB')).toBe('封面不能超过 8MB')
     expect(mapLibraryCoverError('仅支持 jpg / png / webp 封面')).toBe('仅支持 jpg、png、webp')

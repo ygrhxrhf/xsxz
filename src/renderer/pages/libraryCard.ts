@@ -264,31 +264,16 @@ export function libraryCoverFileName(coverPath?: string | null): string | null {
   return name.toLowerCase()
 }
 
-function encodeFileUrlPath(unixPath: string): string {
-  return unixPath
-    .split('/')
-    .map((segment) => {
-      if (segment === '') return ''
-      if (/^[A-Za-z]:$/.test(segment)) return segment
-      return encodeURIComponent(segment)
-    })
-    .join('/')
-}
-
-export function libraryCoverSrc(
-  libraryPath: string,
-  bookId: string,
-  coverPath?: string | null,
-): string | null {
+/**
+ * 封面走主进程的 spbf-cover 协议（见 src/main/coverProtocol.ts），渲染层只给书 id 与文件名。
+ * 不用 file://：开发模式页面来自 http 源，Chromium 会拦住 file:// 图片。
+ */
+export function libraryCoverSrc(bookId: string, coverPath?: string | null): string | null {
   const file = libraryCoverFileName(coverPath)
-  const root = (libraryPath || '').trim()
   const id = (bookId || '').trim()
-  if (!file || !root || !id) return null
+  if (!file || !id) return null
   if (id.includes('..') || /[\\/]/.test(id)) return null
-  const unixRoot = root.replace(/\\/g, '/').replace(/\/+$/g, '')
-  const abs = `${unixRoot}/${id}/${file}`
-  const withLead = abs.startsWith('/') ? abs : `/${abs}`
-  return `file://${encodeFileUrlPath(withLead)}`
+  return `spbf-cover://c/${encodeURIComponent(id)}/${file}`
 }
 
 export function mapLibraryCoverError(message?: string | null): string {

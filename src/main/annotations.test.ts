@@ -125,6 +125,48 @@ describe('annotations（书签/划线存储）', () => {
     expect((await listAnnotations('d_anno')).find((a) => a.id === bare.id)?.noteSource).toBeUndefined()
   })
 
+  it('tags 归一化并可按补丁替换，颜色只接受白名单', async () => {
+    const hl = await addAnnotation({
+      bookId: 'd_anno',
+      chapterId: 'c0001',
+      kind: 'highlight',
+      start: 0,
+      end: 4,
+      excerpt: '张若尘',
+      tags: ['#Quote', ' quote ', '#  注意力', ''],
+      color: 'green',
+    })
+    // 去 # 、首尾空白与全大写重复项；空串不落盘
+    expect(hl.tags).toEqual(['quote', '注意力'])
+    expect(hl.color).toBe('green')
+
+    const retagged = await updateAnnotation('d_anno', hl.id, { tags: ['#Quote'] })
+    expect(retagged?.tags).toEqual(['quote'])
+
+    // 传空数组清空标签；非法颜色不覆盖旧值
+    const cleared = await updateAnnotation('d_anno', hl.id, { tags: [], color: 'pink' as never })
+    expect('tags' in (cleared ?? {})).toBe(false)
+    expect(cleared?.color).toBe('green')
+
+    const recolored = await updateAnnotation('d_anno', hl.id, { color: 'purple' })
+    expect(recolored?.color).toBe('purple')
+  })
+
+  it('非法 tags 与 color 在写入时丢弃，不留脏字段', async () => {
+    const hl = await addAnnotation({
+      bookId: 'd_anno',
+      chapterId: 'c0001',
+      kind: 'highlight',
+      start: 0,
+      end: 4,
+      excerpt: '张若尘',
+      tags: 'quote' as never,
+      color: 'pink' as never,
+    })
+    expect('tags' in hl).toBe(false)
+    expect('color' in hl).toBe(false)
+  })
+
   it('removes annotations', async () => {
     const a = await addAnnotation({
       bookId: 'd_anno',

@@ -1,5 +1,5 @@
 import { computed, ref } from 'vue'
-import type { Annotation, AiMemoryCharacter } from '@shared/types'
+import type { Annotation, AnnotationColor, AiMemoryCharacter } from '@shared/types'
 import { relocateRange } from '@shared/paragraphSearch'
 
 /**
@@ -34,6 +34,15 @@ export interface ReaderSelectionRange {
 /** 生词本只展示前若干条：这是纯视图，不落盘、不加 IPC。 */
 const WORDBOOK_TERM_LIMIT = 60
 
+/** 划线颜色白名单与界面文案；与主进程归一、磁盘枚举三处同一套取值。 */
+export const MARK_COLORS: ReadonlyArray<{ value: AnnotationColor; label: string }> = [
+  { value: 'yellow', label: '黄' },
+  { value: 'green', label: '绿' },
+  { value: 'blue', label: '蓝' },
+  { value: 'red', label: '红' },
+  { value: 'purple', label: '紫' },
+]
+
 export function useReaderMarks(deps: ReaderMarksDeps) {
   const annotations = ref<Annotation[]>([])
   const lostHighlightIds = ref<Set<string>>(new Set())
@@ -63,6 +72,24 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
     return [...annotations.value].sort(
       (a, b) => (order.get(a.chapterId) ?? 1e9) - (order.get(b.chapterId) ?? 1e9) || a.start - b.start,
     )
+  })
+
+  /**
+   * 标记按 `#tag` 聚类：标签分组按名称排序，「未分类」固定最后；
+   * 一条标记有多个标签时在每个分组各出现一次——这是筛选视图，不是树，不复制数据。
+   */
+  const markGroups = computed(() => {
+    const groups = new Map<string, Annotation[]>()
+    for (const item of sortedMarks.value) {
+      for (const tag of item.tags?.length ? item.tags : ['']) {
+        const list = groups.get(tag)
+        if (list) list.push(item)
+        else groups.set(tag, [item])
+      }
+    }
+    return [...groups.entries()]
+      .sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b, 'zh')))
+      .map(([tag, items]) => ({ key: tag || 'untagged', tag: tag || null, items }))
   })
 
   /** 生词本是纯视图：读者划过的词句加上记忆里已核实的人物，都不另建存储。 */
@@ -204,6 +231,20 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
     editingNoteId.value = ''
   }
 
+  /** 改变划线颜色；以落盘结果为准，失败不动内存里的颜色。 */
+  async function setColor(annotation: Annotation, color: AnnotationColor): Promise<void> {
+    const bookId = deps.bookId()
+    if (!bookId) return
+    const res = await window.api.annotations.update(bookId, annotation.id, { color })
+    if (!res.ok) {
+      deps.notify('error', res.message || '颜色保存失败')
+      return
+    }
+    if (res.item.color) annotation.color = res.item.color
+    else delete annotation.color
+    deps.notify('success', '划线颜色已保存')
+  }
+
   async function remove(annotation: Annotation): Promise<void> {
     const bookId = deps.bookId()
     if (!bookId) return
@@ -227,6 +268,8 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
     currentHighlightRanges,
     chapterBookmark,
     sortedMarks,
+    markGroups,
+    markColors: MARK_COLORS,
     wordbookHighlights,
     wordbookTerms,
     wordbookTrimmed,
@@ -237,6 +280,7 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
     addNote,
     toggleBookmark,
     saveNote,
+    setColor,
     remove,
     deleteConfirmText,
   }

@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { selectionRangeOffsets } from './selectionOffsets'
-import { selectionPopupPosition } from './readerHelpers'
+import { fixedSelectionPopupPosition, selectionPopupPosition } from './readerHelpers'
 
 /**
  * 阅读器的「选区工具条」域：选中正文后浮出的那条工具条，以及选区 → 规范化坐标的接线。
@@ -17,6 +17,11 @@ export interface ReaderSelectionDeps {
   normalizedBody: () => string
   /** 正文容器是否就绪：没就绪就不认选区 */
   hasContent: () => boolean
+  /**
+   * 几何是否不可信（真实书籍俯仰时）。为真则工具条改贴视口底部居中，
+   * 不再读选区矩形——那条矩形在 3D 变换下最多偏一整行。
+   */
+  fixedAnchor?: () => boolean
   /** naive-ui 的 message API：同形注入，搬来的代码不用改调用姿势 */
   message: { error: (text: string) => void; success: (text: string) => void; warning: (text: string) => void; info: (text: string) => void }
   /** 标记域（同形注入：被搬代码里的 marks.addHighlight / marks.addNote 原样可用） */
@@ -28,11 +33,24 @@ export interface ReaderSelectionDeps {
 
 export function useReaderSelection(deps: ReaderSelectionDeps) {
   const { paragraphStarts, normalizedBody, hasContent, message, marks } = deps
+  const fixedAnchor = deps.fixedAnchor ?? (() => false)
 
 const selPopupX = ref(0)
 const selPopupY = ref(0)
 const lastSelRect = ref({ top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 })
+
 function applySelPopupPosition(popup: { width: number; height: number }) {
+  // 俯仰状态下选区矩形会随透视偏移（实测最多一整行），工具条改用固定落点：
+  // 贴在视口底部居中，不读选区几何，也就不会被变换带偏。
+  if (fixedAnchor()) {
+    const fixed = fixedSelectionPopupPosition({
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      popup,
+    })
+    selPopupX.value = fixed.x
+    selPopupY.value = fixed.y
+    return
+  }
   const pos = selectionPopupPosition({
     range: lastSelRect.value,
     viewport: { width: window.innerWidth, height: window.innerHeight },

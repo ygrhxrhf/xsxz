@@ -88,6 +88,19 @@ describe('decorateText', () => {
     expect(segs[0]).toEqual({ text: '只有', hit: false, hl: true })
     expect(decorateText('纯文本', '', [])).toEqual([{ text: '纯文本', hit: false, hl: false }])
   })
+
+  it('把划线颜色带到被覆盖的片段上，未覆盖片段不带该字段', () => {
+    const text = '月光照在墙上，月光下有人走过。'
+    const segs = decorateText(text, '', [
+      { start: 0, end: 2, color: 'green' },
+      { start: 8, end: 10, color: 'purple' },
+    ])
+    expect(segs[0]).toEqual({ text: '月光', hit: false, hl: true, color: 'green' })
+    // 第二段颜色覆盖的是索引 8–10（「光下」），按边界切成多片但逐片都带同一颜色
+    expect(segs.filter((s) => s.color === 'purple').map((s) => s.text).join('')).toBe('光下')
+    expect(segs.filter((s) => s.hl).map((s) => s.text).join('')).toBe('月光光下')
+    expect(decorateText('纯文本', '', [])[0]).toEqual({ text: '纯文本', hit: false, hl: false })
+  })
 })
 
 describe('relocateRange（划线漂移校正）', () => {

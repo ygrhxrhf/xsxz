@@ -3,7 +3,12 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { atomicWriteText } from './atomicFile'
 import { bookDir, loadBook, withBookLock } from './library'
-import type { Annotation, AnnotationNoteSource, AnnotationUpdate } from '../shared/types'
+import type {
+  Annotation,
+  AnnotationColor,
+  AnnotationNoteSource,
+  AnnotationUpdate,
+} from '../shared/types'
 
 interface AnnotationsFile {
   version: number
@@ -15,6 +20,32 @@ const EMPTY: AnnotationsFile = { version: 1, items: [] }
 /** 备注出处只有两种合法取值；其余（含外部塞进来的脏值）一律按缺省处理。 */
 function normalizeNoteSource(value: unknown): AnnotationNoteSource | undefined {
   return value === 'user' || value === 'ai' ? value : undefined
+}
+
+const ANNOTATION_COLORS: readonly AnnotationColor[] = ['yellow', 'green', 'blue', 'red', 'purple']
+const MAX_TAGS = 50
+const MAX_TAG_LENGTH = 32
+
+/** 颜色白名单；非法值返回 undefined，由调用方决定是否保留旧值。 */
+function normalizeColor(value: unknown): AnnotationColor | undefined {
+  return ANNOTATION_COLORS.find((color) => color === value)
+}
+
+/**
+ * `#tag` 归一：去掉开头的 `#`、去除首尾空白、小写，去空、去重。
+ * 非数组（含字符串化后的脏数据）一律当作未提供。
+ */
+function normalizeTags(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const seen = new Set<string>()
+  for (const raw of value) {
+    if (typeof raw !== 'string') continue
+    const tag = raw.trim().replace(/^#+/, '').trim().toLowerCase().slice(0, MAX_TAG_LENGTH)
+    if (!tag) continue
+    seen.add(tag)
+    if (seen.size >= MAX_TAGS) break
+  }
+  return [...seen]
 }
 
 function fileFor(bookId: string): string {
@@ -69,6 +100,13 @@ export async function addAnnotation(
   const source = normalizeNoteSource(draft.noteSource)
   if (!annotation.note || !source) delete annotation.noteSource
   else annotation.noteSource = source
+  // 旧客户端与新字段混用：只保存可识别的内容，空白标签不落盘。
+  const tags = normalizeTags(draft.tags)
+  if (tags && tags.length) annotation.tags = tags
+  else delete annotation.tags
+  const color = normalizeColor(draft.color)
+  if (color) annotation.color = color
+  else delete annotation.color
   await withBookLock(draft.bookId, async () => {
     const data = await readAll(draft.bookId)
     data.items.push(annotation)
@@ -104,6 +142,16 @@ export async function updateAnnotation(
     ) {
       item.start = patch.start
       item.end = patch.end
+    }
+    if (patch.tags !== undefined) {
+      const tags = normalizeTags(patch.tags)
+      // 显式传空数组就是清空；非法（非数组）不覆盖旧值。
+      if (tags && tags.length) item.tags = tags
+      else if (tags) delete item.tags
+    }
+    if (patch.color !== undefined) {
+      const color = normalizeColor(patch.color)
+      if (color) item.color = color
     }
     updated = item
     await writeAll(bookId, data)

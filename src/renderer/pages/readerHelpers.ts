@@ -418,7 +418,12 @@ export function readerTapCanPage(opts: {
   return height - view - top >= edge
 }
 
-/** 把键盘事件解析成阅读器动作；不认识或不应处理时返回 null。 */
+/**
+ * 把键盘事件解析成阅读器动作；不认识或不应处理时返回 null。
+ *
+ * `paged` 表示当前是分页渲染层（书页 / 真实书籍）：此时左右方向键翻页，不换章——
+ * 换章只在页表走到本章末尾时由舞台交上来，方向键再跳章会把整章内容跳过去。
+ */
 export function resolveReaderKey(opts: {
   key: string
   targetTag?: string | null
@@ -426,11 +431,17 @@ export function resolveReaderKey(opts: {
   anyDrawerOpen?: boolean
   ctrlOrMeta?: boolean
   shift?: boolean
+  paged?: boolean
 }): ReaderKeyAction | null {
   if (opts.ctrlOrMeta) return null
   const tag = opts.targetTag?.toUpperCase() ?? ''
   if (TEXT_ENTRY_TAGS.has(tag) || opts.isContentEditable) return null
   if (opts.anyDrawerOpen) return opts.key === 'Escape' ? 'close-drawer' : null
+  if (opts.paged) {
+    // Shift+方向键仍换章：分页模式下左右键已经让位给翻页，换章不能没有键盘入口。
+    if (opts.key === 'ArrowLeft') return opts.shift ? 'prev-chapter' : 'page-up'
+    if (opts.key === 'ArrowRight') return opts.shift ? 'next-chapter' : 'page-down'
+  }
   if (opts.key === 'ArrowLeft') return 'prev-chapter'
   if (opts.key === 'ArrowRight') return 'next-chapter'
   if (opts.key === ' ') return opts.shift ? 'page-up' : 'page-down'
@@ -573,5 +584,31 @@ export function selectionPopupPosition(opts: SelectionPopupPositionOpts): {
     x: clampPopupAxis(x, popupW, vpW, margin),
     y: clampPopupAxis(y, popupH, vpH, margin),
     placement,
+  }
+}
+
+/**
+ * 选区工具条的固定落点：贴在视口底部居中，完全不读选区几何。
+ *
+ * 真实书籍俯仰（`rotateX`）时 Chromium 给出的文本矩形最多会偏移一整行，
+ * 而浏览器自己的 caret 求解在 35° 也开始返回别的节点——几何已经不可信。
+ * 这个角度下改用固定落点：既不会压住选中文字，也不会随角度漂移。
+ */
+export function fixedSelectionPopupPosition(opts: {
+  viewport: { width: number; height: number }
+  popup: { width: number; height: number }
+  /** 距视口底部的留白，默认 96px（避开底部工具栏） */
+  bottom?: number
+  margin?: number
+}): { x: number; y: number } {
+  const margin = nonNegOr(opts?.margin, 8)
+  const bottom = nonNegOr(opts?.bottom, 96)
+  const popupW = nonNegOr(opts?.popup?.width)
+  const popupH = nonNegOr(opts?.popup?.height)
+  const vpW = nonNegOr(opts?.viewport?.width)
+  const vpH = nonNegOr(opts?.viewport?.height)
+  return {
+    x: clampPopupAxis(vpW / 2 - popupW / 2, popupW, vpW, margin),
+    y: clampPopupAxis(vpH - popupH - bottom, popupH, vpH, margin),
   }
 }

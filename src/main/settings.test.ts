@@ -35,6 +35,7 @@ import {
   assertTrustedAiEndpoint,
   getApiKey,
   getProxyPassword,
+  getTencentMapKey,
   getSettings,
   isLegacyDeepSeekModel,
   normalizeAiPrefs,
@@ -72,6 +73,29 @@ describe('settings atomic persistence', () => {
     expect(await readFile(SETTINGS_FILE, 'utf8')).not.toContain('tts-secret')
     await updateSettings({ ttsApiKey: '' })
     expect((await getSettings()).tts.onlineKeyConfigured).toBe(false)
+  })
+
+  it('stores the Tencent map key encrypted and reports only its configured flag', async () => {
+    await updateSettings({ tencentMapKey: '  map-key-1  ' })
+    const settings = await getSettings()
+    expect(settings.tencentMapKeyConfigured).toBe(true)
+    expect(settings.tencentMapKeyUnreadable).toBe(false)
+    expect(JSON.stringify(settings)).not.toContain('map-key-1')
+    expect(await readFile(SETTINGS_FILE, 'utf8')).not.toContain('map-key-1')
+    // 渲染层只在打开地图页时按需取明文
+    expect(await getTencentMapKey()).toBe('map-key-1')
+
+    ss.decryptFails = true
+    resetSettingsCacheForTests()
+    const unreadable = await getSettings()
+    expect(unreadable.tencentMapKeyConfigured).toBe(false)
+    expect(unreadable.tencentMapKeyUnreadable).toBe(true)
+
+    ss.decryptFails = false
+    resetSettingsCacheForTests()
+    await updateSettings({ tencentMapKey: '' })
+    expect((await getSettings()).tencentMapKeyConfigured).toBe(false)
+    expect(await getTencentMapKey()).toBe('')
   })
 
   it('refuses to save any setting when the keyring cannot hold an API Key', async () => {
@@ -121,13 +145,22 @@ describe('settings atomic persistence', () => {
     expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf8'))).not.toHaveProperty('libraryPath')
     expect((await getSettings()).libraryPath).toBe(defaultLibraryPath())
   })
-  it('keeps automatic book overview disabled until explicitly enabled', async () => {
-    expect((await getSettings()).ai?.autoBookOverview).toBe(false)
-    await updateSettings({ ai: { autoBookOverview: true } })
+  it('全书概览模型默认沿用全局模型，只接受去空白后的名字', async () => {
+    expect((await getSettings()).ai?.overviewModel).toBe('')
+    await updateSettings({ ai: { overviewModel: '  deepseek-v4-flash  ' } })
     resetSettingsCacheForTests()
+    expect((await getSettings()).ai?.overviewModel).toBe('deepseek-v4-flash')
+    await updateSettings({ ai: { overviewModel: '' } })
+    expect((await getSettings()).ai?.overviewModel).toBe('')
+  })
+
+  it('自动全书概览默认开启，用户显式关闭后才停', async () => {
     expect((await getSettings()).ai?.autoBookOverview).toBe(true)
     await updateSettings({ ai: { autoBookOverview: false } })
+    resetSettingsCacheForTests()
     expect((await getSettings()).ai?.autoBookOverview).toBe(false)
+    await updateSettings({ ai: { autoBookOverview: true } })
+    expect((await getSettings()).ai?.autoBookOverview).toBe(true)
   })
 
   it('自动追剧默认关闭，单次运行章数只接受正整数区间', async () => {
@@ -242,17 +275,29 @@ describe('normalizeReaderPrefs', () => {
     expect(normalizeReaderPrefs({ focusMode: 'off' }).focusMode).toBe('off')
   })
 
-  it('defaults missing or illegal readingMode to scroll while keeping legal values', () => {
+  it('defaults missing or illegal readingMode to screen while keeping legal values', () => {
     expect(normalizeReaderPrefs({ paragraphIndent: true })).toMatchObject({
       paragraphIndent: true,
-      readingMode: 'scroll',
+      readingMode: 'screen',
     })
     expect(normalizeReaderPrefs({ readingMode: 'paged', focusMode: 'one' })).toMatchObject({
-      readingMode: 'scroll',
+      readingMode: 'screen',
       focusMode: 'one',
     })
     expect(normalizeReaderPrefs({ readingMode: 'screen' }).readingMode).toBe('screen')
     expect(normalizeReaderPrefs({ readingMode: 'scroll' }).readingMode).toBe('scroll')
+  })
+
+  it('bookView 与 handwritingFont 缺省或非法时回退，合法值保留', () => {
+    // 缺字段 = 经典模式：与 DEFAULT_READER_PREFS.bookView 一致，缺省不分页。
+    expect(normalizeReaderPrefs({}).bookView).toBe('classic')
+    expect(normalizeReaderPrefs({ bookView: 'screen' }).bookView).toBe('classic')
+    expect(normalizeReaderPrefs({ bookView: 'classic' }).bookView).toBe('classic')
+    expect(normalizeReaderPrefs({ bookView: 'realbook' }).bookView).toBe('realbook')
+    expect(normalizeReaderPrefs({}).handwritingFont).toBe('none')
+    expect(normalizeReaderPrefs({ handwritingFont: 'brush' }).handwritingFont).toBe('none')
+    expect(normalizeReaderPrefs({ handwritingFont: 'kai' }).handwritingFont).toBe('kai')
+    expect(normalizeReaderPrefs({ handwritingFont: 'xingshu' }).handwritingFont).toBe('xingshu')
   })
 
   it('夹紧自动滚屏速度并默认关闭自动续章', () => {
@@ -453,8 +498,9 @@ describe('AI settings compatibility', () => {
       recapLength: 'detailed',
       budgetWarningTokens: DEFAULT_AI_PREFS.budgetWarningTokens,
       trustedCustomOrigins: ['https://example.com', 'http://example.com:8080'],
-      autoBookOverview: false,
+      autoBookOverview: true,
       autoMonthlyTokenLimit: DEFAULT_AI_PREFS.autoMonthlyTokenLimit,
+      overviewModel: '',
       autoReadingFollow: false,
       followMaxChaptersPerRun: DEFAULT_AI_PREFS.followMaxChaptersPerRun,
       promptMode: {
