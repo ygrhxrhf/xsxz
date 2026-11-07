@@ -5,19 +5,28 @@
  * **一道连续弯曲的纸**：靠近书脊的那一片还平躺在书上，越往外弯得越急，
  * 最后甩到对面压下去。弯是一个连续量，没有「平的一段 + 折一下 + 平的一段」。
  *
- * 一次翻页里有三件事同时发生，缺一件就「机械」：
- *   1. 外缘领跑：手指捏着纸角把外缘甩出去，纸角先到对面；
- *   2. 书脊侧滞后：靠近书脊的那一片还躺在书上，直到纸快落定才跟着压平——
- *      正是这条滞后让纸弯出弧面；两端同步转的话，整张纸就是一个刚体；
- *   3. 纸面离桌：整张纸在飞行中抬离桌面、上缘朝观者倾过去（「帆」起来）。
+ * ## 一条时间线拆成三条
  *
- * 转角由两端的角度与一条分布曲线决定：
- *   θ(s) = 书脊侧角 + (外缘角 − 书脊侧角) · s^k
- * 其中 s 是页宽上的归一化位置，k > 1 表示**越往外弯得越急**——
- * 真纸被甩起来时曲率就集中在纸角那一小段，所以纸角卷得最急、像纸卷。
+ * 一次翻页里同时发生三件事，各有各的时间线，合起来才是「翻一张纸」：
  *
- * 位置由转角积分得到：把纸看成一条首尾相接的折线，从书脊出发逐带累加——
- * 第 i 条的起点是第 i−1 条的终点。这一层是纯函数，形状规则可以单测。
+ *   1. **纸角行程**（`tipProgress`）：被捏住的纸角甩到了全程的百分之多少。
+ *      它领跑——先越过正对观者的位置，再落向对面。
+ *   2. **书脊侧行程**（`rootProgress`）：还连在书上的那一端走到哪了。
+ *      它**晚起**：纸角已经在飞了，书脊这一片还贴在书上。
+ *   3. **纸面离桌**（`liftEnvelope`）：整张纸离开桌面、上缘朝观者倾过去的量。
+ *
+ * 纸角的行程与书脊侧的行程之差，就是纸弯出来的那个弓。弯度自己起自己落，
+ * 不需要额外维护。
+ *
+ * ## 曾经踩过的坑：钳制弯度会把纸角钉死
+ *
+ * 早先的写法是「弯度一旦超过纸的挺度上限，就压住纸角不让它再转」。
+ * 结果是纸角在行程的 30%–62% 之间被钉在 −90° 一动不动，直到后段才一次性甩到
+ * 落位角。画面上就是纸的外缘卡住、只有里侧在转——那正是「僵硬、机械」的读感。
+ *
+ * 现在弯度上限退化成一条**护栏**：几何按自己的曲线走，正常行程下峰值弯度
+ * （约 57°）远低于上限，护栏根本不触发；即便触发，也是整条曲线一起压缩，
+ * 不会出现某一段被钉住。三条时间线全程单调：纸角一旦回摆，画面上就是纸在抖。
  */
 
 /**
@@ -39,15 +48,11 @@ export const FLIP_DURATION_MS = 700
  * 这是「纸能弯，但弯不成铁皮」的护栏。真实书页在翻动中是**弓起来的**，
  * 不是卷成筒。
  *
- * 峰值取 108°：纸弯出一个弓形，靠近纸角那一段卷得最急（像纸卷），
- * 其余部分还是一张宽面。
- *
- * 超限时**压住外缘**（纸角那一头），不动书脊侧：真纸被书脊那一点拴着，
- * 靠近书脊的一片直到快落定都还贴在书上。若把书脊侧往前拉，
- * 纸就从书脊上翘开了——根部离桌，画面上多出一道楔形缝，
- * 读起来像一块绕着轴转的硬板，而不是纸。
+ * 峰值取 64°：正常行程下的峰值弯度约 57°，离上限还有余量，护栏平时不触发；
+ * 万一触发也是整条曲线一起压缩——不会出现某一段被钉住不动的情况
+ * （那正是早先实现「僵硬、机械」的根源）。
  */
-export const FLIP_MAX_BEND_DEG = 108
+export const FLIP_MAX_BEND_DEG = 64
 
 /**
  * 纸角外翻的额外卷曲（deg）：最外那一段再往回卷一点。
@@ -56,12 +61,12 @@ export const FLIP_MAX_BEND_DEG = 108
  * 而是一小段翻回来的卷边。没有这道卷曲，纸再弯也读成一块微微起拱的板，
  * 设计图里那一下明显的「纸角翻过去」就没了。
  *
- * 卷曲只加在最外 20% 的纸宽上（见 FLIP_CURL_SHAPE_START），纸面中段仍是连续的弧。
+ * 卷曲只加在最外一小段纸宽上（见 FLIP_CURL_SHAPE_START），纸面中段仍是连续的弧。
  */
-const FLIP_EDGE_CURL_DEG = 24
+const FLIP_EDGE_CURL_DEG = 9
 
-/** 卷曲从纸宽的 80% 处开始，到外缘达到全额。 */
-const FLIP_CURL_SHAPE_START = 0.8
+/** 卷曲从纸宽的 86% 处开始，到外缘达到全额。 */
+const FLIP_CURL_SHAPE_START = 0.86
 
 /**
  * 卷曲的包络：起翻后很快出现，落定前收回。
@@ -70,9 +75,9 @@ const FLIP_CURL_SHAPE_START = 0.8
  * 若卷曲一直留着，页面在翻页前后就不是平的纸，落定时会看到一个歪掉的纸角。
  */
 function curlEnvelope(t: number): number {
-  if (t <= 0.12) return smootherstep(t / 0.12)
-  if (t <= 0.85) return 1
-  return 1 - smootherstep((t - 0.85) / 0.15)
+  if (t <= 0.1) return smootherstep(t / 0.1)
+  if (t <= 0.55) return 1
+  return 1 - smootherstep((t - 0.55) / 0.18)
 }
 
 /**
@@ -167,7 +172,6 @@ export function flipEase(progress: number): number {
   const t = clamp01(progress)
   return 0.5 - 0.5 * Math.cos(Math.PI * t)
 }
-
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.max(0, Math.min(1, value))
@@ -180,41 +184,105 @@ function smootherstep(value: number): number {
 }
 
 /**
- * 外缘进度（0–1）：被捏住的纸角甩到了全程的百分之多少。
+ * 纸角的行程（0–1）：被捏住的纸角甩到了全程的百分之多少。
  *
- * 起手快、落定慢：手指一甩纸角就窜出去，快到贴住对面的那一下还要压平。
- * 曲线 1−(1−t)^3 在起点斜率最大（甩）、在终点斜率为 0（贴实）。
+ * 这是**主时间线**：纸角领跑，它决定整张纸此刻在哪儿。其余两条时间线
+ * （书脊侧行程、纸面离桌）都由它派生，纸与影子与书的随动才不会各走各的。
  *
- * 甩的幅度必须够大：行程前四分之一里纸角就该翻过 90°（正对观者），
- * 否则纸像被慢慢推开的门，而不是被甩过去的。
+ * 两段行程拼成一条曲线：
+ *   1. **甩**（0 → FLING_END）：纸角被甩出去。用 2u²−u³ 而不是 u：
+ *      起点斜率为 0（纸不是一上来就在动，是被捏起来的那一下带动的），
+ *      终点斜率最大（正甩到劲头上）。这一段结束时纸角已越过正对观者的位置。
+ *   2. **落**（FLING_END → 1）：纸角被按向对面。用 v − v²/2：
+ *      起手斜率与上一段末端的斜率**连续**（两段的系数由 FLING_END 推出），
+ *      终点斜率为 0（纸贴住了）。
+ *
+ * 两段的斜率连续很关键：接缝处若有一处速度突变，画面上就是纸「顿一下」——
+ * 那比慢更刺眼。
  */
+const FLING_END = 0.34
+const FLING_FRACTION = 0.58
+const FLING_JOIN_SPEED = 1.5
+
+/** 单段 Hermite 行程：端点位置和端点速度都可控，避免分段曲线在接缝处顿一下。 */
+function hermiteSegment(progress: number, start: number, end: number, startTangent: number, endTangent: number): number {
+  const u = clamp01(progress)
+  const u2 = u * u
+  const u3 = u2 * u
+  const smooth = 3 * u2 - 2 * u3
+  const tangent = u3 - u2
+  return start + (end - start) * smooth + (startTangent * (u3 - 2 * u2 + u) + endTangent * tangent)
+}
+
 function tipProgress(t: number): number {
-  return 1 - Math.pow(1 - clamp01(t), 3)
+  if (t <= 0) return 0
+  if (t >= 1) return 1
+  if (t < FLING_END) {
+    // 甩段与落段共享同一个物理角速度，接缝处不会突然加速或刹停。
+    return hermiteSegment(t / FLING_END, 0, FLING_FRACTION, 0, FLING_JOIN_SPEED * FLING_END)
+  }
+  return hermiteSegment(
+    (t - FLING_END) / (1 - FLING_END),
+    FLING_FRACTION,
+    1,
+    FLING_JOIN_SPEED * (1 - FLING_END),
+    0,
+  )
 }
 
 /**
- * 书脊侧进度（0–1）：还连在书上的那一端转到了全程的百分之多少。
+ * 书脊侧的行程（0–1）：还连在书上的那一端走到哪了。
  *
- * 它**远远落后**外缘：真实翻页是捏着外角往回拽，靠近书脊的那一片几乎还躺在书上，
+ * 它**晚起**：真实翻页是捏着外角往回拽，靠近书脊的那一片几乎还躺在书上，
  * 直到纸快落定才跟着压平。这条滞后是「纸在卷」与「板子在转」的分界——
  * 书脊侧若跟着一起转，整张纸就成了一个刚体，卷不出弧面。
+ *
+ * 晚起的方式是**整体延后**：把纸角的行程曲线按 ROOT_DELAY 往后挪一段，
+ * 再重新归一化。延后而不是压缩，是为了让书脊侧的曲线与纸角**形状相同**——
+ * 同一族曲线取不同的时间偏移，两端速度都连续，不会出现新的接缝。
  */
-function spineProgress(t: number): number {
-  if (t <= 0.55) return 0
-  return smootherstep((t - 0.55) / 0.45)
+const ROOT_DELAY = 0.18
+
+function rootProgress(t: number): number {
+  if (t <= ROOT_DELAY) return 0
+  if (t >= 1) return 1
+  return tipProgress((t - ROOT_DELAY) / (1 - ROOT_DELAY))
 }
 
 /**
- * 弯度沿页宽的分布：θ(s) = 书脊侧角 + (外缘角 − 书脊侧角) · s^k。
+ * 纸面转角沿页宽的分布指数（>1）：越往外弯得越急。
  *
- * k = 1.5 表示曲率**匀匀地铺在整张纸上**：纸弯成一个连续的弧，
- * 像一段弯曲的拱。k 大于 2 时，只有最外一小段卷起来，中段几乎还是一张
- * 直纸——画面上就成了「一块板 + 一个卷边」，读起来仍然是硬卡片在摆。
+ * 真纸被甩起来时曲率就集中在纸角那一小段，所以纸角卷得最急、像纸卷。
  *
- * 真实的纸翻过去时，整张纸都在弯，只是越靠纸角弯得越急一点。
- * 所以指数取 1.5：这是「一条连续曲线」与「一串折面」的分界。
+ * 指数随时间**回落**：起手时纸弯得急（纸角那一小截卷起来），
+ * 落定途中弯度摊开成一张宽面。指数从 1.75 降到 1.05，
+ * 末段接近 1 就是「整张纸一起摊平」——真纸落位时不是一折一折地压，是整片落下去。
  */
-const FLIP_CURL_EXPONENT = 1.5
+const FLIP_CURL_EXPONENT_START = 1.45
+const FLIP_CURL_EXPONENT_END = 1.05
+
+function curlExponent(t: number): number {
+  return FLIP_CURL_EXPONENT_START
+    + (FLIP_CURL_EXPONENT_END - FLIP_CURL_EXPONENT_START) * smootherstep(t / 0.55)
+}
+
+export interface FlipPhases {
+  /** 纸角的行程进度（0–1） */
+  tip: number
+  /** 书脊侧的行程进度（0–1） */
+  root: number
+}
+
+/**
+ * 翻页此刻的相位。
+ *
+ * 渲染层（影子、离桌、书的随动）与几何共用这一组相位，
+ * 纸与影子才不会各走各的——那正是「几段动画拼在一起」的读感。
+ */
+export function flipPhases(progress: number): FlipPhases {
+  const t = clamp01(progress)
+  return { tip: tipProgress(t), root: rootProgress(t) }
+}
 
 /**
  * 竖带的分布指数（<1）：越靠纸角，竖带越窄。
@@ -245,41 +313,33 @@ export function flipPoses(progress: number, options: FlipPoseOptions): FlipSlice
   const from = Number.isFinite(options.fromDeg) ? options.fromDeg : 0
   const to = Number.isFinite(options.toDeg) ? options.toDeg : 0
   const t = clamp01(progress)
-  // 总节奏：先把线性时间换成翻页的真实节奏（起手慢、中段快、落定慢）。
-  // 这一层在几何模块内部统一施加，竖带、离桌、随动共用同一个时间源。
-  const te = flipEase(t)
   const span = to - from
-
-  const tip = tipProgress(te)
-  const spine = spineProgress(te)
-  // 书脊侧角：正常行程里就是 from + span·spine——它**不动**。
-  // 真实翻页是纸角被甩出去、书脊那一端仍被书拴着，两端角的差就是纸的弯度。
-  const spineAngle = from + span * spine
-  const rawTip = from + span * tip
-  const gap = rawTip - spineAngle
   // 甩动方向：卷曲要顺着甩的方向加，反了就成折回去。
-  const swing = Math.sign(gap) || -1
-  // 弯度超上限时压住纸角：让纸角停在「弯度刚好到上限」的位置。
-  //
-  // 压纸角而不是拉书脊侧，是因为拉书脊侧会让纸的根部离开桌面——
-  // 画面上多出一道楔形的缝，纸读成一块绕轴摆动的硬板。
-  // 压纸角只是让纸角晚一点到位，纸仍贴着书翻过去，形状仍是连续的弧。
-  //
-  // 上限要给外缘卷曲留出额度：卷曲是叠加在弯度之上的，两项之和才不超过挺度上限。
-  const bendBudget = FLIP_MAX_BEND_DEG - FLIP_EDGE_CURL_DEG
-  const tipAngle = Math.abs(gap) > bendBudget
-    ? spineAngle + Math.sign(gap || 1) * bendBudget
-    : rawTip
+  const swing = Math.sign(span) || -1
+
+  // 三条时间线：纸角领跑、书脊侧晚起，两者的差就是纸弯出的那个弓。
+  const tip = tipProgress(t)
+  const root = rootProgress(t)
+  const rootAngle = from + span * root
+  const tipAngle = from + span * tip
+  // 弯度超上限时整条曲线一起压缩：早先的写法是「压住纸角」，
+  // 那一压就把纸角钉死在某个角度上不动了，画面上纸的外缘卡住、只有里侧在转。
+  // 压缩不改变任何一条时间线的形状，纸角全程照旧在走。
+  const gap = tipAngle - rootAngle
+  const bendCap = Math.min(FLIP_MAX_BEND_DEG, Math.abs(span) * 0.9)
+  const scaledGap = Math.abs(gap) > bendCap ? Math.sign(gap) * bendCap : gap
   // 外缘卷曲的强度：起翻后很快出现（纸角被甩得卷起来），落定前收回。
-  const curl = curlEnvelope(te)
+  const curl = curlEnvelope(t)
+  // 弯度沿页宽的分布指数：起手时弯得急，落定途中摊平成一张宽面。
+  const exponent = curlExponent(t)
 
   /** 某一页宽位置 s 处的转角。 */
   const angleAt = (s: number): number => {
     const s01 = clamp01(s)
     // 外缘卷曲：只在最外一段额外翻过去，读成纸角卷起来的一小截。
     const curlShape = smootherstep((s01 - FLIP_CURL_SHAPE_START) / (1 - FLIP_CURL_SHAPE_START))
-    return spineAngle
-      + (tipAngle - spineAngle) * Math.pow(s01, FLIP_CURL_EXPONENT)
+    return rootAngle
+      + scaledGap * Math.pow(s01, exponent)
       + swing * FLIP_EDGE_CURL_DEG * curlShape * curl
   }
   const sliceWidth = width / slices
@@ -353,7 +413,7 @@ export function flipContentOpacity(angleDeg: number): number {
 }
 
 /**
- * 背面（纸的里子）的淡出系数（0–0.18）。
+ * 背面（纸的里子）的淡出系数（0–0.08）。
  *
  * 背面要**比正面留得多**：背面若跟着正面一起淡掉，纸翻过去的那一半就成了
  * 一片素净的灰板——灰板与字面之间那道直边是「机械」最扎眼的地方。
@@ -363,7 +423,7 @@ export function flipContentOpacity(angleDeg: number): number {
  */
 export function flipBackOpacity(angleDeg: number): number {
   const facing = flipFacing(angleDeg)
-  return Math.min(1, Math.max(0, (facing - 0.15) / 0.5)) * 0.18
+  return Math.min(1, Math.max(0, (facing - 0.15) / 0.5)) * 0.08
 }
 
 /**
@@ -402,10 +462,13 @@ export interface FlipSheetLift {
  * 纸面不能靠「每条带各自往上抬」来离桌：那样页脚会变成锯齿状的阶梯。
  * 真实翻页是整张纸一起离开桌面、上缘朝观者倾过去——所以位移与倾角都作用在
  * 整张纸上，各竖带只负责弯。
+ *
+ * 包络吃的是**纸角行程**而不是另设一条曲线：纸被甩起来的时候它才离桌，
+ * 纸角贴到对面时它落回桌面。纸与影子共用同一个行程，影子才不会提前出现。
  */
 export function flipSheetLift(progress: number): FlipSheetLift {
-  const t = flipEase(clamp01(progress))
-  const rise = Math.sin(Math.PI * Math.pow(t, 0.8))
+  const t = clamp01(progress)
+  const rise = Math.sin(Math.PI * tipProgress(t))
   return {
     lift: FLIP_SAIL_PX * rise,
     tilt: 9 * rise,
@@ -425,11 +488,14 @@ export interface FlipSway {
  * 真书是用手指把纸角甩过去，书身会被这一推带得微微侧倾、离桌一下；
  * 纸落定后书还有一点余颤。缺了这一层，即便纸卷得再像，书仍是钉在桌上的两块板——
  * 那就是「机械感」的来源。
+ *
+ * 随动吃的是**纸角行程**：书被手推的时机与纸被甩出去的时机是同一件事。
+ * 余颤接在落定之后，幅度越来越小。
  */
 export function flipSway(progress: number, direction: 1 | -1): FlipSway {
-  const t = flipEase(clamp01(progress))
-  // 抬起：书被托起来又落回桌面。
-  const lift = Math.sin(Math.PI * t)
+  const t = clamp01(progress)
+  // 抬起：书被托起来又落回桌面，跟纸角行程同步。
+  const lift = Math.sin(Math.PI * tipProgress(t))
   // 落定后的余颤：越来越小的一次摆动。
   const settle = t > 0.82 ? (t - 0.82) / 0.18 : 0
   const wobble = t > 0.82 ? Math.sin(settle * Math.PI * 2.5) * (1 - settle) * 1.4 : 0

@@ -19,7 +19,7 @@ import { createRealBookPaginator, findPageForInput, pageRatio, type RealBookAnch
 import { MAX_SPINE_LAYERS, spineLayers, spineStack } from './realBookSpine'
 import { measureLines } from './realBookMeasure'
 import { clampPitch, pitchFromDrag, pitchResetTarget } from './realBookPitch'
-import { FLIP_DURATION_MS, flipAngles, flipContentOpacity, flipFaceVisible, flipFacing, flipLight, flipPhases, flipPoses, flipSheetLift, flipSliceSpeeds, flipSway } from './realBookFlip'
+import { FLIP_DURATION_MS, flipAngles, flipBackOpacity, flipContentOpacity, flipFaceVisible, flipFacing, flipLight, flipPhases, flipPoses, flipSheetLift, flipSliceSpeeds, flipSway } from './realBookFlip'
 
 interface HighlightSpan {
   /** 段落下标（原始下标，与经典模式一致） */
@@ -551,6 +551,9 @@ const flipSlices = computed(() => {
     const sideOpacity = pose.angle < 90 ? 1 : 0
     // 正视程度：投影压缩的模糊量也按它给（侧对得越狠，竖条越明显）。
     const facing = flipFacing(pose.angle)
+    // 纸背只留极淡的透墨：完全没有背面，翻过去就只剩一张半透明的旧页，
+    // 看不出「纸翻过去了」。但字影不能重——重了盖在左页上就是一块灰影。
+    const backOpacity = flipBackOpacity(pose.angle)
     // 动态模糊：快的那几条带在飞，字应该是糊的。每帧都清晰的翻页读成「贴图在转」。
     //
     // 只给**一条**带加模糊：飞得最快的那条（纸角附近）。
@@ -605,6 +608,12 @@ const flipSlices = computed(() => {
         // 用等宽的 index×bandwidth 会整段错位——纸上的字与带缝对不上。
         transform: `translateX(${(-pose.offset).toFixed(2)}px)`,
         opacity: (contentOpacity * sideOpacity).toFixed(3),
+      } as Record<string, string>,
+      backContentStyle: {
+        width: `${width}px`,
+        transformOrigin: '0 0',
+        transform: `translateX(${(pose.offset + pose.width).toFixed(2)}px) scaleX(-1)`,
+        opacity: backOpacity.toFixed(3),
       } as Record<string, string>,
     }
   })
@@ -985,6 +994,22 @@ defineExpose({
                     <p
                       v-for="piece in flipSheetPieces"
                       :key="`front-${piece.key}`"
+                      class="real-book-para"
+                      :data-p="piece.original"
+                    ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                  </div>
+                  <footer class="real-book-page-foot">{{ flipSheetPageNumber || '' }}</footer>
+                  </div>
+                </div>
+              </div>
+              <div class="real-book-flip-face real-book-flip-back" v-show="slice.showBack">
+                <div class="real-book-flip-window">
+                  <div class="real-book-flip-content" :style="slice.backContentStyle">
+                  <header class="real-book-page-head">{{ chapterTitle }}</header>
+                  <div class="real-book-page-body">
+                    <p
+                      v-for="piece in flipSheetPieces"
+                      :key="`back-${piece.key}`"
                       class="real-book-para"
                       :data-p="piece.original"
                     ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
@@ -1584,6 +1609,16 @@ defineExpose({
     ),
     /* 纸纹：与静态页同源的极淡竖向纹理，翻动中的纸才不是一张白板。 */
     repeating-linear-gradient(90deg, rgba(58, 36, 16, 0.014) 0 1px, transparent 1px 3px);
+}
+
+/* 背面：与正面共面，靠 JS 显隐互斥（见 flipSlices 的 showFront / showBack）。
+   不给背面加 rotateY(180deg)：那层带着 3D 变换时窗格裁剪会失效，
+   整页正文会从窄缝里整片漏出来且方向是镜像的。镜像改在内容层做（backContentStyle）。
+
+   纸背与正面同一种纸色：纸背更暗会在左页上读成一块阴影。
+   背面只留极淡的透墨（见 flipBackOpacity），否则翻过去就只剩一张半透明的旧页。 */
+.real-book-flip-back {
+  backface-visibility: visible;
 }
 
 @media (prefers-reduced-motion: reduce) {

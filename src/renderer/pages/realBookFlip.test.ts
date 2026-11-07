@@ -68,10 +68,43 @@ describe('卷页几何', () => {
   })
 
   it('外缘那一段真的被甩过去了：外缘的转角先过半', () => {
-    const poses = pose(0.25)
+    const poses = pose(0.35)
     // 外缘已过 −90°（正对观者的那一侧），书脊侧还没到。
     expect(outerSide(poses)).toBeLessThan(-90)
     expect(spineSide(poses)).toBeGreaterThan(-90)
+  })
+
+  it('纸角全程不回摆：角度单调，绝不出现纸在抖', () => {
+    // 纸角一旦回头（角度回摆），画面上就是纸在抖——比慢更刺眼。
+    for (const step of [0, 1, 2]) {
+      const angles = pose(step / 3).map((item) => item.angle)
+      const descending = angles.every((value, index) => index === 0 || value <= angles[index - 1]!)
+      expect(descending).toBe(true)
+    }
+  })
+
+  it('纸角不被钳制钉死：中段仍在明显前进', () => {
+    // 早先的写法在弯度超限时「压住纸角」，纸角在行程 35%–55% 被钉在 −92° 不动，
+    // 整整五分之一的行程纸的外缘卡住、只有里侧在转——那正是「僵硬、机械」的根源。
+    // 这里钉住这条回归：甩到一半那一段，纸角必须一路都在明显前进。
+    const sample = (progress: number) => outerSide(pose(progress))
+    // 窗口取 30%–60%（甩的末段与弯度峰值区），旧实现在这里总位移只有 16°。
+    const travelled = Math.abs(sample(0.6) - sample(0.3))
+    expect(travelled).toBeGreaterThan(40)
+    // 窗口内不能有任何一小段几乎不动：被钳制钉死时这里是 0。
+    let minStep = Infinity
+    for (let step = 12; step <= 24; step += 1) {
+      const progress = step / 40
+      minStep = Math.min(minStep, Math.abs(sample(progress) - sample(progress - 1 / 40)))
+    }
+    expect(minStep).toBeGreaterThan(0.3)
+  })
+
+  it('书脊侧晚起：纸角已经甩出去时，书脊那一片还贴在书上', () => {
+    const poses = pose(0.25)
+    // 纸角已经走了 −65° 左右，书脊侧几乎还没动。
+    expect(Math.abs(spineSide(poses) + 8)).toBeLessThan(14)
+    expect(Math.abs(outerSide(poses) + 8)).toBeGreaterThan(40)
   })
 
   it('正反面的显隐由转角决定：任何一条带都不会两面同时画', () => {
@@ -110,6 +143,9 @@ describe('卷页几何', () => {
     // 上限是纸的挺度：弯过头就成了塑料片。
     expect(bendAt(0.5)).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
     expect(bendAt(1)).toBeCloseTo(0, 6)
+    // 峰值弯度发生在中段（纸弯成弓的那一刻），不是全程拉满。
+    const peak = Math.max(...Array.from({ length: 21 }, (_, i) => bendAt(i / 20)))
+    expect(peak).toBeGreaterThan(40)
   })
 
   it('折线首尾相接：下一条的起点就是上一条的终点', () => {
@@ -216,11 +252,11 @@ describe('卷页几何', () => {
       expect(flipContentOpacity(angle)).toBeCloseTo(0, 6)
       expect(flipBackOpacity(angle)).toBeGreaterThan(flipContentOpacity(angle))
     }
-    // 但背面不是正文，只是纸里透过来的淡淡字影：上限压得很低。
-    expect(flipBackOpacity(0)).toBeLessThanOrEqual(0.18)
-    expect(flipBackOpacity(Number.NaN)).toBeLessThanOrEqual(0.18)
-    // 正对观者时背面最厚（纸翻过来了），但仍不超过 0.18。
-    expect(flipBackOpacity(180)).toBeLessThanOrEqual(0.18)
+    // 但背面不是正文，只是纸里透过来的极淡字影：上限压得很低。
+    expect(flipBackOpacity(0)).toBeLessThanOrEqual(0.08)
+    expect(flipBackOpacity(Number.NaN)).toBeLessThanOrEqual(0.08)
+    // 正对观者时背面最厚（纸翻过来了），但仍不超过 0.08。
+    expect(flipBackOpacity(180)).toBeLessThanOrEqual(0.08)
     // 侧对到底（90°）时正反两面都看不见字影。
     expect(flipBackOpacity(90)).toBeCloseTo(0, 6)
     expect(flipContentOpacity(90)).toBeCloseTo(0, 6)

@@ -125,11 +125,12 @@ describe('RealBookStage（真实书籍舞台）', () => {
 
     const front = document.querySelector('.real-book-flip-front')
     expect(front?.querySelector('.real-book-page-head')?.textContent).toBe('第一章 测试')
+    const back = document.querySelector('.real-book-flip-back')
+    expect(back?.querySelector('.real-book-page-head')?.textContent).toBe('第一章 测试')
     // 翻动的是第 1 页（原来的右页），正反面是同一张纸：翻页只前进一页，
     // 落定后它正好落在左页上，背面若印第 2 页，落定那一帧左页会跳一下。
     expect(front?.querySelector('.real-book-page-foot')?.textContent?.trim()).toBe('1')
-    // 纸背是空白的里子：背面再印字影会在左页上读成一块灰影。
-    expect(document.querySelector('.real-book-flip-back')).toBeNull()
+    expect(back?.querySelector('.real-book-page-foot')?.textContent?.trim()).toBe('1')
     // 纸抬起来的这一侧立刻露出翻页后的下一页，否则纸底下压着一模一样的一页，看着像没翻动。
     expect(document.querySelector('.real-book-right .real-book-page-foot')?.textContent?.trim()).toBe('2')
 
