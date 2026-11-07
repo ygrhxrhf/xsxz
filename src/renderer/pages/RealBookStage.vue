@@ -1330,10 +1330,12 @@ defineExpose({
      阴影是暖的：纯灰的暗部压在奶油色纸上会发脏。 */
   --rb-page-curve: linear-gradient(
     90deg,
-    transparent 56%,
-    color-mix(in srgb, var(--rb-paper-shade) 14%, transparent) 78%,
-    color-mix(in srgb, var(--rb-paper-shade) 42%, transparent) 92%,
-    color-mix(in srgb, var(--rb-paper-shade) 66%, transparent) 100%
+    /* 左页从书脊向右：谷阴影占整页约一半，外缘受光 */
+    color-mix(in srgb, var(--rb-paper-shade) 35%, transparent) 0%,
+    color-mix(in srgb, var(--rb-paper-shade) 28%, transparent) 15%,
+    transparent 45%,
+    transparent 70%,
+    color-mix(in srgb, var(--rb-paper-lit) 100%, transparent) 100%
   );
 }
 
@@ -1343,13 +1345,8 @@ defineExpose({
   transform-origin: left center;
   transform: rotateY(calc(-1 * var(--rb-bend, 0deg)));
   /* 右页的弧面：书脊在左边，谷口朝内，外缘抬起受光。与左页同一套光。 */
-  --rb-page-curve: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--rb-paper-shade) 66%, transparent) 0%,
-    color-mix(in srgb, var(--rb-paper-shade) 42%, transparent) 8%,
-    color-mix(in srgb, var(--rb-paper-shade) 14%, transparent) 22%,
-    transparent 44%
-  );
+  /* 右页从左页缝向右：书脊处阴影快速褪去，外缘受光面完整保留 */
+  --rb-page-curve: none;
 }
 
 .real-book-gutter {
