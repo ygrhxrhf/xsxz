@@ -44,6 +44,7 @@ async function mountStage(options: MountOptions = {}) {
       ref: stageRef,
       paragraphs,
       paragraphIndexes: indexes,
+      totalChars: paragraphs.join('').length,
       highlights: options.highlights ?? [],
       startAnchor: options.startAnchor ?? null,
       chapterTitle: options.chapterTitle ?? '',
@@ -138,6 +139,29 @@ describe('RealBookStage（真实书籍舞台）', () => {
     app.unmount()
   })
 
+  it('翻页中态：竖带转过 90° 后正面整层停画，不留下半透明的上一页', async () => {
+    const { app, stage } = await mountStage()
+    stage.nextPage()
+    await nextTick()
+
+    // 起手时最外那条带已经越过正对观者的位置；它的正面内容必须整层 opacity 0，
+    // 否则侧过去的那半张仍按 opacity 叠在下方页面上，看起来像整页残影。
+    let sawHiddenSide = false
+    for (let i = 0; i < 20; i += 1) {
+      const sides = [...document.querySelectorAll<HTMLElement>('.real-book-flip-content')]
+        .map((node) => Number(getComputedStyle(node).opacity))
+      if (sides.some((opacity) => opacity === 0)) {
+        sawHiddenSide = true
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    expect(sawHiddenSide).toBe(true)
+
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
+    app.unmount()
+  })
+
   it('没有翻页按钮：翻页改由点按纸面承担', async () => {
     const { app } = await mountStage()
     // 翻页按钮已移除：读者靠点纸面左右两侧翻页，页码只在页脚报位置。
@@ -192,15 +216,13 @@ describe('RealBookStage（真实书籍舞台）', () => {
     long.app.unmount()
   })
 
-  it('书厚：第一屏左半无已读、右半压满剩余，总层数不超上限', async () => {
+  it('书厚：第一屏左半无已读、右半显示该书基础厚度', async () => {
     const { app } = await mountStage()
     const left = document.querySelectorAll('.real-book-block-left i')
     const right = document.querySelectorAll('.real-book-block-right i')
     expect(left).toHaveLength(0)
-    expect(right).toHaveLength(8)
-    // 阅读进度是唯一驱动量，必须下发给 CSS 可见。
-    const style = document.querySelector<HTMLElement>('.real-book-stage')?.getAttribute('style') ?? ''
-    expect(style).toContain('--rb-read-ratio: 0')
+    expect(right.length).toBeGreaterThanOrEqual(3)
+    expect(right.length).toBeLessThanOrEqual(14)
     app.unmount()
   })
 
@@ -208,17 +230,16 @@ describe('RealBookStage（真实书籍舞台）', () => {
     const { app } = await mountStage({ startAnchor: { paragraph: 29, offset: 0 } })
     const left = document.querySelectorAll('.real-book-block-left i')
     const right = document.querySelectorAll('.real-book-block-right i')
-    expect(left).toHaveLength(8)
+    expect(left.length).toBeGreaterThanOrEqual(3)
     expect(right).toHaveLength(0)
-    const style = document.querySelector<HTMLElement>('.real-book-stage')?.getAttribute('style') ?? ''
-    expect(style).toContain('--rb-read-ratio: 1')
     app.unmount()
   })
 
-  it('书厚总层数始终等于上限，且每层带纵深偏移', async () => {
+  it('书厚层数带纵深偏移，且不超过最大显示层数', async () => {
     const { app } = await mountStage({ startAnchor: { paragraph: 15, offset: 0 } })
     const layers = [...document.querySelectorAll<HTMLElement>('.real-book-block i')]
-    expect(layers).toHaveLength(8)
+    expect(layers.length).toBeGreaterThanOrEqual(3)
+    expect(layers.length).toBeLessThanOrEqual(14)
     for (const layer of layers) {
       expect(layer.style.transform).toContain('translate3d')
     }
