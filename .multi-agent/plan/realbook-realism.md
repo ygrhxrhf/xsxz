@@ -20,9 +20,9 @@
       - 验：`npx vitest run src/renderer/pages/RealBookStage.ui.test.ts src/renderer/pages/realBookFlip.test.ts src/renderer/pages/realBookSpine.test.ts src/renderer/pages/Reader.realBook.ui.test.ts` → 全绿
 - [x] 5. 真机视觉与性能：构建后跑 Electron 截图脚本，检查封面、书口、纸纹、书缝与翻页
       - 验：`npm run build` 后 `$env:SPBF_KEEP_SHOTS='1'; node scripts/realbook-flip-fps-e2e.mjs` → 截图可看，视觉断言通过
-- [ ] 6. 提交：`feat(reader): 精细真实书籍纸张与书口建模`
+- [x] 6. 提交：`feat(reader): 真实书籍翻页弯曲舒展与纸张精修`
       - 验：`git log --oneline -1` → 本地提交存在
-- [ ] 7. 收尾：写 HANDOFF，更新计划证据，核对工作区
+- [x] 7. 收尾：写 HANDOFF，更新计划证据，核对工作区
       - 验：`npm run plan:status` → 本任务项全勾；既有未提交并行改动明确列出
 
 ## 设计结论
@@ -48,7 +48,7 @@
 
 ## 断点记录（每次停下前更新）
 
-- 状态：实现与验证完成，待提交
+- 状态：已提交（`93282dc`），收尾完成
 - 已验证：
   - `npm run typecheck` → exit 0
   - 4 个阅读器测试文件 → 70/70 通过
@@ -56,5 +56,13 @@
     823ms / 34 帧 / 中位 21.0ms / 严重长帧 0 / 长帧 1
   - 慢动作确定性截图（t=0.30/0.45/0.62）：
     纸面弓起、外角卷曲、上下缘收弯，落定前舒展摊平
-- 下一步第一条命令：`git add ... && git commit -m "feat(reader): 真实书籍翻页弯曲舒展与纸张精修"`
+- 下一步第一条命令：无（本任务完成）
 - 未验证项：不同 DPI / 低端机上的长期帧率；其他主题色下的纸纹观感
+
+## 收尾核对
+
+- `npm run plan:status`：本计划 7 项已全勾；退出码仍为 1，因为工作区有 14 个
+  并行任务的未提交文件（`Reader.vue`、书库 IPC、preload、agent 集成、`realBookSpine` 等）。
+  这些都不是本任务改动，未清理、未暂存、未提交。
+- `.multi-agent/HANDOFF.md` 已追加本任务状态；该文件同时含并行任务的未提交段落，
+  因此未纳入本任务提交。
