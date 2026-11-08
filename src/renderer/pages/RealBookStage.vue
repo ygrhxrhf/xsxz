@@ -19,7 +19,7 @@ import { createRealBookPaginator, findPageForInput, pageRatio, type RealBookAnch
 import { MAX_SPINE_LAYERS, spineLayers, spineStack } from './realBookSpine'
 import { measureLines } from './realBookMeasure'
 import { clampPitch, pitchFromDrag, pitchResetTarget } from './realBookPitch'
-import { FLIP_DURATION_MS, flipAngles, flipBackOpacity, flipContentOpacity, flipFaceVisible, flipFacing, flipLight, flipPhases, flipPoses, flipSheetLift, flipSliceSpeeds, flipSway } from './realBookFlip'
+import { FLIP_DURATION_MS, flipAngles, flipContentOpacity, flipFaceVisible, flipLight, flipPhases, flipPoses, flipSheetLift, flipSway } from './realBookFlip'
 
 interface HighlightSpan {
   /** 段落下标（原始下标，与经典模式一致） */
@@ -131,6 +131,16 @@ const pageColumns = computed(() => (props.columns === 2 ? 2 : 1))
 const columnGapPx = computed(() => Math.round(Math.max(1, props.fontSize) * 3))
 /** 一张书页折几栏就是一页翻几步：书台一页=一页，书页一页=栏数个分页器页。 */
 const pageStep = computed(() => (props.variant === 'sheet' ? pageColumns.value : 1))
+/**
+ * 一次翻页前进多少页。
+ *
+ * 书台是**双页摊开**：翻一张纸会同时换掉左右两页——旧右页翻到对面成为新的左页，
+ * 新的右页是再往后一页。所以一次翻页要前进 2 页。若只前进 1 页，读者会看到
+ * 旧右页滑到左页、右页换成下一页，那是「挪一个窗口」，不是「翻一张纸」。
+ *
+ * 书页模式一张纸折几栏就是翻几步，用 pageStep。
+ */
+const advance = computed(() => (props.variant === 'book' ? 2 : pageStep.value))
 /**
  * 页眉页脚占高（px）：它们是排版输入，必须参与页表签名。
  * 不传时按字号推导；显式传入主要是为了让签名可测——同一字号下改占高，页数必须变。
@@ -259,21 +269,21 @@ function updateLayout(): void {
     }
     return
   }
-  // 参考图的书本不是铺满舞台的矩形：左右要留出深色桌面，上方也要有呼吸空间。
-  // 书的总展开宽度约占可用舞台的 76%；默认俯仰会把屏幕投影再放大，
-  // 因此这里按 0.76 预留，而不是把整行宽度都塞给书页。
-  const pageWidth = Math.max(240, Math.floor((width * 0.72 / 2) * 0.96))
-  // 参考图是接近 3:4 的竖版开本；高度优先由可用视口决定，底部给纸垛留出厚度。
-  // 开本比例固定，窗口变窄时只缩小书，不把纸压成横向卡片。
-  // 再受舞台高度约束，并给下方书厚纸垛让出高度——
-  // 视口是 overflow:hidden，不让出这一段，纸垛的切口会被裁在页面外边。
+  // 书尽量铺满可用宽度，只留一圈窄桌边：阅读面积优先。
+  // 默认俯仰会把投影再放大，因此按 0.88 预留，而不是把整行宽度都塞给书页。
+  const availableHeight = Math.floor(height * 0.99) - BLOCK_THICKNESS_PX
+  const widthLimit = Math.floor((width * 0.88 / 2) * 0.99)
+  // 开本固定为约 3:4 的竖版（1:1.42）。宽度同时受高度约束：
+  // 只按宽度算会在矮窗口里把书压成横向卡片——那不是书。
+  const heightLimit = Math.floor(availableHeight / 1.42)
+  const pageWidth = Math.max(260, Math.min(widthLimit, heightLimit))
   const pageHeight = Math.max(320, Math.min(
     Math.floor(pageWidth * 1.42),
-    Math.floor(height * 0.98) - BLOCK_THICKNESS_PX,
+    availableHeight,
   ))
-  const paddingX = Math.round(pageWidth * 0.09)
+  const paddingX = Math.round(pageWidth * 0.08)
   // 垂直内边距与 CSS 共用同一变量：JS 算版心、CSS 排版，两处不一致就会裁字。
-  const paddingY = Math.round(pageHeight * 0.06)
+  const paddingY = Math.round(pageHeight * 0.055)
   layout.value = {
     pageWidth,
     pageHeight,
@@ -407,11 +417,11 @@ function nextPage(): void {
     emit('next-chapter')
     return
   }
-  goToPage(currentPage.value + pageStep.value, true)
+  goToPage(currentPage.value + advance.value, true)
 }
 
 function prevPage(): void {
-  goToPage(currentPage.value - pageStep.value, true)
+  goToPage(currentPage.value - advance.value, true)
 }
 
 /** 按锚点跳页：真实书籍与经典模式互转位置的唯一接口。 */
@@ -500,7 +510,7 @@ function piecesOf(page: RealBookPage | undefined): PagePiece[] {
  * 下面露出来的就该是下一页（否则抬起的纸底下压着和自己一模一样的同一页，看着像没动）；
  * 纸要落下的那一侧保持旧内容到落定为止——它此刻还被纸压着，提前换等于凭空抠掉一页。
  */
-const slotPage = computed(() => currentPage.value + (flipping.value?.direction ?? 0))
+const slotPage = computed(() => currentPage.value + (flipping.value ? flipping.value.direction * advance.value : 0))
 const leftViewIndex = computed(() => (flipping.value?.direction === 1
   ? currentPage.value - 1
   : slotPage.value - 1))
@@ -513,33 +523,46 @@ const rightViewPieces = computed(() => piecesOf(pages.value[rightViewIndex.value
 /**
  * 正被翻动的那张纸：往后翻它是右页、往前翻它是左页，正反面是同一张纸。
  *
- * 背面必须与正面同内容：翻页只前进一页，落定后左页显示的正是这张纸
- * （页表按页侧编号，旧右页落到左页）；若背面印下一页，落定那一帧左页会从下一页跳回这一页。
+ * 正面是抬起的那一页（旧右页 / 旧左页）。背面只画纸：纸背若是半透明字影，
+ * 铺在落点那一页上会读成一块灰影，翻页时看着像左边多了个影子。背面保持
+ * 不透明纸面，落定后静态页再一次性换成新内容，读者不会看到半透明旧字。
  */
 const flipSheetIndex = computed(() => (flipping.value?.direction === -1
   ? currentPage.value - 1
   : currentPage.value))
 const flipSheetPieces = computed(() => piecesOf(pages.value[flipSheetIndex.value]))
 /**
+ * 翻动纸背的内容：一张纸的正面是右页，背面就是落到对面后露出的左页。
+ *
+ * 之前因为“纸背透字会在落点页上叠出灰影”把背面正文整层去掉了，结果翻页中
+ * 看到一整块空白纸板——这正是僵硬感的来源之一。正确的做法不是不画，而是
+ * 只在转角越过 90° 后画**另一页**内容，并沿纸面镜像；正反面互斥后不会再重影。
+ */
+const flipBackIndex = computed(() => {
+  const direction = flipping.value?.direction
+  if (!direction) return -1
+  return direction === 1 ? currentPage.value + 1 : currentPage.value - 2
+})
+const flipBackPieces = computed(() => piecesOf(pages.value[flipBackIndex.value]))
+/**
  * 卷页竖带：角度与位置由 `flipPoses` 算（折线积分），这里只铺成 style。
  * 每条带各渲染一份整页内容、按 −i×带宽 错开，相当于把同一页切成一条条窗格。
  */
 /** 翻动页的 1-based 页码：与静态页同一条公式（页下标 + 1），空页不印号。 */
 const flipSheetPageNumber = computed(() => (flipSheetPieces.value.length ? flipSheetIndex.value + 1 : 0))
+const flipBackPageNumber = computed(() => (flipBackPieces.value.length ? flipBackIndex.value + 1 : 0))
 /**
  * 动态模糊的角速度阈值（0–1）：低于它的带保持清晰。
  *
  * 模糊要重做离屏表面，是翻页最大的开销。阈值把「需要模糊的带」压到少数几条：
  * 实测整段翻页从 29 帧（长帧 3）回到 40 帧上下，且没有长帧。
  */
-const FLIP_BLUR_SPEED_THRESHOLD = 0.7
 const flipSlices = computed(() => {
   const direction = flipping.value?.direction ?? 1
   const width = layout.value.pageWidth
   const { from, to } = flipAngles(direction, BEND_DEG)
   const options = { width, fromDeg: from, toDeg: to }
   const poses = flipPoses(flipT.value, options)
-  const speeds = flipSliceSpeeds(flipT.value, options)
   return poses.map((pose, index) => {
     // 纸面侧对观者时把正文淡出：竖带是按平面拼的，越斜越糊。
     //
@@ -548,47 +571,28 @@ const flipSlices = computed(() => {
     // 却仍和翻过来的背面同时存在，右半页上就会叠出一层半透明的上一页残影。
     // 阈值与背面字影的系数都收在 `realBookFlip` 里（那里有单测钉住）。
     const contentOpacity = flipContentOpacity(pose.angle)
-    const sideOpacity = pose.angle < 90 ? 1 : 0
-    // 正视程度：投影压缩的模糊量也按它给（侧对得越狠，竖条越明显）。
-    const facing = flipFacing(pose.angle)
-    // 纸背只留极淡的透墨：完全没有背面，翻过去就只剩一张半透明的旧页，
-    // 看不出「纸翻过去了」。但字影不能重——重了盖在左页上就是一块灰影。
-    const backOpacity = flipBackOpacity(pose.angle)
-    // 动态模糊：快的那几条带在飞，字应该是糊的。每帧都清晰的翻页读成「贴图在转」。
-    //
-    // 只给**一条**带加模糊：飞得最快的那条（纸角附近）。
-    //
-    // 模糊要重做离屏表面，是翻页最大的开销——实测整段翻页 29 帧（长帧 3），
-    // 去掉模糊后 41 帧（长帧 0）。而每条带的模糊只值约 0.3ms/帧：
-    // 12 条带全加就是 3~4ms/帧，正好吃掉一帧的预算。
-    //
-    // 只糊一条带在视觉上也够：人眼读「纸在飞」靠的是那条最快带上的拖影，
-    // 旁边的带本来就因侧对而被 opacity 淡出，糊不糊都看不清。
-    const speed = speeds[index] ?? 0
-    const speedBlur = Math.pow(speed, 1.8) * 1.8
-    // 量化到 0.5px：相邻帧常常落到同一个值，浏览器就不用每帧重做模糊。
-    // 不量化的话每帧的半径都是新值，模糊层每帧重算。
-    const blurRaw = speed >= FLIP_BLUR_SPEED_THRESHOLD ? Math.min(1.5, speedBlur) : 0
-    const blur = blurRaw >= 0.25 ? Math.round(blurRaw / 0.5) * 0.5 : 0
+    const visible = flipFaceVisible(pose.angle)
+    // 转角是负的（向右翻的外缘是 -180°），必须按绝对值判侧：直接写 angle < 90
+    // 会把所有负角都当成正面，纸转过去后仍画着旧正文。
+    const sideOpacity = visible.showFront ? 1 : 0
+    // 上下缘的弯曲用裁切轮廓表达：相邻带共用边界处的弯曲量，所以纸边是连续弧线，
+    // 不会像把一叠等宽纸板排成扇形那样出现台阶。
+    const clipPath = `polygon(0 ${pose.topLeft.toFixed(2)}px, 100% ${pose.topRight.toFixed(2)}px, `
+      + `100% calc(100% - ${pose.bottomRight.toFixed(2)}px), 0 calc(100% - ${pose.bottomLeft.toFixed(2)}px))`
     return {
       index,
       // 作废一面交给转角自己决定：纸面转过 90° 后正面就不该再画，否则正反两层
       // 叠在同一张纸上；浏览器的 backface-visibility 在带裁剪的 3D 层里不可靠。
-      ...flipFaceVisible(pose.angle),
+      ...visible,
       // 多出 0.5px 让相邻两条略搭接：亚像素缝隙会在纸上漏成一条亮线。
       style: {
         width: `${(pose.width + 0.5).toFixed(2)}px`,
         transform: `translate3d(${pose.x.toFixed(2)}px, 0, ${pose.z.toFixed(2)}px) rotateY(${pose.angle.toFixed(2)}deg)`,
-        // 模糊量做成 CSS 变量而不是直接写 filter：
-        // 落点（face / window / content）不同，开销差一倍——实测三种落点的帧数
-        // 分别是 9 / 27 / 55。做成变量后可以在样式层自由切换落点做 A/B，
-        // 不必改代码。样式里见 .real-book-flip-face 的 filter。
-        //
-        // 关键：**模糊量为 0 时给 none，而不是 blur(0px)**。
-        // 带 filter 的层（哪怕半径是 0）会被浏览器当作需要离屏渲染的层，
-        // 每一帧都要为 12 条带 × 2 面各做一次离屏合成——实测这一项就吃掉
-        // 整段翻页的三分之一帧率。给 none 时浏览器把它当普通层处理。
-        '--rb-flip-blur': blur > 0 ? `blur(${blur.toFixed(1)}px)` : 'none',
+        clipPath,
+        // 动态模糊会为每条带重建一次离屏表面，实测把整段翻页压到 10–17 帧。
+        // 现在纸页本身有连续曲率与外角侧滚，动画的“速度感”由几何承担；
+        // 保住 60Hz 的连续帧，比给快带糊一层拖影更像真纸。
+        '--rb-flip-blur': 'none',
         // 明暗取这条带两端的边界角，而不是中间角：每条带自己涂一层渐变，
         // 相邻带的端点值相同，接起来就是沿弧面连续的光，不会浮出一层竖条纹。
         '--rb-flip-dark-a': (1 - flipLight(pose.startAngle)).toFixed(3),
@@ -612,8 +616,12 @@ const flipSlices = computed(() => {
       backContentStyle: {
         width: `${width}px`,
         transformOrigin: '0 0',
-        transform: `translateX(${(pose.offset + pose.width).toFixed(2)}px) scaleX(-1)`,
-        opacity: backOpacity.toFixed(3),
+        // 纸背可见时切片上的 --rb-flip-side 正好是 0（正面停画）。
+        // 纸背内容必须显式恢复不透明，否则会把整张纸背也一起隐掉。
+        opacity: '1',
+        // 纸背沿竖带镜像：竖带转过 90° 后局部 x 轴在屏幕上是反的，
+        // 先把内容预翻一次，纸背上的下一页才不会左右颠倒。
+        transform: `translateX(${(width - pose.offset).toFixed(2)}px) scaleX(-1)`,
       } as Record<string, string>,
     }
   })
@@ -624,7 +632,7 @@ const flipSlices = computed(() => {
  *
  * 位移与倾角都作用在整张纸上，不作用在单条竖带——否则页脚会变成锯齿状的阶梯。
  */
-const flipSheetState = computed(() => flipSheetLift(flipT.value))
+const flipSheetState = computed(() => flipSheetLift(flipT.value, flipping.value?.direction ?? 1))
 
 /**
  * 翻页时整本书的随动。
@@ -654,9 +662,9 @@ const flipCast = computed(() => {
   const t = flipPhases(flipT.value).tip
   const direction = flipping.value?.direction ?? 1
   // 抬起侧：起手就压暗，纸离开后迅速转淡，翻过一半就几乎没了。
-  const lift = Math.max(0, Math.sin(Math.PI * Math.min(1, t / 0.55))) * 0.34
+  const lift = Math.max(0, Math.sin(Math.PI * Math.min(1, t / 0.55))) * 0.12
   // 落下侧：纸快到时才开始压暗，落定前收回，免得落定那一帧突然变亮。
-  const land = Math.max(0, Math.sin(Math.PI * Math.min(1, Math.max(0, (t - 0.45) / 0.55)))) * 0.3
+  const land = Math.max(0, Math.sin(Math.PI * Math.min(1, Math.max(0, (t - 0.45) / 0.55)))) * 0.15
   // 影子带的宽度（占页宽的百分比）：纸越贴近落位，压在页面上的影子越宽。
   const landWidth = 6 + 26 * Math.min(1, Math.max(0, (t - 0.3) / 0.7))
   const liftWidth = 4 + 14 * Math.min(1, Math.max(0, t / 0.55))
@@ -683,7 +691,7 @@ const sheetPieces = computed<PagePiece[][]>(() => {
 const hasNextPage = computed(() => {
   const created = paginator.value
   if (!created) return false
-  const target = currentPage.value + pageStep.value
+  const target = currentPage.value + advance.value
   return created.ensure(target) > target
 })
 const sheetPageCount = computed(() => Math.max(1, Math.ceil(pages.value.length / pageStep.value)))
@@ -699,10 +707,10 @@ const sheetLabel = computed(() => `第 ${Math.min(sheetPageIndex.value + 1, shee
  * 让纸堆跳变；只有翻页才重新分配左右厚度。
  */
 /**
- * 每层纸的纵深（px）。纯模块里的默认值是 5，那里是「逻辑层间距」；
- * 书台要的是看得见的书厚，按一页纸能读出层数来定，所以这里另给一个更厚的值。
+ * 每层纸的纵深（px）。纯模块里的默认值同样是 4；
+ * 书台要的是「看得见层、但整体薄」——一层 4px，整本最多 12 层也才 48px。
  */
-const BLOCK_DEPTH_PER_LAYER_PX = 10
+const BLOCK_DEPTH_PER_LAYER_PX = 4
 
 /**
  * V 形摊开角（deg）：两页以书脊为轴向外掀起的角度。
@@ -711,7 +719,7 @@ const BLOCK_DEPTH_PER_LAYER_PX = 10
 const BEND_DEG = 9
 
 /** 书厚纸垛占用的高度：页面在下方让出这一段，纸垛的切口才不会被视口裁掉。 */
-const BLOCK_THICKNESS_PX = MAX_SPINE_LAYERS * BLOCK_DEPTH_PER_LAYER_PX + 12
+const BLOCK_THICKNESS_PX = MAX_SPINE_LAYERS * BLOCK_DEPTH_PER_LAYER_PX + 8
 
 const readRatio = computed(() => pageRatio(currentPage.value, Math.max(1, pageCount.value)))
 const stackProgress = computed(() => {
@@ -902,9 +910,14 @@ defineExpose({
         <div class="real-book-spread">
           <!-- 书下投影：让书体有落地的重量，而不是浮在底色上 -->
           <div class="real-book-shadow" aria-hidden="true"></div>
+          <!-- 硬壳封面：左右两块沿书脊轴掀起，只从纸页外缘露出一圈包边。
+               没有这层，页面再卷也只是两张纸，读不出「一本装订好的书」。 -->
+          <div class="real-book-board real-book-board-left" aria-hidden="true"></div>
+          <div class="real-book-board real-book-board-right" aria-hidden="true"></div>
           <!-- 书厚：左半是已读、右半是剩余，层数之和恒定，厚度随阅读进度从右往左转移。
                零层的半边连块都不渲染，免得只剩一块空纸板。 -->
           <div v-if="leftBlockLayers.length" class="real-book-block real-book-block-left" aria-hidden="true">
+            <span class="real-book-block-top"></span>
             <i
               v-for="layer in leftBlockLayers"
               :key="layer.index"
@@ -915,6 +928,7 @@ defineExpose({
             ></i>
           </div>
           <div v-if="rightBlockLayers.length" class="real-book-block real-book-block-right" aria-hidden="true">
+            <span class="real-book-block-top"></span>
             <i
               v-for="layer in rightBlockLayers"
               :key="layer.index"
@@ -976,17 +990,17 @@ defineExpose({
             :key="flipping.key"
             class="real-book-flip"
             :style="{
-              transform: `translateZ(${flipSheetState.lift.toFixed(2)}px) rotateX(${(-flipSheetState.tilt).toFixed(2)}deg)`,
+              transform: `translateZ(${flipSheetState.lift.toFixed(2)}px) rotateX(${(-flipSheetState.tilt).toFixed(2)}deg) rotateZ(${flipSheetState.roll.toFixed(2)}deg)`,
             }"
             aria-hidden="true"
           >
             <div
               v-for="slice in flipSlices"
               :key="`slice-${slice.index}`"
-              class="real-book-flip-slice"
+              :class="['real-book-flip-slice', { 'is-outer': slice.index === flipSlices.length - 1 }]"
               :style="slice.style"
             >
-              <div class="real-book-flip-face real-book-flip-front" v-show="slice.showFront">
+              <div class="real-book-flip-face real-book-flip-front" v-if="slice.showFront">
                 <div class="real-book-flip-window">
                   <div class="real-book-flip-content" :style="slice.contentStyle">
                   <header class="real-book-page-head">{{ chapterTitle }}</header>
@@ -1002,19 +1016,20 @@ defineExpose({
                   </div>
                 </div>
               </div>
-              <div class="real-book-flip-face real-book-flip-back" v-show="slice.showBack">
+              <!-- 纸背：转过 90° 后显示同一张纸的另一面（落地页）。 -->
+              <div class="real-book-flip-face real-book-flip-back" v-if="slice.showBack">
                 <div class="real-book-flip-window">
                   <div class="real-book-flip-content" :style="slice.backContentStyle">
-                  <header class="real-book-page-head">{{ chapterTitle }}</header>
-                  <div class="real-book-page-body">
-                    <p
-                      v-for="piece in flipSheetPieces"
-                      :key="`back-${piece.key}`"
-                      class="real-book-para"
-                      :data-p="piece.original"
-                    ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
-                  </div>
-                  <footer class="real-book-page-foot">{{ flipSheetPageNumber || '' }}</footer>
+                    <header class="real-book-page-head">{{ chapterTitle }}</header>
+                    <div class="real-book-page-body">
+                      <p
+                        v-for="piece in flipBackPieces"
+                        :key="`back-${piece.key}`"
+                        class="real-book-para"
+                        :data-p="piece.original"
+                      ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                    </div>
+                    <footer class="real-book-page-foot">{{ flipBackPageNumber || '' }}</footer>
                   </div>
                 </div>
               </div>
@@ -1032,7 +1047,8 @@ defineExpose({
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: 18px 24px 26px;
+  /* 桌边收窄：把省下来的空间还给书页（阅读面积优先）。 */
+  padding: 10px 14px 18px;
   background: var(--reader-outer, #e9e3d7);
   color: var(--reader-paper-text, #2f2a24);
   /* 纸的三层色：暖底、受光面、暖阴影。
@@ -1041,6 +1057,10 @@ defineExpose({
   --rb-paper-warm: color-mix(in srgb, var(--reader-paper, #f7f3e8) 72%, #d7a56c);
   --rb-paper-lit: color-mix(in srgb, var(--reader-paper, #f7f3e8) 78%, #fff0c9);
   --rb-paper-shade: color-mix(in srgb, var(--reader-paper, #f7f3e8) 76%, #6b4b27);
+  /* 封面色固定为一套深暖皮壳：它不与纸色联动，夜间主题才不会把封面洗成浅灰。 */
+  --rb-cover-lit: #6a4a30;
+  --rb-cover-mid: #452e1e;
+  --rb-cover-deep: #24150d;
 }
 
 /* 书台：书摊在一张深色桌面上。
@@ -1048,11 +1068,16 @@ defineExpose({
    托了出来；浅底上摊开的书只是一块浅色矩形，读不出「一本有厚度的书」。 */
 .real-book-stage:not(.is-sheet) {
   background:
+    /* 桌面不是一块纯色：低对比布纹 + 中央柔光 + 四周暗角，
+       把书从「放在色块上」变成「放在有反射的桌面上」。 */
+    radial-gradient(70% 58% at 50% 36%, rgba(148, 104, 62, 0.18), transparent 72%),
+    repeating-linear-gradient(96deg, rgba(255, 229, 190, 0.018) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(7deg, rgba(0, 0, 0, 0.02) 0 2px, transparent 2px 11px),
     radial-gradient(
       120% 96% at 50% 24%,
-      #2b4038 0%,
-      #1d302a 58%,
-      #14231f 100%
+      #4a3420 0%,
+      #352215 58%,
+      #22150c 100%
     );
 }
 
@@ -1228,8 +1253,13 @@ defineExpose({
   padding: var(--rb-pad-y) var(--rb-pad-x);
   box-sizing: border-box;
   overflow: hidden;
-  border-radius: 7px 3px 5px 4px;
-  box-shadow: 0 10px 16px rgba(30, 22, 12, 0.12);
+  border-radius: 10px 3px 8px 4px;
+  /* 纸页自身几乎不投影：它压在书垛与封面上，真正的重量由书下投影表达。
+     这里只留一道极薄的纸边暗线，避免纸页像贴纸一样浮起来。 */
+  box-shadow:
+    0 1px 1px rgba(30, 22, 12, 0.12),
+    inset 0 1px 0 rgba(255, 250, 234, 0.32),
+    inset 0 0 24px rgba(105, 70, 35, 0.035);
   display: grid;
   grid-template-rows: var(--rb-head-height) 1fr var(--rb-foot-height);
   /* 纸面质感：上缘受光 + 版心一团柔光 + 下缘转沉 + 沿页宽的弧面明暗。
@@ -1241,17 +1271,22 @@ defineExpose({
   background-image:
     linear-gradient(
       180deg,
-      var(--rb-paper-lit) 0%,
-      color-mix(in srgb, var(--rb-paper-lit) 42%, transparent) 11%,
-      transparent 30%,
-      transparent 82%,
-      color-mix(in srgb, var(--rb-paper-shade) 40%, transparent) 94%,
-      var(--rb-paper-shade) 100%
+      color-mix(in srgb, var(--rb-paper-lit) 86%, transparent) 0%,
+      color-mix(in srgb, var(--rb-paper-lit) 28%, transparent) 10%,
+      transparent 32%,
+      transparent 84%,
+      color-mix(in srgb, var(--rb-paper-shade) 22%, transparent) 95%,
+      color-mix(in srgb, var(--rb-paper-shade) 52%, transparent) 100%
     ),
     radial-gradient(
-      120% 70% at 50% 20%,
-      color-mix(in srgb, var(--rb-paper-lit) 55%, transparent),
-      transparent 62%
+      115% 86% at 42% 10%,
+      color-mix(in srgb, var(--rb-paper-lit) 48%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      72% 62% at 88% 88%,
+      color-mix(in srgb, var(--rb-paper-shade) 14%, transparent),
+      transparent 72%
     ),
     var(--rb-page-curve, none);
   color: var(--reader-paper-text, #2f2a24);
@@ -1259,6 +1294,62 @@ defineExpose({
   line-height: var(--rb-line-height);
   font-family: var(--rb-font-family);
   text-align: justify;
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+}
+
+/* 正文与页眉页脚压在纸纹之上：纤维只做纸的背景，不糊字。 */
+.real-book-page > * {
+  position: relative;
+  z-index: 2;
+}
+
+/* 纸纹：三组不同尺度的纤维与斑点。全部由 CSS 生成，不加载贴图，
+   缩放与夜间主题都不会出现位图拉伸或发灰。 */
+.real-book-page::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.6;
+  background-image:
+    repeating-linear-gradient(93deg, rgba(78, 51, 24, 0.012) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(3deg, rgba(255, 252, 238, 0.02) 0 1px, transparent 1px 8px),
+    radial-gradient(circle at 3px 4px, rgba(72, 45, 20, 0.032) 0 0.55px, transparent 0.9px),
+    radial-gradient(circle at 11px 13px, rgba(255, 250, 235, 0.045) 0 0.55px, transparent 0.9px);
+  background-size: auto, auto, 17px 19px, 23px 29px;
+}
+
+/* 外书口不是裁纸刀切出来的直边：极窄的深浅断续线给纸边一点手工裁切感。
+   它被放在正文内边距里，不会压到字。 */
+.real-book-page::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 3px;
+  pointer-events: none;
+  opacity: 0.7;
+  background:
+    repeating-linear-gradient(
+      180deg,
+      rgba(255, 250, 234, 0.28) 0 1px,
+      rgba(100, 68, 34, 0.06) 1px 2px,
+      transparent 2px 7px,
+      rgba(100, 68, 34, 0.04) 7px 8px
+    );
+}
+
+.real-book-left::before {
+  left: 0;
+  border-radius: 10px 0 0 8px;
+}
+
+.real-book-right::before {
+  right: 0;
+  border-radius: 0 3px 4px 0;
 }
 
 /* 页眉：章节眉题。必须单行省略——占高是排版输入，不能随标题长短变。
@@ -1269,9 +1360,8 @@ defineExpose({
   text-overflow: ellipsis;
   text-align: center;
   font-size: 0.72em;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.085em;
   color: color-mix(in srgb, var(--reader-paper-text, #2f2a24) 45%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--reader-paper-text, #2f2a24) 12%, transparent);
   padding-bottom: 0.3em;
 }
 
@@ -1286,6 +1376,7 @@ defineExpose({
   align-items: flex-end;
   justify-content: center;
   font-size: 0.7em;
+  letter-spacing: 0.04em;
   color: color-mix(in srgb, var(--reader-paper-text, #2f2a24) 45%, transparent);
   padding-top: 0.3em;
 }
@@ -1301,27 +1392,22 @@ defineExpose({
   inset: 0;
   pointer-events: none;
   /* 影子带贴着书脊，宽度由 JS 按纸的位置下发（--rb-cast-width）。 */
-  background: radial-gradient(
-    var(--rb-cast-width, 18%) 84% at 0% 50%,
-    rgba(58, 36, 16, 0.34),
-    rgba(58, 36, 16, 0) 78%
-  );
+  /* alpha 0.16 × JS max(0.12/0.15) ≈ net 0.02–0.024 */
+  background: color-mix(in srgb, rgba(58, 36, 16, 0.16) var(--rb-cast-width, 12%), transparent);
 }
 
 .real-book-left .real-book-cast {
-  background: radial-gradient(
-    var(--rb-cast-width, 18%) 84% at 100% 50%,
-    rgba(58, 36, 16, 0.34),
-    rgba(58, 36, 16, 0) 78%
-  );
+  background: color-mix(in srgb, rgba(58, 36, 16, 0.16) var(--rb-cast-width, 12%), transparent);
 }
 
 /* V 形摊开：两页以书脊为轴向外掀起，外侧先靠近观者，透视下因此向书脊收拢。
    这是「摊开的书」和「两个并排矩形」的全部区别，扭转量只走 3D 变换、不动排版。 */
 .real-book-left {
-  border-radius: 4px 0 0 4px;
+  border-radius: 10px 2px 9px 2px;
   /* 书脊侧的暗：纸从谷里抬起来，靠脊那一小段落进阴影。 */
-  box-shadow: inset -10px 0 18px -14px rgba(58, 36, 16, 0.5);
+  box-shadow:
+    inset -9px 0 15px -13px rgba(58, 36, 16, 0.24),
+    inset 0 1px 0 rgba(255, 250, 234, 0.3);
   transform-origin: right center;
   transform: rotateY(var(--rb-bend, 0deg));
   /* 左页的弧面：书脊在右边，所以越靠右越深地落进谷里，外缘受光。
@@ -1330,47 +1416,79 @@ defineExpose({
      阴影是暖的：纯灰的暗部压在奶油色纸上会发脏。 */
   --rb-page-curve: linear-gradient(
     90deg,
-    /* 左页从书脊向右：谷阴影占整页约一半，外缘受光 */
-    color-mix(in srgb, var(--rb-paper-shade) 35%, transparent) 0%,
-    color-mix(in srgb, var(--rb-paper-shade) 28%, transparent) 15%,
-    transparent 45%,
-    transparent 70%,
-    color-mix(in srgb, var(--rb-paper-lit) 100%, transparent) 100%
+    /* 左页书脊在右边：外缘受光，靠近右缘才落进谷里。 */
+    color-mix(in srgb, var(--rb-paper-lit) 12%, transparent) 0%,
+    transparent 10%,
+    transparent 78%,
+    color-mix(in srgb, var(--rb-paper-shade) 8%, transparent) 86%,
+    color-mix(in srgb, var(--rb-paper-shade) 18%, transparent) 94%,
+    color-mix(in srgb, var(--rb-paper-shade) 34%, transparent) 100%
   );
 }
 
 .real-book-right {
-  border-radius: 0 4px 4px 0;
-  box-shadow: inset 10px 0 18px -14px rgba(58, 36, 16, 0.5);
+  border-radius: 2px 10px 2px 9px;
+  box-shadow:
+    inset 9px 0 15px -13px rgba(58, 36, 16, 0.24),
+    inset 0 1px 0 rgba(255, 250, 234, 0.3);
   transform-origin: left center;
   transform: rotateY(calc(-1 * var(--rb-bend, 0deg)));
   /* 右页的弧面：书脊在左边，谷口朝内，外缘抬起受光。与左页同一套光。 */
-  /* 右页从左页缝向右：书脊处阴影快速褪去，外缘受光面完整保留 */
-  --rb-page-curve: none;
+  --rb-page-curve: linear-gradient(
+    90deg,
+    /* 右页书脊在左边：紧贴左缘落谷，向外很快抬回受光面。 */
+    color-mix(in srgb, var(--rb-paper-shade) 34%, transparent) 0%,
+    color-mix(in srgb, var(--rb-paper-shade) 18%, transparent) 6%,
+    color-mix(in srgb, var(--rb-paper-shade) 8%, transparent) 14%,
+    transparent 24%,
+    transparent 88%,
+    color-mix(in srgb, var(--rb-paper-lit) 10%, transparent) 100%
+  );
 }
 
 .real-book-gutter {
-  width: 18px;
+  position: relative;
+  width: 14px;
   /* 书脊是全书最低的一点：它是**谷**，不是一道缝，更不是一根黑棒。
      谷的结构是：两侧的纸往中间落、落进谷里，所以紧靠脊的那一小段最暗；
-     再往里（脊心）纸页叠在一起，反而被上方折过来的纸缘挡出一道亮线。
+     脊心被上方折过来的纸缘挡出一线极弱的反光，但绝不是一根金属亮棒。
      这一层必须**不透明**：书台是深色桌面，谷一旦半透明，深色桌面从底下透上来，
      谷就读成「这里裂开一条缝，缝里是黑的」，而不是纸落下去的凹面。 */
   background:
     linear-gradient(
       90deg,
-      color-mix(in srgb, var(--rb-paper-shade) 84%, #1d1207) 0%,
-      color-mix(in srgb, var(--rb-paper-shade) 66%, #33210e) 26%,
-      color-mix(in srgb, var(--rb-paper-shade) 40%, #53381a) 43%,
-      color-mix(in srgb, var(--rb-paper-lit) 58%, var(--rb-paper-warm)) 50%,
-      color-mix(in srgb, var(--rb-paper-shade) 42%, #513718) 57%,
-      color-mix(in srgb, var(--rb-paper-shade) 68%, #33210e) 74%,
-      color-mix(in srgb, var(--rb-paper-shade) 84%, #1d1207) 100%
+      color-mix(in srgb, var(--rb-paper-shade) 62%, #2c1b0d) 0%,
+      color-mix(in srgb, var(--rb-paper-shade) 72%, #1f1309) 18%,
+      color-mix(in srgb, var(--rb-paper-shade) 84%, #160d06) 46%,
+      color-mix(in srgb, var(--rb-paper-shade) 84%, #160d06) 54%,
+      color-mix(in srgb, var(--rb-paper-shade) 72%, #1f1309) 82%,
+      color-mix(in srgb, var(--rb-paper-shade) 62%, #2c1b0d) 100%
     );
-  /* 谷口的两侧各有一道细亮边：那是纸页折过来时露出的纸缘。 */
+  /* 谷口不再做两侧对称亮边：那会把书脊读成一根圆管。
+     只在脊心留一条断续的纸页折痕，并让整条谷落进下方软影。 */
   box-shadow:
-    inset 2px 0 3px -1px rgba(255, 246, 226, 0.42),
-    inset -2px 0 3px -1px rgba(255, 246, 226, 0.34);
+    inset 1px 0 2px -1px rgba(255, 246, 226, 0.12),
+    inset -1px 0 2px -1px rgba(255, 246, 226, 0.1),
+    0 4px 9px rgba(22, 13, 6, 0.18);
+}
+
+.real-book-gutter::after {
+  content: '';
+  position: absolute;
+  top: 3%;
+  bottom: 3%;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background:
+    repeating-linear-gradient(
+      180deg,
+      rgba(36, 21, 9, 0.22) 0 3px,
+      rgba(255, 239, 208, 0.12) 3px 4px,
+      rgba(36, 21, 9, 0.08) 4px 9px,
+      transparent 9px 12px
+    );
+  opacity: 0.8;
 }
 
 /* 书下投影：书体与纸垛落在地面上的影子。退到书体后方（translateZ），
@@ -1383,11 +1501,64 @@ defineExpose({
   /* 锚在页脚下沿、顺着页面平面往下长：投影的最深处正好落在书脚，
      俯仰时它跟着页面一起转，不必另算屏幕坐标。 */
   top: 100%;
-  height: calc(56px + var(--rb-lift, 0px) * 0.8);
-  background: radial-gradient(58% 62% at 50% 0%, rgba(0, 0, 0, 0.54), rgba(0, 0, 0, 0) 76%);
+  height: calc(58px + var(--rb-lift, 0px) * 0.8);
+  /* 三层影：贴着纸垛的接触暗影、向左右摊开的柔影、向桌面深处拖长的投影。 */
+  background:
+    radial-gradient(50% 46% at 50% 0%, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0) 76%),
+    radial-gradient(72% 80% at 50% 16%, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0) 72%),
+    radial-gradient(94% 96% at 50% 30%, rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0) 78%);
   filter: blur(calc(14px + var(--rb-lift, 0px) * 0.5));
   opacity: calc(1 - var(--rb-lift, 0px) * 0.018);
   pointer-events: none;
+}
+
+/* 硬壳封面：比纸页每边多出几像素。它藏在纸页之下（translateZ 为负），
+   只从外缘露一圈深色皮壳、压印线与厚度高光，页面本身仍是主角。
+   两块封面各自跟随本半页的 V 形折角，避免书脊处翘出一条平直的黑边。 */
+.real-book-board {
+  position: absolute;
+  top: -7px;
+  width: calc(var(--rb-page-width) + 8px);
+  height: calc(var(--rb-page-height) + 14px);
+  border-radius: 13px 4px 10px 5px;
+  background:
+    linear-gradient(180deg, rgba(255, 222, 174, 0.12), transparent 12%, transparent 86%, rgba(0, 0, 0, 0.24)),
+    repeating-linear-gradient(96deg, rgba(255, 224, 184, 0.025) 0 1px, transparent 1px 4px),
+    linear-gradient(180deg, var(--rb-cover-lit), var(--rb-cover-mid) 42%, var(--rb-cover-deep));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 226, 184, 0.14),
+    inset 0 0 0 4px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 238, 205, 0.18),
+    0 8px 18px rgba(14, 8, 4, 0.3);
+  transform-style: preserve-3d;
+  pointer-events: none;
+}
+
+.real-book-board::after {
+  content: '';
+  position: absolute;
+  inset: 5px;
+  border: 1px solid rgba(235, 199, 145, 0.16);
+  border-radius: 9px 2px 7px 3px;
+  box-shadow: 0 0 0 1px rgba(20, 12, 7, 0.18);
+  pointer-events: none;
+}
+
+.real-book-board-left {
+  left: -8px;
+  transform-origin: right center;
+  transform: rotateY(var(--rb-bend, 0deg)) translateZ(-10px);
+}
+
+.real-book-board-right {
+  right: -8px;
+  transform-origin: left center;
+  transform: rotateY(calc(-1 * var(--rb-bend, 0deg))) translateZ(-10px);
+  border-radius: 4px 13px 5px 10px;
+}
+
+.real-book-board-right::after {
+  border-radius: 2px 9px 3px 7px;
 }
 
 /* 书厚：左右两半各一摞纸。纸垛必须跟着本半页折同一个角，
@@ -1429,14 +1600,15 @@ defineExpose({
   border-radius: 0 0 3px 3px;
   /* 上缘贴着纸面要压深一点，否则纸垛会像是平铺在页脚的一张旧纸；
      每条 1px 暗线就是一页纸的纸边。 */
-  box-shadow: inset 0 3px 4px -2px rgba(58, 36, 16, 0.5);
+  box-shadow: inset 0 2px 3px -1px rgba(58, 36, 16, 0.25);
   background:
     /* 切口是**暖的**：一层层纸叠在一起的断面，每层之间压一道暖影。 */
-    linear-gradient(180deg, rgba(58, 36, 16, 0.48), rgba(58, 36, 16, 0.06) 18%, rgba(58, 36, 16, 0.22) 66%, rgba(58, 36, 16, 0.46)),
+    linear-gradient(180deg, rgba(58, 36, 16, 0.44), rgba(58, 36, 16, 0.04) 18%, rgba(58, 36, 16, 0.2) 66%, rgba(58, 36, 16, 0.42)),
     repeating-linear-gradient(
       180deg,
-      color-mix(in srgb, var(--rb-paper-warm) 52%, #6a471d) 0 1px,
-      color-mix(in srgb, var(--rb-paper-warm) 90%, #f2e5c6) 1px 2.5px
+      color-mix(in srgb, var(--rb-paper-warm) 50%, #67451e) 0 1px,
+      color-mix(in srgb, var(--rb-paper-warm) 88%, #f4e8ca) 1px 2.1px,
+      color-mix(in srgb, var(--rb-paper-warm) 70%, #8b6434) 2.1px 2.6px
     );
 }
 
@@ -1455,14 +1627,15 @@ defineExpose({
   border-radius: 0 3px 3px 0;
   background:
     /* 里侧贴着纸面那一段压深：那是纸叠进去的那一侧。 */
-    linear-gradient(90deg, rgba(58, 36, 16, 0.55), rgba(58, 36, 16, 0.08) 44%, rgba(58, 36, 16, 0.26)),
+    linear-gradient(90deg, rgba(58, 36, 16, 0.52), rgba(58, 36, 16, 0.05) 44%, rgba(58, 36, 16, 0.22)),
     /* 逐张纸的边：竖着的细纹，一层层数得出来。
        这一面是**侧着**看的书口，看到的是一页叠一页的厚度，
        所以纹路要竖着走（沿进深方向分���层），不是一道道横线。 */
     repeating-linear-gradient(
       90deg,
-      color-mix(in srgb, var(--rb-paper-warm) 54%, #5d4320) 0 1px,
-      color-mix(in srgb, var(--rb-paper-warm) 84%, #efdfbe) 1px 3px
+      color-mix(in srgb, var(--rb-paper-warm) 52%, #5b401e) 0 0.9px,
+      color-mix(in srgb, var(--rb-paper-warm) 86%, #f0e1bf) 0.9px 2.4px,
+      color-mix(in srgb, var(--rb-paper-warm) 72%, #8c6738) 2.4px 2.9px
     );
 }
 
@@ -1474,6 +1647,30 @@ defineExpose({
   border-radius: 3px 0 0 3px;
 }
 
+/* 上切口：书页顶端那一面。它和底切口使用同一套纸层线，
+   只是绕页顶向后倒过去；没有它，俯看时书的上缘仍是一条剪纸边。 */
+.real-book-block-top {
+  position: absolute;
+  top: calc(-1 * var(--rb-page-height));
+  left: 0;
+  right: 0;
+  height: max(1px, var(--rb-block-h, 0px));
+  transform-origin: center bottom;
+  transform: rotateX(60deg);
+  border-radius: 3px 3px 0 0;
+  background:
+    linear-gradient(180deg, rgba(255, 247, 224, 0.13), rgba(58, 36, 16, 0.1) 24%, rgba(58, 36, 16, 0.34)),
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--rb-paper-warm) 52%, #5b401e) 0 0.9px,
+      color-mix(in srgb, var(--rb-paper-warm) 88%, #f1e3c4) 0.9px 2.3px,
+      color-mix(in srgb, var(--rb-paper-warm) 74%, #8c6738) 2.3px 2.8px
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 245, 218, 0.22),
+    inset 0 -1px 2px rgba(50, 31, 14, 0.3);
+}
+
 /* 逐层纸边：每层沿页脚向下、向后错开一点，叠成数得清层数的纸摞。 */
 .real-book-block i {
   position: absolute;
@@ -1482,8 +1679,10 @@ defineExpose({
   height: 2px;
   border-radius: 0 0 2px 2px;
   /* 纸边比纸面略深：从暖纸色里压出来，四套主题下都不会发灰或发紫。 */
-  background: color-mix(in srgb, var(--rb-paper-warm) 80%, #7a5a30);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--reader-paper-text, #2f2a24) 12%, transparent);
+  background: color-mix(in srgb, var(--rb-paper-warm) 76%, #7a5a30);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--reader-paper-text, #2f2a24) 10%, transparent),
+    0 -1px 0 rgba(255, 245, 220, 0.08);
 }
 
 .real-book-para {
@@ -1531,6 +1730,30 @@ defineExpose({
   transform-origin: left center;
   transform-style: flat;
   overflow: hidden;
+  /* 每条带是独立的裁剪+3D 变换层：把布局与重绘范围关在带内，
+     翻页时不会互相触发整页重排。 */
+  contain: layout paint style;
+  /* 逐帧只改 transform/clip-path：提升为独立合成层，避免每帧重画带内正文。 */
+  will-change: transform;
+}
+
+/* 纸页外缘的一线受光：它跟着裁切后的弧边一起走，让最外侧那几条带读成
+   一张纸的边，而不是一排刚好齐平的矩形。 */
+.real-book-flip-slice.is-outer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 248, 230, 0.24) 55%,
+    rgba(96, 63, 30, 0.08)
+  );
+  box-shadow: -1px 0 2px rgba(255, 250, 238, 0.12);
+  pointer-events: none;
 }
 
 /* 纸面：正反面的显隐由 JS 按竖带转角下发（见 flipSlices 的 showFront / showBack）。
@@ -1603,17 +1826,15 @@ defineExpose({
       90deg,
       rgb(58 36 16 / calc(var(--rb-flip-dark-a, 0) * 0.26)),
       rgb(58 36 16 / calc(var(--rb-flip-dark-b, 0) * 0.26))
-    ),
-    /* 纸纹：与静态页同源的极淡竖向纹理，翻动中的纸才不是一张白板。 */
-    repeating-linear-gradient(90deg, rgba(58, 36, 16, 0.014) 0 1px, transparent 1px 3px);
+    );
 }
 
 /* 背面：与正面共面，靠 JS 显隐互斥（见 flipSlices 的 showFront / showBack）。
    不给背面加 rotateY(180deg)：那层带着 3D 变换时窗格裁剪会失效，
-   整页正文会从窄缝里整片漏出来且方向是镜像的。镜像改在内容层做（backContentStyle）。
+   整页正文会从窄缝里整片漏出来且方向是镜像的。
 
-   纸背与正面同一种纸色：纸背更暗会在左页上读成一块阴影。
-   背面只留极淡的透墨（见 flipBackOpacity），否则翻过去就只剩一张半透明的旧页。 */
+   背面**只画纸面、不印正文**：半透明字影铺在落点页上会读成一块灰影，
+   翻页时看起来像左边多了一层阴影。纸背与正面同一种纸色。 */
 .real-book-flip-back {
   backface-visibility: visible;
 }

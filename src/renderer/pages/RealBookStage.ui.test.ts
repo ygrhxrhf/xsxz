@@ -95,6 +95,13 @@ describe('RealBookStage（真实书籍舞台）', () => {
     app.unmount()
   })
 
+  it('书台有硬壳封面与上下纸页切口，不再只是两张平纸', async () => {
+    const { app } = await mountStage()
+    expect(document.querySelectorAll('.real-book-board')).toHaveLength(2)
+    expect(document.querySelector('.real-book-block-right .real-book-block-top')).not.toBeNull()
+    app.unmount()
+  })
+
   it('正文落在页面上，段落带原始下标 data-p', async () => {
     const { app } = await mountStage()
     const paras = [...document.querySelectorAll<HTMLElement>('.real-book-para')]
@@ -112,12 +119,14 @@ describe('RealBookStage（真实书籍舞台）', () => {
     await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
     await nextTick()
     const after = Number(document.querySelector('.real-book-page-label')?.textContent?.match(/第 (\d+)/)?.[1] ?? '1')
-    expect(after).toBe(before + 1)
+    // 书台是双页摊开：翻一张纸会同时换掉左右两页，一次前进 2 页。
+    // 只前进 1 页会把「翻一张纸」读成「挪一个窗口」。
+    expect(after).toBe(before + 2)
     expect(events.some((e) => e.type === 'anchor')).toBe(true)
     app.unmount()
   })
 
-  it('翻页中态：翻动页两面都带页眉与页码，和静态页一致', async () => {
+  it('翻页中态：正面是旧右页，纸背是落定后的左页', async () => {
     const { app, stage } = await mountStage({ chapterTitle: '第一章 测试' })
     // 首屏左页是空的（章首），右页是第 1 页。
     stage.nextPage()
@@ -125,14 +134,22 @@ describe('RealBookStage（真实书籍舞台）', () => {
 
     const front = document.querySelector('.real-book-flip-front')
     expect(front?.querySelector('.real-book-page-head')?.textContent).toBe('第一章 测试')
-    const back = document.querySelector('.real-book-flip-back')
-    expect(back?.querySelector('.real-book-page-head')?.textContent).toBe('第一章 测试')
-    // 翻动的是第 1 页（原来的右页），正反面是同一张纸：翻页只前进一页，
-    // 落定后它正好落在左页上，背面若印第 2 页，落定那一帧左页会跳一下。
+    // 翻动的是第 1 页（原来的右页）。
     expect(front?.querySelector('.real-book-page-foot')?.textContent?.trim()).toBe('1')
-    expect(back?.querySelector('.real-book-page-foot')?.textContent?.trim()).toBe('1')
-    // 纸抬起来的这一侧立刻露出翻页后的下一页，否则纸底下压着一模一样的一页，看着像没翻动。
-    expect(document.querySelector('.real-book-right .real-book-page-foot')?.textContent?.trim()).toBe('2')
+    // 纸背就是这张纸的另一面：落地后它成为左页。空白纸背会读成一块硬纸板。
+    // 纸背只在竖带转过 90° 后才挂载（v-if），所以先等它出现再断言。
+    for (let i = 0; i < 60 && !document.querySelector('.real-book-flip-back'); i += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    }
+    const back = document.querySelector('.real-book-flip-back')
+    expect(back).not.toBeNull()
+    expect(back?.querySelector('.real-book-page-head')?.textContent).toBe('第一章 测试')
+    expect(back?.querySelector('.real-book-page-foot')?.textContent?.trim()).toBe('2')
+    expect(back?.textContent).toContain('第12段文字。')
+    expect(back?.querySelector<HTMLElement>('.real-book-flip-content')?.style.transform).toContain('scaleX(-1)')
+    // 纸抬起来的这一侧立刻露出翻页后的新右页（前进 2 页）：否则纸底下压着一模一样的一页，
+    // 看着像没翻动。
+    expect(document.querySelector('.real-book-right .real-book-page-foot')?.textContent?.trim()).toBe('3')
 
     // 等落定定时器走完，别让它漏到下一个用例里。
     await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
@@ -147,14 +164,16 @@ describe('RealBookStage（真实书籍舞台）', () => {
     // 起手时最外那条带已经越过正对观者的位置；它的正面内容必须整层 opacity 0，
     // 否则侧过去的那半张仍按 opacity 叠在下方页面上，看起来像整页残影。
     let sawHiddenSide = false
-    for (let i = 0; i < 20; i += 1) {
-      const sides = [...document.querySelectorAll<HTMLElement>('.real-book-flip-content')]
-        .map((node) => Number(getComputedStyle(node).opacity))
+    for (let i = 0; i < 60; i += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      // 直接读几何下发的 --rb-flip-side：它决定正面整层是否停画，
+      // 比 jsdom 对多层继承 opacity 的计算更接近真实约定。
+      const sides = [...document.querySelectorAll<HTMLElement>('.real-book-flip-slice')]
+        .map((node) => Number(node.style.getPropertyValue('--rb-flip-side')))
       if (sides.some((opacity) => opacity === 0)) {
         sawHiddenSide = true
         break
       }
-      await new Promise((resolve) => setTimeout(resolve, 20))
     }
     expect(sawHiddenSide).toBe(true)
 
