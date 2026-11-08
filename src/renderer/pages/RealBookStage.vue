@@ -1258,8 +1258,7 @@ defineExpose({
      这里只留一道极薄的纸边暗线，避免纸页像贴纸一样浮起来。 */
   box-shadow:
     0 1px 1px rgba(30, 22, 12, 0.12),
-    inset 0 1px 0 rgba(255, 250, 234, 0.32),
-    inset 0 0 24px rgba(105, 70, 35, 0.035);
+    inset 0 1px 0 rgba(255, 250, 234, 0.32);
   display: grid;
   grid-template-rows: var(--rb-head-height) 1fr var(--rb-foot-height);
   /* 纸面质感：上缘受光 + 版心一团柔光 + 下缘转沉 + 沿页宽的弧面明暗。
@@ -1404,43 +1403,26 @@ defineExpose({
    这是「摊开的书」和「两个并排矩形」的全部区别，扭转量只走 3D 变换、不动排版。 */
 .real-book-left {
   border-radius: 10px 2px 9px 2px;
-  /* 书脊侧的暗：纸从谷里抬起来，靠脊那一小段落进阴影。 */
-  box-shadow:
-    inset -9px 0 15px -13px rgba(58, 36, 16, 0.24),
-    inset 0 1px 0 rgba(255, 250, 234, 0.3);
+  /* 靠脊不再压暗：中间只留纸面本身与一条极浅折缝，避免书心出现黑带。 */
+  box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.3);
   transform-origin: right center;
   transform: rotateY(var(--rb-bend, 0deg));
-  /* 左页的弧面：书脊在右边，所以越靠右越深地落进谷里，外缘受光。
-     暗部必须**收在书脊那一小段**：摊开的书是书脊最低、纸面从谷里缓缓抬起，
-     暗只占靠近书脊的窄带；暗摊开一整页就不是谷，是一张脏纸。
-     阴影是暖的：纯灰的暗部压在奶油色纸上会发脏。 */
+  /* 左页只保留外缘受光与极轻的纸面起伏，靠书脊一侧不再落暗。 */
   --rb-page-curve: linear-gradient(
     90deg,
-    /* 左页书脊在右边：外缘受光，靠近右缘才落进谷里。 */
     color-mix(in srgb, var(--rb-paper-lit) 12%, transparent) 0%,
-    transparent 10%,
-    transparent 78%,
-    color-mix(in srgb, var(--rb-paper-shade) 8%, transparent) 86%,
-    color-mix(in srgb, var(--rb-paper-shade) 18%, transparent) 94%,
-    color-mix(in srgb, var(--rb-paper-shade) 34%, transparent) 100%
+    transparent 10%
   );
 }
 
 .real-book-right {
   border-radius: 2px 10px 2px 9px;
-  box-shadow:
-    inset 9px 0 15px -13px rgba(58, 36, 16, 0.24),
-    inset 0 1px 0 rgba(255, 250, 234, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.3);
   transform-origin: left center;
   transform: rotateY(calc(-1 * var(--rb-bend, 0deg)));
-  /* 右页的弧面：书脊在左边，谷口朝内，外缘抬起受光。与左页同一套光。 */
+  /* 右页同样不加靠脊暗带，只保留外缘受光。 */
   --rb-page-curve: linear-gradient(
     90deg,
-    /* 右页书脊在左边：紧贴左缘落谷，向外很快抬回受光面。 */
-    color-mix(in srgb, var(--rb-paper-shade) 34%, transparent) 0%,
-    color-mix(in srgb, var(--rb-paper-shade) 18%, transparent) 6%,
-    color-mix(in srgb, var(--rb-paper-shade) 8%, transparent) 14%,
-    transparent 24%,
     transparent 88%,
     color-mix(in srgb, var(--rb-paper-lit) 10%, transparent) 100%
   );
@@ -1448,47 +1430,35 @@ defineExpose({
 
 .real-book-gutter {
   position: relative;
-  width: 14px;
-  /* 书脊是全书最低的一点：它是**谷**，不是一道缝，更不是一根黑棒。
-     谷的结构是：两侧的纸往中间落、落进谷里，所以紧靠脊的那一小段最暗；
-     脊心被上方折过来的纸缘挡出一线极弱的反光，但绝不是一根金属亮棒。
-     这一层必须**不透明**：书台是深色桌面，谷一旦半透明，深色桌面从底下透上来，
-     谷就读成「这里裂开一条缝，缝里是黑的」，而不是纸落下去的凹面。 */
-  background:
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--rb-paper-shade) 62%, #2c1b0d) 0%,
-      color-mix(in srgb, var(--rb-paper-shade) 72%, #1f1309) 18%,
-      color-mix(in srgb, var(--rb-paper-shade) 84%, #160d06) 46%,
-      color-mix(in srgb, var(--rb-paper-shade) 84%, #160d06) 54%,
-      color-mix(in srgb, var(--rb-paper-shade) 72%, #1f1309) 82%,
-      color-mix(in srgb, var(--rb-paper-shade) 62%, #2c1b0d) 100%
-    );
-  /* 谷口不再做两侧对称亮边：那会把书脊读成一根圆管。
-     只在脊心留一条断续的纸页折痕，并让整条谷落进下方软影。 */
-  box-shadow:
-    inset 1px 0 2px -1px rgba(255, 246, 226, 0.12),
-    inset -1px 0 2px -1px rgba(255, 246, 226, 0.1),
-    0 4px 9px rgba(22, 13, 6, 0.18);
+  /* 纸心向两侧各压进 2px：页缘与书心之间只要有一条亚像素缝，底下的深色
+     封面就会透成一条竖直暗线。总宽度仍是 14px，不改变两页的排版位置。 */
+  width: 18px;
+  margin: 0 -2px;
+  /* 书心就是一整片纸：不铺暗带，也不画中线阴影。
+     折缝由左右两页的 V 形折角自然形成，而不是在中间叠一条深色。 */
+  background: var(--rb-paper-warm);
+  box-shadow: none;
 }
 
-.real-book-gutter::after {
+/* 书心两侧各留出一指宽的纸色过渡：页缘的抗锯齿缝、纸面曲线与纸心
+   即使有 1px 的亮度差，也被这层同色渐变抹平，不会再读成一条暗线。
+   过渡只压在版心的内侧留白里，不碰正文。 */
+.real-book-gutter::before {
   content: '';
   position: absolute;
-  top: 3%;
-  bottom: 3%;
-  left: 50%;
-  width: 1px;
-  transform: translateX(-0.5px);
-  background:
-    repeating-linear-gradient(
-      180deg,
-      rgba(36, 21, 9, 0.22) 0 3px,
-      rgba(255, 239, 208, 0.12) 3px 4px,
-      rgba(36, 21, 9, 0.08) 4px 9px,
-      transparent 9px 12px
-    );
-  opacity: 0.8;
+  top: 0;
+  bottom: 0;
+  left: -9px;
+  right: -9px;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--rb-paper-warm) 24%,
+    var(--rb-paper-warm) 76%,
+    transparent 100%
+  );
 }
 
 /* 书下投影：书体与纸垛落在地面上的影子。退到书体后方（translateZ），

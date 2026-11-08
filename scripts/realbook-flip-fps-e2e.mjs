@@ -210,8 +210,8 @@ try {
    * 横穿书缝的像素亮度剖面。
    *
    * 为什么要拉回页面里解码：接口只给 PNG 字节，Node 侧没有解码器，而浏览器自带 canvas。
-   * 拿到的是真实像素，不是「我觉得中缝应该有暗」。剖面必须呈现「亮—暗谷—亮」的谷形：
-   * 只有暗带塌成一条均匀黑边，说明中缝读成了裂缝而不是纸陷下去的谷。
+   * 拿到的是真实像素，不是「我觉得中缝应该有暗」。剖面应该接近「亮—同亮—亮」：
+   * 中间一旦明显暗下去，书心就会读成一道阴影或裂缝，而不是一整片纸。
    */
   const seamProfile = async () => {
     const clip = {
@@ -491,23 +491,21 @@ try {
   // 把「拍照卡住」算成「翻页掉帧」。
   await shootFlip()
 
-  // 书缝像素剖面：中缝必须是「陷下去的谷」——两侧是纸，中间显著更暗。
+  // 书缝像素剖面：书心必须是纸，不是暗谷。中缝与两侧纸面亮度接近，
+  // 只允许极轻的纸页折缝差异。
   if (geom) {
     await cdp('Page.bringToFront')
     await sleep(300)
     const prof = await seamProfile()
-    console.log(`      书缝亮度剖面：左纸 ${prof.leftPaper.toFixed(1)} · 中缝均 ${prof.seamAvg.toFixed(1)} · 中缝最低 ${prof.seamMin} · 右纸 ${prof.rightPaper.toFixed(1)}`)
-    check('中缝比两侧纸面明显更暗（谷形存在）',
-      prof.seamMin < Math.min(prof.leftPaper, prof.rightPaper) - 20,
-      `中缝最低 ${prof.seamMin}，左纸 ${prof.leftPaper.toFixed(1)}，右纸 ${prof.rightPaper.toFixed(1)}`)
+    console.log(`      书心亮度剖面：左纸 ${prof.leftPaper.toFixed(1)} · 中缝均 ${prof.seamAvg.toFixed(1)} · 中缝最低 ${prof.seamMin} · 右纸 ${prof.rightPaper.toFixed(1)}`)
+    const sideAvg = (prof.leftPaper + prof.rightPaper) / 2
+    check('书心没有暗带（中缝与两侧纸面同亮度）',
+      Math.abs(prof.seamAvg - sideAvg) < 8 &&
+        prof.seamMin > Math.min(prof.leftPaper, prof.rightPaper) - 12,
+      `中缝均 ${prof.seamAvg.toFixed(1)}，两侧均 ${sideAvg.toFixed(1)}，中缝最低 ${prof.seamMin}`)
     check('中缝不是一条纯黑裂缝（保留纸色层次）',
-      prof.seamMin > 30,
-      `中缝最低 ${prof.seamMin}（低于 30 就接近桌面透出来的黑缝）`)
-    const seam = prof.px.slice(prof.from, prof.to)
-    const darkest = seam.indexOf(Math.min(...seam))
-    check('最暗处在中缝内而不是贴着一侧纸边',
-      darkest > 0 && darkest < seam.length - 1,
-      `最暗列 ${darkest}/${seam.length}`)
+      prof.seamMin > 120,
+      `中缝最低 ${prof.seamMin}（低于 120 就接近桌面透出来的黑缝）`)
   }
 
   const fmt = (s) => `翻页时长 ${Math.round(s.flipDuration)}ms，翻页帧 ${s.flipFrames}，中位间隔 ${s.flipMedian?.toFixed(1)}ms，最大 ${s.flipMax?.toFixed(1)}ms，长帧 ${s.flipLong}，长任务 ${s.longTaskCount} 次共 ${Math.round(s.longTaskTotal)}ms`
