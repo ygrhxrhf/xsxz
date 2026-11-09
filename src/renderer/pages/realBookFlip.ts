@@ -55,32 +55,6 @@ export const FLIP_DURATION_MS = 820
 export const FLIP_MAX_BEND_DEG = 72
 
 /**
- * 纸角外翻的额外卷曲（deg）：最外那一段再往回卷一点。
- *
- * 摊开的纸是一张弓；被手指甩出去的纸角是**卷**着的——外缘不再是纸的边，
- * 而是一小段翻回来的卷边。没有这道卷曲，纸再弯也读成一块微微起拱的板，
- * 设计图里那一下明显的「纸角翻过去」就没了。
- *
- * 卷曲只加在最外一小段纸宽上（见 FLIP_CURL_SHAPE_START），纸面中段仍是连续的弧。
- */
-const FLIP_EDGE_CURL_DEG = 20
-
-/** 卷曲从纸宽的 70% 处开始，到外缘达到全额。 */
-const FLIP_CURL_SHAPE_START = 0.70
-
-/**
- * 卷曲的包络：起翻后很快出现，落定前收回。
- *
- * 包络在进度 0 与 1 都必须是 0——静止的纸是一张平的纸，
- * 若卷曲一直留着，页面在翻页前后就不是平的纸，落定时会看到一个歪掉的纸角。
- */
-function curlEnvelope(t: number): number {
-  if (t <= 0.1) return smootherstep(t / 0.1)
-  if (t <= 0.55) return 1
-  return 1 - smootherstep((t - 0.55) / 0.18)
-}
-
-/**
  * 翻动页浮在下面那页之上的纵深（px）。
  *
  * 翻动页的平躺那一段与它下面的页面在同一块区域（下面已经换成了下一页的正文），
@@ -318,9 +292,6 @@ export function flipPoses(progress: number, options: FlipPoseOptions): FlipSlice
   const to = Number.isFinite(options.toDeg) ? options.toDeg : 0
   const t = clamp01(progress)
   const span = to - from
-  // 甩动方向：卷曲要顺着甩的方向加，反了就成折回去。
-  const swing = Math.sign(span) || -1
-
   // 三条时间线：纸角领跑、书脊侧晚起，两者的差就是纸弯出的那个弓。
   const tip = tipProgress(t)
   const root = rootProgress(t)
@@ -330,13 +301,7 @@ export function flipPoses(progress: number, options: FlipPoseOptions): FlipSlice
   // 那一压就把纸角钉死在某个角度上不动了，画面上纸的外缘卡住、只有里侧在转。
   // 压缩不改变任何一条时间线的形状，纸角全程照旧在走。
   const gap = tipAngle - rootAngle
-  // 外缘卷曲的强度：起翻后很快出现（纸角被甩得卷起来），落定前收回。
-  const curl = curlEnvelope(t)
-  // 弯度护栏要先把纸角卷曲那一段让出来：整页的转角差 = 弓 + 卷曲。
-  const bendCap = Math.max(
-    0,
-    Math.min(FLIP_MAX_BEND_DEG - FLIP_EDGE_CURL_DEG * curl, Math.abs(span) * 0.9),
-  )
+  const bendCap = Math.max(0, Math.min(FLIP_MAX_BEND_DEG, Math.abs(span) * 0.9))
   // 用 tanh 软压缩而不是硬截断：纸弯到接近挺度上限时增速变缓，但**不会停住**。
   // 硬截断会让外缘在书脊侧追上来之前被钉在同一个角度上——那正是「僵硬」的读感。
   const scaledGap = bendCap > 0 ? bendCap * Math.tanh(gap / bendCap) : gap
@@ -346,11 +311,7 @@ export function flipPoses(progress: number, options: FlipPoseOptions): FlipSlice
   /** 某一页宽位置 s 处的转角。 */
   const angleAt = (s: number): number => {
     const s01 = clamp01(s)
-    // 外缘卷曲：只在最外一段额外翻过去，读成纸角卷起来的一小截。
-    const curlShape = smootherstep((s01 - FLIP_CURL_SHAPE_START) / (1 - FLIP_CURL_SHAPE_START))
-    return rootAngle
-      + scaledGap * Math.pow(s01, exponent)
-      + swing * FLIP_EDGE_CURL_DEG * curlShape * curl
+    return rootAngle + scaledGap * Math.pow(s01, exponent)
   }
   const sliceWidth = width / slices
   // 竖带在纸上的边界：越靠纸角越窄。
@@ -442,6 +403,22 @@ export function flipContentOpacity(angleDeg: number): number {
 export function flipBackOpacity(angleDeg: number): number {
   const facing = flipFacing(angleDeg)
   return Math.min(1, Math.max(0, (facing - 0.15) / 0.5)) * 0.08
+}
+
+/**
+ * 纸背正文的淡入系数（0–1）。
+ *
+ * 纸背在 90° 处正侧对观者，正文应完全隐去；转到约 130° 后才完整露出。
+ * 没有这段淡入时，正面与背面在 90° 边界会从旧页正文直接切成另一页正文，
+ * 纸上留下一条竖直的「撕缝」——两侧字完全不同，看起来像纸被竖着撕开。
+ *
+ * 纸面本身始终不透明：这里只淡正文，不淡纸。
+ */
+export function flipBackContentOpacity(angleDeg: number): number {
+  const angle = Number.isFinite(angleDeg) ? Math.abs(angleDeg) : 180
+  if (angle <= 90) return 0
+  const facing = Math.abs(Math.cos((angle * Math.PI) / 180))
+  return Math.min(1, Math.max(0, (facing - 0.08) / 0.55))
 }
 
 /**

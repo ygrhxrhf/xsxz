@@ -3,6 +3,7 @@ import {
   FLIP_MAX_BEND_DEG,
   FLIP_SLICE_COUNT,
   flipAngles,
+  flipBackContentOpacity,
   flipBackOpacity,
   flipContentOpacity,
   flipFaceVisible,
@@ -52,7 +53,8 @@ describe('卷页几何', () => {
   })
 
   it('中段有弧度：整页的转角沿页宽拉开，纸是被弯着的不是刚体', () => {
-    const angles = pose(0.5).map((item) => item.angle)
+    // 弯度峰值在纸角刚越过正对位置、书脊侧还没跟上时（约 34%）。
+    const angles = pose(0.34).map((item) => item.angle)
     expect(Math.max(...angles) - Math.min(...angles)).toBeGreaterThan(45)
   })
 
@@ -68,7 +70,7 @@ describe('卷页几何', () => {
   })
 
   it('外缘那一段真的被甩过去了：外缘的转角先过半', () => {
-    const poses = pose(0.38)
+    const poses = pose(0.4)
     // 外缘已过 −90°（正对观者的那一侧），书脊侧还没到。
     expect(outerSide(poses)).toBeLessThan(-90)
     expect(spineSide(poses)).toBeGreaterThan(-90)
@@ -139,14 +141,14 @@ describe('卷页几何', () => {
       const angles = pose(progress).map((item) => item.angle)
       return Math.max(...angles) - Math.min(...angles)
     }
-    expect(bendAt(0.5)).toBeGreaterThan(45)
-    expect(bendAt(0.4)).toBeGreaterThan(55)
+    expect(bendAt(0.34)).toBeGreaterThan(45)
+    expect(bendAt(0.5)).toBeGreaterThan(30)
     // 上限是纸的挺度：弯过头就成了塑料片。
     expect(bendAt(0.5)).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
     expect(bendAt(1)).toBeCloseTo(0, 6)
     // 峰值弯度发生在中段（纸弯成弓的那一刻），不是全程拉满。
     const peak = Math.max(...Array.from({ length: 21 }, (_, i) => bendAt(i / 20)))
-    expect(peak).toBeGreaterThan(58)
+    expect(peak).toBeGreaterThan(50)
   })
 
   it('折线首尾相接：下一条的起点就是上一条的终点', () => {
@@ -175,22 +177,23 @@ describe('卷页几何', () => {
     expect(poses[poses.length - 1]!.width).toBeLessThan(poses[0]!.width)
   })
 
-  it('曲率集中在纸角：最外一段的转角增量大于纸面中段', () => {
+  it('曲率集中在纸角：外缘单位纸宽上的转角增量大于纸面中段', () => {
     const poses = pose(0.4)
-    const step = (index: number) => Math.abs(poses[index + 1]!.angle - poses[index]!.angle)
-    const mid = step(Math.floor(poses.length / 2))
-    const edge = step(poses.length - 2)
-    // 纸角那一段额外卷过去（FLIP_EDGE_CURL_DEG），所以那里的弯得比纸面中段急。
-    // 没有这道卷曲，纸再弯也只是一张微微起拱的板——设计图里那一下「纸角翻过去」就没了。
+    // 外缘的竖带更窄，单条的绝对转角增量不一定更大；按单位纸宽比较，
+    // 才能确认曲率真的集中在纸角，而不是靠一条额外的折边硬折出来。
+    const perWidth = (index: number) =>
+      Math.abs(poses[index + 1]!.angle - poses[index]!.angle) / poses[index]!.width
+    const mid = perWidth(Math.floor(poses.length / 2))
+    const edge = perWidth(poses.length - 2)
     expect(edge).toBeGreaterThan(mid)
   })
 
-  it('卷曲计入弯度上限：整页的最大转角差仍不超过纸的挺度', () => {
+  it('弯度上限：整页的最大转角差仍不超过纸的挺度', () => {
     const bendAt = (progress: number) => {
       const angles = pose(progress).map((item) => item.angle)
       return Math.max(...angles) - Math.min(...angles)
     }
-    // 上限要覆盖「弓」与「纸角卷曲」两项之和：超了就成铁皮。
+    // 整页沿纸宽连续弯曲，峰值不能超过纸的挺度：超了就成铁皮。
     expect(bendAt(0.35)).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
     expect(bendAt(0.65)).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
   })
@@ -270,6 +273,26 @@ describe('卷页几何', () => {
     expect(flipContentOpacity(90)).toBeCloseTo(0, 6)
   })
 
+  it('纸背正文在 90° 边界淡入：不留下竖着换字的撕缝', () => {
+    // 90° 处纸背正侧对观者，正文必须完全隐去；否则正面/背面会在竖带边界
+    // 从旧页正文直接切成另一页正文，纸上出现一条竖缝。
+    expect(flipBackContentOpacity(0)).toBeCloseTo(0, 6)
+    expect(flipBackContentOpacity(90)).toBeCloseTo(0, 6)
+    expect(flipBackContentOpacity(-90)).toBeCloseTo(0, 6)
+    // 转过 90° 后单调淡入，约 130° 才完整露出。
+    let previous = 0
+    for (let angle = 91; angle <= 180; angle += 1) {
+      const opacity = flipBackContentOpacity(angle)
+      expect(opacity).toBeGreaterThanOrEqual(previous)
+      previous = opacity
+    }
+    expect(flipBackContentOpacity(120)).toBeGreaterThan(0.6)
+    expect(flipBackContentOpacity(130)).toBeCloseTo(1, 6)
+    expect(flipBackContentOpacity(180)).toBeCloseTo(1, 6)
+    // 非法转角按已经翻过来的纸处理，不能把纸背正文算成 NaN/透明。
+    expect(flipBackContentOpacity(Number.NaN)).toBeCloseTo(1, 6)
+  })
+
   it('竖带连续曲面：整段行程每一条带都连着前一条，首尾相接', () => {
     // 竖带是折线积分摆出来的：下一条的起点必须正好是上一条的终点。
     // 这条不变量破了，纸上就会有一道缝或一个台阶——那正是「硬卡片」的样子。
@@ -294,7 +317,7 @@ describe('卷页几何', () => {
 
   it('竖带连续曲面：转角沿页宽连续变化，没有跳变', () => {
     // 相邻两条带的转角差不能突然变大——那是折面而不是曲面的读感。
-    // 允许的最大台阶就是外缘卷曲那一段的增量，其余地方必须平顺。
+    // 外缘竖带更窄，单条角度增量可以略大；但不能超过平均值十倍。
     const poses = pose(0.45)
     const steps = poses.slice(0, -1).map((item, index) => Math.abs(poses[index + 1]!.angle - item.angle))
     const maxStep = Math.max(...steps)

@@ -19,7 +19,7 @@ import { createRealBookPaginator, findPageForInput, pageRatio, type RealBookAnch
 import { MAX_SPINE_LAYERS, spineLayers, spineStack } from './realBookSpine'
 import { measureLines } from './realBookMeasure'
 import { clampPitch, pitchFromDrag, pitchResetTarget } from './realBookPitch'
-import { FLIP_DURATION_MS, flipAngles, flipContentOpacity, flipFaceVisible, flipLight, flipPhases, flipPoses, flipSheetLift, flipSway } from './realBookFlip'
+import { FLIP_DURATION_MS, flipAngles, flipBackContentOpacity, flipContentOpacity, flipFaceVisible, flipLight, flipPhases, flipPoses, flipSheetLift, flipSway } from './realBookFlip'
 
 interface HighlightSpan {
   /** 段落下标（原始下标，与经典模式一致） */
@@ -614,8 +614,9 @@ const flipSlices = computed(() => {
         width: `${width}px`,
         transformOrigin: '0 0',
         // 纸背可见时切片上的 --rb-flip-side 正好是 0（正面停画）。
-        // 纸背内容必须显式恢复不透明，否则会把整张纸背也一起隐掉。
-        opacity: '1',
+        // 纸背正文按转角淡入：90° 边界两侧不能一边旧页正文、一边新页正文，
+        // 否则纸上会出现一条竖着换字的「撕缝」。纸背本身仍是整张不透明纸。
+        opacity: flipBackContentOpacity(pose.angle).toFixed(3),
         // 纸背沿竖带镜像：竖带转过 90° 后局部 x 轴在屏幕上是反的，
         // 先把内容预翻一次，纸背上的下一页才不会左右颠倒。
         transform: `translateX(${(width - pose.offset).toFixed(2)}px) scaleX(-1)`,

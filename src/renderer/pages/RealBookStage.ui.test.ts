@@ -202,6 +202,20 @@ describe('RealBookStage（真实书籍舞台）', () => {
     app.unmount()
   })
 
+  it('向前翻页时转轴落在左页装订边（中心线 -7px）', async () => {
+    const { app, stage } = await mountStage()
+    // 先翻到第二屏，再往回翻，才能测到 direction=-1 的转轴。
+    stage.nextPage()
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
+    stage.prevPage()
+    await nextTick()
+
+    expect(document.querySelector<HTMLElement>('.real-book-flip')?.style.left).toBe('calc(50% - 7px)')
+
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
+    app.unmount()
+  })
+
   it('没有翻页按钮：翻页改由点按纸面承担', async () => {
     const { app } = await mountStage()
     // 翻页按钮已移除：读者靠点纸面左右两侧翻页，页码只在页脚报位置。
