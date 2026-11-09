@@ -106,17 +106,6 @@ export interface FlipSlicePose {
   offset: number
   /** 该竖带的宽度（px） */
   width: number
-  /**
-   * 纸页上下缘的弯曲内收量（px）。
-   *
-   * 竖带几何只管左右卷，整页仍是一个上下边笔直的矩形。真实纸张被捏住外角时，
-   * 纸面还会在上下方向鼓/垂：外缘比书脊侧更晚拉直，纸角有轻微的“垂头”。
-   * 渲染层用这四个值裁出连续的波浪轮廓——相邻带共用边界值，所以不会裂开。
-   */
-  topLeft: number
-  topRight: number
-  bottomLeft: number
-  bottomRight: number
 }
 
 /**
@@ -314,37 +303,6 @@ export function flipPhases(progress: number): FlipPhases {
  */
 const FLIP_STRIP_DENSITY_EXPONENT = 0.72
 
-export interface FlipLeafEdge {
-  /** 上缘向内收多少（px） */
-  top: number
-  /** 下缘向内收多少（px） */
-  bottom: number
-}
-
-/**
- * 纸页上下缘的瞬时弯曲量。
- *
- * 只在翻动中存在，起止必须归零：静止的纸页轮廓要能和下面那张静态页严丝合缝。
- * 外缘（s→1）比书脊侧更自由，收得更多；下缘略小于上缘，纸角就不会像被剪掉
- * 一块直角，而是有一点点纸垂下来的弧。
- *
- * 这里刻意只做**内收**（正值）：竖带本身 overflow:hidden，向上/向下鼓出去会被
- * 裁掉，反而在纸边留下硬直切口。内收则能安全地读出弯曲轮廓。
- */
-export function flipLeafEdge(progress: number, s: number): FlipLeafEdge {
-  const t = clamp01(progress)
-  // 纸角先走，纸边弯曲也跟着纸角行程；两端用 sin 包络自然归零。
-  const tip = tipProgress(t)
-  const lift = Math.sin(Math.PI * tip)
-  const u = clamp01(s)
-  // 外缘项负责“纸角被捏住”，sin 项让纸面中段有一点鼓起的弧，而不是一条斜线。
-  const wave = Math.sin(Math.PI * u)
-  return {
-    top: (16 * Math.pow(u, 1.7) + 4 * wave) * lift,
-    bottom: (8.5 * Math.pow(u, 2) + 2.2 * wave) * lift,
-  }
-}
-
 /**
  * 给定进度（0–1）与版面，算出每条竖带的角度与位置。
  *
@@ -413,8 +371,6 @@ export function flipPoses(progress: number, options: FlipPoseOptions): FlipSlice
     const angle = angleAt(s)
     const startAngle = angleAt(s0)
     const endAngle = angleAt(s1)
-    const leftEdge = flipLeafEdge(t, s0)
-    const rightEdge = flipLeafEdge(t, s1)
     poses.push({
       angle,
       startAngle,
@@ -423,10 +379,6 @@ export function flipPoses(progress: number, options: FlipPoseOptions): FlipSlice
       z: z + FLIP_SHEET_CLEARANCE_PX,
       offset,
       width: stripWidth,
-      topLeft: leftEdge.top,
-      topRight: rightEdge.top,
-      bottomLeft: leftEdge.bottom,
-      bottomRight: rightEdge.bottom,
     })
     const rad = angle * Math.PI / 180
     // rotateY(angle) 把条带的局部 +x 指向 (cos, 0, −sin)。

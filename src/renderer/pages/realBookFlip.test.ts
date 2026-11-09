@@ -7,7 +7,6 @@ import {
   flipContentOpacity,
   flipFaceVisible,
   flipFacing,
-  flipLeafEdge,
   flipPoses,
   flipSheetLift,
 } from './realBookFlip'
@@ -207,35 +206,6 @@ describe('卷页几何', () => {
     expect(flipSheetLift(1).lift).toBeCloseTo(0, 6)
     // 中段纸离桌面最高。
     expect(flipSheetLift(0.5).lift).toBeGreaterThan(10)
-  })
-
-  it('纸页上下缘在飞行中弯曲，起止与静态页严丝合缝', () => {
-    // 起止两帧必须是一张直边的纸，否则翻页开始/结束会与静态页错开一圈毛边。
-    for (const progress of [0, 1]) {
-      for (const s of [0, 0.25, 0.5, 0.75, 1]) {
-        const edge = flipLeafEdge(progress, s)
-        expect(edge.top).toBeCloseTo(0, 8)
-        expect(edge.bottom).toBeCloseTo(0, 8)
-      }
-    }
-    // 中段外缘收得比书脊侧多：纸角被捏住，书脊那片还贴着书。
-    const spineEdge = flipLeafEdge(0.45, 0)
-    const middleEdge = flipLeafEdge(0.45, 0.5)
-    const outerEdge = flipLeafEdge(0.45, 1)
-    expect(spineEdge.top).toBeCloseTo(0, 6)
-    expect(middleEdge.top).toBeGreaterThan(0)
-    expect(outerEdge.top).toBeGreaterThan(middleEdge.top)
-    expect(outerEdge.bottom).toBeGreaterThan(0)
-  })
-
-  it('上下缘弯曲连续：相邻竖带共享边界值，不会裁出锯齿', () => {
-    for (const progress of [0.2, 0.4, 0.6, 0.85]) {
-      const poses = pose(progress)
-      for (let index = 0; index < poses.length - 1; index += 1) {
-        expect(poses[index]!.topRight).toBeCloseTo(poses[index + 1]!.topLeft, 6)
-        expect(poses[index]!.bottomRight).toBeCloseTo(poses[index + 1]!.bottomLeft, 6)
-      }
-    }
   })
 
   it('整张纸有方向性的侧滚：左右翻页镜像，而不是一条直线扇动', () => {

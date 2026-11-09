@@ -575,10 +575,6 @@ const flipSlices = computed(() => {
     // 转角是负的（向右翻的外缘是 -180°），必须按绝对值判侧：直接写 angle < 90
     // 会把所有负角都当成正面，纸转过去后仍画着旧正文。
     const sideOpacity = visible.showFront ? 1 : 0
-    // 上下缘的弯曲用裁切轮廓表达：相邻带共用边界处的弯曲量，所以纸边是连续弧线，
-    // 不会像把一叠等宽纸板排成扇形那样出现台阶。
-    const clipPath = `polygon(0 ${pose.topLeft.toFixed(2)}px, 100% ${pose.topRight.toFixed(2)}px, `
-      + `100% calc(100% - ${pose.bottomRight.toFixed(2)}px), 0 calc(100% - ${pose.bottomLeft.toFixed(2)}px))`
     return {
       index,
       // 作废一面交给转角自己决定：纸面转过 90° 后正面就不该再画，否则正反两层
@@ -588,7 +584,8 @@ const flipSlices = computed(() => {
       style: {
         width: `${(pose.width + 0.5).toFixed(2)}px`,
         transform: `translate3d(${pose.x.toFixed(2)}px, 0, ${pose.z.toFixed(2)}px) rotateY(${pose.angle.toFixed(2)}deg)`,
-        clipPath,
+        // 竖带保持整页高度，不在上下缘裁内收轮廓：裁掉的那一块会直接露出
+        // 下面的静态页，起手时就像纸先被撕开一条横缝，再开始翻。
         // 动态模糊会为每条带重建一次离屏表面，实测把整段翻页压到 10–17 帧。
         // 现在纸页本身有连续曲率与外角侧滚，动画的“速度感”由几何承担；
         // 保住 60Hz 的连续帧，比给快带糊一层拖影更像真纸。
@@ -717,6 +714,15 @@ const BLOCK_DEPTH_PER_LAYER_PX = 4
  * 翻页的起翻角与落位角都由它推出来——两处必须同一个数，否则落定时会错开一个折角。
  */
 const BEND_DEG = 9
+
+/**
+ * 翻动页的转轴到摊开中心线的距离（px）。
+ *
+ * 书心 CSS 是 `width:18px; margin:0 -2px`，实际占 14px；右页的左缘在中心线右侧
+ * 7px、左页的右缘在左侧 7px。翻动页必须以**本半页的装订边**为轴，不能转在
+ * 书心正中：差这 7px 时纸的右缘会先露出一条下面那页的竖缝，起手就读成「撕开」。
+ */
+const FLIP_ANCHOR_OFFSET_PX = 7
 
 /** 书厚纸垛占用的高度：页面在下方让出这一段，纸垛的切口才不会被视口裁掉。 */
 const BLOCK_THICKNESS_PX = MAX_SPINE_LAYERS * BLOCK_DEPTH_PER_LAYER_PX + 8
@@ -990,6 +996,9 @@ defineExpose({
             :key="flipping.key"
             class="real-book-flip"
             :style="{
+              left: flipping.direction === 1
+                ? `calc(50% + ${FLIP_ANCHOR_OFFSET_PX}px)`
+                : `calc(50% - ${FLIP_ANCHOR_OFFSET_PX}px)`,
               transform: `translateZ(${flipSheetState.lift.toFixed(2)}px) rotateX(${(-flipSheetState.tilt).toFixed(2)}deg) rotateZ(${flipSheetState.roll.toFixed(2)}deg)`,
             }"
             aria-hidden="true"

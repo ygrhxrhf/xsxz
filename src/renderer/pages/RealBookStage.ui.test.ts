@@ -134,6 +134,9 @@ describe('RealBookStage（真实书籍舞台）', () => {
 
     const front = document.querySelector('.real-book-flip-front')
     expect(front?.querySelector('.real-book-page-head')?.textContent).toBe('第一章 测试')
+    // 翻动页的轴必须落在右页自己的装订边（中心线 +7px），不能转在书心正中：
+    // 差这 7px 起手就会先露出纸缘竖缝，看着像纸被撕开。
+    expect(document.querySelector<HTMLElement>('.real-book-flip')?.style.left).toBe('calc(50% + 7px)')
     // 翻动的是第 1 页（原来的右页）。
     expect(front?.querySelector('.real-book-page-foot')?.textContent?.trim()).toBe('1')
     // 纸背就是这张纸的另一面：落地后它成为左页。空白纸背会读成一块硬纸板。
@@ -176,6 +179,24 @@ describe('RealBookStage（真实书籍舞台）', () => {
       }
     }
     expect(sawHiddenSide).toBe(true)
+
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
+    app.unmount()
+  })
+
+  it('翻页中态：竖带始终铺满页高，不裁出露出底下页的横缝', async () => {
+    const { app, stage } = await mountStage()
+    stage.nextPage()
+    await nextTick()
+
+    // 上下缘内收的裁切会在纸上挖掉一条横带：下面静态页的新内容从缝里露出来，
+    // 起手几帧看起来就像纸先被撕开、再开始翻转。竖带必须保持整页高度。
+    for (let i = 0; i < 20; i += 1) {
+      const slices = [...document.querySelectorAll<HTMLElement>('.real-book-flip-slice')]
+      expect(slices.length).toBeGreaterThan(0)
+      for (const slice of slices) expect(slice.style.clipPath).toBe('')
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    }
 
     await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
     app.unmount()
