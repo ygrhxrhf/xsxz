@@ -19,8 +19,8 @@
       - 验：`npx vitest run src/renderer/pages/realBookFlip.test.ts src/renderer/pages/RealBookStage.ui.test.ts src/renderer/pages/Reader.realBook.ui.test.ts` → 73 用例全绿
 - [x] 5. 真机验证：重建后重跑同一组慢动作帧
       - 验：`npm run build` + 21 帧慢动作序列 → 无竖折缝；非慢动作 e2e 9/9 通过，55 帧、中位 13.9ms、长帧 0
-- [ ] 6. 提交：只暂存本任务文件
-      - 验：`git log --oneline -1`
+- [x] 6. 提交：只暂存本任务文件
+      - 验：`git log --oneline -1` → `9a47b32 fix(reader): 翻页外缘连续，去掉撕开式折边`
 
 ## 不做
 
@@ -40,6 +40,6 @@
 
 ## 断点记录（每次停下前更新）
 
-- 状态：进行中
-- 下一步第一条命令：`npm run build`
-- 未验证项：全部
+- 状态：已完成（第二轮）
+- 下一步第一条命令：`git -C 'C:/codes/xsxz' log --oneline -1`
+- 未验证项：干净 worktree 复核后收工
