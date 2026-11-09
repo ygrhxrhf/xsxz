@@ -41,5 +41,11 @@
 ## 断点记录（每次停下前更新）
 
 - 状态：已完成（第二轮）
-- 下一步第一条命令：`git -C 'C:/codes/xsxz' log --oneline -1`
-- 未验证项：干净 worktree 复核后收工
+- 下一步第一条命令：无（本任务收工）
+- 干净 worktree 复核（`c5a47fd`）：
+  - `npx vitest run src/renderer/pages/realBookFlip.test.ts src/renderer/pages/RealBookStage.ui.test.ts` → 2 文件 / 59 用例全绿。
+  - 排除既有过期用例后 `tsc --noEmit` → 0；`npm run plan:status` → exit 0。
+- 既有基线问题（与本轮无关，父提交 `cce36a2` 同样存在）：
+  - `realBookSpine.test.ts` 仍按旧签名调用 `spineStack`，HEAD 上 typecheck 报 9 处 TS2554。
+  - `Reader.realBook.ui.test.ts` 的键盘/点按翻页仍断言「+1 页」，实际书页模式翻一张为 +2；
+    工作区已有其他批次的未提交修正，本轮未触碰。
