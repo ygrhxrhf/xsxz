@@ -1,6 +1,102 @@
 # HANDOFF
 
+## 工作区积压已落成三笔提交（2026-11-11，本轮完成）
+
+- 做到哪：2026-11-09/10 三轮真实书籍工作从工作区拆成三笔提交，`plan:status` 归零。
+- 提交：
+  - `d1091da` fix(reader): 翻页 84°–91° 竖缝按投影宽度收字 —— `flipContentSideFalloff`、
+    书脊纸垛调薄（20→12 层、间距 3→2.5、纵深 8→4）、`valleyBands` 弧面几何、
+    2026-11-10 实机复核报告 + 墨迹密度脚本 + 证据截图。
+  - `028e32f` feat(reader): 真实书籍页内批注 —— `showInlineNotes` 偏好、`library.readBookStats` IPC、
+    批注原子块分页、`RealBookStage` 渲染与编辑浮层、`Reader.vue` 接线、契约与磁盘说明同步。
+  - `ab377a8` chore(reader): 留档书脊弧面排版实验 —— `RealBookArcPage` / `realBookArcText`
+    与 2 个单测；未接入产品页面。
+- 本轮回归证据：`npm run typecheck` 0；`npx vitest run src --exclude .delta/ --exclude .qoder/ --maxWorkers=6`
+  → **179 文件 / 1858 用例全绿**；`npm run build` 0。
+- 计划：`.multi-agent/plan/workspace-commit-sweep.md`。
+- 不入库（已进 `.gitignore`）：`arc*.log`、`scripts/tmp-arc-*`、`.multi-agent/e2e-artifacts/`、
+  `docs/img/*.log.bak-*`、`.cancricode/`、`.openbitfun/`。
+- 未验证/边界：三笔提交后未再单独跑 e2e（翻页慢动作、批注 17 项）——全量单测与构建已覆盖接线；
+  弧面实验只是留档，没有产品入口。
+- 下一步：无功能遗留。若要发布，`git push origin master`（需用户点头）。
+
+## 真实书籍页内批注（2026-11-09，已提交 `028e32f`）
+
+- 做到哪：`bookView === 'realbook'` 下加入可持久化的页内批注。选区工具条「批注」写下的内容复用
+  `annotations.json` 的 `highlight.note/noteSource/color`，以原子卡片插入锚定段落之后；默认开启，
+  关闭只隐藏卡片、保留划线。工具栏「批注」开关带 `aria-pressed`，卡片点击打开固定定位编辑浮层，
+  可保存/二次确认删除；AI 批注改写后由主进程既有规则落回 `user`。
+- 关键文件：`src/shared/types.ts`、`src/main/settings.ts`、`src/renderer/pages/realBookPager.ts`、
+  `realBookNotes.ts`、`RealBookStage.vue`、`Reader.vue`、`readerMarks.ts`、`scripts/realbook-annotations-e2e.mjs`。
+- 已验证证据：
+  - `npx vitest run src/renderer/pages/realBookPager.test.ts src/renderer/pages/realBookNotes.test.ts src/renderer/pages/RealBookStage.ui.test.ts src/renderer/pages/Reader.realBook.ui.test.ts src/renderer/pages/Reader.marks.ui.test.ts src/renderer/pages/readerMarks.test.ts src/main/settings.test.ts`
+    → 7 文件 / 130 用例全绿。
+  - `npx vitest run src/renderer/pages/Reader.pagination.contract.test.ts src/renderer/pages/Reader.accessibility.contract.test.ts src/renderer/pages/Reader.selection.contract.test.ts`
+    → 3 文件 / 29 用例全绿（选区契约同步改为「批注」）。
+  - `npm run typecheck` → 0；`npm run build` → 0。
+  - `node scripts/realbook-annotations-e2e.mjs` → 17/17 PASS：预置批注显示、就地编辑落盘、
+    关闭后划线保留、设置写盘、重启后开关保持关闭；平放 / 20° / 35° 与四套主题截图产出到
+    `%TEMP%\spbf-realbook-annotations-shots`。
+- 下一步第一条命令：无功能遗留。若要收工提交，先按用户要求只暂存本任务文件；当前按系统约束未 commit。
+- 未验证/边界：`npm run plan:status` 仍因既有 `.multi-agent/plan/realbook-flip-tear-2.md` 未勾项与整个
+  工作区未提交改动而失败，属既有基线；真实站点超长章下的批注分页未单独压测；经典/书页模式按设计
+  不出现页内批注。
+
 ## 当前事实
+
+- **真实书籍翻页起手「撕开」已修（2026-11-09）**：
+  - 根因：竖带按 `clip-path` 把纸的上下缘向内裁掉，裁口直接透出下面静态页；
+    起手还没转动就先出现上下横缝。另有转轴落在书心正中，比本半页装订边偏 7px，
+    右缘也会先裂出竖缝。
+  - 修法：竖带保持整页高度、不再裁上下缘；翻动页转轴按方向放到中心线 ±7px。
+  - 提交：`cce36a2` fix(reader): 修复真实书籍翻页起手先撕开的分层
+  - 验证：`npm run typecheck` 0；3 个 Reader 用例文件 59 用例全绿；`npm run build` 0；
+    确定性慢动作截图 12%/20% 帧无横缝、无起手竖缝。
+  - 注意：`scripts/realbook-flip-fps-e2e.mjs` 非慢动作收尾仍有既有 `shotDir` 未定义
+    的 ReferenceError（帧率 9 项检查本身全过）；慢动作模式 exit 0。
+  - 计划：`.multi-agent/plan/realbook-flip-tear.md`。
+
+- **真实书籍翻页外缘竖折缝（2026-11-09 第二轮）**：
+  - 用户第二次反馈仍像「先撕开」；宽视口慢动作帧确认外缘额外 20° 翻卷把
+    最外一条竖带折成与纸身分离的窄带，窄带里还是同一页的行尾字。
+  - 修法：去掉外缘独立翻卷，曲率只由整页连续角度分布给出；另补纸背正文
+    90° 淡入（`flipBackContentOpacity`），避免正反面交界硬切文字。
+  - 提交：`9a47b32` fix(reader): 翻页外缘连续，去掉撕开式折边
+  - 验证：主工作区 typecheck 0、73 用例全绿、build 0；慢动作 21 帧无竖折缝；
+    非慢动作 e2e 9/9，55 帧、中位 13.9ms、长帧 0。
+  - 干净 worktree 复核（`26408a5`）：本任务 2 个测试文件 59 用例全绿；
+    排除既有过期 `realBookSpine.test.ts` 后 `tsc --noEmit` 0；`plan:status` exit 0。
+  - 既有基线（父提交 `cce36a2` 同样存在，非本轮引入）：HEAD 上 `realBookSpine.test.ts`
+    仍是旧签名 9 处 TS2554；`Reader.realBook.ui.test.ts` 键盘/点按翻页仍断言 +1 页，
+    实际书页模式翻一张 +2，工作区已有其他批次未提交的测试修正。
+  - 计划：`.multi-agent/plan/realbook-flip-tear-2.md`。
+
+- **真实书籍纸张与翻页弯曲精修（2026-11-08，进行中/待提交）**：
+  - 纸张：硬壳封面、三面书口、纸垛层线、纤维斑点、桌面布纹与书下软影；
+    书脊改为窄暖谷，不再像金属圆棒。
+  - 翻页：书脊侧延后 30% 行程，整页中段弯度约 64°；外角卷曲 20°，
+    上下缘连续内收；整张纸加帆起、侧滚与落定余颤。外缘转角用 tanh 软压缩，
+    接近挺度上限时增速变缓但不会钉死。
+  - 性能：去掉动态模糊与翻页面两层不可见纤维；竖带 `contain` + `will-change`。
+    热态真机 823ms / 34 帧 / 中位 21.0ms / 严重长帧 0。
+  - 计划：`.multi-agent/plan/realbook-realism.md`。截图脚本新增确定性慢动作帧。
+  - 追加（2026-11-09）：书心去掉深色谷与折痕，改为纯纸色；书心向两侧压 2px
+    盖住页缘缝，并用纸色渐变过渡。书心剖面 222.8 / 223.1 / 224.2，无暗带。
+
+- **真实书籍翻页鬼影已修（2026-11-07）**：翻页中间态不再出现整页残影。
+  - 根因：竖带转过 90° 后仍按 `opacity` 画正面内容，和翻过来的背面叠在一起，
+    在下方页面留下半透明的上一页。
+  - 修法：`RealBookStage.vue` 的 `flipSlices` 按纸面自身转角下发 `--rb-flip-side`，
+    转角 ≥90° 时正面整层停画；补了对应回归用例。
+  - 提交：`115a58c` fix(reader): 修复真实书籍翻页中间态重影
+  - 验证：`npm run typecheck` 通过；相关单测 56 项通过；
+    `npm run build` 后 `node scripts/realbook-flip-fps-e2e.mjs` 10 项通过，
+    翻页中态截图无整页重影。
+  - 追加修复：纸背不再印字影、纸背色与正面一致；翻过去的那页不再像一块灰影。
+    提交：`a17150c` fix(reader): 去掉真实书籍翻页纸背灰影
+  - 再追加：保留纸背以维持翻页动作，只把透墨压到 0.08；提交
+    `e0e6d6c` fix(reader): 保留真实书籍翻页纸背，只留极淡透墨
+  - 计划：`.multi-agent/plan/realbook-flip-ghosting.md`
 
 - **CF 挑战在 Electron 45 上已解决**：`6b5a4f8` + `a164083` + `2c7d8ee`
   - 根因：会话 UA 被覆盖成纯 Chrome，抹掉 `Electron/45.2.1` 与完整版本号，

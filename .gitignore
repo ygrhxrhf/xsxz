@@ -32,9 +32,15 @@ runB.log
 web_tsc.log
 tmp-diag/
 vibe_images/
+arc*.log
+scripts/tmp-arc-*
+.multi-agent/e2e-artifacts/
+docs/img/*.log.bak-*
 
 # 工具自己的工作区
 .breezell/
+.cancricode/
+.openbitfun/
 .qoder/
 
 # 用户素材：电子书本体、需求原文 docx、参考截图、书单数据（不入库，仅本地保留）
@@ -43,3 +49,5 @@ docs/*.docx
 docs/pikt/
 docs/书目清单.csv
 docs/书目清单.md
+.openbitfun/
+/.openbitfun/search/flashgrep-index/
