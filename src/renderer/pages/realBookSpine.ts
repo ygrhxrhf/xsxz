@@ -7,10 +7,10 @@
  */
 
 export const MIN_SPINE_LAYERS = 3
-export const MAX_SPINE_LAYERS = 20
-export const SPINE_LAYER_SPACING_PX = 3
-/** 每层纸的纵深（px）：参考图中纸垛厚度明显，按每页约 0.6mm 纸厚 + 压边推算，这里取 8px。 */
-export const SPINE_LAYER_DEPTH_PX = 8
+export const MAX_SPINE_LAYERS = 12
+export const SPINE_LAYER_SPACING_PX = 2.5
+/** 每层纸的纵深（px）：整本书整体做薄，纸垛只保留可数的几层，不再堆成砖。 */
+export const SPINE_LAYER_DEPTH_PX = 4
 
 /** 正文字符数对应的视觉厚度：以 10 万字作为中等厚度基准。 */
 const CHARS_PER_LAYER = 5_000

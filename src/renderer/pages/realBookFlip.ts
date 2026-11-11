@@ -116,6 +116,225 @@ export interface FlipPoseOptions {
 }
 
 /**
+ * 静态书页的弧面几何：把摊开的一页当成一张**真的弯下去**的纸。
+ *
+ * ## 为什么不用「一块平面绕书脊转 9°」
+ *
+ * 那样得到的书脊是一道折角：两页各自是一块刚体纸，内缘在中线碰成一个尖。
+ * 参考图里的书脊是连续的——靠脊那一条纸弯下去，弯量从书脊向外渐渐变小，
+ * 到外缘几乎摊平。纸心因此读成「一本摊开的书」，而不是「两张纸拼在一起」。
+ *
+ * ## 曲线怎么取
+ *
+ * 与翻页竖带同一套折线积分（`flipPoses` 的算法），只是两端角度反过来：
+ * 翻页是从书脊到纸角弯，静态页是从书脊到**外缘**弯。
+ *
+ * 转角沿页宽的分布用幂函数 θ(s) = 书脊角 − Δ·s^k：
+ *   - 书脊侧（s=0）角度最大：那一段弯得最急，正是折缝谷底；
+ *   - 外缘（s=1）角度回到 0：纸在外缘摊平，与桌面平行。
+ *
+ * 指数 k 控制弯量的分布：k 小则弯量集中在靠脊一小段（谷很急、外缘很平），
+ * k 大则整页均匀弯。真实摊开的书是**前一种**——书心那一小段塌进去，
+ * 越往外越平。所以取 1.6 附近。
+ *
+ * 静态页与翻页必须用同一个「摊平角」：翻动页起手时的角度要等于它所在半页
+ * 的弯角，否则起手瞬间纸与下面的静态页差一个角，落定时会跳。
+ */
+export interface SpineValleyOptions {
+  /** 谷的宽度（px）：从书脊向外这一段纸是弯的 */
+  valleyWidth: number
+  /** 谷底角度（deg）：书脊处的倾角，越大谷越深 */
+  valleyDeg: number
+  /** 竖带条数 */
+  slices?: number
+}
+
+export interface SpineValleyStrip {
+  /** 第几条带 */
+  index: number
+  /** 沿谷方向的投影位置（px，从书脊算起） */
+  x: number
+  /** 纵深（px，负值向后退，即谷越深越靠后） */
+  z: number
+  /** 该带的倾角（deg） */
+  angle: number
+  /** 该带在纸面上的宽度（px，未投影） */
+  width: number
+  /** 该带的投影宽度（px） */
+  projectedWidth: number
+  /** 该带在谷方向上的起点（px，从书脊算起） */
+  offset: number
+}
+
+/** 谷的角度分布指数：越大越平缓，越小越集中在书脊那一小段。 */
+const VALLEY_ANGLE_EXPONENT = 1.5
+/** 谷的条带密度指数（<1）：靠书脊那几条更窄，那里曲率最大。 */
+const VALLEY_DENSITY_EXPONENT = 0.75
+
+/**
+ * 书脊的「谷」：摊开的书，书脊那一小段纸是塌进书里的。
+ *
+ * ## 为什么要有谷
+ *
+ * 摊开的书不是两张平纸对折：书心那一段纸向下弯，弯量从书脊向外渐渐变小，
+ * 到离书脊约一掌宽就摊平了。整个书因此是一个**连续曲面**，书心读成一条谷。
+ *
+ * 只让两页各转 9°（一块平面绕书脊转）得到的是**折角**：两页在中线碰成一个尖，
+ * 纸心是硬的，读成两张纸拼在一起。有谷才是「一本摊开的书」。
+ *
+ * ## 曲线怎么取
+ *
+ * 倾角沿谷方向 θ(u) = 谷底角 · (1 − u/谷宽)^1.5：
+ *   - u=0（书脊）：倾角最大，纸面在这里最陡；
+ *   - u=谷宽：倾角归零，纸摊平，与桌面平行。
+ *
+ * 纵深由折线积分给出（与卷页同一套算法）：每条带按自己的倾角推进一段，
+ * 于是谷是一个真正的曲面，而不是几块斜面拼的台阶。
+ */
+export function spineValleyPoses(options: SpineValleyOptions): SpineValleyStrip[] {
+  const valleyWidth = Number.isFinite(options.valleyWidth) && options.valleyWidth > 0 ? options.valleyWidth : 0
+  const slices = Number.isFinite(options.slices) && (options.slices as number) >= 1
+    ? Math.min(12, Math.floor(options.slices as number))
+    : 4
+  const valleyDeg = Number.isFinite(options.valleyDeg) ? Math.min(45, Math.max(0, options.valleyDeg)) : 0
+
+  /** 谷方向上 u 处的倾角。 */
+  const angleAt = (u: number): number => {
+    if (valleyWidth <= 0) return 0
+    const t = Math.max(0, Math.min(1, u / valleyWidth))
+    return valleyDeg * Math.pow(1 - t, VALLEY_ANGLE_EXPONENT)
+  }
+
+  // 条带边界：靠书脊那几条更窄（曲率最大）。
+  const boundaries: number[] = []
+  for (let index = 0; index <= slices; index += 1) {
+    boundaries.push(Math.pow(index / slices, VALLEY_DENSITY_EXPONENT) * valleyWidth)
+  }
+
+  const strips: SpineValleyStrip[] = []
+  // 先算出每条带的抬升量（rise）：谷底（书脊）在最深处，向外缘抬回桌面。
+  const rises: number[] = []
+  const angles: number[] = []
+  for (let index = 0; index < slices; index += 1) {
+    const offset = boundaries[index]!
+    const width = boundaries[index + 1]! - offset
+    const angle = angleAt(offset + width / 2)
+    const rad = (angle * Math.PI) / 180
+    angles.push(angle)
+    rises.push(width * Math.sin(rad))
+  }
+  // 总抬升：书脊比外缘低这么多。把它摊到每条带上，
+  // 于是第一条带在谷底（最靠后），最后一条带回到桌面高度。
+  const totalRise = rises.reduce((sum, value) => sum + value, 0)
+  let x = 0
+  let rise = 0
+  for (let index = 0; index < slices; index += 1) {
+    const offset = boundaries[index]!
+    const width = boundaries[index + 1]! - offset
+    const angle = angles[index]!
+    const rad = (angle * Math.PI) / 180
+    strips.push({
+      index,
+      x,
+      // 纵深是相对谷底：谷底最深（最靠后），外缘回到 0。
+      z: rise - totalRise,
+      angle,
+      width,
+      projectedWidth: width * Math.cos(rad),
+      offset,
+    })
+    x += width * Math.cos(rad)
+    rise += rises[index]!
+  }
+  return strips
+}
+
+export interface ValleyBandOptions {
+  pageWidth: number
+  valleyWidth: number
+  valleyDeg: number
+  slices?: number
+  spineAt: 'left' | 'right'
+}
+
+export interface ValleyBand {
+  index: number
+  x: number
+  z: number
+  angle: number
+  width: number
+  projectedWidth: number
+  paperLeft: number
+  tilt: number
+}
+
+/** 静态页面与中缝共用的、以外缘为零点的对称谷带坐标。 */
+export function valleyBands(options: ValleyBandOptions): ValleyBand[] {
+  const pageWidth = Number.isFinite(options.pageWidth) && options.pageWidth > 0 ? options.pageWidth : 0
+  const valleyWidth = Math.max(0, Math.min(pageWidth, Number.isFinite(options.valleyWidth) ? options.valleyWidth : 0))
+  const strips = spineValleyPoses({ valleyWidth, valleyDeg: options.valleyDeg, slices: options.slices })
+  if (!strips.length || pageWidth <= 0) return []
+  const flatWidth = pageWidth - valleyWidth
+  const depth = strips.reduce((sum, strip) => sum + strip.width * Math.sin((strip.angle * Math.PI) / 180), 0)
+  // 投影宽度之和必然小于谷区宽度：rotateY 会把每条带在屏幕上压短。
+  // 不补偿的话，谷带覆盖不到中线，内缘与中线之间留下几像素缺口，露出桌面成暗带。
+  // 把谷区的屏幕宽度平均摊回各带，端点才刚好落在书脊与平段的分界上。
+  const projectedSum = strips.reduce((sum, strip) => sum + strip.projectedWidth, 0)
+  const spread = projectedSum > 0 ? valleyWidth / projectedSum : 1
+  const bands: ValleyBand[] = []
+
+  if (options.spineAt === 'left') {
+    // 书脊在页左缘：谷带从 spine（x=0, z=-depth）向外缘累加回 z=0，再接平段。
+    let x = 0
+    let z = -depth
+    for (const strip of strips) {
+      bands.push({
+        index: bands.length, x, z, angle: strip.angle, width: strip.width,
+        projectedWidth: strip.projectedWidth * spread, paperLeft: strip.offset, tilt: -strip.angle,
+      })
+      x += strip.projectedWidth * spread
+      z += strip.width * Math.sin((strip.angle * Math.PI) / 180)
+    }
+    if (flatWidth > 0) {
+      bands.push({
+        index: bands.length, x, z, angle: 0, width: flatWidth,
+        projectedWidth: flatWidth, paperLeft: valleyWidth, tilt: 0,
+      })
+    }
+    return bands
+  }
+
+  // 书脊在页右缘：先从外缘平段 z=0 起，谷带按外到内排布。
+  if (flatWidth > 0) {
+    bands.push({
+      index: 0, x: 0, z: 0, angle: 0, width: flatWidth,
+      projectedWidth: flatWidth, paperLeft: 0, tilt: 0,
+    })
+  }
+  let x = flatWidth
+  let z = 0
+  for (let index = strips.length - 1; index >= 0; index -= 1) {
+    const strip = strips[index]!
+    const paperLeft = pageWidth - strip.offset - strip.width
+    // 先落位再前移：带的左端就是本带的 z，右端＝z − w·sinθ，最后一条正落在谷底 −depth。
+    bands.push({
+      index: bands.length,
+      x,
+      z,
+      angle: strip.angle,
+      width: strip.width,
+      projectedWidth: strip.projectedWidth * spread,
+      paperLeft,
+      tilt: strip.angle,
+    })
+    x += strip.projectedWidth * spread
+    z -= strip.width * Math.sin((strip.angle * Math.PI) / 180)
+  }
+  return bands
+}
+
+
+/**
  * 起翻 / 落位角：必须落在两半页各自的折角上。
  *
  * 起点用所属半页的折角、终点用对面半页的折角，否则动画首尾会与静态页面差一个
@@ -379,16 +598,61 @@ export function flipFacing(angleDeg: number): number {
 }
 
 /**
+ * 纸面正文在侧对到底时留下的最低可见度（0–1）。
+ *
+ * 下限不为 0 是为了不让纸在中段整片发白：正面淡得太早、纸背又要转过 90° 才起淡，
+ * 中间那段角域两面同时没字，纸上就是一条空白带。留一层薄字兜住这段过渡。
+ *
+ * 但「薄字」不能一直留到纸完全侧立——那正是另一头的错（见 `flipContentSideFalloff`）。
+ */
+const FLIP_CONTENT_FLOOR = 0.36
+
+/** 正文开始退的正视程度（|cos θ|）：约 46°，投影还有七成宽。 */
+const FLIP_CONTENT_CLEAR_FACING = 0.72
+/** 正文完全隐去的正视程度（|cos θ|）：约 57°，投影不足六成宽。 */
+const FLIP_CONTENT_BLANK_FACING = 0.55
+
+/**
+ * 侧对角线的内容压暗系数（0–1），按**投影宽度**而不是按角度给。
+ *
+ * 一条带侧过去后，它在屏幕上只剩带宽的 |cos θ| 倍：窗口里那一段版面被压成
+ * 几道竖着的墨色。那不是字，看起来就是「纸被撕开一条」。真人翻书在同一个相位
+ * 看到的只有纸边和阴影，所以这时候把正文收干净。
+ *
+ * 阈值卡在 |cos| = 0.55（约 57°–123°）：实测逐带数据里，纸背 120°–126° 的带
+ * 仍有 0.19–0.87 的内容可见度，投影宽度还有半宽以上，字被压成竖长条，
+ * 和正面残字一样读成撕页。收到 0.55 后，整个侧立过程（57°–123°）只剩纸色。
+ * 正面 46° 以前、纸背 137° 以后的字完整可读：那时用户确实在读那一面。
+ *
+ * 按 |cos θ| 判而不是按角度区间对称判，是因为
+ * 正面与纸背侧立的距离并不对称：57° 的正面和 123° 的纸背投影一样窄（|cos|≈0.55），
+ * 它们应该一起收掉。按角度划一个固定窗，两头的窄带总有一头盖不住。
+ *
+ * 两段边界用 smootherstep，对外一阶连续，扫描时不会看到内容闪一下。
+ */
+export function flipContentSideFalloff(angleDeg: number): number {
+  const facing = flipFacing(angleDeg)
+  if (facing >= FLIP_CONTENT_CLEAR_FACING) return 1
+  if (facing <= FLIP_CONTENT_BLANK_FACING) return 0
+  const t = (facing - FLIP_CONTENT_BLANK_FACING) / (FLIP_CONTENT_CLEAR_FACING - FLIP_CONTENT_BLANK_FACING)
+  return t * t * (3 - 2 * t)
+}
+
+/**
  * 正面正文的淡出系数（0–1）。
  *
- * 阈值要**高**：一条带侧过去以后，投影宽度按 |cos θ| 缩，窗口里那一段版面被压成
- * 几十像素宽——正文此时不是字，是一排竖着的色带。只有正视程度接近 1 时才让它保持
- * 清晰；到 0.9 以下就开始淡出，到 0.5 以下完全交给纸面自己的明暗。
- * 淡出得不够快，纸边上就会挂着一截被压扁的竖字，看着像贴图在转。
+ * 阈值要**晚**：正文淡得太早，纸还没立起来字就先没了，中段整片纸两面无字。
+ * 但也不能不淡：一条带侧过去以后，投影宽度按 |cos θ| 缩，窗口里那一段版面被压成
+ * 几十像素宽的色带。折中取正视 0.48（约 61°，半宽）起淡、0.06（约 87°）淡到下限：
+ * 纸立到投影不足半宽时正文才开始退，退到底仍留一层薄字交给纸背接。
+ *
+ * 最后再乘侧对角域的压暗系数：投影不足半宽后，纸上的墨色不再是字。
  */
 export function flipContentOpacity(angleDeg: number): number {
   const facing = flipFacing(angleDeg)
-  return Math.min(1, Math.max(0, (facing - 0.5) / 0.4))
+  const fade = Math.min(1, Math.max(0, (facing - 0.06) / 0.42))
+  const base = FLIP_CONTENT_FLOOR + (1 - FLIP_CONTENT_FLOOR) * fade
+  return base * flipContentSideFalloff(angleDeg)
 }
 
 /**
@@ -402,23 +666,29 @@ export function flipContentOpacity(angleDeg: number): number {
  */
 export function flipBackOpacity(angleDeg: number): number {
   const facing = flipFacing(angleDeg)
-  return Math.min(1, Math.max(0, (facing - 0.15) / 0.5)) * 0.08
+  const base = Math.min(1, Math.max(0, (facing - 0.15) / 0.5)) * 0.08
+  // 侧对时连字影也收干净：一条投影不足带宽四分之一的窄带里，
+  // 哪怕 8% 的淡影也会被压成几道竖着的墨痕，跟正文一样读成「撕开一条」。
+  return base * flipContentSideFalloff(angleDeg)
 }
 
 /**
  * 纸背正文的淡入系数（0–1）。
  *
- * 纸背在 90° 处正侧对观者，正文应完全隐去；转到约 130° 后才完整露出。
- * 没有这段淡入时，正面与背面在 90° 边界会从旧页正文直接切成另一页正文，
- * 纸上留下一条竖直的「撕缝」——两侧字完全不同，看起来像纸被竖着撕开。
+ * 纸背只有转过 90° 才参与合成（见 `flipFaceVisible`），所以它必须**接在正面
+ * 淡变的下限上**，而不是从 0 起淡：从 0 起淡就会在换面那一刻把正面最后那层薄字
+ * 一起收掉，纸上一段角域两面无字。
  *
- * 纸面本身始终不透明：这里只淡正文，不淡纸。
+ * 因此它与正面共用同一个下限（`FLIP_CONTENT_FLOOR`），也共用同一个侧对角域压暗系数：
+ * 90° 两侧的过渡是连续的，约 115° 露全。
  */
 export function flipBackContentOpacity(angleDeg: number): number {
   const angle = Number.isFinite(angleDeg) ? Math.abs(angleDeg) : 180
   if (angle <= 90) return 0
   const facing = Math.abs(Math.cos((angle * Math.PI) / 180))
-  return Math.min(1, Math.max(0, (facing - 0.08) / 0.55))
+  const fade = Math.min(1, Math.max(0, facing / 0.42))
+  const base = FLIP_CONTENT_FLOOR + (1 - FLIP_CONTENT_FLOOR) * fade
+  return base * flipContentSideFalloff(angle)
 }
 
 /**

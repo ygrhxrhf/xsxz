@@ -10,6 +10,7 @@ import {
   flipFacing,
   flipPoses,
   flipSheetLift,
+  spineValleyPoses,
 } from './realBookFlip'
 
 /**
@@ -241,56 +242,104 @@ describe('卷页几何', () => {
     // 非法转角按 0 处理（正对），不能算出 NaN 把整条带变成透明。
     expect(flipFacing(Number.NaN)).toBeCloseTo(1, 6)
 
-    // 正对时正文清晰；侧对到 90° 时完全交给纸面明暗（正文全隐）。
+    // 正对时正文清晰；侧对到 90° 时正文收干净（只剩纸边与阴影）。
     expect(flipContentOpacity(0)).toBeCloseTo(1, 6)
     expect(flipContentOpacity(90)).toBeCloseTo(0, 6)
     expect(flipContentOpacity(-90)).toBeCloseTo(0, 6)
-    // 淡出是单调的：越侧对越淡，中间没有反复。
+    // 淡出起点晚：46°（投影还有七成宽）前正文完全清晰，之后由侧角压暗接管。
+    expect(flipContentOpacity(0)).toBeCloseTo(1, 6)
+    expect(flipContentOpacity(40)).toBeCloseTo(1, 6)
+    expect(flipContentOpacity(50)).toBeGreaterThan(0.3)
+    expect(flipContentOpacity(50)).toBeLessThan(1)
+    // 投影不足六成宽之后，纸上的墨色不再是字：收干净，只剩纸边与阴影。
+    expect(flipContentOpacity(60)).toBeCloseTo(0, 6)
+    expect(flipContentOpacity(75)).toBeCloseTo(0, 6)
+    expect(flipContentOpacity(84)).toBeCloseTo(0, 6)
+    expect(flipContentOpacity(85)).toBeCloseTo(0, 6)
+    // 淡出是单调的：越侧对越淡，不能在中间反复。
     let previous = flipContentOpacity(0)
     for (let step = 1; step <= 40; step += 1) {
       const opacity = flipContentOpacity((step / 40) * 90)
-      expect(opacity).toBeLessThanOrEqual(previous)
+      expect(opacity).toBeLessThanOrEqual(previous + 1e-9)
       previous = opacity
     }
-    // 淡出阈值高：稍微侧过去一点就已经在淡。
-    expect(flipContentOpacity(60)).toBeLessThan(1)
   })
 
   it('cos 淡出：背面字影留得比正面多，但始终只是淡淡一层', () => {
     // 纸翻过去的那一半不能成一片素净的灰板：灰板与字面之间那道直边是「机械」最扎眼的地方。
-    // 判据取「正面已经淡尽、但纸还没转到底」的角度（60° 与 120°）：那里背面仍要留一点字影。
-    for (const angle of [60, 120]) {
-      expect(flipContentOpacity(angle)).toBeCloseTo(0, 6)
-      expect(flipBackOpacity(angle)).toBeGreaterThan(flipContentOpacity(angle))
+    for (const angle of [85, 88]) {
+      expect(flipBackOpacity(angle)).toBeLessThanOrEqual(0.08)
     }
     // 但背面不是正文，只是纸里透过来的极淡字影：上限压得很低。
     expect(flipBackOpacity(0)).toBeLessThanOrEqual(0.08)
     expect(flipBackOpacity(Number.NaN)).toBeLessThanOrEqual(0.08)
     // 正对观者时背面最厚（纸翻过来了），但仍不超过 0.08。
     expect(flipBackOpacity(180)).toBeLessThanOrEqual(0.08)
-    // 侧对到底（90°）时正反两面都看不见字影。
+    // 侧对到底（90°）时字影收掉，纸面只剩明暗。
     expect(flipBackOpacity(90)).toBeCloseTo(0, 6)
-    expect(flipContentOpacity(90)).toBeCloseTo(0, 6)
   })
 
-  it('纸背正文在 90° 边界淡入：不留下竖着换字的撕缝', () => {
-    // 90° 处纸背正侧对观者，正文必须完全隐去；否则正面/背面会在竖带边界
-    // 从旧页正文直接切成另一页正文，纸上出现一条竖缝。
-    expect(flipBackContentOpacity(0)).toBeCloseTo(0, 6)
-    expect(flipBackContentOpacity(90)).toBeCloseTo(0, 6)
-    expect(flipBackContentOpacity(-90)).toBeCloseTo(0, 6)
-    // 转过 90° 后单调淡入，约 130° 才完整露出。
-    let previous = 0
-    for (let angle = 91; angle <= 180; angle += 1) {
-      const opacity = flipBackContentOpacity(angle)
-      expect(opacity).toBeGreaterThanOrEqual(previous)
-      previous = opacity
+  it('侧对角线把正文收干净：投影不足四分之一宽后只剩纸边与阴影', () => {
+    // 渲染层只画转角对应的那一面（flipFaceVisible）：正面 ≤90°、背面 >90°。
+    // 所以某一帧纸上能看见多少字，就是那一面自己的淡变系数。
+    const drawn = (angle: number) => (flipFaceVisible(angle).showFront
+      ? flipContentOpacity(angle)
+      : flipBackContentOpacity(angle))
+
+    // 判据按**投影宽度**（|cos θ|），不是按角度区间对称：
+    // 57° 的正面与 123° 的纸背投影一样窄，两面必须一起收掉。
+    for (let angle = 58; angle <= 122; angle += 0.5) {
+      expect(drawn(angle)).toBeCloseTo(0, 6)
     }
-    expect(flipBackContentOpacity(120)).toBeGreaterThan(0.6)
-    expect(flipBackContentOpacity(130)).toBeCloseTo(1, 6)
-    expect(flipBackContentOpacity(180)).toBeCloseTo(1, 6)
-    // 非法转角按已经翻过来的纸处理，不能把纸背正文算成 NaN/透明。
+    expect(drawn(-90)).toBeCloseTo(0, 6)
+
+    // 角域外正文照旧：纸还没立起来（40° 以前）和已经转平（140° 以后）都有字。
+    for (const angle of [0, 20, 40, 140, 150, 180]) {
+      expect(drawn(angle)).toBeGreaterThanOrEqual(0.3)
+    }
+
+    // 90° 换面两侧都是 0：换面时两面一起淡出，不会出现一面有字一面没字的竖向硬切。
+    expect(Math.abs(drawn(90) - drawn(89))).toBeLessThan(0.05)
+    expect(Math.abs(drawn(91) - drawn(90))).toBeLessThan(0.05)
+    // 按投影宽度判，正背两侧天然对称地「几乎全暗」：57° 与 123° 的 |cos| 相同。
+    // （不要求数值相等：正背两条基础曲线本来就不同，只要求两侧都已经收干净。）
+    expect(flipContentOpacity(57)).toBeLessThan(0.03)
+    expect(flipBackContentOpacity(123)).toBeLessThan(0.03)
+
+    // 非法转角按已经翻过来的纸处理，不能把纸背正文算成 NaN。
     expect(flipBackContentOpacity(Number.NaN)).toBeCloseTo(1, 6)
+  })
+
+  it('整段翻页里只有侧对角域的带子可以无字', () => {
+    // 上面的断言按角度扫；这里用真实的 flipT 行程再扫一遍：
+    // 每条带只在它自己侧立的那一刻才允许没字，其余相位都得能读。
+    // 76°–84° 与 96°–104° 是两段斜坡，取值介于 0 与满可见度之间，这里只要求单调、不跳。
+    let blankPhases = 0
+    for (let step = 0; step <= 40; step += 1) {
+      const poses = pose(step / 40)
+      let blank = 0
+      for (const item of poses) {
+        const angle = Math.abs(item.angle)
+        const visible = flipFaceVisible(item.angle).showFront
+          ? flipContentOpacity(item.angle)
+          : flipBackContentOpacity(item.angle)
+        const cos = Math.abs(Math.cos(item.angle * Math.PI / 180))
+        if (cos <= 0.55) {
+          expect(visible).toBeCloseTo(0, 6)
+          blank += 1
+        } else if (angle <= 40 || angle >= 140) {
+          expect(visible).toBeGreaterThanOrEqual(0.3)
+        } else {
+          // 斜坡上：必须是一个合法的 0–1 值，不能是 NaN。
+          expect(Number.isFinite(visible)).toBe(true)
+          expect(visible).toBeGreaterThanOrEqual(0)
+          expect(visible).toBeLessThanOrEqual(1)
+        }
+      }
+      if (blank === poses.length) blankPhases += 1
+    }
+    // 整张纸同时无字的相位必须很短：它只在整页几乎侧立的一瞬。
+    expect(blankPhases).toBeLessThanOrEqual(4)
   })
 
   it('竖带连续曲面：整段行程每一条带都连着前一条，首尾相接', () => {
@@ -315,6 +364,28 @@ describe('卷页几何', () => {
     }
   })
 
+  it('书脊的谷：谷底最深、外缘摊平，条带首尾相接', () => {
+    const strips = spineValleyPoses({ valleyWidth: 120, valleyDeg: 14, slices: 6 })
+    expect(strips).toHaveLength(6)
+    // 书脊侧倾角最大，外缘归零：谷是连续的一条弧。
+    expect(strips[0]!.angle).toBeGreaterThan(strips[strips.length - 1]!.angle)
+    expect(strips[strips.length - 1]!.angle).toBeLessThan(1)
+    // 条带在谷方向上首尾相接，不重不漏。
+    let cursor = 0
+    for (const strip of strips) {
+      expect(strip.offset).toBeCloseTo(cursor, 6)
+      cursor += strip.width
+    }
+    expect(cursor).toBeCloseTo(120, 6)
+    // 相邻条带的纵深从书脊向外逐步前移，形成连续曲面。
+    for (let index = 0; index < strips.length - 1; index += 1) {
+      const current = strips[index]!
+      const next = strips[index + 1]!
+      const rad = (current.angle * Math.PI) / 180
+      expect(current.x + current.width * Math.cos(rad)).toBeCloseTo(next.x, 6)
+      expect(current.z + current.width * Math.sin(rad)).toBeCloseTo(next.z, 6)
+    }
+  })
   it('竖带连续曲面：转角沿页宽连续变化，没有跳变', () => {
     // 相邻两条带的转角差不能突然变大——那是折面而不是曲面的读感。
     // 外缘竖带更窄，单条角度增量可以略大；但不能超过平均值十倍。

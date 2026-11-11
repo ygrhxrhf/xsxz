@@ -12,45 +12,38 @@ import {
  * 这两条规则决定 E3（书厚层次）能不能对上阅读进度，所以用单测钉住边界。
  */
 
-describe('spineStack（阅读进度 → 上下纸堆层数）', () => {
-  it('章首全部压在下侧（剩余），章末全部叠到上侧（已读）', () => {
-    expect(spineStack(0)).toEqual({ read: 0, remaining: MAX_SPINE_LAYERS })
-    expect(spineStack(1)).toEqual({ read: MAX_SPINE_LAYERS, remaining: 0 })
+describe('spineStack（整本规模 + 全书进度 → 连续纸垛厚度）', () => {
+  it('正文规模不同会得到不同基础厚度', () => {
+    expect(spineStack(10_000, 0.5).total).toBeLessThan(spineStack(1_000_000, 0.5).total)
   })
 
-  it('比例居中时两侧对半分', () => {
-    expect(spineStack(0.5)).toEqual({ read: 4, remaining: 4 })
+  it('全书进度在左右两侧连续转移', () => {
+    const start = spineStack(500_000, 0)
+    const middle = spineStack(500_000, 0.5)
+    const end = spineStack(500_000, 1)
+    expect(start.read).toBe(0)
+    expect(end.remaining).toBe(0)
+    expect(middle.read).toBeCloseTo(middle.remaining, 8)
+    expect(start.total).toBe(end.total)
   })
 
-  it('总层数恒等于上限，不随比例变化', () => {
-    for (const ratio of [0, 0.13, 0.37, 0.62, 0.88, 1]) {
-      const stack = spineStack(ratio)
-      expect(stack.read + stack.remaining).toBe(MAX_SPINE_LAYERS)
-      expect(stack.read).toBeGreaterThanOrEqual(0)
-      expect(stack.remaining).toBeGreaterThanOrEqual(0)
-    }
+  it('进度越界与非法正文规模都被钳制', () => {
+    expect(spineStack(Number.NaN, -1).read).toBe(0)
+    expect(spineStack(Number.NaN, 2).remaining).toBe(0)
   })
 
-  it('比例越界与非数值都被钳制', () => {
-    expect(spineStack(-1)).toEqual({ read: 0, remaining: MAX_SPINE_LAYERS })
-    expect(spineStack(2)).toEqual({ read: MAX_SPINE_LAYERS, remaining: 0 })
-    expect(spineStack(Number.NaN)).toEqual({ read: 0, remaining: MAX_SPINE_LAYERS })
-    expect(spineStack(Number.POSITIVE_INFINITY)).toEqual({ read: 0, remaining: MAX_SPINE_LAYERS })
-  })
-
-  it('已读层数随比例单调不减', () => {
+  it('已读厚度随全书进度单调不减', () => {
     let previous = -1
     for (let ratio = 0; ratio <= 1.0001; ratio += 0.05) {
-      const stack = spineStack(ratio)
+      const stack = spineStack(500_000, ratio)
       expect(stack.read).toBeGreaterThanOrEqual(previous)
       previous = stack.read
     }
   })
 
-  it('上限可覆盖，且非法上限回退默认值', () => {
-    expect(spineStack(0.5, 4)).toEqual({ read: 2, remaining: 2 })
-    expect(spineStack(0.5, 0)).toEqual({ read: 4, remaining: 4 })
-    expect(spineStack(0.5, Number.NaN)).toEqual({ read: 4, remaining: 4 })
+  it('上限可覆盖且总厚度不超出上限', () => {
+    expect(spineStack(10_000_000, 0.5, 6).total).toBe(6)
+    expect(spineStack(10_000_000, 0.5, 0).total).toBe(MAX_SPINE_LAYERS)
   })
 })
 

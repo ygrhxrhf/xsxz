@@ -81,6 +81,8 @@ const killTree = () => {
 }
 
 let ws
+// 截图目录必须在 try 外声明：finally 里要用它清理，而 try 块内的 const 在那里不可见。
+let shotDir = null
 try {
   let target
   let seen = []
@@ -196,7 +198,7 @@ try {
   `)
 
   // 截图目录：验证完就删，仓库里不留测试产物。
-  const shotDir = await mkdtemp(join(tmpdir(), 'spbf-rbfps-shots-'))
+  shotDir = await mkdtemp(join(tmpdir(), 'spbf-rbfps-shots-'))
   const shots = []
   /** 截图。传 clip 即只拍一块区域（书缝细节要放大看，整幅缩略看不清）。 */
   const takeShot = async (name, clip) => {
@@ -249,6 +251,322 @@ try {
     return { px, from, to, seamMin: Math.min(...seamLum), seamAvg: avg(seamLum), leftPaper: avg(leftPaper), rightPaper: avg(rightPaper) }
   }
 
+  /**
+   * 定格帧里检查 84°–91° 那几条竖带的接缝。
+   *
+   * 用命中测试而不是包围盒：竖带是斜放的，`getBoundingClientRect()` 给的是投影后的
+   * 包围盒，右缘根本不是相邻两条共享的那条 3D 边，拿它当接缝位置会量到一大堆无关像素。
+   * 命中测试问的是「这一列屏幕上最上层是谁」：相邻两条真的接上了，整段纸面上
+   * 每一列都会落到某条竖带上；漏了哪怕一列，那一列就穿到下面去——那是竖缝的直接证据。
+   *
+   * `.real-book-flip` 平时 `pointer-events: none`（翻页不接鼠标），命中测试会漏过它，
+   * 所以这里临时打开指针事件；只改采样期的 DOM，不动源码。
+   */
+  const inspectBandSeams = async (frameIndex) => {
+    const scan = await ev(`
+      const book = document.querySelector('.real-book-book');
+      if (!book) return null;
+      const style = document.createElement('style');
+      style.id = '__rb_hit_probe';
+      style.textContent = '.real-book-flip, .real-book-flip-slice, .real-book-flip-face, .real-book-flip-window, .real-book-flip-content { pointer-events: auto !important; }';
+      document.head.appendChild(style);
+      const box = book.getBoundingClientRect();
+      const nodes = [...document.querySelectorAll('.real-book-flip-slice')];
+      // 三个高度各扫一行：竖缝若存在一定贯穿页高，一行里读不到就够了，
+      // 但带子在页高方向有折角，单行可能刚好碰上遮挡，多两行才定得了案。
+      const ys = [0.32, 0.5, 0.68].map((f) => Math.round(box.top + box.height * f));
+      const rowsByY = ys.map((y) => {
+        const rows = [];
+        for (let x = Math.round(box.left); x <= Math.round(box.right); x += 1) {
+          const el = document.elementFromPoint(x, y);
+          const slice = el && el.closest ? el.closest('.real-book-flip-slice') : null;
+          rows.push({ x, index: slice ? nodes.indexOf(slice) : -1 });
+        }
+        return { y, rows };
+      });
+      style.remove();
+      // 转角原文带回去在 Node 侧解析：在注入的模板字符串里写正则要穿两层转义，
+      // 很容易变成「反斜杠+d」而默默匹配不到，导致角度全部读成 0。
+      return { ys, rowsByY, transforms: nodes.map((node) => node.style.transform) };
+    `)
+    if (!scan) {
+      check(`帧 ${frameIndex} 命中测试可执行`, false, '找不到 .real-book-book')
+      return
+    }
+    const angleOf = (transform) => {
+      const match = /rotateY\(\s*(-?\d+(?:\.\d+)?)deg\s*\)/.exec(transform ?? '')
+      return match ? Number(match[1]) : null
+    }
+    const angles = scan.transforms.map(angleOf)
+    // 几何上确实处在 84°–91° 的条带（不靠命中测试，不受遮挡影响）。
+    const inWindow = angles
+      .map((angle, index) => ({ index, angle }))
+      .filter((item) => item.angle !== null && Math.abs(item.angle) >= 84 && Math.abs(item.angle) <= 91)
+    const reports = scan.rowsByY.map(({ y, rows }) => {
+      // 纸面 = 命中竖带的最长连续区段：一次翻页里只有一张纸在飞。
+      let best = null
+      let run = null
+      for (const row of rows) {
+        if (row.index >= 0) {
+          if (!run) run = { from: row.x, to: row.x, count: 1 }
+          else { run.to = row.x; run.count += 1 }
+        } else if (run) {
+          if (!best || run.count > best.count) best = run
+          run = null
+        }
+      }
+      if (run && (!best || run.count > best.count)) best = run
+      if (!best) return { y, empty: true, holes: null }
+      // 纸面区间内部命中不到任何竖带的列：就是穿到桌面去的竖缝。
+      const holes = rows.filter((row) => row.index < 0 && row.x > best.from && row.x < best.to)
+      return { y, empty: false, from: best.from, to: best.to, holes: holes.map((row) => row.x) }
+    })
+    const empty = reports.filter((report) => report.empty)
+    const totalHoles = reports.reduce((sum, report) => sum + (report.holes?.length ?? 0), 0)
+    const span = reports.find((report) => !report.empty)
+    check(
+      `帧 ${frameIndex} 纸面带子无漏列（3 行扫描）`,
+      empty.length === 0 && totalHoles === 0,
+      `${reports.map((r) => (r.empty ? `y=${r.y} 未命中` : `y=${r.y} x=${r.from}..${r.to} 漏${r.holes.length}`)).join('；')}`
+        + `；84°–91° 带 ${inWindow.length} 条（${inWindow.map((i) => `${i.index}:${Math.abs(i.angle).toFixed(1)}°`).join(',') || '—'}）`
+        + (span ? '' : '（无纸面样本）'),
+    )
+  }
+
+  /**
+   * 读一块裁剪图的逐列亮度（0–255）。
+   *
+   * 解码拉回页面里做：CDP 只给 PNG 字节，Node 侧没有解码器，而浏览器自带 canvas。
+   * 拿到的是真实像素，不是「我觉得那儿应该有道缝」。
+   */
+  const luminanceRow = async (clip) => {
+    const shot = await cdp('Page.captureScreenshot', { format: 'png', clip })
+    const dataUrl = `data:image/png;base64,${shot.data}`
+    return ev(`
+      const img = new Image();
+      img.src = ${JSON.stringify(dataUrl)};
+      await img.decode();
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      const out = [];
+      for (let x = 0; x < c.width; x += 1) {
+        let sum = 0;
+        for (let y = 0; y < c.height; y += 1) {
+          const i = (y * c.width + x) * 4;
+          sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+        }
+        out.push(Math.round(sum / c.height));
+      }
+      return out;
+    `)
+  }
+
+  /**
+   * 读一块裁剪图里**逐列的亮度中位数**（0–255）。
+   *
+   * 为什么取中位数而不是单行均值：窗口只有 ±7px，正文的字形笔画必然落在里面，
+   * 单行的亮度会被笔画砸出 20–80/255 的坑——那是字，不是缝。
+   * 真正的竖缝是**贯穿页高**的一条暗线：一列在所有行上都暗；
+   * 笔画只占几行，中位数不受它影响。
+   */
+  const columnMedianProfile = async (clip) => {
+    const shot = await cdp('Page.captureScreenshot', { format: 'png', clip })
+    const dataUrl = `data:image/png;base64,${shot.data}`
+    return ev(`
+      const img = new Image();
+      img.src = ${JSON.stringify(dataUrl)};
+      await img.decode();
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      const out = [];
+      for (let x = 0; x < c.width; x += 1) {
+        const column = [];
+        for (let y = 0; y < c.height; y += 1) {
+          const i = (y * c.width + x) * 4;
+          column.push(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]);
+        }
+        column.sort((a, b) => a - b);
+        out.push(Math.round(column[Math.floor(column.length / 2)]));
+      }
+      return { width: c.width, height: c.height, lum: out };
+    `)
+  }
+
+  /**
+   * 斜带**真实 3D 边**处的亮度剖面，用来复核「无字缝」的亮度判据。
+   *
+   * 采样锚点不能取包围盒右缘：竖带是绕左轴转过的平面，`getBoundingClientRect()`
+   * 给的是投影后的包围盒，它的右缘跟相邻带共享的那条 3D 边根本不是一个位置。
+   *
+   * 也不能指望命中测试把边找出来：正因为 84°–91° 的带已经侧到快看不见，
+   * 它的投影宽度不到 1px，按 1px 步长扫描会整条跳过——「边为空集」就是假阳性。
+   *
+   * 所以把探针量在带上：在每条带自己的右缘按三个高度各放一个零尺寸的探针元素，
+   * 让浏览器自己把它沿 `rotateY`、sheet 的 `rotateX/rotateZ`、以及 `perspective` 投影出来，
+   * 再读探针的屏幕坐标。逐行取样是因为带子在页高方向有折角，同一条边在不同高度上
+   * 的屏幕 x 相差十来个像素。
+   *
+   * 判据（沿用 8/255 与 16/255）：
+   *   - 边两侧远场（CSS ±4..±7px）亮度均值差 < 8/255；
+   *   - 窗口内不存在相对邻列均值偏离 > 16/255 的单列。
+   *     靠近边心的 ±2.5px 是相邻带 `width + 0.5px` 搭接的过渡带，不计入该统计。
+   * 最外一条带的右缘不算：`is-outer::after` 是刻意的纸边受光亮线，量它必误判。
+   */
+  const bandBrightnessProfile = async (frameIndex) => {
+    const scan = await ev(`
+      const book = document.querySelector('.real-book-book');
+      if (!book) return null;
+      const nodes = [...document.querySelectorAll('.real-book-flip-slice')];
+      const box = book.getBoundingClientRect();
+      const fracs = [0.32, 0.5, 0.68];
+      const edges = [];
+      nodes.forEach((node, index) => {
+        const w = node.offsetWidth;
+        const h = node.offsetHeight;
+        for (const frac of fracs) {
+          const probe = document.createElement('div');
+          probe.style.cssText = 'position:absolute;left:' + w + 'px;top:' + Math.round(h * frac) + 'px;width:0;height:0;visibility:hidden;';
+          node.appendChild(probe);
+          const rect = probe.getBoundingClientRect();
+          probe.remove();
+          // 零尺寸元素在旋转后的包围盒是单点，left/top 就是那条 3D 边的屏幕坐标。
+          edges.push({ index, frac, x: rect.left, y: rect.top });
+        }
+      });
+      return {
+        box: { left: box.left, right: box.right, top: box.top, bottom: box.bottom },
+        edges,
+        transforms: nodes.map((n) => n.style.transform),
+        count: nodes.length,
+      };
+    `)
+    if (!scan) {
+      check(`帧 ${frameIndex} 亮度剖面可执行`, false, '找不到 .real-book-book')
+      return
+    }
+    const angleOf = (transform) => {
+      const match = /rotateY\(\s*(-?\d+(?:\.\d+)?)deg\s*\)/.exec(transform ?? '')
+      return match ? Number(match[1]) : null
+    }
+    const angles = scan.transforms.map(angleOf)
+
+    // 逐带把「角度 → 实际写进 DOM 的前/背内容 opacity」打出来。
+    // 调窄带里那点墨色到底来自哪几条带，靠猜「大概是 78° 还是 110°」不行。
+    const opacityDump = await ev(`
+      return [...document.querySelectorAll('.real-book-flip-slice')].map((node) => {
+        const front = node.querySelector('.real-book-flip-front .real-book-flip-content');
+        const back = node.querySelector('.real-book-flip-back .real-book-flip-content');
+        return {
+          front: front ? front.style.opacity : null,
+          back: back ? back.style.opacity : null,
+        };
+      });
+    `)
+    console.log(`      帧 ${frameIndex} 逐带：` + angles.map((angle, index) => {
+      const a = angle === null ? '?' : Math.abs(angle).toFixed(1)
+      const f = opacityDump[index]?.front
+      const b = opacityDump[index]?.back
+      return `#${index} ${a}° f=${f ?? '—'} b=${b ?? '—'}`
+    }).join(' | '))
+    const inWindow = (index) => {
+      const angle = angles[index]
+      return angle !== null && angle !== undefined && Math.abs(angle) >= 84 && Math.abs(angle) <= 91
+    }
+    // 只取「带 i 的右缘」且 i 不是最外带（`is-outer` 右缘是纸边反光，不是接缝），
+    // 且参与这条边的两条带中至少一条落在 84°–91°。
+    const targets = scan.edges.filter((edge) => edge.index < scan.count - 1
+      && (inWindow(edge.index) || inWindow(edge.index + 1)))
+    if (!targets.length) {
+      const all = angles.map((angle) => (angle === null ? '?' : Math.abs(angle).toFixed(1)))
+      console.log(`--    帧 ${frameIndex} 亮度剖面：84°–91° 靶边为空集（逐带 ${all.join('/')}°）`)
+      return
+    }
+    // 桌面参考亮度：竖缝如果真的存在，露出的就是桌面色。拿它做对照，
+    // 才能区分「边上有一道暗线」与「字迹/光影起伏」。
+    const measuredRight = targets.reduce((max, edge) => Math.max(max, edge.x), 0)
+    const deskLum = await luminanceRow({
+      x: Math.max(0, Math.round(scan.box.left) - 60),
+      y: Math.max(0, Math.round(scan.box.top) + 20),
+      width: 20,
+      height: 1,
+      scale: 1,
+    })
+    const desk = deskLum.reduce((a, b) => a + b, 0) / (deskLum.length || 1)
+    console.log(`      帧 ${frameIndex} 探针：最右缘 x=${measuredRight.toFixed(1)}；桌面参考亮度 ${desk.toFixed(1)}/255`)
+
+    const half = 7
+    const scale = 2
+    // 纵向取 60px 一条窄条，逐列取中位数：竖缝贯穿页高（每一行都暗），
+    // 而字形笔画只占其中几行——中位数把它们滤掉，单行均值滤不掉。
+    const stripHeight = 60
+    for (const edge of targets) {
+      const top = Math.min(Math.max(0, Math.round(edge.y) - stripHeight / 2), Math.max(0, Math.round(scan.box.bottom) - stripHeight))
+      const clip = {
+        x: Math.max(0, Math.round(edge.x) - half),
+        y: top,
+        width: half * 2 + 1,
+        height: stripHeight,
+        scale,
+      }
+      const prof = await columnMedianProfile(clip)
+      const lum = prof.lum
+      // 设备像素下标：CSS 列 k 落在 [2k, 2k+1]，边心在 2*half。
+      const center = half * scale
+      const mean = (list) => list.reduce((a, b) => a + b, 0) / (list.length || 1)
+      const leftFar = mean(lum.slice(0, center - 6))
+      const rightFar = mean(lum.slice(center + 6, lum.length))
+      const step = Math.abs(leftFar - rightFar)
+      const aaFrom = center - 5
+      const aaTo = center + 5
+      let worst = 0
+      let worstAt = -1
+      for (let i = 2; i < lum.length - 2; i += 1) {
+        if (i >= aaFrom && i <= aaTo) continue
+        const local = mean([lum[i - 2], lum[i - 1], lum[i + 1], lum[i + 2]])
+        const deviation = Math.abs(lum[i] - local)
+        if (deviation > worst) { worst = deviation; worstAt = i }
+      }
+      const lowest = Math.min(...lum)
+      // 真正的竖缝会露出桌子：暗到接近桌面亮度。只有这种情况才算「缝」。
+      const leaksDesk = lowest < desk + 30
+
+      // 判据修正：两张纸的明暗本来就不一样（跨接缝会有一个亮度台阶），
+      // 所以「两侧亮度差 < 8/255」不是缝的证据——实测台阶 0–22/255，
+      // 但剖面里**没有凹下去**。缝的形态是边心附近出现局部极小，
+      // 即比两侧都暗的那一列。判据改成看凹陷深度，阈值仍 16/255。
+      const shallower = Math.min(leftFar, rightFar)
+      let dip = 0
+      let dipAt = -1
+      for (let i = 1; i < lum.length - 1; i += 1) {
+        // 只算局部极小：单调台阶不算（台阶是明暗差，不是缝）。
+        if (!(lum[i] <= lum[i - 1] && lum[i] <= lum[i + 1])) continue
+        const depth = shallower - lum[i]
+        if (depth > dip) { dip = depth; dipAt = i }
+      }
+      const dipOffset = dipAt < 0 ? 0 : Math.abs(dipAt - center) / scale
+      const pass = dip <= 16 && !leaksDesk
+      // 诊断：最偏列离边心多少 CSS px。真竖缝一定在边心附近（±2px），
+      // 而相邻条带自己的接缝会落在窗口两端的远场里。
+      const worstOffset = worstAt < 0 ? 0 : Math.abs(worstAt - center) / scale
+      if (!pass) {
+        // 不通过时把整条剖面打出来：报告里要能看出是「中间凹下去的 V 形」（竖缝）
+        // 还是「从左到右单调爬升」（两张纸的明暗梯度跨过接缝）。
+        console.log(`        剖面 ${edge.index}→${edge.index + 1}：${lum.join(',')}`)
+      }
+      check(
+        `帧 ${frameIndex} 带 ${edge.index}→${edge.index + 1}（${(Math.abs(angles[edge.index] ?? 0)).toFixed(1)}°/${(Math.abs(angles[edge.index + 1] ?? 0)).toFixed(1)}°，y=${edge.y.toFixed(1)}, x=${edge.x.toFixed(1)}）亮度无竖缝`,
+        pass,
+        `${prof.width}×${prof.height}px 列中位：两侧 ${leftFar.toFixed(1)} / ${rightFar.toFixed(1)}（台阶 ${step.toFixed(1)}/255，仅参考），最深深陷 ${dip.toFixed(1)}/255 @ 离边心 ${dipOffset.toFixed(1)}px，窗口最低 ${lowest}/255（桌面 ${desk.toFixed(1)}，漏桌 ${leaksDesk ? '是' : '否'}）`,
+      )
+    }
+  }
+
   // 书缝（中缝）几何：后面所有裁剪截图与像素剖面都按它定位。
   const geom = await ev(`
     const gutter = document.querySelector('.real-book-gutter');
@@ -263,8 +581,12 @@ try {
       bookTop: b.top, bookBottom: b.bottom, bookCenterX: b.left + b.width * 0.5,
     };
   `)
-  check('书缝元素存在且位于两页之间', Boolean(geom) && geom.gutterWidth > 0,
+  check('书缝元素存在且位于两页之间', Boolean(geom),
     geom ? `中缝 x=${geom.gutterLeft.toFixed(1)} 宽=${geom.gutterWidth.toFixed(1)} 页心 x=${geom.bookCenterX.toFixed(1)}` : '找不到 .real-book-gutter')
+  // 书心不占宽度（`.real-book-gutter { width: 0 }`，两页装订边直接落在中心线上），
+  // 所以「中缝宽度」和「中缝亮度剖面」对当前渲染不再适用：中缝没有自己的像素列。
+  // 这两条不当作翻页竖缝的证据，也不应因零宽而报失败。
+  const gutterHasWidth = Boolean(geom) && geom.gutterWidth >= 1
 
   const paperBox = await ev(`
     const stage = document.querySelector('.real-book-stage');
@@ -345,22 +667,15 @@ try {
     await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickNextX, y: clickY, button: 'left', buttons: 1, clickCount: 1 })
     await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: clickNextX, y: clickY, button: 'left', buttons: 0, clickCount: 1 })
     await waitFor(`document.querySelector('.real-book-flip')`, 3000)
-    const seamClip = geom
-      ? {
-          x: Math.max(0, Math.round(geom.gutterLeft - 110)),
-          y: Math.max(0, Math.round(geom.bookTop - 6)),
-          width: Math.round(geom.gutterWidth + 220),
-          height: Math.round(geom.bookBottom - geom.bookTop + 12),
-          scale: 2,
-        }
-      : null
-    // 三帧：起手纸角卷起、弯度峰值（纸弯成弓）、落定前舒展摊平。
+    // 帧选择：0.45–0.52 正是竖带转过 84°–91° 的那一段（0.54 起整页已越过 91°，
+    // 纸背全显，再往后看不到交接）。取四帧才看得清"只换字、不露缝"。
     //
     // 慢动作模式下不能靠 sleep 截：截图本身会阻塞渲染进程，动画仍在继续，
     // 第二张常常已经落定。改为把组件用的 performance.now 钉在目标进度，
     // 每张都冻结在确定的相位。
-    const frames = slowFlip ? [0.30, 0.45, 0.62] : null
-    for (let index = 0; index < 3; index += 1) {
+    const frames = slowFlip ? [0.45, 0.48, 0.5, 0.52] : null
+    const frameCount = frames ? frames.length : 3
+    for (let index = 0; index < frameCount; index += 1) {
       if (frames) {
         const target = clickClock + frames[index] * 820
         await ev(`window.__rbFreezeAt(${target})`)
@@ -376,7 +691,12 @@ try {
         await sleep(index === 0 ? 110 : index === 1 ? 170 : 200)
       }
       await takeShot(`realbook-flip-${index + 1}.png`)
-      if (seamClip) await takeShot(`realbook-seam-flip-${index + 1}.png`, seamClip)
+      if (frames) {
+        await inspectBandSeams(index + 1)
+        // 两套判据分开跑：命中测试问「纸上漏没漏列」，亮度剖面问「边上亮度连不连续」。
+        // 两者结论不一致时，报告里以命中测试为准（它是竖缝的直接证据）。
+        await bandBrightnessProfile(index + 1)
+      }
     }
     if (frames) await ev('window.__rbUnfreeze()')
     await waitFor(`!document.querySelector('.real-book-flip')`, slowFlip ? 14000 : 5000)
@@ -491,9 +811,11 @@ try {
   // 把「拍照卡住」算成「翻页掉帧」。
   await shootFlip()
 
-  // 书缝像素剖面：书心必须是纸，不是暗谷。中缝与两侧纸面亮度接近，
-  // 只允许极轻的纸页折缝差异。
-  if (geom) {
+  // 书缝像素剖面：书心必须是纸，不是暗谷。
+  //
+  // 书心现在是零宽的（见上），没有自己的像素列可测；只有旧版宽书心才跑这两条。
+  // 它们测的是书脊谷暗部，与本题的「竖带竖缝」无关，不能相互代替。
+  if (gutterHasWidth) {
     await cdp('Page.bringToFront')
     await sleep(300)
     const prof = await seamProfile()
@@ -506,6 +828,8 @@ try {
     check('中缝不是一条纯黑裂缝（保留纸色层次）',
       prof.seamMin > 120,
       `中缝最低 ${prof.seamMin}（低于 120 就接近桌面透出来的黑缝）`)
+  } else {
+    console.log(`--    书心中缝宽 ${geom ? geom.gutterWidth.toFixed(1) : '?'}px（零宽，两页直落中心线）：跳过中缝暗带判定`)
   }
 
   const fmt = (s) => `翻页时长 ${Math.round(s.flipDuration)}ms，翻页帧 ${s.flipFrames}，中位间隔 ${s.flipMedian?.toFixed(1)}ms，最大 ${s.flipMax?.toFixed(1)}ms，长帧 ${s.flipLong}，长任务 ${s.longTaskCount} 次共 ${Math.round(s.longTaskTotal)}ms`
@@ -550,7 +874,7 @@ try {
   await sleep(500)
   await rm(lib, { recursive: true, force: true }).catch(() => {})
   await rm(userData, { recursive: true, force: true }).catch(() => {})
-  if (process.env.SPBF_KEEP_SHOTS !== '1') {
+  if (process.env.SPBF_KEEP_SHOTS !== '1' && shotDir) {
     await rm(shotDir, { recursive: true, force: true }).catch(() => {})
   }
 }
