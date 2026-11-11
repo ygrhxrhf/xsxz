@@ -28,6 +28,8 @@ export default defineComponent({
     paragraphIndexes: { type: Array as () => number[], required: true },
     /** 每段的搜索命中／划线区间（段内字符偏移），与经典模式同一套局部坐标 */
     paragraphRanges: { type: Array as () => ArcRange[][], default: () => [] },
+    /** 每段是否首行缩进；跨页延续的段落不缩进，与平面版式的 `para-continued` 一致 */
+    indents: { type: Array as () => boolean[], default: () => [] },
     chapterTitle: { type: String, default: '' },
     pageNumber: { type: Number, default: 0 },
     contentWidth: { type: Number, default: 420 },
@@ -47,6 +49,13 @@ export default defineComponent({
     segments: { type: Number, default: 8 },
     /** 书脊在页面的哪一侧 */
     spineAt: { type: String as () => 'left' | 'right', default: 'left' },
+    /** 段间距（px）：与平面版式同一套排版参数 */
+    paragraphGap: { type: Number, default: 0 },
+    /**
+     * 嵌入模式：去掉页面自己的背景、投影与页眉页脚，只画正文，
+     * 由宿主书页提供纸面与眉脚（真实书籍页面就是这样嵌的）。
+     */
+    bare: { type: Boolean, default: false },
   },
   setup(props) {
     const measureRef = ref<HTMLElement | null>(null)
@@ -71,6 +80,9 @@ export default defineComponent({
       props.paragraphs.forEach((text, index) => {
         const original = props.paragraphIndexes[index] ?? index
         const ranges = props.paragraphRanges[index] ?? []
+        // 量断行的缩进必须与这一段的真实首行一致：续段在平面版式里没有缩进，
+        // 这里若仍带 2em，首行会少盛两个字，排出来的行数与内容对不上。
+        measureEl.style.textIndent = props.indents[index] === false ? '0' : '2em'
         const group = document.createElementNS(SVG_NS, 'g')
         // 一个段落 = 一个 data-p 组：selectionOffsets 用 closest('[data-p]') 找段落，
         // 再在该元素内累加文本长度算偏移，所以同段的所有 <text> 必须都在这一组里且顺序正确。
@@ -100,22 +112,23 @@ export default defineComponent({
           }
           cursorY += props.lineHeight
         }
+        if (index < props.paragraphs.length - 1) cursorY += Math.max(0, props.paragraphGap)
         svg.appendChild(group)
       })
     }
 
     onMounted(() => { void nextTick(rebuild) })
     watch(
-      () => [props.paragraphs, props.paragraphIndexes, props.paragraphRanges, props.contentWidth, props.valleyWidth, props.valleyDeg, props.dipPx, props.segments, props.spineAt],
+      () => [props.paragraphs, props.paragraphIndexes, props.paragraphRanges, props.indents, props.contentWidth, props.paragraphGap, props.valleyWidth, props.valleyDeg, props.dipPx, props.segments, props.spineAt],
       () => { void nextTick(rebuild) },
       { deep: true },
     )
 
     const pageStyle = computed(() => ({
       position: 'relative' as const,
-      background: 'var(--arc-paper, #f7f2e4)',
-      color: 'var(--arc-ink, #2f2a24)',
-      boxShadow: '0 8px 24px rgba(38, 24, 12, 0.28)',
+      background: props.bare ? 'transparent' : 'var(--arc-paper, #f7f2e4)',
+      color: props.bare ? 'currentColor' : 'var(--arc-ink, #2f2a24)',
+      boxShadow: props.bare ? 'none' : '0 8px 24px rgba(38, 24, 12, 0.28)',
       overflow: 'hidden' as const,
       width: `${props.contentWidth + props.paddingX * 2}px`,
       height: `${props.pageHeight}px`,
@@ -145,6 +158,7 @@ export default defineComponent({
           top: `${Math.round(props.paddingY * 0.35)}px`, fontSize: '12px',
           letterSpacing: '0.08em', opacity: '0.5', pointerEvents: 'none',
         },
+        ...(props.bare ? { hidden: true } : {}),
       }, props.chapterTitle),
       h('svg', {
         ref: svgRef,
@@ -163,6 +177,7 @@ export default defineComponent({
           bottom: `${Math.round(props.paddingY * 0.35)}px`, fontSize: '12px',
           letterSpacing: '0.08em', opacity: '0.5', pointerEvents: 'none',
         },
+        ...(props.bare ? { hidden: true } : {}),
       }, props.pageNumber ? String(props.pageNumber) : ''),
     ])
   },
