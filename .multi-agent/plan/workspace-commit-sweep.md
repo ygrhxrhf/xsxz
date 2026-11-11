@@ -17,8 +17,8 @@
       - 验：`git log --oneline -1` → `028e32f`，24 文件
 - [x] 4. 提交弧面实验留档，删除纯日志与临时探针
       - 验：`git log --oneline -1` → `ab377a8`；`git status --porcelain --untracked-files=all` → 只剩 .gitignore / HANDOFF / 本计划
-- [ ] 5. 更新 HANDOFF 与断点，`npm run plan:status` 退出码 0
-      - 验：`npm run plan:status; echo $?` → 0
+- [x] 5. 更新 HANDOFF 与断点，`npm run plan:status` 退出码 0
+      - 验：`npm run plan:status` → 可收工；提交 `d7be100`
 
 ## 不做（显式出范围）
 
