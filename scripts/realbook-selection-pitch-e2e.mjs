@@ -299,12 +299,32 @@ try {
     await click(`document.querySelector('.real-book-btn[aria-label="平放"]')`)
     await sleep(400)
   }
-  // 俯仰拖拽：在书体左上角内边距竖向拖动，0.1°/px。
+  // 俯仰拖拽：0.1°/px。起点不能写死成「书体左上角 +8px」——选过多行字之后顶部阅读
+  // 工具栏常显，正好盖住那个角（elementFromPoint 命中「书架」按钮），拖拽根本到不了书体；
+  // 起点若落在文字上还会触发原生拖拽把 pointer 取消。所以在书体内部扫描一个
+  // 「命中书体、不落在正文/批注、不被工具栏或选区工具条盖住」的纸面点。
+  const findDragPoint = () => ev(`
+    window.getSelection().removeAllRanges();
+    const book = document.querySelector('.real-book-book');
+    const r = book.getBoundingClientRect();
+    const blocked = '.real-book-para, .real-book-note, .reader-toolbar, .reader-bottombar, .sel-popup';
+    for (let y = r.top + 40; y <= r.bottom - 40; y += 10) {
+      for (const x of [Math.round(r.left + 10), Math.round(r.left + 20)]) {
+        const el = document.elementFromPoint(x, y);
+        if (el && book.contains(el) && !el.closest(blocked)) return { x, y };
+      }
+    }
+    return null;
+  `)
   const dragToPitch = async (px) => {
     await resetFlat()
-    const bookRect = await ev(`const r = document.querySelector('.real-book-book').getBoundingClientRect(); return { left: r.left, top: r.top };`)
-    const startX = bookRect.left + 8
-    const startY = bookRect.top + 8
+    const start = await findDragPoint()
+    if (!start) {
+      check(`拖拽 ${px}px 前能找到纸面起点`, false, '书体上没有可拖拽的空白点')
+      return readPitch()
+    }
+    const startX = start.x
+    const startY = start.y
     await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: startX, y: startY, button: 'left', buttons: 1, clickCount: 1 })
     const steps = 24
     for (let step = 1; step <= steps; step += 1) {

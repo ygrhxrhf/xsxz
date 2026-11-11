@@ -1,5 +1,17 @@
 # HANDOFF
 
+## 弧面删除后真机回归：三条 e2e 全通过（2026-11-11，本轮完成）
+
+- 做到哪：补齐 `60b1c2e` 删除弧面实验时留下的真机验证缺口，在真实 Electron 窗口（1266×763）上复跑三条 e2e。
+- 结果：
+  - 翻页帧率 `scripts/realbook-flip-fps-e2e.mjs`：`7 项通过，0 项失败`，EXIT 0。基线 827ms/60 帧、中位 13.9ms、最大 20.9ms、40ms 以上长帧 0。
+  - 页内批注 `scripts/realbook-annotations-e2e.mjs`：`17 项通过，0 项失败`，EXIT 0。
+  - 选区俯仰 `scripts/realbook-selection-pitch-e2e.mjs`：`18 项通过，0 项失败`，EXIT 0（平放 0°、20°、35° 下单行/多行选区的工具条位置与真实划词全部通过）。
+- 本轮唯一代码改动是 e2e 脚本：`realbook-selection-pitch-e2e.mjs` 的拖拽起点原先写死「书体左上角 +8px」，选完字后顶部阅读工具栏常显正好盖住该点（`elementFromPoint` 命中「书架」按钮），pointerdown 到不了书体；平放 0° 时该点还落在页内标题区，已有选区时浏览器起原生拖拽并 `pointercancel`，8px 就中止。改成在书体内部扫描「命中书体、不落在正文/批注、不被工具栏或选区工具条盖住」的纸面点，并先清空选区。
+- 产品侧判定：不是回归。同一位置无选区时 0° 能拖到 20°、默认 18° 能拖到 35°，俯仰逻辑（`realBookPitch.ts` + `RealBookStage` 指针接管）完好；平面正文路径无变化。
+- 未验证/边界：真机只跑一次窗口尺寸；未做多显示器/缩放比例变化下的重现。`realbook-flip-fps-e2e.mjs` 日志里的 `长任务 undefined 次共 NaNms` 是既有统计空值，不是失败项。
+- 下一步：无遗留。`git push origin master` 仍需用户点头。
+
 ## 弧面排版裁决：删除（2026-11-11，本轮完成）
 
 - 裁决：**删除弧面实验**，保留平面 `.real-book-para` 渲染。理由：
