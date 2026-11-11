@@ -1,5 +1,25 @@
 # HANDOFF
 
+## 弧面排版裁决：删除（2026-11-11，本轮完成）
+
+- 裁决：**删除弧面实验**，保留平面 `.real-book-para` 渲染。理由：
+  - 真机截图对比：`realbook-flat.png` 两页干净；`realbook-arc.png` 字被
+    `textLength lengthAdjust="spacingAndGlyphs"` 按弧带宽度拉伸成巨型字形、行间重叠、右缘裁切、
+    左页整页空白（弧面分支缺空态）。根因在 `layoutArcRuns`：每带给整段几何宽度并把文字拉满，
+    未占满全部带的行（段末短行）必然撑大。
+  - 叠加此前两次 3D 竖带失败（投影宽度对不上中线），弧面路线没有可交付版本。
+- 已删：`RealBookArcPage.ts`、`realBookArcText.ts` 与两份测试；`realBookFlip.ts` 的
+  `valleyBands`/`ValleyBand`/`ValleyBandOptions`；`RealBookStage.vue` 的「弧面」按钮、
+  谷竖带层与其 CSS、`ENABLE_ARC_TEXT`/`ENABLE_VALLEY_STRIPS` 及全部接线；`scripts/realbook-arc-e2e.mjs`
+  与 `scripts/tmp-arc-*`。
+- 保留：`realBookMeasure`（分页器依赖）、`spineValleyPoses`（`realBookFlip.test.ts` 仍覆盖）。
+- 验证：`npm run typecheck` → EXIT:0；
+  `npx vitest run src/renderer/pages/realBook*.test.ts src/renderer/pages/Reader.realBook.ui.test.ts --maxWorkers=6`
+  → 7 文件 / 83 用例全通过，EXIT:0。
+- 截图不入库（`.gitignore:12` 忽略 `.multi-agent/**/*.png`），证据存于
+  `.multi-agent/acceptance/arc-2026-11-11/`，结论以文字留档。计划：`.multi-agent/plan/realbook-arc-adjudication.md`。
+- 未验证/边界：删除后未再跑真机翻页/批注 e2e；本轮改动只删弧面分支与竖带层，平面路径代码未变。
+
 ## 工作区积压已落成三笔提交（2026-11-11，本轮完成）
 
 - 做到哪：2026-11-09/10 三轮真实书籍工作从工作区拆成三笔提交，`plan:status` 归零。

@@ -15,10 +15,18 @@
 - [x] 2. 单测不回归：现有 realbook 相关 vitest 全绿
       - 验：`npx vitest run src/renderer/pages/realBookArcSelection.test.ts src/renderer/pages/realBook*.test.ts --maxWorkers=6` → 全部通过
       - 实跑：8 个文件 80 用例全通过（realBookArcSelection/ArcText/Flip/Measure/Notes/Pager/Pitch/Spine），EXIT:0
-- [ ] 3. 真机截图对比：CDP e2e 起真实 Electron，同一夹具书分别截「平面（现状）」与「弧面」整页图，检查弧面文本节点存在、划线区间可用、无横向溢出
+- [x] 3. 真机截图对比：CDP e2e 起真实 Electron，同一夹具书分别截「平面（现状）」与「弧面」整页图，检查弧面文本节点存在、划线区间可用、无横向溢出
       - 验：`node scripts/realbook-arc-e2e.mjs` → 产出 PNG 到 `.multi-agent/acceptance/arc-2026-11-11/`，断言全 PASS
-- [ ] 4. 按证据裁决：合并（接稳/接修）或删除（删 Valley 竖条实验与/或 ArcPage），结论写进本文件与 HANDOFF
+      - 实跑：14/14 断言 PASS，产出 `realbook-flat.png` / `realbook-arc.png`（`.gitignore:12` 忽略 `.multi-agent/**/*.png`，截图不入库，结论以文字留档）
+      - 目视结论：`realbook-flat.png` 两页正文排布干净；`realbook-arc.png` 字被 `textLength` 按弧面带宽度拉伸成巨型字形、行与行重叠、右缘裁切、左页整页空白（弧面分支缺 `real-book-empty` 空态）——弧面不可用
+- [x] 4. 按证据裁决：合并（接稳/接修）或删除（删 Valley 竖条实验与/或 ArcPage），结论写进本文件与 HANDOFF
       - 验：`git log --oneline -3` 出现裁决提交
+      - 裁决：**删除**。根因是 `layoutArcRuns` 给每个弧面带分配整段几何宽度，再用 `<text textLength lengthAdjust="spacingAndGlyphs">` 把该带文字横向拉满——未占满所有带的行（如段末短行）字被撑成巨型；叠加此前两次 3D 竖带失败（投影宽度对不上中线），弧面路线在本仓库没有可交付版本
+      - 已删：`RealBookArcPage.ts`、`realBookArcText.ts` 及两份测试、`realBookFlip.ts` 的 `valleyBands`/`ValleyBand`/`ValleyBandOptions`、`RealBookStage.vue` 的弧面开关按钮与谷竖带层及配套 CSS、`scripts/realbook-arc-e2e.mjs`、`scripts/tmp-arc-*`
+      - 保留：平面 `.real-book-para` 渲染、`realBookMeasure`（分页器依赖）、`spineValleyPoses`（中缝谷带测试仍覆盖）
+      - 验证：`npm run typecheck` → EXIT:0；`npx vitest run src/renderer/pages/realBook*.test.ts src/renderer/pages/Reader.realBook.ui.test.ts --maxWorkers=6` → 7 文件 83 用例全通过，EXIT:0
+      - 全量：`npx vitest run src --exclude .delta/ --exclude .qoder/ --maxWorkers=6` → 177 文件 1840 用例全通过，EXIT:0；`npm run build` → EXIT:0
+
 - [ ] 5. 收工自检
       - 验：`npm run plan:status` → 退出码 0
 
@@ -35,6 +43,6 @@
 
 ## 断点记录（每次停下前更新）
 
-- 状态：进行中
-- 下一步第一条命令：写 `scripts/realbook-arc-e2e.mjs` 并跑真机截图
-- 未验证项：步骤 3～5（真机截图、裁决、收工自检）
+- 状态：已裁决（删除弧面实验），待提交与收工自检
+- 下一步第一条命令：`git add -A && git commit` 记录裁决，再 `npm run plan:status`
+- 未验证项：步骤 5（收工自检）
