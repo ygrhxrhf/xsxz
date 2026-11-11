@@ -29,7 +29,7 @@ describe('Reader selection toolbar contract', () => {
     expect(source).toContain("e.key === 'Escape' && selectionOpen()")
     expect(source).toContain('复制')
     expect(source).toContain('划线')
-    expect(source).toContain('备注')
+    expect(source).toContain('批注')
     expect(source).toContain('翻译')
     expect(source).toContain('问 AI')
     expect(source).not.toContain('e.clientX - 120')

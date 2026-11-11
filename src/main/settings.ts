@@ -240,6 +240,10 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
       READER_HANDWRITING_FONTS,
       DEFAULT_READER_PREFS.handwritingFont ?? 'none',
     ),
+    showInlineNotes:
+      typeof reader.showInlineNotes === 'boolean'
+        ? reader.showInlineNotes
+        : DEFAULT_READER_PREFS.showInlineNotes ?? true,
     autoScrollSpeed: Math.round(readFiniteClamped(reader.autoScrollSpeed, 1, 5, DEFAULT_READER_PREFS.autoScrollSpeed!)),
     autoNextChapter: typeof reader.autoNextChapter === 'boolean' ? reader.autoNextChapter : DEFAULT_READER_PREFS.autoNextChapter!,
     dim: Math.round(readFiniteClamped(reader.dim, 0, 70, DEFAULT_READER_PREFS.dim!)),

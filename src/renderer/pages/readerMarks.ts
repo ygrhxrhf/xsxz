@@ -22,6 +22,8 @@ export interface ReaderMarksDeps {
   memoryCharacters: () => AiMemoryCharacter[]
   /** 成功/提示/失败三种反馈。 */
   notify: (kind: 'success' | 'info' | 'error', text: string) => void
+  /** 新批注落盘后的通知：阅读器据此开启页内批注并跳到新卡片。 */
+  onAnnotationAdded?: (annotation: Annotation) => void
 }
 
 /** 选中的区间（规范化正文坐标 + 原文摘录）。 */
@@ -180,7 +182,8 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
       return false
     }
     annotations.value.push(res.item)
-    deps.notify('success', options.successText ?? '备注已保存')
+    deps.onAnnotationAdded?.(res.item)
+    deps.notify('success', options.successText ?? '批注已保存')
     return true
   }
 
@@ -217,17 +220,25 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
   }
 
   /** 保存对已有标记备注的编辑；改写过的备注按读者手写算（出处跟着落盘结果走）。 */
-  async function saveNote(annotation: Annotation): Promise<void> {
+  async function saveNoteText(annotation: Annotation, text: string): Promise<boolean> {
     const bookId = deps.bookId()
-    if (!bookId) return
-    const res = await window.api.annotations.update(bookId, annotation.id, { note: noteDraft.value })
+    const note = text.trim()
+    if (!bookId || !note) return false
+    const res = await window.api.annotations.update(bookId, annotation.id, { note })
     if (res.ok) {
       annotation.note = res.item.note
       annotation.noteSource = res.item.noteSource
-      deps.notify('success', '备注已保存')
+      deps.notify('success', '批注已保存')
+      return true
     } else {
       deps.notify('error', res.message || '保存失败')
+      return false
     }
+  }
+
+  /** 标记抽屉的编辑框沿用旧入口，保存成功后收起编辑态。 */
+  async function saveNote(annotation: Annotation): Promise<void> {
+    await saveNoteText(annotation, noteDraft.value)
     editingNoteId.value = ''
   }
 
@@ -279,6 +290,7 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
     addHighlight,
     addNote,
     toggleBookmark,
+    saveNoteText,
     saveNote,
     setColor,
     remove,

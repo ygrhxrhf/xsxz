@@ -48,6 +48,7 @@ const EXISTING_API_CHANNELS = new Set([
   'window.api.library.get',
   'window.api.library.getReadFrontier',
   'window.api.library.markReadFrontier',
+  'window.api.library.readBookStats',
   'window.api.library.readChapter',
   'window.api.library.searchInBook',
   'window.api.library.setProgress',

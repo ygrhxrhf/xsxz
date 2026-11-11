@@ -288,7 +288,7 @@ describe('normalizeReaderPrefs', () => {
     expect(normalizeReaderPrefs({ readingMode: 'scroll' }).readingMode).toBe('scroll')
   })
 
-  it('bookView 与 handwritingFont 缺省或非法时回退，合法值保留', () => {
+  it('bookView、handwritingFont 与页内批注开关缺省或非法时回退，合法值保留', () => {
     // 缺字段 = 经典模式：与 DEFAULT_READER_PREFS.bookView 一致，缺省不分页。
     expect(normalizeReaderPrefs({}).bookView).toBe('classic')
     expect(normalizeReaderPrefs({ bookView: 'screen' }).bookView).toBe('classic')
@@ -298,6 +298,10 @@ describe('normalizeReaderPrefs', () => {
     expect(normalizeReaderPrefs({ handwritingFont: 'brush' }).handwritingFont).toBe('none')
     expect(normalizeReaderPrefs({ handwritingFont: 'kai' }).handwritingFont).toBe('kai')
     expect(normalizeReaderPrefs({ handwritingFont: 'xingshu' }).handwritingFont).toBe('xingshu')
+    expect(normalizeReaderPrefs({}).showInlineNotes).toBe(true)
+    expect(normalizeReaderPrefs({ showInlineNotes: 'yes' }).showInlineNotes).toBe(true)
+    expect(normalizeReaderPrefs({ showInlineNotes: false }).showInlineNotes).toBe(false)
+    expect(normalizeReaderPrefs({ showInlineNotes: true }).showInlineNotes).toBe(true)
   })
 
   it('夹紧自动滚屏速度并默认关闭自动续章', () => {

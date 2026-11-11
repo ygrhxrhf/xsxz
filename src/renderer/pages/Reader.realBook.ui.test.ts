@@ -61,10 +61,15 @@ function installReaderApi(options: {
   body?: string
   annotations?: Annotation[]
   progress?: ProgressWrite | null
+  showInlineNotes?: boolean
 } = {}) {
   const progressWrites: ProgressWrite[] = []
   const settingsWrites = options.settingsWrites ?? []
+  const annotationUpdates: Array<{ id: string; patch: Partial<Annotation> }> = []
+  const annotationRemoves: string[] = []
+  const items = [...(options.annotations ?? [])]
   const chapters = [{ id: 'c1', index: 1, title: '第一章', file: '0001.json', status: 'ready' as const }]
+  const bookStats = [{ chapterId: 'c1', chars: (options.body ?? '第一段。\n\n第二段。').length }]
   const book = {
     id: 'book-1', title: '真实书', author: '', tags: [] as string[], importType: 'txt' as const,
     createdAt: '', updatedAt: '', status: 'ready' as const, chapters,
@@ -75,6 +80,7 @@ function installReaderApi(options: {
     value: {
       library: {
         get: async () => ({ book }),
+        readBookStats: async () => ({ stats: bookStats }),
         readChapter: async () => ({
           chapter: { title: '第一章', body: options.body ?? '第一段。\n\n第二段。', status: 'ready' },
         }),
@@ -90,16 +96,36 @@ function installReaderApi(options: {
             fontSize: 18, lineHeight: 1.8, theme: 'paper', fontFamily: 'serif', contentWidth: 'medium',
             paragraphSpacing: 'normal', paragraphIndent: true, focusMode: 'off', readingMode: 'scroll',
             bookView: options.bookView ?? 'classic', handwritingFont: 'none',
+            showInlineNotes: options.showInlineNotes ?? true,
           },
           tts: { rate: 1, autoNextChapter: true }, baseUrl: '',
         }),
         set: async (patch: SettingsWrite) => { settingsWrites.push(patch); return {} },
       },
       annotations: {
-        list: async () => ({ ok: true, items: options.annotations ?? [] }),
-        add: async () => ({ ok: false, message: '测试桩：不新增' }),
-        update: async () => ({ ok: false, message: '测试桩：不更新' }),
-        remove: async () => ({ ok: true }),
+        list: async () => ({ ok: true, items }),
+        add: async (draft: Partial<Annotation>) => {
+          const item: Annotation = {
+            id: `new-${items.length + 1}`, bookId: 'book-1', chapterId: 'c1', kind: 'highlight',
+            start: 0, end: 0, excerpt: '', createdAt: '2026-11-09T00:00:00.000Z', ...draft,
+          }
+          items.push(item)
+          return { ok: true, item }
+        },
+        update: async (_bookId: string, id: string, patch: Partial<Annotation>) => {
+          annotationUpdates.push({ id, patch })
+          const base = items.find((item) => item.id === id) ?? items[0]!
+          const item = { ...base, ...patch, noteSource: 'user' as const }
+          const index = items.findIndex((entry) => entry.id === id)
+          if (index >= 0) items[index] = item
+          return { ok: true, item }
+        },
+        remove: async (_bookId: string, id: string) => {
+          annotationRemoves.push(id)
+          const index = items.findIndex((item) => item.id === id)
+          if (index >= 0) items.splice(index, 1)
+          return { ok: true }
+        },
       },
       download: { onProgress: () => () => {} },
       ai: {
@@ -110,7 +136,12 @@ function installReaderApi(options: {
       },
     },
   })
-  return { progressWrites, settingsWrites }
+  return { progressWrites, settingsWrites, annotationUpdates, annotationRemoves }
+}
+
+function buttonByText<T extends HTMLElement = HTMLElement>(root: ParentNode, text: string): T | null {
+  return [...root.querySelectorAll<HTMLElement>('button')]
+    .find((button) => (button.textContent ?? '').trim() === text) as T | null
 }
 
 async function mountReader() {
@@ -280,7 +311,8 @@ describe('Reader 真实书籍模式接线', () => {
     // 翻页而不是换章：页码往前走，页眉仍是本章章名（换章会把整章跳过去）。
     expect(label()).not.toBe(before)
     expect(document.querySelector('.real-book-page-head')?.textContent).toBe('第一章')
-    expect(document.querySelector('.real-book-stage')?.textContent).toContain('第1段。')
+    // 双页摊开一次翻 2 页，第 1 页翻过去后就不再显示；只确认正文仍在本章。
+    expect(document.querySelectorAll('.real-book-para').length).toBeGreaterThan(0)
     app.unmount()
   })
 
@@ -303,7 +335,8 @@ describe('Reader 真实书籍模式接线', () => {
     paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 500 }))
     await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 250))
     await nextTick()
-    expect(pageNo()).toBe(before + 1)
+    // 双页摊开，翻一张纸前进 2 页：右页滑到左页不是翻页，是挪窗口。
+    expect(pageNo()).toBe(before + 2)
 
     // 左侧三分之一：回上一页。
     paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 100 }))
@@ -430,6 +463,154 @@ describe('Reader 真实书籍模式接线', () => {
     const panel = document.querySelector('.bottom-panel')?.textContent ?? ''
     expect(panel).not.toContain('连续滚动')
     expect(panel).not.toContain('开始自动滚屏')
+    app.unmount()
+  })
+
+  it('真实书籍默认开启批注：已有批注显示在页面上', async () => {
+    installReaderApi({
+      bookView: 'realbook',
+      body: '第一段。\n\n第二段。',
+      annotations: [{
+        id: 'a-note', bookId: 'book-1', chapterId: 'c1', kind: 'highlight',
+        start: 0, end: 3, excerpt: '第一段', note: '默认可见的批注',
+        createdAt: '2026-11-09T00:00:00.000Z',
+      }],
+    })
+    const app = await mountReader()
+
+    const card = document.querySelector<HTMLElement>('.real-book-note[data-note-id="a-note"]')
+    expect(card?.textContent).toContain('默认可见的批注')
+    expect(document.querySelector<HTMLElement>('.real-book-note-toggle')?.getAttribute('aria-pressed')).toBe('true')
+    app.unmount()
+  })
+
+  it('关闭批注模式后卡片隐藏，划线底色保留', async () => {
+    const { settingsWrites } = installReaderApi({
+      bookView: 'realbook',
+      body: '第一段。\n\n第二段。',
+      annotations: [{
+        id: 'a-note', bookId: 'book-1', chapterId: 'c1', kind: 'highlight',
+        start: 0, end: 3, excerpt: '第一段', note: '可以隐藏的批注',
+        createdAt: '2026-11-09T00:00:00.000Z',
+      }],
+    })
+    const app = await mountReader()
+    expect(document.querySelector('.real-book-note[data-note-id="a-note"]')).not.toBeNull()
+
+    document.querySelector<HTMLElement>('.real-book-note-toggle')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(document.querySelector('.real-book-note[data-note-id="a-note"]')).toBeNull()
+    expect(document.querySelector('.real-book-stage mark.hl-mark')?.textContent).toBe('第一段')
+    expect(document.querySelector<HTMLElement>('.real-book-note-toggle')?.getAttribute('aria-pressed')).toBe('false')
+
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(settingsWrites.some((write) => write.reader?.showInlineNotes === false)).toBe(true)
+    app.unmount()
+  })
+
+  it('点击页内批注打开固定定位浮层，保存走 annotations.update', async () => {
+    const { annotationUpdates } = installReaderApi({
+      bookView: 'realbook',
+      body: '第一段。\n\n第二段。',
+      annotations: [{
+        id: 'a-note', bookId: 'book-1', chapterId: 'c1', kind: 'highlight',
+        start: 0, end: 3, excerpt: '第一段', note: '原来的批注',
+        createdAt: '2026-11-09T00:00:00.000Z',
+      }],
+    })
+    const app = await mountReader()
+
+    document.querySelector<HTMLElement>('.real-book-note[data-note-id="a-note"]')?.click()
+    await nextTick()
+    const editor = document.querySelector<HTMLElement>('.inline-note-editor')
+    expect(editor).not.toBeNull()
+    expect(editor?.classList.contains('inline-note-editor')).toBe(true)
+    expect(editor?.style.left).not.toBe('')
+    expect(editor?.style.top).not.toBe('')
+    expect(editor?.textContent).toContain('第一段')
+
+    const textarea = editor!.querySelector<HTMLTextAreaElement>('textarea')!
+    textarea.value = '改写后的批注'
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    buttonByText(editor!, '保存')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(annotationUpdates).toContainEqual({ id: 'a-note', patch: { note: '改写后的批注' } })
+    expect(document.querySelector('.inline-note-editor')).toBeNull()
+    expect(document.querySelector('.real-book-note[data-note-id="a-note"]')?.textContent).toContain('改写后的批注')
+    app.unmount()
+  })
+
+  it('空批注不能保存，显式确认后才删除', async () => {
+    const { annotationUpdates, annotationRemoves } = installReaderApi({
+      bookView: 'realbook',
+      body: '第一段。\n\n第二段。',
+      annotations: [{
+        id: 'a-note', bookId: 'book-1', chapterId: 'c1', kind: 'highlight',
+        start: 0, end: 3, excerpt: '第一段', note: '待删除的批注',
+        createdAt: '2026-11-09T00:00:00.000Z',
+      }],
+    })
+    const app = await mountReader()
+
+    document.querySelector<HTMLElement>('.real-book-note[data-note-id="a-note"]')?.click()
+    await nextTick()
+    const editor = document.querySelector<HTMLElement>('.inline-note-editor')!
+    const textarea = editor.querySelector<HTMLTextAreaElement>('textarea')!
+    textarea.value = '   '
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    // 空内容时保存按钮禁用，批注不会因误清空而静默消失。
+    expect(buttonByText(editor, '保存')?.hasAttribute('disabled')).toBe(true)
+    expect(annotationUpdates).toHaveLength(0)
+
+    buttonByText(editor, '删除')?.click()
+    await nextTick()
+    expect(buttonByText(editor, '确认删除')).not.toBeNull()
+    expect(annotationRemoves).toHaveLength(0)
+    buttonByText(editor, '确认删除')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(annotationRemoves).toEqual(['a-note'])
+    expect(document.querySelector('.inline-note-editor')).toBeNull()
+    expect(document.querySelector('.real-book-note[data-note-id="a-note"]')).toBeNull()
+    app.unmount()
+  })
+
+  it('新写批注会自动开启批注模式并显示在页面上', async () => {
+    installReaderApi({
+      bookView: 'realbook',
+      body: LONG_BODY,
+      showInlineNotes: false,
+    })
+    const app = await mountReader()
+    expect(document.querySelector<HTMLElement>('.real-book-note-toggle')?.getAttribute('aria-pressed')).toBe('false')
+
+    const para = document.querySelector<HTMLElement>('.real-book-para')!
+    const text = longestTextNode(para)
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, Math.min(3, text.textContent!.length))
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    para.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300 }))
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    buttonByText(document.querySelector('.sel-popup')!, '批注')?.click()
+    await nextTick()
+    const editor = document.querySelector<HTMLElement>('.direct-note-editor')!
+    const textarea = editor.querySelector<HTMLTextAreaElement>('textarea')!
+    textarea.value = '刚写下的批注'
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    buttonByText(editor, '保存批注')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(document.querySelector<HTMLElement>('.real-book-note-toggle')?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('.real-book-note-text')?.textContent).toBe('刚写下的批注')
     app.unmount()
   })
 })

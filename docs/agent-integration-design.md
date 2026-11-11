@@ -289,6 +289,7 @@ export interface AgentCapability {
 | `library.list` | `library_list` | 读 | — | disk | 返回 `{ books }`（无 `ok` 包裹） |
 | `bookOverview.retry` | `book_overview_retry` | 费 | — | key | 只清除生成失败标记并唤醒后台队列；已有概览不再重跑，自动生成关闭时不发模型请求 |
 | `library.get` | `library_get` | 读 | — | disk | 含章节列表与进度 |
+| `library.readBookStats` | `library_read_book_stats` | 读 | — | disk | 整本书各章节正文字符数，用于阅读进度与书厚 |
 | `library.readChapter` | `library_read_chapter` | 读 | — | disk | 单章正文 |
 | `library.delete` | `library_delete` | 破 | dry | disk | 移入 `__trash__/<bookId>-<ms>`，可还原 |
 | `library.listTrash` | `library_list_trash` | 读 | — | disk | |

@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import { createApp, h, nextTick, ref } from 'vue'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import RealBookStage from './RealBookStage.vue'
 import { FLIP_DURATION_MS } from './realBookFlip'
+import type { RealBookNote } from './realBookNotes'
 
 /**
  * 真实书籍舞台的组件测试：双页摊开、翻页、缩放、锚点回报。
@@ -30,12 +33,16 @@ interface MountOptions {
   /** 页眉页脚占高（px）：显式传入才能单独验证签名是否吃占高 */
   headHeight?: number
   footHeight?: number
+  notes?: RealBookNote[]
+  showNotes?: boolean
+  handwritingFont?: 'none' | 'kai' | 'xingshu'
 }
 
 async function mountStage(options: MountOptions = {}) {
   const paragraphs = options.paragraphs ?? PARAGRAPHS
   const indexes = options.indexes ?? paragraphs.map((_, i) => i)
   const events: Array<{ type: string; payload: unknown }> = []
+  const showNotes = ref(options.showNotes ?? true)
   const host = document.createElement('div')
   document.body.appendChild(host)
   const stageRef = ref<InstanceType<typeof RealBookStage> | null>(null)
@@ -50,9 +57,17 @@ async function mountStage(options: MountOptions = {}) {
       chapterTitle: options.chapterTitle ?? '',
       headHeight: options.headHeight ?? 0,
       footHeight: options.footHeight ?? 0,
+      notes: options.notes ?? [],
+      showNotes: showNotes.value,
+      handwritingFont: options.handwritingFont ?? 'none',
       'onUpdate:anchor': (anchor: unknown) => events.push({ type: 'anchor', payload: anchor }),
       'onUpdate:page': (page: number) => events.push({ type: 'page', payload: page }),
       'onUpdate:page-count': (count: number) => events.push({ type: 'page-count', payload: count }),
+      'onUpdate:show-notes': (show: boolean) => {
+        showNotes.value = show
+        events.push({ type: 'show-notes', payload: show })
+      },
+      'onEditNote': (id: string) => events.push({ type: 'edit-note', payload: id }),
     }),
   })
   app.mount(host)
@@ -62,7 +77,19 @@ async function mountStage(options: MountOptions = {}) {
     prevPage: () => void
     hasNextPage: boolean
   }
-  return { app, events, stage }
+  return { app, events, stage, showNotes }
+}
+
+function note(partial: Partial<RealBookNote> = {}): RealBookNote {
+  return {
+    id: 'n1',
+    paragraph: 2,
+    offset: 3,
+    text: '这是一条页内批注',
+    source: 'user',
+    createdAt: '2026-11-09T00:00:00.000Z',
+    ...partial,
+  }
 }
 
 describe('RealBookStage（真实书籍舞台）', () => {
@@ -134,9 +161,8 @@ describe('RealBookStage（真实书籍舞台）', () => {
 
     const front = document.querySelector('.real-book-flip-front')
     expect(front?.querySelector('.real-book-page-head')?.textContent).toBe('第一章 测试')
-    // 翻动页的轴必须落在右页自己的装订边（中心线 +7px），不能转在书心正中：
-    // 差这 7px 起手就会先露出纸缘竖缝，看着像纸被撕开。
-    expect(document.querySelector<HTMLElement>('.real-book-flip')?.style.left).toBe('calc(50% + 7px)')
+    // 书心不再留槽，翻动页与两页共用中心线，避免书脊出现贯穿页高的空白竖带。
+    expect(document.querySelector<HTMLElement>('.real-book-flip')?.style.left).toBe('calc(50% + 0px)')
     // 翻动的是第 1 页（原来的右页）。
     expect(front?.querySelector('.real-book-page-foot')?.textContent?.trim()).toBe('1')
     // 纸背就是这张纸的另一面：落地后它成为左页。空白纸背会读成一块硬纸板。
@@ -202,7 +228,16 @@ describe('RealBookStage（真实书籍舞台）', () => {
     app.unmount()
   })
 
-  it('向前翻页时转轴落在左页装订边（中心线 -7px）', async () => {
+  it('书心不留贯穿页高的空白槽', async () => {
+    const { app } = await mountStage()
+    const gutter = document.querySelector<HTMLElement>('.real-book-gutter')
+    expect(gutter).not.toBeNull()
+    // 宽度为 0 的元素计算后是 0px；布局空间必须完全消失。
+    expect(gutter!.getBoundingClientRect().width).toBeLessThan(0.5)
+    app.unmount()
+  })
+
+  it('向前翻页时转轴落在书心中心线', async () => {
     const { app, stage } = await mountStage()
     // 先翻到第二屏，再往回翻，才能测到 direction=-1 的转轴。
     stage.nextPage()
@@ -210,7 +245,7 @@ describe('RealBookStage（真实书籍舞台）', () => {
     stage.prevPage()
     await nextTick()
 
-    expect(document.querySelector<HTMLElement>('.real-book-flip')?.style.left).toBe('calc(50% - 7px)')
+    expect(document.querySelector<HTMLElement>('.real-book-flip')?.style.left).toBe('calc(50% - 0px)')
 
     await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
     app.unmount()
@@ -340,5 +375,183 @@ describe('RealBookStage（真实书籍舞台）', () => {
     expect(document.querySelector('.real-book-right')?.innerHTML).not.toContain('<b>')
     expect(document.querySelector('.real-book-right')?.textContent).toContain('<b>不该是标签</b>')
     app.unmount()
+  })
+
+  it('批注卡紧跟锚定段落的最后一个片段，落在正文流里', async () => {
+    const { app } = await mountStage({ notes: [note()] })
+    const card = document.querySelector<HTMLElement>('.real-book-right .real-book-note[data-note-id="n1"]')
+    expect(card).not.toBeNull()
+    const anchored = document.querySelector<HTMLElement>('.real-book-right .real-book-para[data-p="2"]')
+    expect(anchored).not.toBeNull()
+    // 卡片必须排在被批注段落之后，而不是浮在页角。
+    expect(anchored!.nextElementSibling).toBe(card)
+    expect(card?.querySelector('.real-book-note-label')?.textContent).toContain('批注')
+    expect(card?.querySelector('.real-book-note-text')?.textContent).toBe('这是一条页内批注')
+    app.unmount()
+  })
+
+  it('批注卡空间不足时整体移到下一页，不被拆开', async () => {
+    // 两个长段先把第二段推到页尾，卡片剩余空间不够就只能从下一页开头出现。
+    const long = '很长的段落。'.repeat(120)
+    const { app, stage } = await mountStage({
+      paragraphs: ['开头。', long, '第二段。', '第三段。'],
+      indexes: [0, 1, 2, 3],
+      notes: [note({ id: 'n-tail', paragraph: 1, offset: long.length })],
+    })
+    // 让分页器把卡片所在页显式排出来，再检查卡片没有跨页碎片。
+    stage.nextPage()
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
+    await nextTick()
+    const cards = [...document.querySelectorAll('.real-book-note[data-note-id="n-tail"]')]
+    expect(cards).toHaveLength(1)
+    // 卡片所在页必须有它锚定段落的文本（同一页或续页尾部），而不是孤零零悬空。
+    const cardPage = cards[0]?.closest('.real-book-page, .real-book-flip-front, .real-book-flip-back')
+    expect(cardPage?.textContent).toContain('很长的段落。')
+    app.unmount()
+  })
+
+  it('批注卡支持 AI 标记与手写体，正文不需要手写体', async () => {
+    const { app } = await mountStage({
+      notes: [note({ id: 'n-ai', source: 'ai', text: 'AI 写的解释' })],
+      handwritingFont: 'kai',
+    })
+    const card = document.querySelector<HTMLElement>('.real-book-right .real-book-note[data-note-id="n-ai"]')
+    expect(card?.classList.contains('handwriting-kai')).toBe(true)
+    expect(card?.classList.contains('is-ai')).toBe(true)
+    expect(card?.querySelector('.real-book-note-source')?.textContent).toBe('AI')
+    // 手写体只作用于批注，不污染正文段落。
+    expect(document.querySelector('.real-book-para.handwriting-kai')).toBeNull()
+    app.unmount()
+  })
+
+  it('批注文本按纯文本渲染，不解析 HTML', async () => {
+    const { app } = await mountStage({
+      notes: [note({ text: '<b>不该加粗</b>' })],
+    })
+    const page = document.querySelector('.real-book-right')
+    expect(page?.querySelector('b')).toBeNull()
+    expect(page?.querySelector('.real-book-note-text')?.innerHTML).toBe('&lt;b&gt;不该加粗&lt;/b&gt;')
+    expect(page?.textContent).toContain('<b>不该加粗</b>')
+    app.unmount()
+  })
+
+  it('批注开关带 aria-pressed，关闭后卡片隐藏但正文仍在', async () => {
+    const { app } = await mountStage({ notes: [note()] })
+    const toggle = document.querySelector<HTMLElement>('.real-book-note-toggle')!
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('.real-book-right .real-book-note[data-note-id="n1"]')).not.toBeNull()
+
+    toggle.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(document.querySelector('.real-book-right .real-book-note[data-note-id="n1"]')).toBeNull()
+    expect(document.querySelector('.real-book-page .real-book-para')).not.toBeNull()
+    app.unmount()
+  })
+
+  it('点击批注卡只发出编辑事件，不触发翻页', async () => {
+    const { app, events } = await mountStage({ notes: [note()] })
+    const card = document.querySelector<HTMLElement>('.real-book-right .real-book-note[data-note-id="n1"]')!
+    card.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, clientX: 500 }))
+    card.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 500 }))
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 100))
+    await nextTick()
+
+    expect(events.some((event) => event.type === 'edit-note' && event.payload === 'n1')).toBe(true)
+    expect(document.querySelector('.real-book-page-label')?.textContent).toContain('第 1')
+    expect(document.querySelector<HTMLElement>('.real-book-note[data-note-id="n1"]')).not.toBeNull()
+    app.unmount()
+  })
+
+  it('翻动页正面同样渲染批注卡', async () => {
+    const { app, stage } = await mountStage({ notes: [note()] })
+    stage.nextPage()
+    await nextTick()
+    expect(document.querySelector('.real-book-flip-front .real-book-note[data-note-id="n1"]')).not.toBeNull()
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
+    app.unmount()
+  })
+
+  it('同一条带只挂一面：正反两面的字不会叠在同一张纸上', async () => {
+    const { app, stage } = await mountStage()
+    stage.nextPage()
+    await nextTick()
+
+    // 重影只有一种来源：同一条带同时画了正面与背面。显隐由 flipFaceVisible 互斥
+    // 下发成模板上的两个 v-if；竖带转过 90° 的瞬间也只是换面，不是叠面。
+    let sawBoth = false
+    let sawBack = false
+    for (let i = 0; i < 60; i += 1) {
+      for (const slice of document.querySelectorAll('.real-book-flip-slice')) {
+        const faces = slice.querySelectorAll(':scope > .real-book-flip-face').length
+        expect(faces).toBeLessThanOrEqual(1)
+        if (faces === 1) sawBoth = true
+        if (slice.querySelector(':scope > .real-book-flip-back')) sawBack = true
+      }
+      if (sawBack) break
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    }
+    expect(sawBoth).toBe(true)
+    // 正反两面都必须在整段翻页里各出现过一次，否则这个断言就只是在测一个空集合。
+    expect(sawBack).toBe(true)
+
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
+    app.unmount()
+  })
+
+  it('纸背正文按转角自己淡入，不被正面的停画变量带走', async () => {
+    const { app, stage } = await mountStage()
+    stage.nextPage()
+    await nextTick()
+
+    // 正面停画靠 `--rb-flip-side: 0`；纸背可见时这条带上的它正好是 0。
+    // 纸背正文的 opacity 必须来自 flipBackContentOpacity 的内联值，不能被那个变量带走。
+    // 但也不能指望它一露面就是亮的：刚转过 90° 时纸还侧着，投影不足半宽，
+    // 那时正文本来就该收干净——纸背要转到快平了才露出正文。
+    let sawBackSide = false
+    let maxOpacity = 0
+    let sawInline = false
+    for (let i = 0; i < 120; i += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      for (const back of document.querySelectorAll<HTMLElement>('.real-book-flip-back')) {
+        const content = back.querySelector<HTMLElement>('.real-book-flip-content')
+        if (!content) continue
+        const slice = back.closest<HTMLElement>('.real-book-flip-slice')
+        const side = Number(slice?.style.getPropertyValue('--rb-flip-side'))
+        const opacity = Number(content.style.opacity)
+        if (side !== 0) continue
+        sawBackSide = true
+        if (Number.isFinite(opacity)) {
+          sawInline = true
+          maxOpacity = Math.max(maxOpacity, opacity)
+        }
+      }
+      if (maxOpacity >= 0.3) break
+    }
+    expect(sawBackSide).toBe(true)
+    expect(sawInline).toBe(true)
+    // 纸转平后必须印出正文，否则纸背就只是一张白纸。
+    expect(maxOpacity).toBeGreaterThan(0.3)
+
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 200))
+    app.unmount()
+  })
+
+  it('纸面不透明、且停画兜底只落在正面', () => {
+    // 跨竖带的重叠区靠**不透明纸面**遮挡：两条带的字落在不同 x 区间，
+    // 纸面一旦半透明，下面那条带的字就会透上来，看起来就是重影。
+    // 停画变量同理只能管正面——写成不限面的选择器会把纸背正文一起清零。
+    const source = readFileSync(join(import.meta.dirname, 'RealBookStage.vue'), 'utf-8')
+
+    const faceRule = /\.real-book-flip-face \{([^}]*)\}/.exec(source)?.[1] ?? ''
+    expect(faceRule).toMatch(/background:\s*var\(--rb-paper-warm[^)]*\)\s*;/)
+    // 不透明底色不能带上 alpha（rgba(...) / color-mix(...transparent) 都会漏出下层）。
+    expect(faceRule).not.toMatch(/background:[^;]*transparent/)
+
+    const frontRule = /\.real-book-flip-front \.real-book-flip-content \{([^}]*)\}/.exec(source)?.[1] ?? ''
+    expect(frontRule).toContain('opacity: var(--rb-flip-side, 1)')
+    // 不带面限定的规则行必须没有：它会在纸背可见时（--rb-flip-side 为 0）连纸背正文一起清零。
+    const bareRule = /^\.real-book-flip-content \{([^}]*)\}/m.exec(source)?.[1]
+    expect(bareRule ?? '').not.toContain('--rb-flip-side')
   })
 })

@@ -80,6 +80,19 @@ export function registerLibraryIpc(register: IpcRegistrar, deps: LibraryIpcDeps)
       return { ok: false, message: String(e) }
     }
   })
+  register('library.readBookStats', async (_e, { bookId }: { bookId: string }) => {
+    try {
+      const book = await getBook(bookId)
+      const stats = []
+      for (const chapter of book.chapters) {
+        const file = await readChapter(bookId, chapter.id)
+        stats.push({ chapterId: chapter.id, chars: file.body?.length ?? 0 })
+      }
+      return { stats }
+    } catch (e: unknown) {
+      return { ok: false, message: String(e) }
+    }
+  })
   register('library.readChapter', async (_e, { bookId, chapterId }: { bookId: string; chapterId: string }) => {
     try {
       const chapter = await readChapter(bookId, chapterId)

@@ -470,6 +470,7 @@
     "paragraphIndent": true,
     "focusMode": "off",
     "readingMode": "scroll",
+    "showInlineNotes": true,
     "dim": 0
   },
   "tts": {
@@ -522,6 +523,7 @@
 - `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。
 - `reader.theme` 取值 `paper`（默认）/ `sepia` / `gray` / `night`；`reader.fontFamily` 取值 `serif`（默认）/ `system` / `mono`；`reader.contentWidth` 取值 `narrow` / `medium`（默认）/ `wide`；`reader.paragraphSpacing` 取值 `compact` / `normal`（默认）/ `relaxed`；`reader.paragraphIndent` 为布尔值，默认 `true`；`reader.focusMode` 取值 `off`（默认）/ `one` / `three` / `five`；`reader.readingMode` 取值 `scroll`（默认）/ `screen`；`reader.bookView` 取值 `classic`（默认）/ `sheet` / `realbook`；`reader.sheetColumns` 取值 `single` / `double`（默认 `double`，只影响 `bookView === 'sheet'`）。非法字段逐项回退，不影响其他合法设置。缺失或非法的 `focusMode` 回退 `off`。缺失或非法的 `readingMode` 回退 `scroll`。缺失或非法的 `bookView` 回退 `classic`（旧设置文件无此字段即经典模式）。缺失或非法的 `sheetColumns` 回退 `double`（旧设置文件无此字段即双栏）。
 - `reader.handwritingFont` 取值 `none`（默认，批注与正文同体）/ `kai` / `xingshu`，只影响批注呈现，不参与正文字体与分页量测；缺失或非法回退 `none`。
+- `reader.showInlineNotes` 为布尔值，默认 `true`：控制真实书籍页面上带 `note` 的划线是否以批注卡片进入正文流；缺失或非法回退 `true`。关闭只隐藏批注卡片，`annotations.json` 里的 `highlight.note` 与划线底色原样保留，不新增磁盘字段。
 - `reader.dim` 为护眼压暗百分比（正文区黑色遮罩的不透明度），有限数值四舍五入并夹紧到 0–70，默认 `0`（关）；缺失/非数值回退 `0`。旧设置无此字段时按 `0` 启动，不改变其他偏好。
 - 向后兼容：有效的新 `theme` 优先；新主题缺失或非法时，旧 `nightMode: true` 迁移为 `night`、`false` 迁移为 `paper`。首次成功保存新偏好后写入新字段；未知旧字段允许继续保留，但读取逻辑不再依赖它们。设置文件整体损坏时按默认值启动，不重建书库、章节、进度或标记数据。
 

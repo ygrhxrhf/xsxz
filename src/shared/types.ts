@@ -586,6 +586,11 @@ export interface ReaderPrefs {
   sheetColumns?: ReaderSheetColumns
   /** 批注手写字体；缺省 `none`（与正文同体）。 */
   handwritingFont?: ReaderHandwritingFont
+  /**
+   * 真实书籍的页内批注开关；缺省 `true`。
+   * 只控制带 note 的划线是否在书页正文流中显示，不影响划线底色。
+   */
+  showInlineNotes?: boolean
   /** 自动滚屏速度档，1–5（越界夹紧）；缺省按 DEFAULT_READER_PREFS。 */
   autoScrollSpeed?: number
   /** 连续滚动到章末时自动接下一章；缺省按 DEFAULT_READER_PREFS。 */
@@ -1387,6 +1392,7 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   bookView: 'classic',
   sheetColumns: 'double',
   handwritingFont: 'none',
+  showInlineNotes: true,
   autoScrollSpeed: 3,
   autoNextChapter: false,
   dim: 0,

@@ -15,11 +15,24 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { decorateText } from '@shared/paragraphSearch'
-import { createRealBookPaginator, findPageForInput, pageRatio, type RealBookAnchor, type RealBookPage } from './realBookPager'
+import type { ReaderHandwritingFont } from '@shared/types'
+import {
+  createRealBookPaginator,
+  findPageForInput,
+  pageRatio,
+  type RealBookAnchor,
+  type RealBookNoteBlock,
+  type RealBookPage,
+} from './realBookPager'
+import {
+  estimateInlineNoteHeight,
+  INLINE_NOTE_GAP_PX,
+  type RealBookNote,
+} from './realBookNotes'
 import { MAX_SPINE_LAYERS, spineLayers, spineStack } from './realBookSpine'
 import { measureLines } from './realBookMeasure'
 import { clampPitch, pitchFromDrag, pitchResetTarget } from './realBookPitch'
-import { FLIP_DURATION_MS, flipAngles, flipBackContentOpacity, flipContentOpacity, flipFaceVisible, flipLight, flipPhases, flipPoses, flipSheetLift, flipSway } from './realBookFlip'
+import { FLIP_DURATION_MS, flipAngles, flipBackContentOpacity, flipContentOpacity, flipFaceVisible, flipLight, flipPhases, flipPoses, flipSheetLift, flipSway, valleyBands } from './realBookFlip'
 
 interface HighlightSpan {
   /** 段落下标（原始下标，与经典模式一致） */
@@ -38,6 +51,12 @@ const props = withDefaults(defineProps<{
   paragraphIndexes: number[]
   /** 划线：段内局部坐标 */
   highlights?: HighlightSpan[]
+  /** 当前章的页内批注；只在真实书籍 variant 下显示 */
+  notes?: RealBookNote[]
+  /** 批注模式开关；关掉后只留划线 */
+  showNotes?: boolean
+  /** 批注手写体；只影响批注呈现 */
+  handwritingFont?: ReaderHandwritingFont
   /** 本书搜索的关键词 */
   searchQuery?: string
   /** 字号（px） */
@@ -72,8 +91,15 @@ const props = withDefaults(defineProps<{
   variant?: 'book' | 'sheet'
   /** 书页模式每页栏数：1 单栏、2 双栏；书台版式忽略。 */
   columns?: number
+  /** 新写或刚编辑的批注 id：重排后跳到它所在页 */
+  revealNoteId?: string
+  /** 每次要求露出批注时递增 */
+  revealNoteToken?: number
 }>(), {
   highlights: () => [],
+  notes: () => [],
+  showNotes: true,
+  handwritingFont: 'none',
   searchQuery: '',
   fontSize: 18,
   lineHeight: 1.8,
@@ -89,6 +115,8 @@ const props = withDefaults(defineProps<{
   columns: 1,
   totalChars: 0,
   bookProgressStep: 0,
+  revealNoteId: '',
+  revealNoteToken: 0,
 })
 
 const emit = defineEmits<{
@@ -97,11 +125,14 @@ const emit = defineEmits<{
   (event: 'update:page-count', count: number): void
   (event: 'select', event: MouseEvent): void
   (event: 'update:pitch', pitch: number): void
+  (event: 'update:show-notes', show: boolean): void
+  (event: 'edit-note', noteId: string): void
   (event: 'next-chapter'): void
 }>()
 
 const hostRef = ref<HTMLElement | null>(null)
 const measureRef = ref<HTMLElement | null>(null)
+const noteMeasureRef = ref<HTMLElement | null>(null)
 /** 书页版式那张纸：分区翻页按它的横向位置算（纸面比舞台窄，用舞台会把纸外的桌面也算进去）。 */
 const sheetRef = ref<HTMLElement | null>(null)
 /** 书台版式的书体：分区按左右两页的实际位置算，而不是整个舞台。 */
@@ -116,6 +147,7 @@ let pitchDragged = false
 /** 翻页进度 0–1：由 rAF 推进，只驱动竖带卷曲，不参与任何排版计算。 */
 const flipT = ref(0)
 const pages = shallowRef<RealBookPage[]>([])
+let lastRevealToken = 0
 
 let flipTimer: ReturnType<typeof setTimeout> | null = null
 let flipRaf = 0
@@ -126,6 +158,7 @@ let observer: ResizeObserver | null = null
 const layout = ref({ pageWidth: 480, pageHeight: 640, paddingX: 43, paddingY: 38, contentWidth: 420, contentHeight: 560 })
 const lineHeightPx = computed(() => Math.max(1, props.fontSize) * Math.max(0.5, props.lineHeight))
 const paragraphGapPx = computed(() => Math.max(0, props.fontSize) * Math.max(0, props.paragraphGap))
+const handwritingNoteClass = computed(() => `handwriting-${props.handwritingFont}`)
 /** 书页模式的栏数与栏间距；栏间距跟着字号走，换字号不会把两栏挤到一起。 */
 const pageColumns = computed(() => (props.columns === 2 ? 2 : 1))
 const columnGapPx = computed(() => Math.round(Math.max(1, props.fontSize) * 3))
@@ -195,7 +228,7 @@ function beginPitchDrag(event: PointerEvent): void {
   // 但标记必须重置，否则上一次拖完角会把这一次普通点按也当成拖拽。
   pitchDragged = false
   const target = event.target as HTMLElement | null
-  if (target?.closest?.('.real-book-para')) return
+  if (target?.closest?.('.real-book-para, .real-book-note')) return
   pitchDragging.value = true
   pitchDragState = { startY: event.clientY, startPitch: pitch.value }
   ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
@@ -316,19 +349,55 @@ function applyRestore(): void {
   }
 }
 
+/**
+ * 把 Reader 的原始段落下标映射成排版器输入下标，并量出每张卡的真实高度。
+ * 无布局环境（jsdom）或卡还没挂载时退回估算，保证页表仍可计算。
+ */
+function measuredNoteBlocks(): RealBookNoteBlock[] {
+  if (props.variant !== 'book' || !props.showNotes || !props.notes.length) return []
+  const root = noteMeasureRef.value
+  if (root) root.style.width = `${layout.value.contentWidth}px`
+  const measured = new Map<string, number>()
+  if (root) {
+    for (const el of root.querySelectorAll<HTMLElement>('[data-measure-note-id]')) {
+      const id = el.dataset.measureNoteId
+      const height = el.getBoundingClientRect().height
+      if (id && Number.isFinite(height) && height > 0) measured.set(id, height)
+    }
+  }
+  const out: RealBookNoteBlock[] = []
+  for (const note of props.notes) {
+    const paragraph = inputIndexOf(note.paragraph)
+    if (paragraph < 0) continue
+    const height = measured.get(note.id)
+      ?? estimateInlineNoteHeight(note.text, layout.value.contentWidth, props.fontSize)
+    out.push({
+      id: note.id,
+      paragraph,
+      anchorOffset: note.offset,
+      height: height + INLINE_NOTE_GAP_PX,
+    })
+  }
+  return out
+}
+
 function rebuildPages(): void {
   const measure = measureRef.value
   if (!measure) return
+  const previousAnchor = pendingRestore ? null : anchorOf(pages.value[currentPage.value])
   const { contentHeight } = layout.value
   const created = createRealBookPaginator(
     props.paragraphs,
     (text) => measureLines(text, measure),
     { pageHeight: contentHeight, lineHeight: lineHeightPx.value, paragraphGap: paragraphGapPx.value },
+    measuredNoteBlocks(),
   )
   paginator.value = created
   created.ensure(Math.max(0, currentPage.value))
   pages.value = created.pages
-  applyRestore()
+  if (pendingRestore) applyRestore()
+  else if (previousAnchor) goToAnchor(previousAnchor)
+  applyReveal()
   emit('update:page-count', pages.value.length)
   emit('update:page', currentPage.value)
 }
@@ -340,10 +409,9 @@ function inputIndexOf(paragraph: number): number {
 
 function anchorOf(page: RealBookPage | undefined): RealBookAnchor | null {
   if (!page || !page.items.length) return null
-  const first = page.items[0]!
-  const original = props.paragraphIndexes[first.paragraph]
+  const original = props.paragraphIndexes[page.paragraph]
   if (original === undefined) return null
-  return { paragraph: original, offset: first.start }
+  return { paragraph: original, offset: page.offset }
 }
 
 function syncAnchor(): void {
@@ -437,6 +505,34 @@ function goToAnchor(anchor: RealBookAnchor | null): void {
   goToPage(target, false)
 }
 
+/**
+ * 新写/编辑批注后：找到批注卡片实际所在的页。锚点落在段落末尾时，
+ * `findPageForInput` 可能仍指向正文最后一页，而卡片已被挤到下一页，
+ * 所以这里优先按 noteId 查页。
+ */
+function applyReveal(): void {
+  const token = props.revealNoteToken
+  if (token <= 0 || token === lastRevealToken) return
+  lastRevealToken = token
+  if (!props.showNotes) return
+  const note = props.notes.find((item) => item.id === props.revealNoteId)
+  if (!note) return
+  const inputIndex = inputIndexOf(note.paragraph)
+  if (inputIndex < 0) return
+  const created = paginator.value
+  if (!created) return
+  created.ensureThroughParagraph(inputIndex)
+  pages.value = created.pages
+  const notePage = pages.value.findIndex((page) =>
+    page.items.some((item) => item.kind === 'note' && item.noteId === note.id),
+  )
+  if (notePage >= 0) {
+    goToPage(notePage, false)
+    return
+  }
+  goToAnchor({ paragraph: note.paragraph, offset: note.offset })
+}
+
 function onWheel(e: WheelEvent): void {
   if (e.ctrlKey) {
     // 双指捏合在桌面端会带 ctrlKey；这是缩放，不翻页。
@@ -463,8 +559,9 @@ function resetZoom(): void {
   zoom.value = 1
 }
 
-/** 一页里要渲染的片段：段内偏移 + 切出来的文字。 */
-interface PagePiece {
+/** 一页里要渲染的文字片段。 */
+interface PageTextPiece {
+  kind: 'text'
   key: string
   paragraph: number
   original: number
@@ -474,10 +571,28 @@ interface PagePiece {
   segs: ReturnType<typeof decorateText>
 }
 
+interface PageNotePiece {
+  kind: 'note'
+  key: string
+  note: RealBookNote
+}
+
+type PagePiece = PageTextPiece | PageNotePiece
+
+function blockOfNote(noteId: string, key: string): PageNotePiece | null {
+  const note = props.notes.find((item) => item.id === noteId)
+  return note ? { kind: 'note', key, note } : null
+}
+
 function piecesOf(page: RealBookPage | undefined): PagePiece[] {
   if (!page) return []
   const out: PagePiece[] = []
   for (const item of page.items) {
+    if (item.kind === 'note') {
+      const block = blockOfNote(item.noteId, `note-${item.noteId}-${item.paragraph}`)
+      if (block) out.push(block)
+      continue
+    }
     const original = props.paragraphIndexes[item.paragraph]
     if (original === undefined) continue
     const text = props.paragraphs[item.paragraph] ?? ''
@@ -491,6 +606,7 @@ function piecesOf(page: RealBookPage | undefined): PagePiece[] {
       }))
       .filter((h) => h.end > h.start)
     out.push({
+      kind: 'text',
       key: `${item.paragraph}-${item.start}-${item.end}`,
       paragraph: item.paragraph,
       original,
@@ -717,13 +833,87 @@ const BLOCK_DEPTH_PER_LAYER_PX = 4
 const BEND_DEG = 9
 
 /**
- * 翻动页的转轴到摊开中心线的距离（px）。
+ * 书脊谷的宽度（px）：从书脊向外这一段纸是弯的，其余部分摊平。
  *
- * 书心 CSS 是 `width:18px; margin:0 -2px`，实际占 14px；右页的左缘在中心线右侧
- * 7px、左页的右缘在左侧 7px。翻动页必须以**本半页的装订边**为轴，不能转在
- * 书心正中：差这 7px 时纸的右缘会先露出一条下面那页的竖缝，起手就读成「撕开」。
+ * 取页宽的一个固定比例：书心塌下去的宽度与书的大小成正比，
+ * 固定像素会让大书看着谷太浅、小书谷太深。
+ *
+ * 比例要够大才有「弯」可看：谷只占 16% 时，纸面横向只压缩几像素，
+ * 肉眼看过去仍是平的一张纸。参考图里书脊的弯一直铺到半页，
+ * 取 42% 才读得出连续的曲面。
  */
-const FLIP_ANCHOR_OFFSET_PX = 7
+const VALLEY_WIDTH_RATIO = 0.42
+
+/** 书脊谷的深度角（deg）：谷底的最大倾角。比整页折角大：谷是一段急弯，不是一个缓坡。 */
+const VALLEY_DEG = 30
+
+/** 谷的竖带条数：条数越多谷越顺，但每条都要画一份整页内容。 */
+const VALLEY_SLICE_COUNT = 5
+
+/**
+ * 靠脊暖影：整页一张横向渐变，所有竖带共享同一坐标。
+ *
+ * 每条带各自画渐变的话，接缝处会因坐标不同而断开，变成一道道竖纹；
+ * 共享同一张整页渐变，明暗就跨带连续，像一张弯下去的纸上的光。
+ * 渐变只用纸的暖阴影色，纯灰暗压在奶油纸上会发脏。
+ */
+const VALLEY_SHADE_GRADIENT = 'linear-gradient(90deg, transparent 0%, transparent 100%)'
+
+const ENABLE_VALLEY_STRIPS = ref(false)
+
+interface ValleySlice {
+  index: number
+  style: Record<string, string>
+  contentStyle: Record<string, string>
+}
+
+const rightValleySlices = computed<ValleySlice[]>(() => {
+  if (!ENABLE_VALLEY_STRIPS.value) return []
+  const width = layout.value.pageWidth
+  const valleyWidth = Math.max(10, Math.round(width * VALLEY_WIDTH_RATIO))
+  return valleyBands({ pageWidth: width, valleyWidth, valleyDeg: VALLEY_DEG, slices: VALLEY_SLICE_COUNT, spineAt: 'left' })
+    .map((band) => ({
+      index: band.index,
+      style: {
+        width: `${(band.width + 0.5).toFixed(2)}px`,
+        transform: `translate3d(${band.x.toFixed(2)}px, 0, ${band.z.toFixed(2)}px) rotateY(${band.tilt.toFixed(2)}deg)`,
+        transformOrigin: '0 0',
+      },
+      contentStyle: {
+        width: `${width}px`,
+        transform: `translateX(${-band.paperLeft.toFixed(2)}px)`,
+        backgroundImage: VALLEY_SHADE_GRADIENT,
+      },
+    }))
+})
+
+const leftValleySlices = computed<ValleySlice[]>(() => {
+  if (!ENABLE_VALLEY_STRIPS.value) return []
+  const width = layout.value.pageWidth
+  const valleyWidth = Math.max(10, Math.round(width * VALLEY_WIDTH_RATIO))
+  return valleyBands({ pageWidth: width, valleyWidth, valleyDeg: VALLEY_DEG, slices: VALLEY_SLICE_COUNT, spineAt: 'right' })
+    .map((band) => ({
+      index: band.index,
+      style: {
+        width: `${(band.width + 0.5).toFixed(2)}px`,
+        transform: `translate3d(${band.x.toFixed(2)}px, 0, ${band.z.toFixed(2)}px) rotateY(${band.tilt.toFixed(2)}deg)`,
+        transformOrigin: '0 0',
+      },
+      contentStyle: {
+        width: `${width}px`,
+        transform: `translateX(${-band.paperLeft.toFixed(2)}px)`,
+        backgroundImage: VALLEY_SHADE_GRADIENT,
+      },
+    }))
+})
+
+/**
+ * 翻动页转轴到摊开中心线的距离（px）。
+ *
+ * 书心不占宽度（见 `.real-book-gutter`）：两页以各自的装订边为 3D 轴心，
+ * 内缘正好落在中心线上，所以翻动页就直接绕中心线翻。
+ */
+const FLIP_ANCHOR_OFFSET_PX = 0
 
 /** 书厚纸垛占用的高度：页面在下方让出这一段，纸垛的切口才不会被视口裁掉。 */
 const BLOCK_THICKNESS_PX = MAX_SPINE_LAYERS * BLOCK_DEPTH_PER_LAYER_PX + 8
@@ -791,7 +981,17 @@ const measureStyle = computed(() => ({
 // 只盯会改变排版的输入；版面尺寸由 ResizeObserver 负责，避免 layout 自身变化触发重排死循环。
 // 页眉页脚占高显式进签名：它们在 CSS 里只是页内装饰，但占走的是正文高度。
 watch(
-  () => [props.paragraphs, props.fontSize, props.lineHeight, props.paragraphGap, headHeightPx.value, footHeightPx.value],
+  () => [
+    props.paragraphs,
+    props.fontSize,
+    props.lineHeight,
+    props.paragraphGap,
+    props.notes,
+    props.showNotes,
+    props.handwritingFont,
+    headHeightPx.value,
+    footHeightPx.value,
+  ],
   () => {
     void nextTick(() => {
       updateLayout()
@@ -809,6 +1009,9 @@ watch(() => props.startAnchor, (anchor) => {
 watch(() => props.restoreToken, () => {
   pendingRestore = true
   void nextTick(() => rebuildPages())
+})
+watch(() => props.revealNoteToken, () => {
+  void nextTick(() => applyReveal())
 })
 onMounted(() => {
   updateLayout()
@@ -841,7 +1044,8 @@ function readEnd(): { paragraphIndex: number; characterOffset: number } | null {
     ?? pages.value[currentPage.value]
     ?? pages.value[currentPage.value - 1]
   if (!page || !page.items.length) return null
-  const last = page.items[page.items.length - 1]!
+  const last = [...page.items].reverse().find((item) => item.kind === 'text')
+  if (!last) return null
   const original = props.paragraphIndexes[last.paragraph]
   if (original === undefined) return null
   return { paragraphIndex: original, characterOffset: last.end }
@@ -867,6 +1071,18 @@ defineExpose({
   <div ref="hostRef" :class="['real-book-stage', { 'is-sheet': variant === 'sheet' }]" :style="stageStyle" @mouseup="onStageMouseup">
     <!-- 离屏量测容器：宽度与版心一致，量出来的断行与真实渲染一致 -->
     <div ref="measureRef" class="real-book-measure" :style="measureStyle" aria-hidden="true"></div>
+    <!-- 批注卡量高：与真实卡片同一套宽度、字体与三行截断，只把结果交给分页器。 -->
+    <div ref="noteMeasureRef" class="real-book-note-measure" :style="{ width: `${layout.contentWidth}px` }" aria-hidden="true">
+      <aside
+        v-for="note in notes"
+        :key="`measure-${note.id}`"
+        :class="['real-book-note', handwritingNoteClass]"
+        :data-measure-note-id="note.id"
+      >
+        <span class="real-book-note-label">批注</span>
+        <span class="real-book-note-text">{{ note.text }}</span>
+      </aside>
+    </div>
 
     <div v-if="variant === 'book'" class="real-book-toolbar">
       <span class="real-book-page-label" role="status">{{ currentLabel }}</span>
@@ -876,6 +1092,14 @@ defineExpose({
         <button type="button" class="real-book-btn" aria-label="放大" @click="zoomIn">＋</button>
         <button type="button" class="real-book-btn" aria-label="重置缩放" @click="resetZoom">复原</button>
         <button type="button" class="real-book-btn" aria-label="平放" @click="resetPitch">平放</button>
+        <button
+          type="button"
+          :class="['real-book-btn', 'real-book-note-toggle', { 'is-active': showNotes }]"
+          :aria-pressed="showNotes"
+          :aria-label="showNotes ? '关闭批注模式' : '开启批注模式'"
+          :title="showNotes ? '关闭批注模式：只保留划线' : '开启批注模式：在页面上显示批注'"
+          @click="emit('update:show-notes', !showNotes)"
+        >批注</button>
       </span>
     </div>
 
@@ -890,13 +1114,29 @@ defineExpose({
             class="rb-sheet-column"
           >
             <div v-if="ci === 0 && !col.length" class="real-book-empty">本章没有正文</div>
-            <p
-              v-for="piece in col"
-              :key="piece.key"
-              class="real-book-para"
-              :data-p="piece.original"
-              :class="{ 'para-continued': piece.continued }"
-            ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+            <template v-for="piece in col" :key="piece.key">
+              <p
+                v-if="piece.kind === 'text'"
+                class="real-book-para"
+                :data-p="piece.original"
+                :class="{ 'para-continued': piece.continued }"
+              ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+              <aside
+                v-else
+                :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
+                :data-note-id="piece.note.id"
+                role="button"
+                tabindex="0"
+                :aria-label="`编辑批注：${piece.note.text}`"
+                @click.stop="emit('edit-note', piece.note.id)"
+                @mouseup.stop
+                @keydown.enter.stop.prevent="emit('edit-note', piece.note.id)"
+                @keydown.space.stop.prevent="emit('edit-note', piece.note.id)"
+              >
+                <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                <span class="real-book-note-text">{{ piece.note.text }}</span>
+              </aside>
+            </template>
           </div>
         </div>
         <footer class="rb-sheet-foot">
@@ -907,7 +1147,11 @@ defineExpose({
         v-else
         ref="bookRef"
         :class="['real-book-book', { 'is-flipping': Boolean(flipping) }]"
-        :style="bookStyle"
+        :style="{
+          ...bookStyle,
+          '--rb-valley-clip': `${Math.max(10, Math.round(layout.pageWidth * VALLEY_WIDTH_RATIO))}px`,
+          '--rb-valley-active': ENABLE_VALLEY_STRIPS.value ? 1 : 0,
+        }"
         @pointerdown="beginPitchDrag"
         @pointermove="movePitchDrag"
         @pointerup="endPitchDrag"
@@ -945,19 +1189,69 @@ defineExpose({
               }"
             ></i>
           </div>
-          <section class="real-book-page real-book-left" aria-label="左页">
+          <section :class="['real-book-page', 'real-book-left', { 'has-valley-strips': ENABLE_VALLEY_STRIPS && leftValleySlices.length }]" aria-label="左页">
             <header class="real-book-page-head">{{ chapterTitle }}</header>
             <div class="real-book-page-body">
               <div v-if="!leftViewPieces.length" class="real-book-empty">书页已到开头</div>
-              <p
-                v-for="piece in leftViewPieces"
-                :key="piece.key"
-                class="real-book-para"
-                :data-p="piece.original"
-                :class="{ 'para-continued': piece.continued }"
-              ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+              <template v-for="piece in leftViewPieces" :key="piece.key">
+                <p
+                  v-if="piece.kind === 'text'"
+                  class="real-book-para"
+                  :data-p="piece.original"
+                  :class="{ 'para-continued': piece.continued }"
+                ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                <aside
+                  v-else
+                  :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
+                  :data-note-id="piece.note.id"
+                  role="button"
+                  tabindex="0"
+                  :aria-label="`编辑批注：${piece.note.text}`"
+                  @click.stop="emit('edit-note', piece.note.id)"
+                  @mouseup.stop
+                  @keydown.enter.stop.prevent="emit('edit-note', piece.note.id)"
+                  @keydown.space.stop.prevent="emit('edit-note', piece.note.id)"
+                >
+                  <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                  <span class="real-book-note-text">{{ piece.note.text }}</span>
+                </aside>
+              </template>
             </div>
             <footer class="real-book-page-foot">{{ leftPageNumber || '' }}</footer>
+            <div class="real-book-page-cast" aria-hidden="true"></div>
+            <!-- 视觉谷竖带层：文字随书脊弧面弯曲，不可交互、不带 data-p -->
+            <div v-if="ENABLE_VALLEY_STRIPS && leftValleySlices.length" class="real-book-valley-layer" aria-hidden="true">
+              <div
+                v-for="slice in leftValleySlices"
+                :key="`l-slice-${slice.index}`"
+                class="real-book-valley-slice"
+                :style="slice.style"
+              >
+                <div class="real-book-valley-window">
+                  <div class="real-book-valley-content" :style="slice.contentStyle">
+                    <header class="real-book-valley-head">{{ chapterTitle }}</header>
+                    <div class="real-book-valley-body">
+                      <div v-if="!leftViewPieces.length" class="real-book-empty">书页已到开头</div>
+                      <template v-for="piece in leftViewPieces" :key="`lv-${piece.key}`">
+                        <p
+                          v-if="piece.kind === 'text'"
+                          class="real-book-valley-para"
+                          :class="{ 'para-continued': piece.continued }"
+                        ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                        <aside
+                          v-else
+                          :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
+                        >
+                          <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                          <span class="real-book-note-text">{{ piece.note.text }}</span>
+                        </aside>
+                      </template>
+                    </div>
+                    <footer class="real-book-valley-foot">{{ leftPageNumber || '' }}</footer>
+                  </div>
+                </div>
+              </div>
+            </div>
             <!-- 翻动页投在这一页上的影子 -->
             <span
               v-if="flipping"
@@ -967,21 +1261,73 @@ defineExpose({
             ></span>
           </section>
 
-          <div class="real-book-gutter" aria-hidden="true"></div>
+          <div class="real-book-gutter" aria-hidden="true">
+            <span class="real-book-fold-bridge"></span>
+          </div>
 
-          <section class="real-book-page real-book-right" aria-label="右页">
+          <section :class="['real-book-page', 'real-book-right', { 'has-valley-strips': ENABLE_VALLEY_STRIPS && rightValleySlices.length }]" aria-label="右页">
             <header class="real-book-page-head">{{ chapterTitle }}</header>
             <div class="real-book-page-body">
               <div v-if="!rightViewPieces.length" class="real-book-empty">本章没有正文了</div>
-              <p
-                v-for="piece in rightViewPieces"
-                :key="piece.key"
-                class="real-book-para"
-                :data-p="piece.original"
-                :class="{ 'para-continued': piece.continued }"
-              ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+              <template v-for="piece in rightViewPieces" :key="piece.key">
+                <p
+                  v-if="piece.kind === 'text'"
+                  class="real-book-para"
+                  :data-p="piece.original"
+                  :class="{ 'para-continued': piece.continued }"
+                ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                <aside
+                  v-else
+                  :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
+                  :data-note-id="piece.note.id"
+                  role="button"
+                  tabindex="0"
+                  :aria-label="`编辑批注：${piece.note.text}`"
+                  @click.stop="emit('edit-note', piece.note.id)"
+                  @mouseup.stop
+                  @keydown.enter.stop.prevent="emit('edit-note', piece.note.id)"
+                  @keydown.space.stop.prevent="emit('edit-note', piece.note.id)"
+                >
+                  <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                  <span class="real-book-note-text">{{ piece.note.text }}</span>
+                </aside>
+              </template>
             </div>
             <footer class="real-book-page-foot">{{ rightPageNumber || '' }}</footer>
+            <div class="real-book-page-cast" aria-hidden="true"></div>
+            <!-- 视觉谷竖带层：文字随书脊弧面弯曲，不可交互、不带 data-p -->
+            <div v-if="ENABLE_VALLEY_STRIPS && rightValleySlices.length" class="real-book-valley-layer" aria-hidden="true">
+              <div
+                v-for="slice in rightValleySlices"
+                :key="`r-slice-${slice.index}`"
+                class="real-book-valley-slice"
+                :style="slice.style"
+              >
+                <div class="real-book-valley-window">
+                  <div class="real-book-valley-content" :style="slice.contentStyle">
+                    <header class="real-book-valley-head">{{ chapterTitle }}</header>
+                    <div class="real-book-valley-body">
+                      <div v-if="!rightViewPieces.length" class="real-book-empty">本章没有正文了</div>
+                      <template v-for="piece in rightViewPieces" :key="`rv-${piece.key}`">
+                        <p
+                          v-if="piece.kind === 'text'"
+                          class="real-book-valley-para"
+                          :class="{ 'para-continued': piece.continued }"
+                        ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                        <aside
+                          v-else
+                          :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
+                        >
+                          <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                          <span class="real-book-note-text">{{ piece.note.text }}</span>
+                        </aside>
+                      </template>
+                    </div>
+                    <footer class="real-book-valley-foot">{{ rightPageNumber || '' }}</footer>
+                  </div>
+                </div>
+              </div>
+            </div>
             <!-- 翻动页投在这一页上的影子 -->
             <span
               v-if="flipping"
@@ -1015,12 +1361,21 @@ defineExpose({
                   <div class="real-book-flip-content" :style="slice.contentStyle">
                   <header class="real-book-page-head">{{ chapterTitle }}</header>
                   <div class="real-book-page-body">
-                    <p
-                      v-for="piece in flipSheetPieces"
-                      :key="`front-${piece.key}`"
-                      class="real-book-para"
-                      :data-p="piece.original"
-                    ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                    <template v-for="piece in flipSheetPieces" :key="`front-${piece.key}`">
+                      <p
+                        v-if="piece.kind === 'text'"
+                        class="real-book-para"
+                        :data-p="piece.original"
+                      ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                      <aside
+                        v-else
+                        :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
+                        :data-note-id="piece.note.id"
+                      >
+                        <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                        <span class="real-book-note-text">{{ piece.note.text }}</span>
+                      </aside>
+                    </template>
                   </div>
                   <footer class="real-book-page-foot">{{ flipSheetPageNumber || '' }}</footer>
                   </div>
@@ -1032,12 +1387,21 @@ defineExpose({
                   <div class="real-book-flip-content" :style="slice.backContentStyle">
                     <header class="real-book-page-head">{{ chapterTitle }}</header>
                     <div class="real-book-page-body">
-                      <p
-                        v-for="piece in flipBackPieces"
-                        :key="`back-${piece.key}`"
-                        class="real-book-para"
-                        :data-p="piece.original"
-                      ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                      <template v-for="piece in flipBackPieces" :key="`back-${piece.key}`">
+                        <p
+                          v-if="piece.kind === 'text'"
+                          class="real-book-para"
+                          :data-p="piece.original"
+                        ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                        <aside
+                          v-else
+                          :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
+                          :data-note-id="piece.note.id"
+                        >
+                          <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                          <span class="real-book-note-text">{{ piece.note.text }}</span>
+                        </aside>
+                      </template>
                     </div>
                     <footer class="real-book-page-foot">{{ flipBackPageNumber || '' }}</footer>
                   </div>
@@ -1071,6 +1435,14 @@ defineExpose({
   --rb-cover-lit: #6a4a30;
   --rb-cover-mid: #452e1e;
   --rb-cover-deep: #24150d;
+  /* 纸垛的切口、折缝与书心的暗色：比纸自身的暖阴影深一档。
+     纸的暖阴影是「纸的暗面」，折缝是纸弯下去被遮住的那一面，
+     必须更深才读得出谷，否则整本书读成两块平贴的纸板。 */
+  --rb-fold-shadow: 58 36 16;
+  /* 页内批注：墨色跟着主题变亮/变深，底色仍从纸色派生，夜里不会出现一张白卡。 */
+  --rb-note-ink: color-mix(in srgb, #a34230 62%, var(--reader-paper-text, #2f2a24));
+  --rb-note-line: color-mix(in srgb, #a34230 44%, transparent);
+  --rb-note-bg: color-mix(in srgb, var(--rb-paper-lit) 64%, transparent);
 }
 
 /* 书台：书摊在一张深色桌面上。
@@ -1101,6 +1473,18 @@ defineExpose({
   word-break: break-word;
   overflow-wrap: break-word;
   pointer-events: none;
+}
+
+/* 批注量测区：与真实卡片同一套宽度、字体与三行截断，只把高度交给分页器。 */
+.real-book-note-measure {
+  position: absolute;
+  left: -100000px;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+  font-size: var(--rb-font-size);
+  line-height: var(--rb-line-height);
+  font-family: var(--rb-font-family);
 }
 
 .real-book-toolbar {
@@ -1135,6 +1519,11 @@ defineExpose({
 
 .real-book-btn:disabled { opacity: 0.5; cursor: default; }
 .real-book-btn:focus-visible { outline: 2px solid var(--r-focus, #2f7fd0); outline-offset: 2px; }
+.real-book-note-toggle.is-active {
+  border-color: rgba(242, 216, 135, 0.4);
+  background: rgba(242, 216, 135, 0.14);
+  color: #f2d887;
+}
 
 .real-book-page-label { color: rgba(244, 235, 211, 0.62); min-width: 70px; }
 
@@ -1417,11 +1806,21 @@ defineExpose({
   box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.3);
   transform-origin: right center;
   transform: rotateY(var(--rb-bend, 0deg));
-  /* 左页只保留外缘受光与极轻的纸面起伏，靠书脊一侧不再落暗。 */
+  /* 靠脊一侧（右缘）压入一层暖色暗部：纸向折缝弯下去时，内侧先落入阴影，
+     宽度约占页宽 8–12%，强度约 15%，只用纸的暖阴影色，不用纯黑。
+     暗部外侧再补一段滚出的高光（12%–22%）：纸从谷里翻出来时接住光，
+     有了这层「暗—亮」的连续过渡，折缝才读成圆弧而不是一刀切开的直角。 */
   --rb-page-curve: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--rb-paper-lit) 12%, transparent) 0%,
-    transparent 10%
+    270deg,
+    color-mix(in srgb, var(--rb-paper-shade) 15%, transparent) 0%,
+    color-mix(in srgb, var(--rb-paper-shade) 9%, transparent) 4%,
+    color-mix(in srgb, var(--rb-paper-shade) 3%, transparent) 8%,
+    transparent 11%,
+    color-mix(in srgb, var(--rb-paper-lit) 11%, transparent) 15%,
+    color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 22%,
+    transparent 29%,
+    color-mix(in srgb, var(--rb-paper-lit) 5%, transparent) 92%,
+    color-mix(in srgb, var(--rb-paper-lit) 12%, transparent) 100%
   );
 }
 
@@ -1430,45 +1829,83 @@ defineExpose({
   box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.3);
   transform-origin: left center;
   transform: rotateY(calc(-1 * var(--rb-bend, 0deg)));
-  /* 右页同样不加靠脊暗带，只保留外缘受光。 */
+  /* 右页靠脊一侧（左缘）同样压入暖色暗部与滚出高光，与左页镜像对称。 */
   --rb-page-curve: linear-gradient(
     90deg,
-    transparent 88%,
-    color-mix(in srgb, var(--rb-paper-lit) 10%, transparent) 100%
+    color-mix(in srgb, var(--rb-paper-shade) 15%, transparent) 0%,
+    color-mix(in srgb, var(--rb-paper-shade) 9%, transparent) 4%,
+    color-mix(in srgb, var(--rb-paper-shade) 3%, transparent) 8%,
+    transparent 11%,
+    color-mix(in srgb, var(--rb-paper-lit) 11%, transparent) 15%,
+    color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 22%,
+    transparent 29%,
+    color-mix(in srgb, var(--rb-paper-lit) 5%, transparent) 92%,
+    color-mix(in srgb, var(--rb-paper-lit) 12%, transparent) 100%
   );
 }
 
+/* 书心不占宽度：左右页的装订边直接落在中心线上。
+   折缝的谷影画在两页之上，宽度只有 30px（每页 15px），把硬折读成一条圆弧。 */
 .real-book-gutter {
   position: relative;
-  /* 纸心向两侧各压进 2px：页缘与书心之间只要有一条亚像素缝，底下的深色
-     封面就会透成一条竖直暗线。总宽度仍是 14px，不改变两页的排版位置。 */
-  width: 18px;
-  margin: 0 -2px;
-  /* 书心就是一整片纸：不铺暗带，也不画中线阴影。
-     折缝由左右两页的 V 形折角自然形成，而不是在中间叠一条深色。 */
-  background: var(--rb-paper-warm);
+  width: 0;
+  margin: 0;
+  background: none;
   box-shadow: none;
+  z-index: 3;
 }
 
-/* 书心两侧各留出一指宽的纸色过渡：页缘的抗锯齿缝、纸面曲线与纸心
-   即使有 1px 的亮度差，也被这层同色渐变抹平，不会再读成一条暗线。
-   过渡只压在版心的内侧留白里，不碰正文。 */
+/* 折缝的谷影：两页在书脊处形成一个谷，谷底最暗，谷壁接光。
+   这层画在两页之上、宽度只有 30px（每页 15px），把硬折读成一条圆弧；
+   宽度受控就不会变成一条贯穿的黑缝。 */
 .real-book-gutter::before {
+  display: none;
   content: '';
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -9px;
-  right: -9px;
-  z-index: 2;
+  left: -15px;
+  right: -15px;
   pointer-events: none;
   background: linear-gradient(
     90deg,
     transparent 0%,
-    var(--rb-paper-warm) 24%,
-    var(--rb-paper-warm) 76%,
+    color-mix(in srgb, var(--rb-paper-shade) 8%, transparent) 26%,
+    color-mix(in srgb, var(--rb-paper-shade) 20%, transparent) 50%,
+    color-mix(in srgb, var(--rb-paper-shade) 8%, transparent) 74%,
     transparent 100%
   );
+}
+
+/* 折缝的桥：书脊处那条把左右两页连起来的弯折纸面。
+   两页各自绕中线转 9°，交界的内缘本是一道尖角；这道桥盖住尖角，
+   画出纸从一页弯到另一页的那段圆弧——谷底最暗、两侧转亮，
+   于是书脊读成连续弯下去的纸，而不是两张平贴的纸板。 */
+.real-book-fold-bridge {
+  display: none;
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  left: -13px;
+  width: 26px;
+  pointer-events: none;
+  /* 圆弧桥：左右两侧的边缘是纸翻过去时的高光，中间是谷底。
+     宽度只有 26px，遮住的正是两页内缘那道 9° 硬折的交线。 */
+  border-radius: 46% 46% 46% 46% / 3% 3% 3% 3%;
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--rb-paper-lit) 26%, transparent) 0%,
+      color-mix(in srgb, var(--rb-paper-shade) 22%, transparent) 34%,
+      color-mix(in srgb, var(--rb-paper-shade) 34%, transparent) 50%,
+      color-mix(in srgb, var(--rb-paper-shade) 22%, transparent) 66%,
+      color-mix(in srgb, var(--rb-paper-lit) 26%, transparent) 100%
+    );
+  /* 桥两侧的落影：纸离开谷底时在两侧各留一道细影，
+     圆弧才有厚度，而不是一条画上去的线。 */
+  box-shadow:
+    -1px 0 3px rgba(58, 36, 16, 0.22),
+    1px 0 3px rgba(58, 36, 16, 0.22);
 }
 
 /* 书下投影：书体与纸垛落在地面上的影子。退到书体后方（translateZ），
@@ -1674,6 +2111,66 @@ defineExpose({
   text-indent: 0;
 }
 
+/*
+ * 页内批注：像读者用铅笔写在段落下面的旁批。
+ * 卡片高度由三行截断固定，完整内容在点击后的编辑浮层里看。
+ */
+.real-book-note {
+  display: block;
+  margin: 0;
+  padding: 0.42em 0.68em 0.5em;
+  border-left: 2px solid var(--rb-note-line, #a34230);
+  border-radius: 2px 6px 6px 2px;
+  background: var(--rb-note-bg, rgba(255, 240, 201, 0.24));
+  color: var(--rb-note-ink, #9c3f2f);
+  font-size: 0.8em;
+  line-height: 1.5;
+  text-align: left;
+  text-indent: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.real-book-note + .real-book-note {
+  margin-top: 8px;
+}
+
+.real-book-note:focus-visible {
+  outline: 2px solid var(--r-focus, #2f7fd0);
+  outline-offset: 2px;
+}
+
+.real-book-note-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  margin-bottom: 0.18em;
+  font-size: 0.78em;
+  letter-spacing: 0.08em;
+  opacity: 0.72;
+}
+
+.real-book-note-source {
+  padding: 0 0.35em;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 0.86em;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.real-book-note-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.real-book-note.handwriting-kai { font-family: 'KaiTi', '楷体', serif; }
+.real-book-note.handwriting-xingshu { font-family: 'STXingkai', '华文行楷', 'KaiTi', serif; }
+
 .real-book-empty {
   color: var(--r-muted, #6b6257);
   font-size: 13px;
@@ -1772,8 +2269,15 @@ defineExpose({
   box-sizing: border-box;
   display: grid;
   grid-template-rows: var(--rb-head-height) 1fr var(--rb-foot-height);
-  /* 带子转过 90° 后，正面整层停画；只剩背面（或纸背）参与合成。
-     不这样做时，侧过去的那半张仍按 opacity 叠在下方页面上，看起来像整页残影。 */
+}
+
+/* 正面停画的兜底只落在正面：带子转过 90° 后 `--rb-flip-side` 为 0，正面整层停画。
+   不这样做时，侧过去的那半张仍按 opacity 叠在下方页面上，看起来像整页残影。
+
+   绝不能写成不限面的 `.real-book-flip-content`：纸背可见时同一条带上的
+   `--rb-flip-side` 正好是 0，那条规则会连纸背正文一起清零，纸上就只剩一条空白纸带。
+   纸背的可见度由 `flipBackContentOpacity` 通过内联 opacity 下发（见 flipSlices）。 */
+.real-book-flip-front .real-book-flip-content {
   opacity: var(--rb-flip-side, 1);
 }
 
@@ -1809,14 +2313,130 @@ defineExpose({
     );
 }
 
-/* 背面：与正面共面，靠 JS 显隐互斥（见 flipSlices 的 showFront / showBack）。
+/* 背面：与正面共面，靠 JS 显隐互斥（见 flipSlices 的 showFront / showBack），
+   所以同一条带上永远只有一面挂载——正反两面的字不会叠在同一块纸上。
    不给背面加 rotateY(180deg)：那层带着 3D 变换时窗格裁剪会失效，
    整页正文会从窄缝里整片漏出来且方向是镜像的。
 
-   背面**只画纸面、不印正文**：半透明字影铺在落点页上会读成一块灰影，
-   翻页时看起来像左边多了一层阴影。纸背与正面同一种纸色。 */
+   背面印的是落定后的那一页（flipBackPieces），方向靠内容层的 scaleX(-1) 预翻，
+   可见度由 flipBackContentOpacity 逐帧下发：转过 90° 时接在正面那层薄字上，
+   再随纸转平升到全显。纸背与正面同一种纸色。 */
 .real-book-flip-back {
   backface-visibility: visible;
+}
+
+/* 静态书页具有 3D 变换上下文，使得谷竖带在 3D 空间内沿书脊下弯 */
+.real-book-page {
+  transform-style: preserve-3d;
+}
+
+.real-book-page.has-valley-strips {
+  overflow: visible;
+}
+
+.real-book-page.has-valley-strips > .real-book-page-head,
+.real-book-page.has-valley-strips > .real-book-page-body,
+.real-book-page.has-valley-strips > .real-book-page-foot {
+  opacity: 0 !important;
+}
+
+.real-book-page.has-valley-strips > .real-book-page-body .real-book-note {
+  opacity: 0 !important;
+}
+
+.real-book-page.has-valley-strips > .real-book-page-body mark {
+  opacity: 0 !important;
+}
+
+/* 谷区延伸：整页纸底由竖带层提供，原页不再画任何纸面。 */
+.real-book-page.has-valley-strips .real-book-page-cast,
+.real-book-right.has-valley-strips::before,
+.real-book-left.has-valley-strips::before {
+  display: none;
+}
+
+.real-book-valley-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+  transform-style: preserve-3d;
+  z-index: 4;
+}
+
+.real-book-valley-slice {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  transform-style: flat;
+  overflow: hidden;
+  contain: layout paint style;
+  will-change: transform;
+}
+
+.real-book-valley-window {
+  position: absolute;
+  inset: 0;
+}
+
+.real-book-valley-content {
+  height: 100%;
+  padding: var(--rb-pad-y) var(--rb-pad-x);
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: var(--rb-head-height) 1fr var(--rb-foot-height);
+  /* 竖带自己就是纸：不画纸底的带一旦错位，漏出的就是桌面。 */
+  background-color: var(--rb-paper-warm);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--rb-paper-lit) 70%, transparent) 0%,
+    transparent 14%,
+    transparent 84%,
+    color-mix(in srgb, var(--rb-paper-shade) 26%, transparent) 100%
+  );
+  color: var(--reader-paper-text, #2f2a24);
+  font-size: var(--rb-font-size);
+  line-height: var(--rb-line-height);
+  font-family: var(--rb-font-family);
+  text-align: justify;
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+}
+
+.real-book-valley-head {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+  font-size: 0.72em;
+  letter-spacing: 0.085em;
+  color: color-mix(in srgb, var(--reader-paper-text, #2f2a24) 45%, transparent);
+  padding-bottom: 0.3em;
+}
+
+.real-book-valley-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.real-book-valley-para {
+  margin: 0 0 0.45em;
+  text-indent: 2em;
+}
+
+.real-book-valley-para.para-continued {
+  text-indent: 0;
+}
+
+.real-book-valley-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  font-size: 0.7em;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--reader-paper-text, #2f2a24) 45%, transparent);
+  padding-top: 0.3em;
 }
 
 @media (prefers-reduced-motion: reduce) {

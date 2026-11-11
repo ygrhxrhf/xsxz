@@ -85,6 +85,7 @@ import { decorateText } from '@shared/paragraphSearch'
 import { isSiteTailParagraph } from './readerTail'
 import RealBookStage from './RealBookStage.vue'
 import type { RealBookAnchor } from './realBookPager'
+import { deriveRealBookNotes } from './realBookNotes'
 
 /** 真实书籍舞台对外暴露的操作（由 defineExpose 决定）。 */
 type RealBookStageHandle = {
@@ -143,6 +144,9 @@ const downloadProgress = ref<DownloadProgress | null>(null)
 // 下载 running 期间用户自己点过中区（收起或展开）：自动逻辑不再跟他抢，结束后按他的选择收场。
 const downloadToolsIntent = ref<ReaderDownloadToolsIntent>('untouched')
 const chapters = ref<ChapterMeta[]>([])
+const bookChapterChars = ref<Record<string, number>>({})
+const currentChapterChars = computed(() => Math.max(0, bookChapterChars.value[currentChapter.value?.id ?? ''] ?? 0))
+const bookTotalChars = computed(() => Object.values(bookChapterChars.value).reduce((sum, chars) => sum + chars, 0))
 const currentChapter = ref<ChapterMeta | null>(null)
 const chapterPrefetch = createChapterPrefetch()
 const chapterBody = ref('')
@@ -181,6 +185,7 @@ const sheetColumns = ref<ReaderSheetColumns>(DEFAULT_READER_PREFS.sheetColumns ?
 const pagedView = computed(() => bookView.value === 'sheet' || bookView.value === 'realbook')
 const handwritingFont = ref<ReaderHandwritingFont>(DEFAULT_READER_PREFS.handwritingFont ?? 'none')
 const handwritingNoteClass = computed(() => `handwriting-${handwritingFont.value}`)
+const showInlineNotes = ref(DEFAULT_READER_PREFS.showInlineNotes ?? true)
 const autoScrollSpeed = ref(DEFAULT_READER_PREFS.autoScrollSpeed ?? 3)
 const autoNextChapter = ref(DEFAULT_READER_PREFS.autoNextChapter === true)
 const dim = ref(DEFAULT_READER_PREFS.dim ?? 0)
@@ -557,6 +562,12 @@ const marks = useReaderMarks({
     else if (kind === 'info') message.info(text)
     else message.success(text)
   },
+  onAnnotationAdded: (annotation) => {
+    if (annotation.note && bookView.value === 'realbook') {
+      showInlineNotes.value = true
+      revealRealBookNote(annotation.id)
+    }
+  },
 })
 const {
   annotations,
@@ -577,6 +588,7 @@ const {
   reload: reloadAnnotations,
   resolveCurrentChapter: resolveCurrentAnnotations,
   toggleBookmark,
+  saveNoteText,
   saveNote,
   remove: deleteAnnotation,
   deleteConfirmText,
@@ -594,6 +606,134 @@ const paraNormStarts = computed(() => {
   }
   return starts
 })
+
+/** 当前章真实书页上的批注卡：只取有 note、未丢失、锚在本章的划线。 */
+const realBookInlineNotes = computed(() => {
+  if (bookView.value !== 'realbook') return []
+  return deriveRealBookNotes(
+    annotations.value,
+    currentChapter.value?.id ?? '',
+    lostHighlightIds.value,
+    paraNormStarts.value,
+  )
+})
+
+/** 新写/编辑批注后让舞台跳到卡片所在页；token 递增用于强制重查。 */
+const inlineNoteRevealId = ref('')
+const inlineNoteRevealToken = ref(0)
+function revealRealBookNote(id: string) {
+  if (!id) return
+  showInlineNotes.value = true
+  inlineNoteRevealId.value = id
+  inlineNoteRevealToken.value += 1
+}
+
+/**
+ * 页内批注编辑浮层：固定定位在 3D 舞台外。
+ * 浮层不能放进书页：俯仰/翻页把输入框和点击区域一起做透视变形，编辑几乎无法命中。
+ */
+interface InlineNoteEditorState {
+  id: string
+  left: number
+  top: number
+}
+const inlineNoteEditor = ref<InlineNoteEditorState | null>(null)
+const inlineNoteDraft = ref('')
+const inlineNoteSaving = ref(false)
+const inlineNoteDeleteArmed = ref(false)
+const inlineNoteError = ref('')
+const inlineNoteExcerpt = computed(() => {
+  const id = inlineNoteEditor.value?.id
+  return id ? annotations.value.find((item) => item.id === id)?.excerpt ?? '' : ''
+})
+
+function openInlineNoteEditor(id: string) {
+  const annotation = annotations.value.find((item) => item.id === id)
+  if (!annotation?.note) return
+  // 卡片可能同时出现在左右页或翻动页；取第一个可见实例的几何作为浮层落点。
+  const card = document.querySelector<HTMLElement>(`.real-book-note[data-note-id="${id}"]`)
+  const width = Math.min(360, Math.max(240, window.innerWidth - 24))
+  let left = Math.max(12, (window.innerWidth - width) / 2)
+  let top = Math.max(12, (window.innerHeight - 260) / 2)
+  if (card) {
+    const rect = card.getBoundingClientRect()
+    left = Math.min(Math.max(12, rect.left), Math.max(12, window.innerWidth - width - 12))
+    top = rect.bottom + 8
+    if (top > window.innerHeight - 260) top = Math.max(12, rect.top - 250)
+  }
+  inlineNoteDraft.value = annotation.note
+  inlineNoteError.value = ''
+  inlineNoteDeleteArmed.value = false
+  inlineNoteEditor.value = { id, left, top }
+}
+
+function closeInlineNoteEditor() {
+  if (inlineNoteSaving.value) return
+  inlineNoteEditor.value = null
+  inlineNoteDraft.value = ''
+  inlineNoteDeleteArmed.value = false
+  inlineNoteError.value = ''
+}
+
+async function saveInlineNote() {
+  const editor = inlineNoteEditor.value
+  if (!editor || inlineNoteSaving.value) return
+  const annotation = annotations.value.find((item) => item.id === editor.id)
+  if (!annotation) {
+    closeInlineNoteEditor()
+    return
+  }
+  const text = inlineNoteDraft.value.trim()
+  // 空内容不能保存：删除必须是读者显式动作，避免误清空后批注无声消失。
+  if (!text) {
+    inlineNoteError.value = '批注不能为空；要移除请点「删除」。'
+    return
+  }
+  inlineNoteSaving.value = true
+  try {
+    const saved = await saveNoteText(annotation, text)
+    if (!saved) {
+      inlineNoteError.value = '批注保存失败，请重试。'
+      return
+    }
+    inlineNoteEditor.value = null
+    inlineNoteDraft.value = ''
+    inlineNoteDeleteArmed.value = false
+    inlineNoteError.value = ''
+    revealRealBookNote(annotation.id)
+  } finally {
+    inlineNoteSaving.value = false
+  }
+}
+
+async function deleteInlineNote() {
+  const editor = inlineNoteEditor.value
+  if (!editor || inlineNoteSaving.value) return
+  if (!inlineNoteDeleteArmed.value) {
+    inlineNoteDeleteArmed.value = true
+    return
+  }
+  const annotation = annotations.value.find((item) => item.id === editor.id)
+  if (!annotation) {
+    closeInlineNoteEditor()
+    return
+  }
+  inlineNoteSaving.value = true
+  try {
+    await deleteAnnotation(annotation)
+    if (annotations.value.some((item) => item.id === editor.id)) {
+      inlineNoteDeleteArmed.value = false
+      inlineNoteError.value = '删除失败，请重试。'
+      return
+    }
+    inlineNoteEditor.value = null
+    inlineNoteDraft.value = ''
+    inlineNoteDeleteArmed.value = false
+    inlineNoteError.value = ''
+  } finally {
+    inlineNoteSaving.value = false
+  }
+}
 
 // 选区工具条：状态与动作在 readerSelection.ts，这里只接线（名字保持原样，模板不用改）。
 // 落点有讲究：必须在 paragraphStarts/normalizedBody 之后（实参不能 TDZ），
@@ -929,6 +1069,7 @@ function anyDrawerOpen() {
     showAiAssistant.value ||
     showSearch.value ||
     showMarks.value ||
+    Boolean(inlineNoteEditor.value) ||
     activeToolPanel.value !== null ||
     activeBottomPanel.value !== null
   )
@@ -1180,7 +1321,8 @@ function toggleImmersiveLock() {
 }
 
 function closeTopReaderOverlay() {
-  if (showMap.value) showMap.value = false
+  if (inlineNoteEditor.value) closeInlineNoteEditor()
+  else if (showMap.value) showMap.value = false
   else if (showAiAssistant.value) showAiAssistant.value = false
   else if (showSearch.value) showSearch.value = false
   else if (showMarks.value) showMarks.value = false
@@ -1600,7 +1742,19 @@ function catalogBadge(ch: { id: string; status: typeof chapters.value[number]['s
 const currentChapterIndex = computed(() => chapters.value.findIndex((chapter) => chapter.id === currentChapter.value?.id))
 const previousChapter = computed(() => currentChapterIndex.value > 0 ? chapters.value[currentChapterIndex.value - 1] : null)
 const followingChapter = computed(() => currentChapterIndex.value >= 0 && currentChapterIndex.value < chapters.value.length - 1 ? chapters.value[currentChapterIndex.value + 1] : null)
-const bookProgressRatio = computed(() => approximateBookRatio(chapters.value, currentChapter.value?.id, positionRatio.value))
+const weightedBookProgress = computed(() => {
+  const entries = chapters.value.map((chapter) => ({
+    id: chapter.id,
+    chars: Math.max(0, bookChapterChars.value[chapter.id] ?? 0),
+  }))
+  const total = entries.reduce((sum, entry) => sum + entry.chars, 0)
+  const index = Math.max(0, currentChapterIndex.value)
+  if (total <= 0) return approximateBookRatio(chapters.value, currentChapter.value?.id, positionRatio.value)
+  const before = entries.slice(0, index).reduce((sum, entry) => sum + entry.chars, 0)
+  const current = entries[index]?.chars ?? 0
+  return Math.max(0, Math.min(1, (before + current * positionRatio.value) / total))
+})
+const bookProgressRatio = computed(() => weightedBookProgress.value)
 const chapterPercent = computed(() => Math.round(positionRatio.value * 100))
 const bookPercent = computed(() => Math.round(bookProgressRatio.value * 100))
 const remainingChapters = computed(() => remainingChapterCount(chapters.value, currentChapter.value?.id))
@@ -1635,6 +1789,7 @@ async function loadBook(bookId: string) {
   }
   chapterPrefetch.onBookChange(bookId)
   const previousBookId = book.value?.id
+  if (previousBookId !== bookId) bookChapterChars.value = {}
   // 只有同一本书才沿用「当前章」：换书时两本书都有 c0001，
   // 沿用会让新书从第一章开始读，把这本书自己的阅读进度跳过去。
   const previousChapterId = previousBookId === bookId ? currentChapter.value?.id : undefined
@@ -1654,6 +1809,9 @@ async function loadBook(bookId: string) {
     // 追剧状态是主进程的真源：开书就拉一次，界面才知道该显示哪种模式、排了几章。
     void loadAssistantMaterial()
     chapters.value = res.book.chapters
+    const stats = await window.api.library.readBookStats?.(bookId).catch(() => null)
+    if (epoch !== navEpoch) return
+    bookChapterChars.value = Object.fromEntries((stats?.stats ?? []).map((item) => [item.chapterId, Math.max(0, item.chars)]))
     currentChapter.value = null
     lostHighlightIds.value = new Set()
     await reloadAnnotations()
@@ -2322,6 +2480,7 @@ function currentReaderPrefs(): ReaderPrefs {
     bookView: bookView.value,
     sheetColumns: sheetColumns.value,
     handwritingFont: handwritingFont.value,
+    showInlineNotes: showInlineNotes.value,
     autoScrollSpeed: autoScrollSpeed.value,
     autoNextChapter: autoNextChapter.value,
     dim: dim.value,
@@ -2379,6 +2538,7 @@ function restoreDefaultReaderPrefs() {
   bookView.value = DEFAULT_READER_PREFS.bookView ?? 'classic'
   sheetColumns.value = DEFAULT_READER_PREFS.sheetColumns ?? 'double'
   handwritingFont.value = DEFAULT_READER_PREFS.handwritingFont ?? 'none'
+  showInlineNotes.value = DEFAULT_READER_PREFS.showInlineNotes ?? true
   autoScrollSpeed.value = DEFAULT_READER_PREFS.autoScrollSpeed ?? 3
   autoNextChapter.value = DEFAULT_READER_PREFS.autoNextChapter === true
   dim.value = DEFAULT_READER_PREFS.dim ?? 0
@@ -2409,6 +2569,7 @@ async function loadPrefs() {
   bookView.value = s.reader.bookView ?? 'classic'
   sheetColumns.value = s.reader.sheetColumns ?? 'double'
   handwritingFont.value = s.reader.handwritingFont ?? 'none'
+  showInlineNotes.value = s.reader.showInlineNotes ?? true
   autoScrollSpeed.value = s.reader.autoScrollSpeed ?? 3
   autoNextChapter.value = s.reader.autoNextChapter === true
   dim.value = s.reader.dim ?? 0
@@ -2672,7 +2833,7 @@ const {
 } = assistant
 
 watch(
-  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
+  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, showInlineNotes, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()
@@ -2702,7 +2863,10 @@ watch(ttsSource, () => { if (ttsSpeaking.value) ttsStop() })
 
 watch(() => props.bookId, (id) => { if (id) void loadBook(id) })
 // 选区坐标只在当前章的规范化正文里有意义，换章后必须作废。
-watch(() => currentChapter.value?.id, () => { selectionNoteTarget.value = null })
+watch(() => currentChapter.value?.id, () => {
+  selectionNoteTarget.value = null
+  inlineNoteEditor.value = null
+})
 watch([aiAssistantTab, currentChapter], ([tab]) => {
   if (tab === 'notes') void loadChapterNotes()
   if (tab === 'memory') void loadTimeline()
@@ -2722,7 +2886,7 @@ watch(showDrawer, (open) => { if (open && drawerTab.value === 'catalog') void sc
 watch(drawerTab, (tab) => { if (tab === 'catalog' && showDrawer.value) void scrollCatalogToCurrent() })
 watch(showAiAssistant, (open) => { if (open) void loadResumeCard() })
 watch(
-  [showDrawer, showMap, showAiAssistant, showSearch, showMarks, showSelPopup, activeToolPanel, activeBottomPanel],
+  [showDrawer, showMap, showAiAssistant, showSearch, showMarks, showSelPopup, inlineNoteEditor, activeToolPanel, activeBottomPanel],
   () => {
     if (anyDrawerOpen() || selectionOpen()) toolsVisible.value = true
     lastToolActivityAt = Date.now()
@@ -3060,6 +3224,9 @@ onUnmounted(() => {
           </n-space>
           <RealBookStage
             :variant="bookView === 'sheet' ? 'sheet' : 'book'"
+            :total-chars="bookTotalChars"
+            :book-progress-ratio="bookProgressRatio"
+            :book-progress-step="bookTotalChars > 0 && realBookPageCount > 1 ? currentChapterChars / bookTotalChars / Math.max(1, realBookPageCount - 1) : 0"
             :columns="sheetColumns === 'double' ? 2 : 1"
             :pitch="realBookPitch"
             ref="realBookStageRef"
@@ -3072,13 +3239,20 @@ onUnmounted(() => {
             :line-height="lineHeight"
             :font-family="fontStacks[fontFamily]"
             :paragraph-gap="spacingEmValues[paragraphSpacing]"
+            :notes="realBookInlineNotes"
+            :show-notes="showInlineNotes"
+            :handwriting-font="handwritingFont"
             :start-anchor="realBookRestoreAnchor"
             :start-ratio="scrollRatioView"
             :restore-token="realBookRestoreToken"
+            :reveal-note-id="inlineNoteRevealId"
+            :reveal-note-token="inlineNoteRevealToken"
             @update:anchor="realBookAnchor = $event"
             @update:page="onRealBookPage"
             @update:page-count="realBookPageCount = $event"
             @update:pitch="realBookPitch = $event"
+            @update:show-notes="showInlineNotes = $event"
+            @edit-note="openInlineNoteEditor"
             @select="onRealBookMouseup"
             @next-chapter="nextChapter"
           />
@@ -3685,7 +3859,7 @@ onUnmounted(() => {
         >
           <n-button size="tiny" @click="copySelectedText">复制</n-button>
           <n-button size="tiny" type="primary" @click="addHighlight">划线</n-button>
-          <n-button size="tiny" @click="openDirectNote">备注</n-button>
+          <n-button size="tiny" @click="openDirectNote">批注</n-button>
           <n-button size="tiny" @click="translateSelectedText">翻译</n-button>
           <n-button size="tiny" @click="askSelectedText('explain')">问 AI · 解释这段</n-button>
           <n-button size="tiny" @click="askSelectedText('person')">这个人物是谁</n-button>
@@ -3694,12 +3868,44 @@ onUnmounted(() => {
       </Transition>
 
       <div v-if="showDirectNote" class="direct-note-editor" :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }">
-        <strong>添加备注</strong>
+        <strong>添加批注</strong>
         <div class="direct-note-excerpt">{{ selectedExcerpt }}</div>
-        <n-input v-model:value="directNoteDraft" type="textarea" :rows="3" placeholder="写下对这段文字的备注…" autofocus />
+        <n-input v-model:value="directNoteDraft" type="textarea" :rows="3" placeholder="写下对这段文字的批注…" autofocus />
         <n-space justify="end">
           <n-button size="small" @click="closeSelectionTools()">取消</n-button>
-          <n-button size="small" type="primary" :disabled="!directNoteDraft.trim()" @click="saveDirectNote">保存备注</n-button>
+          <n-button size="small" type="primary" :disabled="!directNoteDraft.trim()" @click="saveDirectNote">保存批注</n-button>
+        </n-space>
+      </div>
+
+      <!-- 页内批注编辑浮层：固定定位在 3D 舞台外，避免输入框随书页透视变形。 -->
+      <div
+        v-if="inlineNoteEditor"
+        class="inline-note-editor"
+        :style="{ left: inlineNoteEditor.left + 'px', top: inlineNoteEditor.top + 'px' }"
+        role="dialog"
+        aria-label="编辑批注"
+        @click.stop
+        @mouseup.stop
+        @keydown.stop
+      >
+        <strong>批注</strong>
+        <div class="direct-note-excerpt">{{ inlineNoteExcerpt }}</div>
+        <n-input
+          v-model:value="inlineNoteDraft"
+          type="textarea"
+          :rows="4"
+          placeholder="写下对这段文字的批注…"
+          autofocus
+          @keydown.ctrl.enter.prevent="saveInlineNote"
+          @keydown.meta.enter.prevent="saveInlineNote"
+        />
+        <p v-if="inlineNoteError" class="inline-note-error">{{ inlineNoteError }}</p>
+        <n-space justify="end">
+          <n-button size="small" :type="inlineNoteDeleteArmed ? 'error' : 'default'" :disabled="inlineNoteSaving" @click="deleteInlineNote">
+            {{ inlineNoteDeleteArmed ? '确认删除' : '删除' }}
+          </n-button>
+          <n-button size="small" :disabled="inlineNoteSaving" @click="closeInlineNoteEditor">取消</n-button>
+          <n-button size="small" type="primary" :disabled="!inlineNoteDraft.trim() || inlineNoteSaving" :loading="inlineNoteSaving" @click="saveInlineNote">保存</n-button>
         </n-space>
       </div>
 
@@ -3713,7 +3919,7 @@ onUnmounted(() => {
           </n-popconfirm>
           <n-button v-else block type="primary" :disabled="!currentChapter" style="margin-bottom:12px" @click="toggleBookmark">给本章加书签</n-button>
           <div v-if="!sortedMarks.length" class="control-label" style="text-align:center;padding:24px 0">
-            还没有标记。选中正文可添加划线或备注。
+            还没有标记。选中正文可添加划线或批注。
           </div>
           <div v-else class="mark-list">
             <section v-for="group in markGroups" :key="group.key" class="mark-group">
@@ -3731,7 +3937,7 @@ onUnmounted(() => {
                   {{ a.excerpt }}
                 </div>
                 <div v-if="a.note && editingNoteId !== a.id" :class="['mark-note', handwritingNoteClass]" @click="jumpToAnnotation(a)">
-                  <span v-if="a.noteSource === 'ai'" class="mark-note-source">AI</span>备注：{{ a.note }}
+                  <span v-if="a.noteSource === 'ai'" class="mark-note-source">AI</span>批注：{{ a.note }}
                 </div>
                 <div v-if="a.kind === 'highlight'" class="mark-colors" role="group" :aria-label="`划线颜色：${a.excerpt || '本段'}`">
                   <button
@@ -3748,14 +3954,14 @@ onUnmounted(() => {
                   ></button>
                 </div>
                 <div class="mark-actions">
-                  <n-button size="tiny" quaternary @click.stop="editingNoteId = a.id; noteDraft = a.note ?? ''">备注</n-button>
+                  <n-button size="tiny" quaternary @click.stop="editingNoteId = a.id; noteDraft = a.note ?? ''">批注</n-button>
                   <n-popconfirm positive-text="删除" negative-text="取消" @positive-click="deleteAnnotation(a)">
                     {{ deleteConfirmText(a) }}
                     <template #trigger><n-button size="tiny" quaternary type="error" @click.stop>删除</n-button></template>
                   </n-popconfirm>
                 </div>
                 <div v-if="editingNoteId === a.id" class="mark-note-edit">
-                  <n-input v-model:value="noteDraft" type="textarea" :rows="2" placeholder="写点备注…" />
+                  <n-input v-model:value="noteDraft" type="textarea" :rows="2" placeholder="写点批注…" />
                   <n-space justify="end" style="margin-top:4px">
                     <n-button size="tiny" @click="editingNoteId = ''">取消</n-button>
                     <n-button size="tiny" type="primary" @click="saveNote(a)">保存</n-button>
@@ -4018,6 +4224,27 @@ onUnmounted(() => {
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--r-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.inline-note-editor {
+  position: fixed;
+  z-index: 1002;
+  width: min(360px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--r-line);
+  border-radius: var(--radius-overlay);
+  background: var(--popover-bg);
+  box-shadow: var(--shadow-overlay);
+}
+
+.inline-note-error {
+  margin: 0;
+  color: var(--error-color);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -4577,7 +4804,7 @@ onUnmounted(() => {
 }
 
 .reader-bottombar {
-  transform: translateY(-50%);
+  transform: translateX(-50%);
   transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1),
               transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
               visibility 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -4599,7 +4826,7 @@ onUnmounted(() => {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translateY(-50%) translateY(8px);
+  transform: translateX(-50%) translateY(8px);
 }
 .toolbar-gap { flex: 1 1 auto; min-width: 8px; }
 .tool-button.tool-text { width: auto; flex-basis: auto; padding: 0 10px; font: inherit; font-size: 13px; }
@@ -4676,30 +4903,33 @@ onUnmounted(() => {
 }
 /* 右侧工具条：一串浮在画布上的圆形按钮，不再是带边框的长胶囊。 */
 .reader-bottombar {
-  position: absolute; z-index: 28; top: 50%; right: 24px; width: auto;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 10px; padding: 0; border: 0;
-  border-radius: 0; transform: translateY(-50%);
-  background: transparent; box-shadow: none;
+  position: absolute; z-index: 28; left: 50%; bottom: 18px; top: auto; right: auto;
+  width: max-content; max-width: calc(100% - 32px);
+  display: flex; flex-direction: row; align-items: center; justify-content: center;
+  gap: 3px; padding: 7px 10px; border: 1px solid rgba(233, 220, 188, 0.16);
+  border-radius: 18px; transform: translateX(-50%);
+  background: rgba(24, 28, 25, 0.88);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 245, 216, 0.08);
+  backdrop-filter: blur(14px) saturate(0.82);
+  color: rgba(244, 235, 211, 0.82);
 }
 .bottom-button {
   position: relative; display: grid; place-items: center;
-  width: 46px; height: 46px; min-width: 0; min-height: 0; padding: 0;
-  border: 0; border-radius: 50%;
-  background: color-mix(in srgb, var(--reader-paper) 88%, transparent);
-  box-shadow: var(--shadow-card);
-  color: color-mix(in srgb, var(--reader-paper-text) 72%, transparent);
+  width: 34px; height: 34px; min-width: 0; min-height: 0; padding: 0;
+  border: 0; border-radius: 11px;
+  background: transparent;
+  color: rgba(244, 235, 211, 0.74);
   font: inherit; cursor: pointer;
 }
-.bottom-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.bottom-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 /* 图标圈里不排字：文字标签留给读屏与悬浮提示，视觉上只留图形。 */
 .bottom-button-text {
   position: absolute; width: 1px; height: 1px; overflow: hidden;
   clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
 }
 .bottom-button:hover, .bottom-button.active {
-  background: color-mix(in srgb, var(--reader-paper-text) 9%, var(--reader-paper));
-  color: var(--reader-paper-text);
+  background: rgba(244, 224, 160, 0.14);
+  color: #f2d887;
 }
 .bottom-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .bottom-panel {
@@ -4718,8 +4948,11 @@ onUnmounted(() => {
   to { opacity: 1; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .bottom-panel { animation: none; }
+@media (max-width: 900px) {
+  .reader-bottombar {
+    bottom: 12px;
+    max-width: calc(100% - 20px);
+  }
 }
 
 .reader-progress-row.panel { height: 6px; overflow: hidden; background: var(--r-surface); }

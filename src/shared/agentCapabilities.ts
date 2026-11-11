@@ -511,6 +511,17 @@ const SPECS: readonly CapabilitySpec[] = [
     coreToolset: true,
   },
   {
+    channel: 'library.readBookStats',
+    title: '读取全书正文统计',
+    tier: 'read',
+    confirm: 'none',
+    deps: ['disk'],
+    params: obj({ bookId: str('书籍 ID') }),
+    result: '{ stats: Array<{ chapterId: string; chars: number }> } 或 { ok: false, message }',
+    description: '读取整本书各章节正文字符数，用于按全书规模计算阅读进度与书厚。',
+    coreToolset: true,
+  },
+  {
     channel: 'library.readChapter',
     title: '读取章节正文',
     tier: 'read',

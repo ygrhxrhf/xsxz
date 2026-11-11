@@ -102,6 +102,7 @@
 | `bookOverview.retry` | invoke | `{ bookId?: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `bookOverview.changed` | 主→渲染 | — | 无；提示刷新书库概览状态 |
 | `library.get` | invoke | `{ bookId: string }` | `{ book: Book } \| { ok: false; message: string }` |
+| `library.readBookStats` | invoke | `{ bookId: string }` | `{ stats: Array<{ chapterId: string; chars: number }> } \| { ok: false; message: string }` |
 | `library.readChapter` | invoke | `{ bookId: string; chapterId: string }` | `{ chapter: ChapterFile } \| { ok: false; message: string }` |
 | `library.delete` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.import` | invoke | `{ filePath: string }` | `{ ok: true; bookId: string } \| { ok: false; message: string }` |
@@ -365,6 +366,7 @@
 | `bookView` | `'classic' \| 'sheet' \| 'realbook'` | `'classic'` | 阅读界面（经典模式 / 书页模式 / 真实书籍）；与 `readingMode` 正交，缺失或非法回退 `'classic'` |
 | `sheetColumns` | `'single' \| 'double'` | `'double'` | 书页模式的每页栏数；只影响 `bookView === 'sheet'`，缺失或非法回退 `'double'` |
 | `handwritingFont` | `'none' \| 'kai' \| 'xingshu'` | `'none'` | 批注手写字体；只影响批注呈现，缺失或非法回退 `'none'` |
+| `showInlineNotes` | `boolean` | `true` | 真实书籍的页内批注开关；只控制带 `note` 的划线是否进入书页正文流，划线底色不受影响。缺失或非法回退 `true` |
 | `dim` | `number` | `0` | 护眼压暗百分比，有限数值四舍五入并夹紧到 0–70；缺失/非数值回退 `0`（关） |
 
 读取设置时逐字段校验，一个字段损坏不会丢弃其他合法字段。旧 `nightMode: true` 迁移为 `theme: 'night'`，`false` 迁移为 `'paper'`；未知旧字段可继续留在磁盘，但返回的正式 `ReaderPrefs` 不再包含或依赖 `nightMode`。
@@ -597,7 +599,7 @@ window.api = {
   tts: { getPosition, setPosition, synthesize, cancel },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, resume, zoom, readingPage, setReadingMode, chapter, prefetchChapter, chapterCatalog, saveReadingPos, getReadingPos, find, stopFind, hide, onFindResult, onShortcut, onUrl, onState, onReadingChapter },
   shelf: { list, add, remove, refresh, refreshAll, setProgress, chapters, onChanged },
-  library: { list, get, readChapter, delete, import, setProgress, getReadFrontier, markReadFrontier, confirmLegacyReadRange, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, getReadingStats, listTrash, restoreTrash, purgeTrash },
+  library: { list, get, readBookStats, readChapter, delete, import, setProgress, getReadFrontier, markReadFrontier, confirmLegacyReadRange, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, getReadingStats, listTrash, restoreTrash, purgeTrash },
   bookOverview: { retry, onChanged },
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   mirror: { start, cancel, state, onProgress },

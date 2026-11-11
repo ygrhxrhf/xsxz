@@ -146,6 +146,8 @@ const api = {
   library: {
     list: () => ipcRenderer.invoke('library.list') as Promise<{ books: BookListItem[] }>,
     get: (bookId: string) => ipcRenderer.invoke('library.get', { bookId }) as Promise<{ book?: import('../shared/types').Book; ok?: false; message?: string }>,
+    readBookStats: (bookId: string) =>
+      ipcRenderer.invoke('library.readBookStats', { bookId }) as Promise<{ stats?: Array<{ chapterId: string; chars: number }>; ok?: false; message?: string }>,
     readChapter: (bookId: string, chapterId: string) =>
       ipcRenderer.invoke('library.readChapter', { bookId, chapterId }) as Promise<{ chapter?: ChapterFile; ok?: false; message?: string }>,
     delete: (bookId: string) => ipcRenderer.invoke('library.delete', { bookId }),

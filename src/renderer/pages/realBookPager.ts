@@ -31,7 +31,8 @@ export interface RealBookLayout {
 }
 
 /** 页内的一段文字（一个段落的连续片段）。 */
-export interface RealBookPageItem {
+export interface RealBookTextItem {
+  kind: 'text'
   /** 段落下标（对应分页器输入数组的下标，不是原始段落下标） */
   paragraph: number
   /** 段内起始偏移（含） */
@@ -40,6 +41,37 @@ export interface RealBookPageItem {
   end: number
   /** 是否为上一页延续下来的片段 */
   continued: boolean
+}
+
+/**
+ * 页内的一张批注卡片。
+ *
+ * 卡片是原子块：要么整张落在同一页，要么整体移到下一页；高度由渲染层按真实
+ * 版心与三行截断量出，分页器只负责占位。
+ */
+export interface RealBookNoteItem {
+  kind: 'note'
+  /** 批注 id（对应 Reader 的 Annotation.id） */
+  noteId: string
+  /** 锚定段落（分页器输入下标） */
+  paragraph: number
+  /** 锚定段落内的结束偏移，用于批注页页首的恢复锚点 */
+  anchorOffset: number
+  /** 卡片占高（px，含与上文之间的间距） */
+  height: number
+}
+
+export type RealBookPageItem = RealBookTextItem | RealBookNoteItem
+
+/** 渲染层量好高度后交给分页器的批注块。 */
+export interface RealBookNoteBlock {
+  id: string
+  /** 放在这个输入段落的最后一个文本片段之后 */
+  paragraph: number
+  /** 锚定段落内的结束偏移 */
+  anchorOffset: number
+  /** 卡片占高（px，含与上文之间的间距） */
+  height: number
 }
 
 export interface RealBookPage {
@@ -76,6 +108,7 @@ export function createRealBookPaginator(
   paragraphs: readonly string[],
   linesOf: (text: string, index: number) => RealBookLine[],
   layout: RealBookLayout,
+  notes: readonly RealBookNoteBlock[] = [],
 ): RealBookPaginator {
   /** 已排完的页 */
   const pages: RealBookPage[] = []
@@ -84,6 +117,15 @@ export function createRealBookPaginator(
   let used = 0
   let nextParagraph = 0
   let done = false
+  /** 段落下标 → 页内批注块；段内按传入顺序渲染。 */
+  const notesAfter = new Map<number, RealBookNoteBlock[]>()
+  for (const note of notes) {
+    if (!Number.isInteger(note.paragraph) || note.paragraph < 0) continue
+    if (!Number.isFinite(note.height) || note.height <= 0) continue
+    const list = notesAfter.get(note.paragraph)
+    if (list) list.push(note)
+    else notesAfter.set(note.paragraph, [note])
+  }
 
   const lineHeight = Number.isFinite(layout.lineHeight) && layout.lineHeight > 0 ? layout.lineHeight : 0
   const pageHeight = Number.isFinite(layout.pageHeight) && layout.pageHeight > 0 ? layout.pageHeight : 0
@@ -92,7 +134,11 @@ export function createRealBookPaginator(
   function flush(): void {
     if (!pageItems.length) return
     const first = pageItems[0]!
-    pages.push({ items: pageItems, paragraph: first.paragraph, offset: first.start })
+    pages.push({
+      items: pageItems,
+      paragraph: first.paragraph,
+      offset: first.kind === 'text' ? first.start : first.anchorOffset,
+    })
     pageItems = []
     used = 0
   }
@@ -111,6 +157,33 @@ export function createRealBookPaginator(
   }
 
   /**
+   * 放一个批注块。
+   *
+   * 卡片不拆：当前页剩余高度不够就先把当前页封掉，让卡片从下一页开头出现。
+   * 极端情况下卡片比整页还高（字体异常放大），仍强行放一页，避免死循环；
+   * 真实渲染层的三行截断会把卡片高度控制在版心以内。
+   */
+  function placeNote(note: RealBookNoteBlock): void {
+    if (pageItems.length && used + note.height > pageHeight) flush()
+    pageItems.push({
+      kind: 'note',
+      noteId: note.id,
+      paragraph: note.paragraph,
+      anchorOffset: note.anchorOffset,
+      height: note.height,
+    })
+    used += note.height
+    if (used >= pageHeight) flush()
+  }
+
+  function placeNotesAfter(paragraph: number): void {
+    const list = notesAfter.get(paragraph)
+    if (!list?.length) return
+    for (const note of list) placeNote(note)
+    notesAfter.delete(paragraph)
+  }
+
+  /**
    * 排下一段；返回是否还有段落没排。
    *
    * 「段不腰斩」是这里的核心规则：一段要么整段落在某页，要么（它本身就比一整页还高）
@@ -126,7 +199,10 @@ export function createRealBookPaginator(
     const paragraphIndex = nextParagraph
     nextParagraph += 1
     const lines = linesOf(text, paragraphIndex)
-    if (!lines.length) return
+    if (!lines.length) {
+      placeNotesAfter(paragraphIndex)
+      return
+    }
 
     const paragraphHeight = lines.length * lineHeight
     // 这一段要付的段间距：只有它不是本页第一块内容时才付。
@@ -138,9 +214,10 @@ export function createRealBookPaginator(
       const gapNow = pageItems.length ? gap : 0
       const first = lines[0]!
       const last = lines[lines.length - 1]!
-      pageItems.push({ paragraph: paragraphIndex, start: first.start, end: last.end, continued: false })
+      pageItems.push({ kind: 'text', paragraph: paragraphIndex, start: first.start, end: last.end, continued: false })
       used += gapNow + paragraphHeight
       if (used >= pageHeight) flush()
+      placeNotesAfter(paragraphIndex)
       return
     }
 
@@ -162,18 +239,19 @@ export function createRealBookPaginator(
       const take = Math.min(room, lines.length - line)
       const first = lines[line]!
       const last = lines[line + take - 1]!
-      pageItems.push({ paragraph: paragraphIndex, start: first.start, end: last.end, continued })
+      pageItems.push({ kind: 'text', paragraph: paragraphIndex, start: first.start, end: last.end, continued })
       used += gapNow + take * lineHeight
       line += take
       if (line < lines.length) flush()
     }
     if (used >= pageHeight) flush()
+    placeNotesAfter(paragraphIndex)
   }
 
   function ensureEmptyFallback(): void {
     if (pageCount() || !paragraphs.length) return
     // 版面异常（页高或行高为 0）时也给一页，别让读者看到空白书台。
-    pageItems.push({ paragraph: 0, start: 0, end: (paragraphs[0] ?? '').length, continued: false })
+    pageItems.push({ kind: 'text', paragraph: 0, start: 0, end: (paragraphs[0] ?? '').length, continued: false })
     flush()
   }
 
@@ -183,7 +261,11 @@ export function createRealBookPaginator(
       const out = pages.map((page) => ({ items: page.items.slice(), paragraph: page.paragraph, offset: page.offset }))
       if (pageItems.length) {
         const first = pageItems[0]!
-        out.push({ items: pageItems.slice(), paragraph: first.paragraph, offset: first.start })
+        out.push({
+          items: pageItems.slice(),
+          paragraph: first.paragraph,
+          offset: first.kind === 'text' ? first.start : first.anchorOffset,
+        })
       }
       return out
     },
@@ -227,12 +309,13 @@ export function pageForAnchor(pages: readonly RealBookPage[], anchor: RealBookAn
   if (!pages.length) return 0
   for (let i = 0; i < pages.length; i += 1) {
     const page = pages[i]!
-    const first = page.items[0]
-    const last = page.items[page.items.length - 1]
+    const textItems = page.items.filter((item): item is RealBookTextItem => item.kind === 'text')
+    const first = textItems[0]
+    const last = textItems[textItems.length - 1]
     if (!first || !last) continue
     if (anchor.paragraph < first.paragraph) return Math.max(0, i - 1)
     if (anchor.paragraph > last.paragraph) continue
-    for (const item of page.items) {
+    for (const item of textItems) {
       if (item.paragraph === anchor.paragraph && anchor.offset >= item.start && anchor.offset < item.end) return i
     }
     return i
@@ -253,6 +336,7 @@ export function findPageForInput(
 ): number {
   for (let i = 0; i < pages.length; i += 1) {
     for (const item of pages[i]!.items) {
+      if (item.kind !== 'text') continue
       if (item.paragraph !== inputIndex) continue
       if (offset >= item.start && offset < item.end) return i
       // 段落在这一页但偏移落在段外：取这一页，位置由调用方再微调。

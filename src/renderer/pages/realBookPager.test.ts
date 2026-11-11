@@ -121,4 +121,73 @@ describe('realBookPager（真实书籍分页）', () => {
     pager.ensure(0)
     expect(pager.pages).toHaveLength(0)
   })
+
+  it('批注块紧跟锚定段落的最后一个文本片段', () => {
+    const pager = createRealBookPaginator(
+      ['aa', 'bb'],
+      fixedLines,
+      LAYOUT,
+      [{ id: 'n1', paragraph: 0, anchorOffset: 2, height: 40 }],
+    )
+    pager.ensure(1)
+    const pages = pager.pages
+    expect(pages[0]!.items.map((item) => item.kind)).toEqual(['text', 'note'])
+    expect(pages[0]!.items[1]).toMatchObject({ kind: 'note', noteId: 'n1', paragraph: 0, height: 40 })
+  })
+
+  it('当前页放不下批注时整张移到下一页，不拆卡片', () => {
+    // 第一段 3 行（60），批注 60：本页只剩 40，必须先把本页封掉。
+    const pager = createRealBookPaginator(
+      ['aaa'],
+      fixedLines,
+      LAYOUT,
+      [{ id: 'n1', paragraph: 0, anchorOffset: 3, height: 60 }],
+    )
+    pager.ensure(1)
+    const pages = pager.pages
+    expect(pages[0]!.items.map((item) => item.kind)).toEqual(['text'])
+    expect(pages[1]!.items[0]).toMatchObject({ kind: 'note', noteId: 'n1' })
+  })
+
+  it('同一段的多条批注按传入顺序连续堆叠', () => {
+    const pager = createRealBookPaginator(
+      ['aa'],
+      fixedLines,
+      LAYOUT,
+      [
+        { id: 'n1', paragraph: 0, anchorOffset: 2, height: 20 },
+        { id: 'n2', paragraph: 0, anchorOffset: 2, height: 20 },
+      ],
+    )
+    pager.ensure(1)
+    expect(pager.pages[0]!.items.map((item) => item.kind === 'note' ? item.noteId : item.kind))
+      .toEqual(['text', 'n1', 'n2'])
+  })
+
+  it('纯批注页用锚定段落偏移作为页首锚点', () => {
+    const pager = createRealBookPaginator(
+      ['', 'aa'],
+      fixedLines,
+      LAYOUT,
+      [{ id: 'n1', paragraph: 0, anchorOffset: 7, height: 30 }],
+    )
+    pager.ensure(1)
+    const page = pager.pages[0]!
+    expect(page.items[0]?.kind).toBe('note')
+    expect(page.paragraph).toBe(0)
+    expect(page.offset).toBe(7)
+  })
+
+  it('带批注后查页仍只认文本片段', () => {
+    const pager = createRealBookPaginator(
+      ['aa', 'bb', 'cc'],
+      fixedLines,
+      LAYOUT,
+      [{ id: 'n1', paragraph: 1, anchorOffset: 2, height: 60 }],
+    )
+    pager.ensure(5)
+    const pages = pager.pages
+    expect(findPageForInput(pages, 1, 0)).toBe(0)
+    expect(findPageForInput(pages, 2, 0)).toBe(pages.length - 1)
+  })
 })
