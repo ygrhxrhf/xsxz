@@ -27,7 +27,7 @@
       - 验证：`npm run typecheck` → EXIT:0；`npx vitest run src/renderer/pages/realBook*.test.ts src/renderer/pages/Reader.realBook.ui.test.ts --maxWorkers=6` → 7 文件 83 用例全通过，EXIT:0
       - 全量：`npx vitest run src --exclude .delta/ --exclude .qoder/ --maxWorkers=6` → 177 文件 1840 用例全通过，EXIT:0；`npm run build` → EXIT:0
 
-- [ ] 5. 收工自检
+- [x] 5. 收工自检
       - 验：`npm run plan:status` → 退出码 0
 
 ## 不做（显式出范围）
