@@ -89,6 +89,8 @@ const props = withDefaults(defineProps<{
   bookProgressStep?: number
   /** 阅读主题：只影响拟物书页的纸色与桌面，不参与分页 */
   theme?: ReaderTheme
+  /** 是否显示舞台内悬浮工具条（书台版式；Reader 的真实书籍底栏会接管这些控件） */
+  showToolbar?: boolean
   /** 版式：`book` 是双页 3D 书台，`sheet` 是单张书页（书页模式）。 */
   variant?: 'book' | 'sheet'
   /** 书页模式每页栏数：1 单栏、2 双栏；书台版式忽略。 */
@@ -114,6 +116,7 @@ const props = withDefaults(defineProps<{
   startRatio: 0,
   restoreToken: 0,
   theme: 'paper',
+  showToolbar: true,
   variant: 'book',
   columns: 1,
   totalChars: 0,
@@ -128,6 +131,7 @@ const emit = defineEmits<{
   (event: 'update:page-count', count: number): void
   (event: 'select', event: MouseEvent): void
   (event: 'update:pitch', pitch: number): void
+  (event: 'update:zoom', zoom: number): void
   (event: 'update:show-notes', show: boolean): void
   (event: 'edit-note', noteId: string): void
   (event: 'next-chapter'): void
@@ -250,6 +254,10 @@ watch(() => props.pitch, (value) => {
   const next = clampPitch(value ?? 0)
   if (Math.abs(next - localPitch.value) > 0.001) localPitch.value = next
 })
+
+// 缩放的真源在舞台内（它要逐帧换算页面尺寸），但 Reader 的底栏要显示当前倍率，
+// 所以变化时向外报一次。
+watch(zoom, (value) => emit('update:zoom', value))
 
 function setPitch(value: number): void {
   localPitch.value = clampPitch(value)
@@ -1030,6 +1038,7 @@ defineExpose({
   zoomIn,
   zoomOut,
   resetZoom,
+  resetPitch,
   currentPage,
   pageCount,
   readEnd,
@@ -1053,7 +1062,7 @@ defineExpose({
       </aside>
     </div>
 
-    <div v-if="variant === 'book'" class="real-book-toolbar">
+    <div v-if="variant === 'book' && showToolbar" class="real-book-toolbar">
       <span class="real-book-page-label" role="status">{{ currentLabel }}</span>
       <span class="real-book-zoom">
         <button type="button" class="real-book-btn" aria-label="缩小" @click="zoomOut">－</button>

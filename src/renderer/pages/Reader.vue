@@ -180,6 +180,10 @@ const focusMode = ref<ReaderFocusMode>(DEFAULT_READER_PREFS.focusMode)
 const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
 // 阅读界面与批注手写体偏好已持久化；真实书籍渲染层是 M2 的独立组件，数据层与经典模式共用。
 const bookView = ref<ReaderBookView>(DEFAULT_READER_PREFS.bookView ?? 'classic')
+/** 真实书籍的底栏由 Reader 自己画（参考图的图标条），舞台内悬浮条让位。 */
+const isRealBook = computed(() => bookView.value === 'realbook')
+/** 真实书籍底栏显示的缩放倍率：真源在舞台内，靠 update:zoom 同步上来。 */
+const realBookZoom = ref(1)
 const sheetColumns = ref<ReaderSheetColumns>(DEFAULT_READER_PREFS.sheetColumns ?? 'double')
 /** 分页渲染层：书页模式与真实书籍共用同一套页表舞台，分支点集中在这一个判据上。 */
 const pagedView = computed(() => bookView.value === 'sheet' || bookView.value === 'realbook')
@@ -1210,6 +1214,24 @@ function toggleReaderTools() {
   }
   revealTools(immersiveMode.value === 'locked')
   if (downloading) downloadToolsIntent.value = 'revealed'
+}
+
+/**
+ * 全屏开关：底栏的全屏按钮走浏览器 Fullscreen API。
+ * Electron 窗口支持时直接进/出全屏；不支持（或权限被拒）时静默失败，
+ * 按钮状态由 fullscreenchange 事件回写，不会卡在「已全屏」。
+ */
+const isFullscreen = ref(false)
+function syncFullscreenState() {
+  isFullscreen.value = document.fullscreenElement != null
+}
+async function toggleReaderFullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen()
+    else await document.documentElement.requestFullscreen()
+  } catch {
+    // 环境不支持全屏：按钮不生效，不弹错。
+  }
 }
 
 /** 点正文三分区：中区只显隐工具，左右翻屏。选区条仍由 onContentMouseup 自己出。 */
@@ -2435,6 +2457,57 @@ function cancelProgressScrub() {
   scrubPointerId = null
 }
 
+/**
+ * 真实书籍底栏的进度滑条：与经典模式共用「按章跳转」的落点算法，
+ * 但滑条更窄、只在真实书籍底栏里出现。拖动时只更新浮标百分比，
+ * 松手才换章——中途每动一下就 openChapter 会把书台刷成幻灯片。
+ */
+const rbProgressRef = ref<HTMLElement | null>(null)
+const rbScrub = ref<number | null>(null)
+const rbPercent = computed(() => Math.round((rbScrub.value ?? bookProgressRatio.value) * 100))
+let rbPointerId: number | null = null
+
+function rbRatioFrom(clientX: number): number {
+  const el = rbProgressRef.value
+  if (!el) return 0
+  const rect = el.getBoundingClientRect()
+  if (!(rect.width > 0)) return 0
+  return clampRatio((clientX - rect.left) / rect.width)
+}
+
+function startRbScrub(e: PointerEvent) {
+  if (e.button !== 0) return
+  if (!chapters.value.length) return
+  rbPointerId = e.pointerId
+  rbScrub.value = rbRatioFrom(e.clientX)
+  try { (e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId) } catch { /* 合成事件没有捕获 */ }
+  e.preventDefault()
+}
+
+function moveRbScrub(e: PointerEvent) {
+  if (rbScrub.value === null) return
+  rbScrub.value = rbRatioFrom(e.clientX)
+  e.preventDefault()
+}
+
+function endRbScrub(e: PointerEvent) {
+  if (rbScrub.value === null) return
+  const ratio = rbScrub.value
+  rbScrub.value = null
+  const pointerId = rbPointerId
+  rbPointerId = null
+  if (pointerId !== null) {
+    try { (e.currentTarget as HTMLElement | null)?.releasePointerCapture?.(pointerId) } catch { /* 已释放 */ }
+  }
+  if (e.type === 'pointercancel') {
+    e.preventDefault()
+    return
+  }
+  const target = progressScrubTarget(chapters.value, ratio)
+  if (target) void openChapter(target.chapter, 0)
+  e.preventDefault()
+}
+
 /** 键盘把焦点放在进度条上也能跳章：左右箭头按章移，Home/End 到首末章。 */
 function onProgressTrackKeydown(e: KeyboardEvent) {
   if (!chapters.value.length) return
@@ -2902,6 +2975,7 @@ onMounted(async () => {
   window.addEventListener('keydown', onOverlayEscapeCapture, true)
   window.addEventListener('resize', onReaderResize)
   window.addEventListener('beforeunload', flushPendingReaderWrites)
+  document.addEventListener('fullscreenchange', syncFullscreenState)
   unsubAiChunk = window.api.ai.onChunk(({ jobId, delta }) => {
     if (jobId === recapJobId.value) recapText.value += delta
     if (jobId === chapterNoteJobId.value) chapterNoteText.value += delta
@@ -3055,6 +3129,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onOverlayEscapeCapture, true)
   window.removeEventListener('resize', onReaderResize)
   window.removeEventListener('beforeunload', flushPendingReaderWrites)
+  document.removeEventListener('fullscreenchange', syncFullscreenState)
   chapterPrefetch.dispose()
   stopReaderVisibilityWatch()
   stopFollowPolling()
@@ -3095,12 +3170,15 @@ onUnmounted(() => {
         @mouseleave="onToolbarLeave"
       >
         <div class="reader-book-title" :title="book.title">{{ book.title }}</div>
+        <span v-if="isRealBook" class="real-book-page-label" aria-hidden="true">第 {{ realBookPage + 1 }} / {{ Math.max(1, realBookPageCount) }} 页</span>
         <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('back')">书架</button>
         <button class="tool-button tool-icon-text" title="搜索" aria-label="搜索" @click="openSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><span>搜索</span></button>
         <button class="tool-button tool-icon-text" title="标记" aria-label="标记" @click="showMarks = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg><span>标记</span></button>
         <button class="tool-button tool-icon-text" title="书中地图" aria-label="书中地图" @click="showMap = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg><span>地图</span></button>
         <button class="tool-button tool-icon-text" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg><span>朗读</span></button>
         <button class="tool-button tool-icon-text" title="AI 助手" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg><span>AI</span></button>
+        <button v-if="isRealBook" class="tool-button bottom-button" type="button" title="字体" aria-label="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg></button>
+        <button v-if="isRealBook" class="tool-button bottom-button real-book-btn" type="button" title="平放" aria-label="平放" @click="realBookStageRef?.resetPitch()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16"/><path d="M7 12V8h10v4"/></svg></button>
         <button
           v-if="backgroundAiLabel"
           class="tool-button tool-text"
@@ -3224,6 +3302,7 @@ onUnmounted(() => {
           </n-space>
           <RealBookStage
             :theme="theme"
+            :show-toolbar="bookView !== 'realbook'"
             :variant="bookView === 'sheet' ? 'sheet' : 'book'"
             :total-chars="bookTotalChars"
             :book-progress-ratio="bookProgressRatio"
@@ -3252,6 +3331,7 @@ onUnmounted(() => {
             @update:page="onRealBookPage"
             @update:page-count="realBookPageCount = $event"
             @update:pitch="realBookPitch = $event"
+            @update:zoom="realBookZoom = $event"
             @update:show-notes="showInlineNotes = $event"
             @edit-note="openInlineNoteEditor"
             @select="onRealBookMouseup"
@@ -3263,11 +3343,59 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="reader-bottombar" :class="{ 'reader-tools-hidden': !toolsVisible }" :aria-hidden="!toolsVisible" :inert="!toolsVisible" @mouseenter="onToolbarEnter" @mouseleave="onToolbarLeave">
-        <button class="bottom-button" type="button" aria-label="目录" title="目录" :class="{ active: activeBottomPanel === 'catalog' || showDrawer }" @click="toggleBottomPanel('catalog')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span class="bottom-button-text">目录</span></button>
-        <button class="bottom-button" type="button" aria-label="进度" title="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span class="bottom-button-text">进度</span></button>
-        <button class="bottom-button" type="button" aria-label="背景" title="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg><span class="bottom-button-text">背景</span></button>
-        <button class="bottom-button" type="button" aria-label="字体" title="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg><span class="bottom-button-text">字体</span></button>
+      <div
+        class="reader-bottombar"
+        :class="{ 'reader-tools-hidden': !toolsVisible, 'is-realbook': isRealBook }"
+        :aria-hidden="!toolsVisible && !isRealBook"
+        :inert="!toolsVisible && !isRealBook"
+        @mouseenter="onToolbarEnter"
+        @mouseleave="onToolbarLeave"
+      >
+        <template v-if="!isRealBook">
+          <button class="bottom-button" type="button" aria-label="目录" title="目录" :class="{ active: activeBottomPanel === 'catalog' || showDrawer }" @click="toggleBottomPanel('catalog')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span class="bottom-button-text">目录</span></button>
+          <button class="bottom-button" type="button" aria-label="进度" title="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span class="bottom-button-text">进度</span></button>
+          <button class="bottom-button" type="button" aria-label="背景" title="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg><span class="bottom-button-text">背景</span></button>
+          <button class="bottom-button" type="button" aria-label="字体" title="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg><span class="bottom-button-text">字体</span></button>
+        </template>
+        <template v-else>
+          <!-- 真实书籍底栏：按参考图排成一条图标带——书库 / 目录 / 翻页 /
+               进度滑条 / 背景 / 缩放 / 全屏 / 批注。控件本身仍在 Reader，
+               缩放与翻页由舞台暴露的方法执行。 -->
+          <button class="rb-btn" type="button" aria-label="书库" title="书库" @click="emit('back')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6.5C10 5 6.8 4.6 4 5v13.5c2.8-.4 6 0 8 1.5 2-1.5 5.2-1.9 8-1.5V5c-2.8-.4-6 0-8 1.5z"/><path d="M12 6.5V20"/></svg></button>
+          <button class="rb-btn bottom-button" type="button" aria-label="目录" title="目录" :class="{ active: showDrawer }" @click="toggleBottomPanel('catalog')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
+          <span class="rb-sep" aria-hidden="true"></span>
+          <button class="rb-btn" type="button" aria-label="上一页" title="上一页" @click="realBookStageRef?.prevPage()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
+          <div
+            ref="rbProgressRef"
+            class="rb-progress"
+            role="slider"
+            tabindex="0"
+            aria-label="阅读进度，拖动按章跳转"
+            :aria-valuemin="0"
+            :aria-valuemax="Math.max(0, chapters.length - 1)"
+            :aria-valuenow="currentChapterIndex >= 0 ? currentChapterIndex : 0"
+            :aria-valuetext="`${rbPercent}%`"
+            @pointerdown="startRbScrub"
+            @pointermove="moveRbScrub"
+            @pointerup="endRbScrub"
+            @pointercancel="endRbScrub"
+            @lostpointercapture="rbScrub = null"
+          >
+            <div class="rb-progress-track" aria-hidden="true">
+              <div class="rb-progress-fill" :style="{ width: `${rbPercent}%` }"></div>
+              <div class="rb-progress-dot" :style="{ left: `${rbPercent}%` }"></div>
+            </div>
+            <span class="rb-progress-label">{{ rbPercent }}%</span>
+          </div>
+          <button class="rb-btn" type="button" aria-label="下一页" title="下一页" @click="realBookStageRef?.nextPage()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button>
+          <span class="rb-sep" aria-hidden="true"></span>
+          <button class="rb-btn bottom-button" type="button" aria-label="背景" title="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16"/></svg></button>
+          <button class="rb-btn" type="button" aria-label="缩小" title="缩小" @click="realBookStageRef?.zoomOut()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
+          <button class="rb-zoom" type="button" title="复原缩放" @click="realBookStageRef?.resetZoom()">{{ Math.round(realBookZoom * 100) }}%</button>
+          <button class="rb-btn" type="button" aria-label="放大" title="放大" @click="realBookStageRef?.zoomIn()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg></button>
+          <button class="rb-btn" type="button" :aria-label="isFullscreen ? '退出全屏' : '全屏'" :title="isFullscreen ? '退出全屏' : '全屏'" @click="toggleReaderFullscreen"><svg viewBox="0 0 24 24" aria-hidden="true"><path v-if="!isFullscreen" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/><path v-else d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
+          <button class="rb-btn rb-pen real-book-note-toggle" type="button" :aria-label="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :title="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :aria-pressed="showInlineNotes" :class="{ active: showInlineNotes }" @click="showInlineNotes = !showInlineNotes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.2-4.2L15.5 5.5l3 3L8.2 18.8 4 20z"/><path d="m13.5 7.5 3 3"/></svg></button>
+        </template>
         <div v-if="activeBottomPanel && activeBottomPanel !== 'catalog'" class="bottom-panel" @click.stop>
             <template v-if="activeBottomPanel === 'progress'">
               <strong>进度</strong>
@@ -4872,6 +5000,15 @@ onUnmounted(() => {
 .tool-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .tool-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .reader-toolbar .reader-book-title { min-width: 0; }
+/* 真实书籍顶栏的页码：只报位置，不抢标题；工具收起时整条顶栏隐藏。 */
+.reader-toolbar .real-book-page-label {
+  flex: 0 0 auto;
+  margin-right: 4px;
+  font-size: 12px;
+  color: var(--r-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 /* 书页样式：标题靠左当眉题，其余工具靠右，像一张纸的页眉。 */
 .reader-toolbar { border-bottom: 0; }
 .reader-toolbar .reader-book-title { flex: 0 1 auto; text-align: left; padding: 0 12px 0 0; font-size: 15px; color: var(--reader-paper-text); }
@@ -4933,6 +5070,116 @@ onUnmounted(() => {
   color: #f2d887;
 }
 .bottom-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
+
+/* 真实书籍底栏：按参考图排成一条图标带。与经典底栏不同，这条栏常驻——
+   工具自动隐藏只收顶栏，底栏要一直能翻页、调缩放、开目录。 */
+.reader-bottombar.is-realbook {
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 20px;
+  /* 参考图的底栏是常驻的：backdrop-filter 会在翻页动画期间每帧重算模糊，
+     把 60fps 的翻页拖到二十几帧。常驻栏改为半透明实底，不要模糊。 */
+  backdrop-filter: none;
+}
+.reader-bottombar.is-realbook.reader-tools-hidden {
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  transform: translateX(-50%) !important;
+}
+.rb-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(244, 235, 211, 0.76);
+  cursor: pointer;
+}
+.rb-btn:hover { background: rgba(244, 224, 160, 0.14); color: #f2d887; }
+.rb-btn:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
+.rb-btn.active { color: #f2d887; background: rgba(242, 216, 135, 0.14); }
+.rb-btn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.rb-sep { width: 1px; height: 16px; margin: 0 3px; background: rgba(233, 220, 188, 0.16); }
+.rb-progress {
+  position: relative;
+  width: 92px;
+  height: 32px;
+  margin: 0 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 10px;
+  cursor: pointer;
+  touch-action: none;
+}
+.rb-progress:hover { background: rgba(244, 224, 160, 0.08); }
+.rb-progress-track {
+  position: relative;
+  width: 76px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(244, 235, 211, 0.22);
+}
+.rb-progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 1px;
+  background: rgba(242, 216, 135, 0.75);
+}
+.rb-progress-dot {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f2d887;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px rgba(24, 28, 25, 0.6);
+}
+.rb-progress-label {
+  font-size: 10px;
+  line-height: 1;
+  color: rgba(244, 235, 211, 0.62);
+  font-variant-numeric: tabular-nums;
+}
+.rb-zoom {
+  min-width: 44px;
+  height: 32px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(244, 235, 211, 0.8);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.rb-zoom:hover { background: rgba(244, 224, 160, 0.14); color: #f2d887; }
+
+/* 真实书籍底栏的面板从栏上方展开：栏贴近视口底边，向下的面板会被裁掉。
+   面板右缘对齐底栏右缘，和参考图的浮层位置一致。 */
+.reader-bottombar.is-realbook .bottom-panel {
+  top: auto;
+  bottom: calc(100% + 10px);
+  right: 0;
+  transform: none;
+}
+@media (max-width: 900px) {
+  .reader-bottombar.is-realbook .bottom-panel {
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+}
 .bottom-panel {
   position: absolute; top: 50%; right: calc(100% + 12px); width: min(390px, calc(100vw - 96px));
   max-height: min(440px, 70vh); transform: translateY(-50%); overflow-y: auto; display: flex;

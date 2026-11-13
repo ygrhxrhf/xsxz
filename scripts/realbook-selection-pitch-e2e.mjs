@@ -363,24 +363,39 @@ try {
   // 5) 真实鼠标划词：CDP 派发的按下/移动/松开走浏览器原生选区，与用户拖选一致
   const pick = await ev(`
     const stage = document.querySelector('.real-book-stage');
-    const para = [...stage.querySelectorAll('.real-book-para[data-p]')].find((p) => {
+    // 底栏常驻、顶栏在鼠标移到书台时出现：划词端点不能被这两条栏盖住，
+    // 否则原生选区从一开始就落不到段落上（实测只选中 1 字）。
+    // 逐个段落试，找一组两端都命中段落的可见段落。
+    const candidates = [...stage.querySelectorAll('.real-book-para[data-p]')].filter((p) => {
       const r = p.getBoundingClientRect();
       return r.top > 0 && r.bottom < innerHeight && (p.textContent || '').length > 40;
     });
-    if (!para) return { error: 'no visible paragraph' };
-    const walker = document.createTreeWalker(para, NodeFilter.SHOW_TEXT);
-    let textNode = null;
-    while (walker.nextNode()) {
-      if (walker.currentNode.textContent.length >= 24) { textNode = walker.currentNode; break; }
+    let picked = null;
+    for (const para of candidates) {
+      const walker = document.createTreeWalker(para, NodeFilter.SHOW_TEXT);
+      let textNode = null;
+      while (walker.nextNode()) {
+        if (walker.currentNode.textContent.length >= 24) { textNode = walker.currentNode; break; }
+      }
+      if (!textNode) continue;
+      const at = (index) => {
+        const g = document.createRange();
+        g.setStart(textNode, index);
+        g.setEnd(textNode, index + 1);
+        const r = g.getBoundingClientRect();
+        return [r.left + r.width / 2, r.top + r.height / 2];
+      };
+      const from = at(0);
+      const to = at(23);
+      const hitFrom = document.elementFromPoint(from[0], from[1]);
+      const hitTo = document.elementFromPoint(to[0], to[1]);
+      if (hitFrom && para.contains(hitFrom) && hitTo && para.contains(hitTo)) {
+        picked = { para, textNode, from, to };
+        break;
+      }
     }
-    if (!textNode) return { error: 'no text node' };
-    const at = (index) => {
-      const g = document.createRange();
-      g.setStart(textNode, index);
-      g.setEnd(textNode, index + 1);
-      const r = g.getBoundingClientRect();
-      return [r.left + r.width / 2, r.top + r.height / 2];
-    };
+    if (!picked) return { error: 'no clear paragraph' };
+    const { para, textNode, from, to } = picked;
     // 对比「命中测试不准」与「矩形取值不准」：同一屏幕点对应的字符偏移
     const caretAt = (pt) => {
       const node = textNode;
@@ -395,8 +410,6 @@ try {
       if (owner) hitPara = owner.getAttribute('data-p');
       return { offset, hitPara };
     };
-    const from = at(0);
-    const to = at(23);
     const probe = { fromCaret: caretAt(from), toCaret: caretAt(to) };
     window.getSelection().removeAllRanges();
     return { from, to, probe, expected: textNode.textContent.slice(0, 24), paraText: para.textContent || '' };
