@@ -214,8 +214,9 @@ describe('Reader 标记面板（模板 ↔ readerMarks 接线）', () => {
     const note = document.querySelector<HTMLElement>('.mark-note')
     expect(note?.textContent).toContain('楷体批注')
     expect(note?.classList.contains('handwriting-kai')).toBe(true)
-    // 正文 DOM 不因批注字体偏好获得手写体 class。
-    expect(document.querySelector('.reader-content .handwriting-kai')).toBeNull()
+    // 正文段落不因批注字体偏好获得手写体 class；批注卡按偏好单独套用。
+    expect(document.querySelector('.reader-content .para.handwriting-kai')).toBeNull()
+    expect(document.querySelector('.reader-content .classic-inline-note.handwriting-kai')).not.toBeNull()
     app.unmount()
   })
 

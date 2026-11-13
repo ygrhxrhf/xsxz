@@ -44,7 +44,7 @@ function longestTextNode(el: HTMLElement): Text {
 /** 够长的正文：分页要能排出第二页，翻页才有得可翻。 */
 const LONG_BODY = Array.from({ length: 60 }, (_, i) => `第${i + 1}段。`).join('\n\n')
 
-type BookView = 'classic' | 'realbook'
+type BookView = 'classic' | 'sheet' | 'realbook'
 
 type SettingsWrite = { reader?: Record<string, unknown> }
 
@@ -576,6 +576,72 @@ describe('Reader 真实书籍模式接线', () => {
     expect(annotationRemoves).toEqual(['a-note'])
     expect(document.querySelector('.inline-note-editor')).toBeNull()
     expect(document.querySelector('.real-book-note[data-note-id="a-note"]')).toBeNull()
+    app.unmount()
+  })
+
+  it.each([
+    ['经典模式', 'classic'],
+    ['书页模式', 'sheet'],
+    ['真实书籍', 'realbook'],
+  ] as const)('%s：已有批注显示在该段落下面且可开关', async (_label, bookView) => {
+    const { settingsWrites } = installReaderApi({
+      bookView,
+      body: '第一段。\n\n第二段。',
+      annotations: [{
+        id: 'a-note', bookId: 'book-1', chapterId: 'c1', kind: 'highlight',
+        start: 0, end: 3, excerpt: '第一段', note: '段落下方的批注',
+        createdAt: '2026-11-09T00:00:00.000Z',
+      }],
+    })
+    const app = await mountReader()
+    const card = document.querySelector<HTMLElement>('.real-book-note[data-note-id="a-note"]')
+    expect(card?.textContent).toContain('段落下方的批注')
+    const paragraph = document.querySelector<HTMLElement>('[data-p="0"]')
+    expect(paragraph?.nextElementSibling).toBe(card)
+
+    const toggle = document.querySelector<HTMLElement>('.real-book-note-toggle')!
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    toggle.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(document.querySelector('.real-book-note[data-note-id="a-note"]')).toBeNull()
+    expect(document.querySelector('.reader-content .para, .rb-sheet-column .real-book-para, .real-book-page-body .real-book-para')).not.toBeNull()
+    expect(document.querySelector<HTMLElement>('.real-book-note-toggle')?.getAttribute('aria-pressed')).toBe('false')
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(settingsWrites.some((write) => write.reader?.showInlineNotes === false)).toBe(true)
+    app.unmount()
+  })
+
+  it.each([
+    ['经典模式', 'classic'],
+    ['书页模式', 'sheet'],
+  ] as const)('%s：新写批注会开启批注模式并显示在段落下面', async (_label, bookView) => {
+    installReaderApi({ bookView, body: LONG_BODY, showInlineNotes: false })
+    const app = await mountReader()
+
+    const para = document.querySelector<HTMLElement>('.para, .real-book-para')!
+    const text = longestTextNode(para)
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, Math.min(3, text.textContent!.length))
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    para.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300 }))
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    buttonByText(document.querySelector('.sel-popup')!, '批注')?.click()
+    await nextTick()
+    const editor = document.querySelector<HTMLElement>('.direct-note-editor')!
+    const textarea = editor.querySelector<HTMLTextAreaElement>('textarea')!
+    textarea.value = '刚写下的批注'
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    buttonByText(editor, '保存批注')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(document.querySelector<HTMLElement>('.real-book-note-toggle')?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('.classic-inline-note .real-book-note-text, .rb-sheet-column .real-book-note-text')?.textContent)
+      .toBe('刚写下的批注')
     app.unmount()
   })
 

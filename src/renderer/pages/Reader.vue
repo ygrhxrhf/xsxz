@@ -85,7 +85,7 @@ import { decorateText } from '@shared/paragraphSearch'
 import { isSiteTailParagraph } from './readerTail'
 import RealBookStage from './RealBookStage.vue'
 import type { RealBookAnchor } from './realBookPager'
-import { deriveRealBookNotes } from './realBookNotes'
+import { deriveRealBookNotes, type RealBookNote } from './realBookNotes'
 
 /** 真实书籍舞台对外暴露的操作（由 defineExpose 决定）。 */
 type RealBookStageHandle = {
@@ -567,9 +567,14 @@ const marks = useReaderMarks({
     else message.success(text)
   },
   onAnnotationAdded: (annotation) => {
-    if (annotation.note && bookView.value === 'realbook') {
-      showInlineNotes.value = true
-      revealRealBookNote(annotation.id)
+    if (!annotation.note) return
+    showInlineNotes.value = true
+    // 分页书台/书页要跳到卡片所在页；经典模式滚到被批注段落即可。
+    if (pagedView.value) revealRealBookNote(annotation.id)
+    else {
+      const paragraph = paraNormStarts.value.findIndex((start, index) =>
+        start <= annotation.start && annotation.start < start + (paras.value[index]?.length ?? 0) + 2)
+      if (paragraph >= 0) void waitForParagraph(paragraph).then(() => scrollToParagraphOffset(paragraph, 0, 0))
     }
   },
 })
@@ -611,15 +616,23 @@ const paraNormStarts = computed(() => {
   return starts
 })
 
-/** 当前章真实书页上的批注卡：只取有 note、未丢失、锚在本章的划线。 */
-const realBookInlineNotes = computed(() => {
-  if (bookView.value !== 'realbook') return []
-  return deriveRealBookNotes(
-    annotations.value,
-    currentChapter.value?.id ?? '',
-    lostHighlightIds.value,
-    paraNormStarts.value,
-  )
+/** 当前章的段落批注：只取有 note、未丢失、锚在本章的划线。 */
+const realBookInlineNotes = computed(() => deriveRealBookNotes(
+  annotations.value,
+  currentChapter.value?.id ?? '',
+  lostHighlightIds.value,
+  paraNormStarts.value,
+))
+/** 经典模式按段落下标分组：卡片插在该段下面，不参与正文分段与选区坐标。 */
+const classicInlineNotes = computed(() => {
+  if (bookView.value !== 'classic' || !showInlineNotes.value) return new Map<number, RealBookNote[]>()
+  const groups = new Map<number, RealBookNote[]>()
+  for (const note of realBookInlineNotes.value) {
+    const list = groups.get(note.paragraph)
+    if (list) list.push(note)
+    else groups.set(note.paragraph, [note])
+  }
+  return groups
 })
 
 /** 新写/编辑批注后让舞台跳到卡片所在页；token 递增用于强制重查。 */
@@ -3275,12 +3288,28 @@ onUnmounted(() => {
             </n-space>
             <!-- 窗口化：窗口已离开章首时，被跳过的开头段用占位撑住标题与正文之间的距离 -->
             <div v-if="topGapHeight > 0" class="reader-gap top" :style="{ height: `${topGapHeight}px` }" aria-hidden="true"></div>
-            <p
-              v-for="{ index: i, segs } in visibleParas"
-              :key="i"
-              :data-p="i"
-              :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: paras.length }) }]"
-            ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
+            <template v-for="{ index: i, segs } in visibleParas" :key="i">
+              <p
+                :data-p="i"
+                :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: paras.length }) }]"
+              ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
+              <aside
+                v-for="note in classicInlineNotes.get(i) ?? []"
+                :key="note.id"
+                :class="['classic-inline-note', 'real-book-note', handwritingNoteClass, { 'is-ai': note.source === 'ai' }]"
+                :data-note-id="note.id"
+                role="button"
+                tabindex="0"
+                :aria-label="`编辑批注：${note.text}`"
+                @click.stop="openInlineNoteEditor(note.id)"
+                @mouseup.stop
+                @keydown.enter.stop.prevent="openInlineNoteEditor(note.id)"
+                @keydown.space.stop.prevent="openInlineNoteEditor(note.id)"
+              >
+                <span class="real-book-note-label">批注<span v-if="note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                <span class="real-book-note-text">{{ note.text }}</span>
+              </aside>
+            </template>
             <!-- 窗口化：跳到后段时，跳过的段用等高的占位撑住，滚动条始终按整章长度显示 -->
             <div v-if="bottomGapHeight > 0" class="reader-gap" :style="{ height: `${bottomGapHeight}px` }" aria-hidden="true"></div>
             <button v-if="chapterReady && followingChapter && renderedCount >= paras.length" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
@@ -3356,6 +3385,7 @@ onUnmounted(() => {
           <button class="bottom-button" type="button" aria-label="进度" title="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span class="bottom-button-text">进度</span></button>
           <button class="bottom-button" type="button" aria-label="背景" title="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg><span class="bottom-button-text">背景</span></button>
           <button class="bottom-button" type="button" aria-label="字体" title="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg><span class="bottom-button-text">字体</span></button>
+          <button class="bottom-button real-book-note-toggle" type="button" :aria-label="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :title="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :aria-pressed="showInlineNotes" :class="{ active: showInlineNotes }" @click="showInlineNotes = !showInlineNotes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.2-4.2L15.5 5.5l3 3L8.2 18.8 4 20z"/><path d="m13.5 7.5 3 3"/></svg><span class="bottom-button-text">批注</span></button>
         </template>
         <template v-else>
           <!-- 真实书籍底栏：按参考图排成一条图标带——书库 / 目录 / 翻页 /
@@ -5368,6 +5398,19 @@ onUnmounted(() => {
 .chapter-end-card.finished { display: flex; flex-direction: column; align-items: center; gap: 12px; cursor: default; }
 .para { position: relative; text-indent: var(--paragraph-indent, 2em); margin-bottom: var(--paragraph-spacing, .45em); }
 .large-chapter .para { content-visibility: auto; contain-intrinsic-size: auto 4em; }
+/* 经典模式页内批注：紧跟被批注段落，与书台卡片共用编辑入口和纯文本渲染。 */
+.classic-inline-note {
+  position: relative;
+  z-index: 1;
+  margin: 0 0 var(--paragraph-spacing, .45em);
+  border-left-color: var(--note-accent);
+  background: color-mix(in srgb, var(--r-surface) 80%, transparent);
+  color: var(--note-accent);
+  font-size: 0.86em;
+  line-height: 1.55;
+}
+.classic-inline-note:focus-visible { outline-color: var(--active-chapter); }
+.classic-inline-note + .classic-inline-note { margin-top: calc(var(--paragraph-spacing, .45em) * -1 + 8px); }
 /* 窗口化占位间隙：不参与段落定位（无 .para/data-p），纯占高，跳过强制布局风暴 */
 .large-chapter .reader-gap { contain: strict; }
 .large-chapter .reader-gap.top { margin-top: var(--paragraph-spacing, .45em); }

@@ -233,15 +233,24 @@ describe('卷页几何', () => {
     // 中段纸离桌面最高，但只抬十几像素：纸是绕书脊转，不是从书上揭起来举到空中。
     expect(flipSheetLift(0.5).lift).toBeGreaterThan(4)
     expect(flipSheetLift(0.5).lift).toBeLessThanOrEqual(17)
-    // 仰角同样要收住：早先 19° 让纸的上缘朝观者压过来，透视下整页读成一块斜板。
-    expect(flipSheetLift(0.5).tilt).toBeLessThanOrEqual(9)
+    // 只输出平移量：倾斜与屏面内滚会让书脊侧离开书缝（见 flipSheetLift 的说明）。
+    expect(Object.keys(flipSheetLift(0.5))).toEqual(['lift'])
   })
 
-  it('整张纸有方向性的侧滚：左右翻页镜像，而不是一条直线扇动', () => {
-    expect(flipSheetLift(0, 1).roll).toBeCloseTo(0, 6)
-    expect(flipSheetLift(1, 1).roll).toBeCloseTo(0, 6)
-    expect(flipSheetLift(0.5, 1).roll).toBeGreaterThan(0)
-    expect(flipSheetLift(0.5, -1).roll).toBeCloseTo(-flipSheetLift(0.5, 1).roll, 6)
+  it('书脊侧钉在书缝上：整段行程第一条带都不离开 x=0', () => {
+    // 翻动页的书脊侧还装在折缝里，任何一帧都不能被推开、也不能被抬高：
+    // 一旦离开，中缝上就会露出两边带硬边的空白纸带，读起来就是「书被撕开」。
+    // 纵向的离桌只由整张纸的 translateZ 承担（它不改变屏幕坐标），
+    // 所以第一条带的位置必须逐帧恒为 x=0、z=唯一的离面间隙。
+    const first = pose(0)[0]!
+    for (let step = 0; step <= 40; step += 1) {
+      const strip = pose(step / 40)[0]!
+      expect(strip.x).toBeCloseTo(0, 6)
+      expect(strip.z).toBeCloseTo(first.z, 6)
+      expect(strip.offset).toBeCloseTo(0, 6)
+      // 竖带的左缘就是纸的书脊侧：几何若让这条带绕自己的左缘转，转角也不会移动左缘。
+      expect(strip.width).toBeGreaterThan(0)
+    }
   })
 
   it('非法输入回退而不炸：进度越界钳制、条数与宽度回退', () => {

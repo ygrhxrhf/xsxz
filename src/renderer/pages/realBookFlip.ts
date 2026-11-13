@@ -73,6 +73,9 @@ export const FLIP_MAX_BEND_DEG = 30
  *
  * 翻动页的平躺那一段与它下面的页面在同一块区域（下面已经换成了下一页的正文），
  * 不抬开一点就会 z-fighting：两页的字叠在一起闪。
+ *
+ * 这一量只按竖带给（第一条带也是这么厚），整张纸不再另加平移以外的变换：
+ * 第一条带的 `x` 恒为 0、`z` 恒为这个间隙，纸的书脊侧才能一路钉在书脊上。
  */
 const FLIP_SHEET_CLEARANCE_PX = 3
 
@@ -610,33 +613,39 @@ export function flipSliceSpeeds(progress: number, options: FlipPoseOptions): num
 export interface FlipSheetLift {
   /** 整张纸离桌面的高度（px） */
   lift: number
-  /** 整张纸的上缘朝观者倾多少（deg）：纸在飞行中「帆」起来 */
-  tilt: number
-  /** 整张纸在屏幕平面内朝翻页方向滚多少（deg）：纸角被捏住后不会左右完全对称 */
-  roll: number
 }
 
 /**
  * 整张纸离桌的程度。
  *
  * 纸面不能靠「每条带各自往上抬」来离桌：那样页脚会变成锯齿状的阶梯。
- * 真实翻页是整张纸一起离开桌面、上缘朝观者倾过去——所以位移与倾角都作用在
- * 整张纸上，各竖带只负责弯。
+ * 真实翻页是整张纸一起离开桌面——所以位移作用在整张纸上，各竖带只负责弯。
  *
  * 包络吃的是**纸角行程**而不是另设一条曲线：纸被甩起来的时候它才离桌，
  * 纸角贴到对面时它落回桌面。纸与影子共用同一个行程，影子才不会提前出现。
+ *
+ * ## 只能平移，不能倾斜、不能侧滚
+ *
+ * 翻动页的**书脊侧是钉在书脊上的**：现实里那一端还装在书脊的折缝里，整张纸是
+ * 从书缝里翻出来的。所以这张纸的变换只能沿观者方向平移（`translateZ`）：
+ * 平移不改变那条边在屏幕上的位置，纸始终从书缝里长出来。
+ *
+ * 早先这里还给整张纸加了两项：
+ *
+ *   - `tilt`（绕纸的下缘后仰 8°）：书脊侧的**上端**被推离纸面、往前倾；
+ *   - `roll`（屏面内顺时针滚 1.8°）：转轴在纸的下缘中点，纸的上缘被推开
+ *     `纸高 × sin(1.8°)`——一页 640px 高的纸，顶部就是 20px。
+ *
+ * 两项都让书脊侧那条边离开书缝：中缝上露出一条**空白纸带**，左边是静态页的内边距，
+ * 右边是翻动页被推开的边，两侧各有一道硬边——读起来就是「书从中间被撕开一条缝」。
+ * 侧滚还会让纸的上缘伸出书体轮廓。这两点正是「撕开」的读感来源，已全部去掉；
+ * 「纸在飞」的动态交给卷曲（相邻竖带的转角差）、整本书的随动（`flipSway`）
+ * 和逐帧变化的明暗，不需要把纸从书脊上揭下来。
  */
-export function flipSheetLift(progress: number, direction: 1 | -1 = 1): FlipSheetLift {
+export function flipSheetLift(progress: number): FlipSheetLift {
   const t = clamp01(progress)
   const rise = Math.sin(Math.PI * tipProgress(t))
-  return {
-    lift: FLIP_SAIL_PX * rise,
-    // 倾角只取 8°：纸绕书脊转，不需要整页向后仰。早先 19° 让纸的上缘朝观者
-    // 压过来十几度，透视下纸的上半张被放大、向下缘收缩，整页读成一块斜插在书上的板。
-    tilt: 8 * rise,
-    // 右页向左翻时纸角在右侧，先抬右下角；左页反向时镜像。
-    roll: direction * 1.8 * rise,
-  }
+  return { lift: FLIP_SAIL_PX * rise }
 }
 
 export interface FlipSway {

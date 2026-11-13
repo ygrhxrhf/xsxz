@@ -51,7 +51,7 @@ const props = withDefaults(defineProps<{
   paragraphIndexes: number[]
   /** 划线：段内局部坐标 */
   highlights?: HighlightSpan[]
-  /** 当前章的页内批注；只在真实书籍 variant 下显示 */
+  /** 当前章的页内批注；书页模式和真实书籍模式共用 */
   notes?: RealBookNote[]
   /** 批注模式开关；关掉后只留划线 */
   showNotes?: boolean
@@ -396,7 +396,7 @@ function applyRestore(): void {
  * 无布局环境（jsdom）或卡还没挂载时退回估算，保证页表仍可计算。
  */
 function measuredNoteBlocks(): RealBookNoteBlock[] {
-  if (props.variant !== 'book' || !props.showNotes || !props.notes.length) return []
+  if (!props.showNotes || !props.notes.length) return []
   const root = noteMeasureRef.value
   if (root) root.style.width = `${layout.value.contentWidth}px`
   const measured = new Map<string, number>()
@@ -784,11 +784,13 @@ const flipSlices = computed(() => {
 })
 
 /**
- * 翻动页整体离桌的程度：纸在飞行中「帆」起来。
+ * 翻动页整体离桌的程度：纸在飞行中整体抬离纸面。
  *
- * 位移与倾角都作用在整张纸上，不作用在单条竖带——否则页脚会变成锯齿状的阶梯。
+ * 位移作用在整张纸上，不作用在单条竖带——否则页脚会变成锯齿状的阶梯。
+ * 只有沿观者方向的平移：纸的书脊侧必须始终留在书缝里（见 `flipSheetLift`），
+ * 后仰与屏面内滚都会把那条边推开，中缝就会露出一道「撕开」的空白带。
  */
-const flipSheetState = computed(() => flipSheetLift(flipT.value, flipping.value?.direction ?? 1))
+const flipSheetState = computed(() => flipSheetLift(flipT.value))
 
 /**
  * 翻页时整本书的随动。
@@ -1263,7 +1265,10 @@ defineExpose({
               left: flipping.direction === 1
                 ? `calc(50% + ${FLIP_ANCHOR_OFFSET_PX}px)`
                 : `calc(50% - ${FLIP_ANCHOR_OFFSET_PX}px)`,
-              transform: `translateZ(${flipSheetState.lift.toFixed(2)}px) rotateX(${(-flipSheetState.tilt).toFixed(2)}deg) rotateZ(${flipSheetState.roll.toFixed(2)}deg)`,
+              // 只沿观者方向抬离纸面：书脊侧那条边必须一直落在书缝里。
+              // 后仰（rotateX）与屏面内滚（rotateZ）会把这条边推离书脊，
+              // 中缝上就露出一条两边带硬边的空白纸带——就是「书被撕开」的读感。
+              transform: `translateZ(${flipSheetState.lift.toFixed(2)}px)`,
             }"
             aria-hidden="true"
           >
@@ -2152,11 +2157,10 @@ defineExpose({
   transform-style: preserve-3d;
   pointer-events: none;
   z-index: 2;
-  /* 纸的「帆」起来是以**下缘**为轴翻出去的：下缘还压在书上，上缘朝观者倾过去。
-     若以中心为轴（默认），下半张纸会往后沉到静态页平面之后——3D 上下文里
-     深度优先于 z-index，那半张纸就被下面的静态页盖住，纸上多出一块楔形的缺口。
-     轴放在下缘，纸才会整片抬在页面之上。 */
-  transform-origin: 50% 100%;
+  /* 纸的书脊侧钉在书缝里：整张纸只沿观者方向平移（translateZ，逐帧下发），
+     不做倾斜与屏面内转动——那会把书脊侧那条边推离书缝，中缝上露出空白纸带。
+     平移不改变 x/y，书脊侧始终落在 `left: 50%` 这条折缝上。 */
+  transform-origin: 0 0;
 }
 
 /* 竖带：位置与转角都由 JS 逐帧下发；弯曲只来自相邻带的转角差。
