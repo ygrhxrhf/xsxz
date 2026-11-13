@@ -26,9 +26,9 @@
  * 每一根竖带还按自己的转角把纵深推向观者，最外一条离桌面 300px 以上，
  * 在透视里被放大三成——纸的上下缘都伸出书的轮廓，读起来就是「页面被从书里撕下来」。
  *
- * 现在转轴回到书脊：书脊侧只晚 0.14，弯度上限 20°（一页纸的挺度），
- * 离桌量 12px。整页是一张略弯的硬纸绕书脊掀起、越过正对观者的位置、落到对面，
- * 任何一帧都不会比静止页大出一圈。弯度只负责让纸不像塑料板。
+ * 现在转轴回到书脊：书脊侧只晚 0.18，弯度上限 30°（一页纸的挺度），
+ * 离桌量 16px。整页是一张带着弧面、绕书脊掀起、越过正对观者的位置、落到对面的纸，
+ * 任何一帧都不会比静止页大出一圈；再给一点离桌与侧滚，动起来才不僵。
  *
  * ## 曾经踩过的坑：钳制弯度会把纸角钉死
  *
@@ -52,7 +52,7 @@ export const FLIP_SLICE_COUNT = 12
  * 翻页总时长（ms）。真书翻一页大约 0.6–0.9 秒：甩起来要时间，落下去也要时间。
  * 短于 0.5 秒读成甩硬卡片，长于 1 秒会被当成界面卡住。
  */
-export const FLIP_DURATION_MS = 820
+export const FLIP_DURATION_MS = 900
 
 /**
  * 纸的弯度上限（deg）：书脊侧与外缘之间的角度差最多这么多。
@@ -60,13 +60,13 @@ export const FLIP_DURATION_MS = 820
  * 这是「纸能弯，但弯不成铁皮」的护栏。真实书页在翻动中是**弓起来的**，
  * 不是卷成筒。
  *
- * 取 20°：一页书纸是**有挺度**的，翻动中最多在纸角那一小段弯出二十度上下。
+ * 取 30°：一页书纸是**有挺度**的，翻动中最多在纸角那一小段弯出三十度上下。
  * 早先放到 120° 时，中段的纸被弯成一把打开的折扇：书脊侧还贴在桌上，
  * 外缘已经甩到 90°，整页沿宽度摊开成一个大扇面，每一帧都像一张被揭下来的纸。
- * 现在弯度上限压到纸的挺度量级，整页像一张略弯的硬纸绕着书脊转，
- * 弯度只负责让它不像塑料板，不负责把纸折成扇子。
+ * 30° 是一条中间线：弯面看得出来，纸在翻动中会呼吸，又不会摊成扇子。
+ * 再往上调之前先确认书脊侧仍然只晚 0.18——转轴一离开书脊，扇形就会回来。
  */
-export const FLIP_MAX_BEND_DEG = 20
+export const FLIP_MAX_BEND_DEG = 30
 
 /**
  * 翻动页浮在下面那页之上的纵深（px）。
@@ -79,12 +79,13 @@ const FLIP_SHEET_CLEARANCE_PX = 3
 /**
  * 纸面飘起来的高度（px）：整张纸在飞行中离桌面多远。
  *
- * 只取 12px：翻页是纸**绕书脊转**，不是把纸从书上揭起来举到空中。
+ * 只取 16px：翻页是纸**绕书脊转**，不是把纸从书上揭起来举到空中。
  * 早先取 46px 时，整张纸被平移到观者面前，透视把纸放大了三成，
  * 纸的上下缘都伸到书的轮廓之外——读起来就是「页面被撕下来了」。
- * 留一点离桌量只为脱离 z-fighting，并给投影一点余地。
+ * 16px 比纯脱 z-fighting 多一点：纸在飞行中有一点点离桌，动态才不僵；
+ * 又远小于会让透视放大的量级。
  */
-const FLIP_SAIL_PX = 12
+const FLIP_SAIL_PX = 16
 
 export interface FlipSlicePose {
   /** 该竖带相对观者平面的转角（deg，负值向外翻） */
@@ -333,8 +334,8 @@ function smootherstep(value: number): number {
  * 两段的斜率连续很关键：接缝处若有一处速度突变，画面上就是纸「顿一下」——
  * 那比慢更刺眼。
  */
-const FLING_END = 0.34
-const FLING_FRACTION = 0.58
+const FLING_END = 0.40
+const FLING_FRACTION = 0.55
 const FLING_JOIN_SPEED = 1.5
 
 /** 单段 Hermite 行程：端点位置和端点速度都可控，避免分段曲线在接缝处顿一下。 */
@@ -374,13 +375,14 @@ function tipProgress(t: number): number {
  * 再重新归一化。延后而不是压缩，是为了让书脊侧的曲线与纸角**形状相同**——
  * 同一族曲线取不同的时间偏移，两端速度都连续，不会出现新的接缝。
  *
- * 0.14 意味着书脊侧只比纸角晚一小拍：整页几乎是一起绕书脊掀起来的。
+ * 0.18 意味着书脊侧只比纸角晚一小拍：整页几乎是一起绕书脊掀起来的，
+ * 纸在书脊处被压弯的弧度比 0.14 更明显，翻起来更软。
  * 早先延后到 0.55 时，前一半行程里书脊侧钉在桌上一动没动，外缘却已经甩到
  * 正对观者的位置——纸被弯成一个固定的扇面，转轴从书脊跑到了纸面中间，
  * 那一帧看起来就像有人捏着纸角把页面从书里揭下来。真书翻页的转轴始终在书脊，
  * 书脊侧只比纸角晚一点点（纸在那里被压弯），不会晚到半程。
  */
-const ROOT_DELAY = 0.14
+const ROOT_DELAY = 0.18
 
 function rootProgress(t: number): number {
   if (t <= ROOT_DELAY) return 0
@@ -629,11 +631,11 @@ export function flipSheetLift(progress: number, direction: 1 | -1 = 1): FlipShee
   const rise = Math.sin(Math.PI * tipProgress(t))
   return {
     lift: FLIP_SAIL_PX * rise,
-    // 倾角只取 6°：纸绕书脊转，不需要整页向后仰。早先 19° 让纸的上缘朝观者
+    // 倾角只取 8°：纸绕书脊转，不需要整页向后仰。早先 19° 让纸的上缘朝观者
     // 压过来十几度，透视下纸的上半张被放大、向下缘收缩，整页读成一块斜插在书上的板。
-    tilt: 6 * rise,
+    tilt: 8 * rise,
     // 右页向左翻时纸角在右侧，先抬右下角；左页反向时镜像。
-    roll: direction * 1.2 * rise,
+    roll: direction * 1.8 * rise,
   }
 }
 
@@ -660,11 +662,11 @@ export function flipSway(progress: number, direction: 1 | -1): FlipSway {
   const lift = Math.sin(Math.PI * tipProgress(t))
   // 落定后的余颤：越来越小的一次摆动。
   const settle = t > 0.82 ? (t - 0.82) / 0.18 : 0
-  const wobble = t > 0.82 ? Math.sin(settle * Math.PI * 2.5) * (1 - settle) * 0.7 : 0
-  // 侧倾只取 1.6°：整本书跟着晃一下就够了。早先 3.2° 会把右半页推到观者面前，
+  const wobble = t > 0.82 ? Math.sin(settle * Math.PI * 2.5) * (1 - settle) * 1.0 : 0
+  // 侧倾只取 2.0°：整本书跟着晃一下就够了。早先 3.2° 会把右半页推到观者面前，
   // 再被透视放大——翻页时半本书看起来比另一半大一圈，那也是一层「纸被揭开」的错觉。
   return {
-    rotateY: direction * (1.6 * Math.pow(lift, 1.1) + wobble),
-    lift: 6 * Math.pow(lift, 1.2) + wobble * 2,
+    rotateY: direction * (2.0 * Math.pow(lift, 1.1) + wobble),
+    lift: 7 * Math.pow(lift, 1.2) + wobble * 2.5,
   }
 }

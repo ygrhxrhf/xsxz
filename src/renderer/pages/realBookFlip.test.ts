@@ -73,11 +73,11 @@ describe('卷页几何', () => {
   })
 
   it('整页绕书脊掀过去：外缘只比书脊侧早一点越过正对观者的位置', () => {
-    const poses = pose(0.4)
-    // 40% 时整页都已越过 −90°：转轴在书脊，书脊侧不可能还贴在桌上。
+    const poses = pose(0.5)
+    // 50% 时整页都已越过 −90°：转轴在书脊，书脊侧不可能还贴在桌上。
     expect(outerSide(poses)).toBeLessThan(-90)
     expect(spineSide(poses)).toBeLessThan(-90)
-    // 外缘仍领跑，但只早十度上下——再大就是折扇，不是一页纸。
+    // 外缘仍领跑，但只早一个弯度量级——再大就是折扇，不是一页纸。
     expect(Math.abs(outerSide(poses) - spineSide(poses))).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
     expect(Math.abs(outerSide(poses) - spineSide(poses))).toBeGreaterThan(8)
   })
@@ -110,9 +110,9 @@ describe('卷页几何', () => {
   })
 
   it('书脊侧只晚一小拍：书脊那一段已经跟着掀起来，整页仍绕书脊转', () => {
-    const poses = pose(0.25)
-    // 25% 时书脊侧已经离开桌面二十多度——转轴一直在书脊上。
-    expect(Math.abs(spineSide(poses) + 8)).toBeGreaterThan(18)
+    const poses = pose(0.3)
+    // 30% 时书脊侧已经离开桌面十几度——转轴一直在书脊上，不是钉死在桌上。
+    expect(Math.abs(spineSide(poses) + 8)).toBeGreaterThan(12)
     // 外缘照样领跑，但只领先一个弯度量级。
     expect(Math.abs(outerSide(poses) + 8)).toBeGreaterThan(Math.abs(spineSide(poses) + 8))
     expect(Math.abs(outerSide(poses) - spineSide(poses))).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
@@ -232,9 +232,9 @@ describe('卷页几何', () => {
     expect(flipSheetLift(1).lift).toBeCloseTo(0, 6)
     // 中段纸离桌面最高，但只抬十几像素：纸是绕书脊转，不是从书上揭起来举到空中。
     expect(flipSheetLift(0.5).lift).toBeGreaterThan(4)
-    expect(flipSheetLift(0.5).lift).toBeLessThanOrEqual(13)
+    expect(flipSheetLift(0.5).lift).toBeLessThanOrEqual(17)
     // 仰角同样要收住：早先 19° 让纸的上缘朝观者压过来，透视下整页读成一块斜板。
-    expect(flipSheetLift(0.5).tilt).toBeLessThanOrEqual(7)
+    expect(flipSheetLift(0.5).tilt).toBeLessThanOrEqual(9)
   })
 
   it('整张纸有方向性的侧滚：左右翻页镜像，而不是一条直线扇动', () => {
