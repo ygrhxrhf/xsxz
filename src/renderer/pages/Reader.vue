@@ -5041,7 +5041,8 @@ onUnmounted(() => {
 }
 /* 书页样式：标题靠左当眉题，其余工具靠右，像一张纸的页眉。 */
 .reader-toolbar { border-bottom: 0; }
-.reader-toolbar .reader-book-title { flex: 0 1 auto; text-align: left; padding: 0 12px 0 0; font-size: 15px; color: var(--reader-paper-text); }
+/* 顶栏底跟应用外壳色走，不是纸面：夜间主题下纸面字色是浅色，写在这里会让白底白字。 */
+.reader-toolbar .reader-book-title { flex: 0 1 auto; text-align: left; padding: 0 12px 0 0; font-size: 15px; color: var(--text); }
 
 .tool-panel {
   position: absolute;
@@ -5100,6 +5101,12 @@ onUnmounted(() => {
   color: #f2d887;
 }
 .bottom-button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
+
+/* 顶栏也复用了 .bottom-button（真实书籍的字号 / 平放）：底栏的奶油白字色在白顶栏上
+   几乎看不见，这两个按钮要跟随顶栏的语义前景色与悬停底色。 */
+.reader-toolbar .bottom-button { color: inherit; }
+.reader-toolbar .bottom-button:hover { background: var(--r-hover); }
+.reader-toolbar .bottom-button.active { background: var(--r-hover); color: var(--active-chapter); }
 
 /* 真实书籍底栏：按参考图排成一条图标带。与经典底栏不同，这条栏常驻——
    工具自动隐藏只收顶栏，底栏要一直能翻页、调缩放、开目录。 */
@@ -5215,8 +5222,15 @@ onUnmounted(() => {
   max-height: min(440px, 70vh); transform: translateY(-50%); overflow-y: auto; display: flex;
   flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--r-line);
   border-radius: var(--radius-overlay); background: var(--popover-bg); box-shadow: var(--shadow-overlay);
+  /* 面板是深色底栏的子节点，会继承底栏的奶油白字色；面板自己刷的是浅色浮层底，
+     不把字色拉回语义前景色，白底白字就只剩「屏幕压暗」几行弱色标签还看得见。 */
+  color: var(--text);
   animation: bottom-panel-in 0.16s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+/* 浮层里的说明文字比正文弱一档就够：沿用全局 --r-muted 的白底对比度只有 3:1，
+   12px 小字读着发虚，面板内改用次级前景色。 */
+.bottom-panel .control-label { color: var(--text-secondary); }
 
 /* 入场动效走 CSS keyframes，不再依赖 Transition 的 enter/leave 状态机：
    面板 DOM 的存在与否必须严格等于 activeBottomPanel，避免离场被打断后留下透明残影。
@@ -5355,7 +5369,8 @@ onUnmounted(() => {
   border-radius: 999px;
   background: var(--popover-bg);
   box-shadow: var(--shadow-card);
-  color: var(--reader-paper-text);
+  /* 浮标底是应用浮层色，不是纸面：夜间主题下纸面字色是浅色，会白底白字。 */
+  color: var(--text);
   font-size: 12px;
   line-height: 1.4;
   white-space: nowrap;
@@ -5446,12 +5461,14 @@ onUnmounted(() => {
   padding: 4px 5px;
   border: 1px solid var(--r-line);
   border-radius: 7px;
-  background: transparent;
+  /* 面板是浅色浮层：选项按钮要有可见的浅底与边框，否则白底上的透明按钮只剩字。 */
+  background: var(--r-surface);
   color: inherit;
   cursor: pointer;
   font-size: 12px;
 }
-.option-grid button.active { border-color: var(--active-chapter); background: var(--r-hover); }
+.option-grid button:hover { border-color: var(--hover-line); background: var(--surface-3); }
+.option-grid button.active { border-color: var(--active-chapter); background: var(--info-surface); color: var(--text); font-weight: 600; }
 .option-grid button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 1px; }
 
 @media (prefers-reduced-motion: reduce) {

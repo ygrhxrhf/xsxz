@@ -19,6 +19,20 @@ describe('Reader visual surface contract', () => {
     expect(source).toContain('para-unfocused')
   })
 
+  it('keeps popover and toolbar foregrounds on the app chrome palette, not the paper theme', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    // 底栏是深色半透明条，字色是奶油白；面板与顶栏刷的是浅色应用浮层底，
+    // 不显式归位就会白底白字（背景面板、真实书籍顶栏的字号/平放按钮都踩过）。
+    expect(source).toContain('color: var(--text);\n  animation: bottom-panel-in')
+    expect(source).toContain('.bottom-panel .control-label { color: var(--text-secondary); }')
+    expect(source).toContain('.reader-toolbar .bottom-button { color: inherit; }')
+    // 顶栏与拖拽浮标的底是应用外壳色，夜间主题下不能用纸面字色。
+    expect(source).toContain('.reader-toolbar .reader-book-title { flex: 0 1 auto; text-align: left; padding: 0 12px 0 0; font-size: 15px; color: var(--text); }')
+    expect(source).toMatch(/\.reader-progress-scrub-hint \{[\s\S]*?color: var\(--text\);/)
+    // 面板选项要有可见的浅底，白浮层上不再是透明按钮。
+    expect(source).toContain('background: var(--r-surface);\n  color: inherit;')
+  })
+
   it('preserves the reader interaction structure and motion safety rails', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
     expect(source).toContain('class="reader-toolbar"')
