@@ -387,9 +387,13 @@ try {
       };
       const from = at(0);
       const to = at(23);
-      const hitFrom = document.elementFromPoint(from[0], from[1]);
-      const hitTo = document.elementFromPoint(to[0], to[1]);
-      if (hitFrom && para.contains(hitFrom) && hitTo && para.contains(hitTo)) {
+      // 3D 变换下 elementFromPoint 命中的常常是书体外层而不是段落本身，
+      // 不能要求它命中段落；只要求两端没被顶栏/底栏盖住。
+      const covered = (pt) => {
+        const el = document.elementFromPoint(pt[0], pt[1]);
+        return Boolean(el && el.closest('.reader-toolbar, .reader-bottombar'));
+      };
+      if (!covered(from) && !covered(to)) {
         picked = { para, textNode, from, to };
         break;
       }

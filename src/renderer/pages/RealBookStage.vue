@@ -346,7 +346,7 @@ function updateLayout(): void {
   }
   // 书尽量铺满可用宽度，只留一圈窄桌边：阅读面积优先。
   // 默认俯仰会把投影再放大，因此按 0.88 预留，而不是把整行宽度都塞给书页。
-  const availableHeight = Math.floor(height * 0.99) - BLOCK_THICKNESS_PX
+  const availableHeight = Math.floor(height * 0.99) - BLOCK_THICKNESS_PX - REALBOOK_BAR_CLEARANCE_PX
   const widthLimit = Math.floor((width * 0.88 / 2) * 0.99)
   // 开本固定为约 3:4 的竖版（1:1.42）。宽度同时受高度约束：
   // 只按宽度算会在矮窗口里把书压成横向卡片——那不是书。
@@ -888,6 +888,13 @@ const FLIP_ANCHOR_OFFSET_PX = 0
 /** 书厚纸垛占用的高度：页面在下方让出这一段，纸垛的切口才不会被视口裁掉。 */
 const BLOCK_THICKNESS_PX = MAX_SPINE_LAYERS * BLOCK_DEPTH_PER_LAYER_PX + 8
 
+/**
+ * 底栏让位（px）：真实书籍的图标底栏常驻在视口底部，
+ * 书要在它上方留出一段，封面下沿、纸垛切口的层线才看得见，
+ * 不会被底栏压住。参考图里书脚与底栏之间也有一段空桌。
+ */
+const REALBOOK_BAR_CLEARANCE_PX = 56
+
 const readRatio = computed(() => pageRatio(currentPage.value, Math.max(1, pageCount.value)))
 const stackProgress = computed(() => {
   const base = Number.isFinite(props.bookProgressRatio) ? props.bookProgressRatio : readRatio.value
@@ -938,7 +945,7 @@ const stageStyle = computed(() => ({
   '--rb-block-left': `${leftBlockDepth.value}px`,
   '--rb-block-right': `${rightBlockDepth.value}px`,
   // 书脚下面要留出的高度：参考图底边有明显纸垛与软影，不让它贴到视口边缘。
-  '--rb-block-band': `${Math.round(BLOCK_THICKNESS_PX * 0.86)}px`,
+  '--rb-block-band': `${Math.round(BLOCK_THICKNESS_PX * 0.86 + REALBOOK_BAR_CLEARANCE_PX)}px`,
   '--rb-font-size': `${props.fontSize}px`,
   // 必须是长度：CSS 用它当 line-height，裸数字会被当成「字号的倍数」，一行会被撑成几十倍高。
   '--rb-line-height': `${lineHeightPx.value}px`,
@@ -1139,6 +1146,8 @@ defineExpose({
                没有这层，页面再卷也只是两张纸，读不出「一本装订好的书」。 -->
           <div class="real-book-board real-book-board-left" aria-hidden="true"></div>
           <div class="real-book-board real-book-board-right" aria-hidden="true"></div>
+          <!-- 书脊：一条藏在两页之间的圆弧脊背，只在上下两端的封面外露处露头。 -->
+          <div class="real-book-spine" aria-hidden="true"></div>
           <!-- 书厚：左半是已读、右半是剩余，层数之和恒定，厚度随阅读进度从右往左转移。
                零层的半边连块都不渲染，免得只剩一块空纸板。 -->
           <div v-if="leftBlockLayers.length" class="real-book-block real-book-block-left" aria-hidden="true">
@@ -1342,10 +1351,11 @@ defineExpose({
   /* 桌面：参考图里的书摊在低饱和深绿灰上，不是暖棕桌布。 */
   --rb-desk: #232a28;
   --rb-desk-lit: #303835;
-  /* 封面色：参考图里没有装订壳，书体不再画封面；变量只作旧规则的兜底。 */
-  --rb-cover-lit: #6a4a30;
-  --rb-cover-mid: #452e1e;
-  --rb-cover-deep: #24150d;
+  /* 封面与书脊：参考图是一本浅色纸面软装书——封面只比纸页深一档，
+     从四边露出一圈，书脊在上下两端露出一小截脊头。不是深色皮壳。 */
+  --rb-cover-lit: color-mix(in srgb, var(--rb-paper-warm) 58%, var(--rb-paper-shade));
+  --rb-cover-mid: color-mix(in srgb, var(--rb-paper-warm) 40%, var(--rb-paper-shade));
+  --rb-cover-deep: color-mix(in srgb, var(--rb-paper-warm) 24%, var(--rb-paper-shade));
   /* 纸垛的切口、折缝与书心的暗色：比纸自身的暖阴影深一档。 */
   --rb-fold-shadow: 58 36 16;
   /* 页内批注：墨色跟着主题变亮/变深，底色仍从纸色派生，夜里不会出现一张白卡。 */
@@ -1771,6 +1781,18 @@ defineExpose({
   );
 }
 
+/* 折缝中心的一线：两页在书脊处对折的脊线，只有 1px，避免把书心画成一条黑缝。 */
+.real-book-gutter::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -0.5px;
+  width: 1px;
+  background: color-mix(in srgb, var(--rb-paper-shade) 30%, transparent);
+  pointer-events: none;
+}
+
 /* 折缝的桥：书脊处那条把左右两页连起来的弯折纸面。
    两页各自绕中线转 9°，交界的内缘本是一道尖角；这道桥盖住尖角，
    画出纸从一页弯到另一页的那段圆弧——谷底最暗、两侧转亮，
@@ -1824,24 +1846,22 @@ defineExpose({
   pointer-events: none;
 }
 
-/* 硬壳封面：参考图里的书没有装订壳，只是两页摊开的纸。
-   保留元素与变换只为不牵动排版，视觉上整层收起。 */
+/* 浅色纸面封面：参考图是一本软装书，封面只比纸页深一档，
+   从四边露出一圈包边，读者才读得出「这是一本书」，而不是两张浮在桌上的纸。 */
 .real-book-board {
-  display: none;
   position: absolute;
-  top: -7px;
-  width: calc(var(--rb-page-width) + 8px);
-  height: calc(var(--rb-page-height) + 14px);
-  border-radius: 13px 4px 10px 5px;
+  top: -10px;
+  width: calc(var(--rb-page-width) + 16px);
+  height: calc(var(--rb-page-height) + 20px);
+  border-radius: 16px 6px 14px 7px;
   background:
-    linear-gradient(180deg, rgba(255, 222, 174, 0.12), transparent 12%, transparent 86%, rgba(0, 0, 0, 0.24)),
-    repeating-linear-gradient(96deg, rgba(255, 224, 184, 0.025) 0 1px, transparent 1px 4px),
-    linear-gradient(180deg, var(--rb-cover-lit), var(--rb-cover-mid) 42%, var(--rb-cover-deep));
+    linear-gradient(180deg, rgba(255, 248, 232, 0.34), transparent 10%, transparent 88%, rgba(86, 66, 40, 0.12)),
+    linear-gradient(180deg, var(--rb-cover-lit), var(--rb-cover-mid) 55%, var(--rb-cover-deep));
   box-shadow:
-    inset 0 0 0 1px rgba(255, 226, 184, 0.14),
-    inset 0 0 0 4px rgba(0, 0, 0, 0.08),
-    inset 0 1px 0 rgba(255, 238, 205, 0.18),
-    0 8px 18px rgba(14, 8, 4, 0.3);
+    inset 0 0 0 1px color-mix(in srgb, var(--rb-cover-deep) 46%, transparent),
+    inset 0 0 0 3px rgba(96, 74, 46, 0.08),
+    inset 0 1px 0 rgba(255, 249, 234, 0.30),
+    0 4px 10px rgba(60, 50, 35, 0.16);
   transform-style: preserve-3d;
   pointer-events: none;
 }
@@ -1849,10 +1869,10 @@ defineExpose({
 .real-book-board::after {
   content: '';
   position: absolute;
-  inset: 5px;
-  border: 1px solid rgba(235, 199, 145, 0.16);
-  border-radius: 9px 2px 7px 3px;
-  box-shadow: 0 0 0 1px rgba(20, 12, 7, 0.18);
+  inset: 4px;
+  border: 1px solid color-mix(in srgb, var(--rb-cover-deep) 68%, transparent);
+  border-radius: 10px 3px 8px 4px;
+  box-shadow: 0 0 0 1px rgba(255, 248, 230, 0.18);
   pointer-events: none;
 }
 
@@ -1866,8 +1886,59 @@ defineExpose({
   right: -8px;
   transform-origin: left center;
   transform: rotateY(calc(-1 * var(--rb-bend, 0deg))) translateZ(-10px);
-  border-radius: 4px 13px 5px 10px;
+  border-radius: 6px 16px 7px 14px;
 }
+
+/* 书脊：封面在中间折成的圆弧脊背。它藏在两页后面，只在封面高出纸页的
+   上下两端露出来——正是参考图里书脊头那一小截。 */
+.real-book-spine {
+  position: absolute;
+  left: 50%;
+  top: -12px;
+  bottom: -12px;
+  width: 22px;
+  transform: translateX(-50%) translateZ(-6px);
+  border-radius: 11px;
+  background:
+    /* 脊背的圆弧：中间被压深，两侧滚出受光。 */
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--rb-cover-deep) 24%, transparent) 0%,
+      color-mix(in srgb, var(--rb-cover-deep) 68%, transparent) 34%,
+      color-mix(in srgb, var(--rb-cover-deep) 88%, transparent) 50%,
+      color-mix(in srgb, var(--rb-cover-deep) 68%, transparent) 66%,
+      color-mix(in srgb, var(--rb-cover-deep) 24%, transparent) 100%
+    ),
+    linear-gradient(180deg, var(--rb-cover-lit), var(--rb-cover-mid));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 249, 234, 0.16),
+    0 3px 8px rgba(60, 48, 30, 0.20);
+  pointer-events: none;
+}
+
+/* 脊头：参考图里书脊在上下两端露出的一小截锁线。一圈深色细边 + 虚线，
+   只有 14×5px，不抢正文，但让「这是装订起来的」有一个落点。 */
+.real-book-spine::before,
+.real-book-spine::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  width: 14px;
+  height: 5px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--rb-cover-deep) 62%, transparent) 0 1px,
+      transparent 1px 3px
+    ),
+    color-mix(in srgb, var(--rb-cover-lit) 78%, #fffdf4);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rb-cover-deep) 38%, transparent);
+}
+
+.real-book-spine::before { top: 0; }
+.real-book-spine::after { bottom: 0; }
 
 .real-book-board-right::after {
   border-radius: 2px 9px 3px 7px;
