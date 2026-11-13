@@ -1471,8 +1471,11 @@ defineExpose({
 .real-book-stage.is-sheet .real-book-viewport { padding-bottom: 0; }
 
 .real-book-book {
-  /* 透视提到书体层：缩放、俯仰与两页的 V 形折角都在同一层，页面（子级）才吃得到同一个透视。 */
-  perspective: 1750px;
+  /* 透视提到书体层：缩放、俯仰与两页的 V 形折角都在同一层，页面（子级）才吃得到同一个透视。
+     视距取 2800px：1750px 是贴着桌面拍特写的近距广角，翻动页一离开桌面就被放大两三成，
+     纸的上下缘伸到书外，看着像一张被撕下来的纸。拉远到 2800px 后，纸绕书脊转一整程，
+     投影尺寸与静止页只差几个百分点，翻页才像「同一页纸在转」而不是「另一张纸盖上来」。 */
+  perspective: 2800px;
   perspective-origin: 50% 42%;
   transform-style: preserve-3d;
   touch-action: none;

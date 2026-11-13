@@ -54,9 +54,11 @@ describe('卷页几何', () => {
   })
 
   it('中段有弧度：整页的转角沿页宽拉开，纸是被弯着的不是刚体', () => {
-    // 弯度峰值在纸角刚越过正对位置、书脊侧还没跟上时（约 34%）。
+    // 弯度峰值出现在中段的纸角附近（约 34%）。弧度只需几十度：一页书纸的挺度
+    // 只允许它在纸角那一小段弯一点——弯到 45° 以上整页就成了打开的折扇。
     const angles = pose(0.34).map((item) => item.angle)
-    expect(Math.max(...angles) - Math.min(...angles)).toBeGreaterThan(45)
+    expect(Math.max(...angles) - Math.min(...angles)).toBeGreaterThan(12)
+    expect(Math.max(...angles) - Math.min(...angles)).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
   })
 
   it('外缘领跑：外缘比书脊侧更早离开桌面', () => {
@@ -70,11 +72,14 @@ describe('卷页几何', () => {
     )
   })
 
-  it('外缘那一段真的被甩过去了：外缘的转角先过半', () => {
+  it('整页绕书脊掀过去：外缘只比书脊侧早一点越过正对观者的位置', () => {
     const poses = pose(0.4)
-    // 外缘已过 −90°（正对观者的那一侧），书脊侧还没到。
+    // 40% 时整页都已越过 −90°：转轴在书脊，书脊侧不可能还贴在桌上。
     expect(outerSide(poses)).toBeLessThan(-90)
-    expect(spineSide(poses)).toBeGreaterThan(-90)
+    expect(spineSide(poses)).toBeLessThan(-90)
+    // 外缘仍领跑，但只早十度上下——再大就是折扇，不是一页纸。
+    expect(Math.abs(outerSide(poses) - spineSide(poses))).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
+    expect(Math.abs(outerSide(poses) - spineSide(poses))).toBeGreaterThan(8)
   })
 
   it('纸角全程不回摆：角度单调，绝不出现纸在抖', () => {
@@ -93,7 +98,8 @@ describe('卷页几何', () => {
     const sample = (progress: number) => outerSide(pose(progress))
     // 窗口取 30%–60%（甩的末段与弯度峰值区），旧实现在这里总位移只有 16°。
     const travelled = Math.abs(sample(0.6) - sample(0.3))
-    expect(travelled).toBeGreaterThan(40)
+    // 30%–60% 的窗口里纸角走 38°：弯度上限是软护栏，压缩增速但不阻断。
+    expect(travelled).toBeGreaterThan(30)
     // 窗口内不能有任何一小段几乎不动：被钳制钉死时这里是 0。
     let minStep = Infinity
     for (let step = 12; step <= 24; step += 1) {
@@ -103,11 +109,26 @@ describe('卷页几何', () => {
     expect(minStep).toBeGreaterThan(0.3)
   })
 
-  it('书脊侧晚起：纸角已经甩出去时，书脊那一片还贴在书上', () => {
+  it('书脊侧只晚一小拍：书脊那一段已经跟着掀起来，整页仍绕书脊转', () => {
     const poses = pose(0.25)
-    // 纸角已经走了 −65° 左右，书脊侧几乎还没动。
-    expect(Math.abs(spineSide(poses) + 8)).toBeLessThan(14)
-    expect(Math.abs(outerSide(poses) + 8)).toBeGreaterThan(40)
+    // 25% 时书脊侧已经离开桌面二十多度——转轴一直在书脊上。
+    expect(Math.abs(spineSide(poses) + 8)).toBeGreaterThan(18)
+    // 外缘照样领跑，但只领先一个弯度量级。
+    expect(Math.abs(outerSide(poses) + 8)).toBeGreaterThan(Math.abs(spineSide(poses) + 8))
+    expect(Math.abs(outerSide(poses) - spineSide(poses))).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
+  })
+
+  it('翻动页贴着书脊转：起手时纸身没有被推到观者面前', () => {
+    // 这一条是「页面像被撕下来」的回归钉。早先书脊侧晚起半程、弯度放开到 120°，
+    // 最外一条竖带在起手 10% 就已经离桌面 120px、到 60% 时超过 380px，
+    // 透视把整页放大三成，纸伸出书的轮廓——看着就是一张纸被从书里揭了下来。
+    for (let step = 1; step <= 10; step += 1) {
+      const poses = pose(step / 100)
+      expect(poses[0]!.z).toBeLessThan(6)
+      expect(Math.abs(poses.at(-1)!.z)).toBeLessThan(170)
+    }
+    // 起手 10%：纸角只掀起二十度上下，纸身还贴着书。
+    expect(Math.abs(outerSide(pose(0.1)) + 8)).toBeLessThan(24)
   })
 
   it('正反面的显隐由转角决定：任何一条带都不会两面同时画', () => {
@@ -142,14 +163,15 @@ describe('卷页几何', () => {
       const angles = pose(progress).map((item) => item.angle)
       return Math.max(...angles) - Math.min(...angles)
     }
-    expect(bendAt(0.34)).toBeGreaterThan(45)
-    expect(bendAt(0.5)).toBeGreaterThan(30)
+    expect(bendAt(0.34)).toBeGreaterThan(12)
+    expect(bendAt(0.5)).toBeGreaterThan(8)
     // 上限是纸的挺度：弯过头就成了塑料片。
     expect(bendAt(0.5)).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
     expect(bendAt(1)).toBeCloseTo(0, 6)
     // 峰值弯度发生在中段（纸弯成弓的那一刻），不是全程拉满。
     const peak = Math.max(...Array.from({ length: 21 }, (_, i) => bendAt(i / 20)))
-    expect(peak).toBeGreaterThan(50)
+    expect(peak).toBeGreaterThan(14)
+    expect(peak).toBeLessThanOrEqual(FLIP_MAX_BEND_DEG + 1e-6)
   })
 
   it('折线首尾相接：下一条的起点就是上一条的终点', () => {
@@ -208,8 +230,11 @@ describe('卷页几何', () => {
     // 离桌的量作用在整张纸上，不在单条竖带上（否则页脚会变成锯齿）。
     expect(flipSheetLift(0).lift).toBeCloseTo(0, 6)
     expect(flipSheetLift(1).lift).toBeCloseTo(0, 6)
-    // 中段纸离桌面最高。
-    expect(flipSheetLift(0.5).lift).toBeGreaterThan(10)
+    // 中段纸离桌面最高，但只抬十几像素：纸是绕书脊转，不是从书上揭起来举到空中。
+    expect(flipSheetLift(0.5).lift).toBeGreaterThan(4)
+    expect(flipSheetLift(0.5).lift).toBeLessThanOrEqual(13)
+    // 仰角同样要收住：早先 19° 让纸的上缘朝观者压过来，透视下整页读成一块斜板。
+    expect(flipSheetLift(0.5).tilt).toBeLessThanOrEqual(7)
   })
 
   it('整张纸有方向性的侧滚：左右翻页镜像，而不是一条直线扇动', () => {
@@ -242,20 +267,18 @@ describe('卷页几何', () => {
     // 非法转角按 0 处理（正对），不能算出 NaN 把整条带变成透明。
     expect(flipFacing(Number.NaN)).toBeCloseTo(1, 6)
 
-    // 正对时正文清晰；侧对到 90° 时正文收干净（只剩纸边与阴影）。
-    expect(flipContentOpacity(0)).toBeCloseTo(1, 6)
-    expect(flipContentOpacity(90)).toBeCloseTo(0, 6)
-    expect(flipContentOpacity(-90)).toBeCloseTo(0, 6)
-    // 淡出起点晚：46°（投影还有七成宽）前正文完全清晰，之后由侧角压暗接管。
+    // 正文只在纸几乎侧立时才收干净：60° 以前满字，86° 才到 0。
+    // 早先 57° 就清零，中段整张纸是无字纸板，压在左页上被读成「撕开一条」。
     expect(flipContentOpacity(0)).toBeCloseTo(1, 6)
     expect(flipContentOpacity(40)).toBeCloseTo(1, 6)
-    expect(flipContentOpacity(50)).toBeGreaterThan(0.3)
-    expect(flipContentOpacity(50)).toBeLessThan(1)
-    // 投影不足六成宽之后，纸上的墨色不再是字：收干净，只剩纸边与阴影。
-    expect(flipContentOpacity(60)).toBeCloseTo(0, 6)
-    expect(flipContentOpacity(75)).toBeCloseTo(0, 6)
-    expect(flipContentOpacity(84)).toBeCloseTo(0, 6)
-    expect(flipContentOpacity(85)).toBeCloseTo(0, 6)
+    expect(flipContentOpacity(60)).toBeCloseTo(1, 6)
+    expect(flipContentOpacity(70)).toBeGreaterThan(0.5)
+    expect(flipContentOpacity(70)).toBeLessThan(1)
+    expect(flipContentOpacity(80)).toBeGreaterThan(0)
+    expect(flipContentOpacity(80)).toBeLessThan(0.3)
+    expect(flipContentOpacity(86)).toBeCloseTo(0, 6)
+    expect(flipContentOpacity(90)).toBeCloseTo(0, 6)
+    expect(flipContentOpacity(-90)).toBeCloseTo(0, 6)
     // 淡出是单调的：越侧对越淡，不能在中间反复。
     let previous = flipContentOpacity(0)
     for (let step = 1; step <= 40; step += 1) {
@@ -266,80 +289,50 @@ describe('卷页几何', () => {
   })
 
   it('cos 淡出：背面字影留得比正面多，但始终只是淡淡一层', () => {
-    // 纸翻过去的那一半不能成一片素净的灰板：灰板与字面之间那道直边是「机械」最扎眼的地方。
     for (const angle of [85, 88]) {
       expect(flipBackOpacity(angle)).toBeLessThanOrEqual(0.08)
     }
-    // 但背面不是正文，只是纸里透过来的极淡字影：上限压得很低。
     expect(flipBackOpacity(0)).toBeLessThanOrEqual(0.08)
     expect(flipBackOpacity(Number.NaN)).toBeLessThanOrEqual(0.08)
-    // 正对观者时背面最厚（纸翻过来了），但仍不超过 0.08。
     expect(flipBackOpacity(180)).toBeLessThanOrEqual(0.08)
-    // 侧对到底（90°）时字影收掉，纸面只剩明暗。
     expect(flipBackOpacity(90)).toBeCloseTo(0, 6)
   })
 
-  it('侧对角线把正文收干净：投影不足四分之一宽后只剩纸边与阴影', () => {
-    // 渲染层只画转角对应的那一面（flipFaceVisible）：正面 ≤90°、背面 >90°。
-    // 所以某一帧纸上能看见多少字，就是那一面自己的淡变系数。
+  it('正文只在纸几乎侧立时收干净：整张纸不会变成无字纸板', () => {
     const drawn = (angle: number) => (flipFaceVisible(angle).showFront
       ? flipContentOpacity(angle)
       : flipBackContentOpacity(angle))
 
-    // 判据按**投影宽度**（|cos θ|），不是按角度区间对称：
-    // 57° 的正面与 123° 的纸背投影一样窄，两面必须一起收掉。
-    for (let angle = 58; angle <= 122; angle += 0.5) {
-      expect(drawn(angle)).toBeCloseTo(0, 6)
+    // 只有一条带真正侧立（|cos θ| ≈ 0）时才是 0。
+    for (const angle of [-90, 90]) expect(drawn(angle)).toBeCloseTo(0, 6)
+    // 80° 以前和 104° 以后都得有字：那时投影还有页宽的三成以上。
+    for (const angle of [0, 20, 40, 60, 75, 108, 120, 140, 180]) {
+      expect(drawn(angle)).toBeGreaterThan(0.3)
     }
-    expect(drawn(-90)).toBeCloseTo(0, 6)
-
-    // 角域外正文照旧：纸还没立起来（40° 以前）和已经转平（140° 以后）都有字。
-    for (const angle of [0, 20, 40, 140, 150, 180]) {
-      expect(drawn(angle)).toBeGreaterThanOrEqual(0.3)
-    }
-
-    // 90° 换面两侧都是 0：换面时两面一起淡出，不会出现一面有字一面没字的竖向硬切。
-    expect(Math.abs(drawn(90) - drawn(89))).toBeLessThan(0.05)
-    expect(Math.abs(drawn(91) - drawn(90))).toBeLessThan(0.05)
-    // 按投影宽度判，正背两侧天然对称地「几乎全暗」：57° 与 123° 的 |cos| 相同。
-    // （不要求数值相等：正背两条基础曲线本来就不同，只要求两侧都已经收干净。）
-    expect(flipContentOpacity(57)).toBeLessThan(0.03)
-    expect(flipBackContentOpacity(123)).toBeLessThan(0.03)
-
-    // 非法转角按已经翻过来的纸处理，不能把纸背正文算成 NaN。
+    // 换面点两侧都是 0：不会出现一面有字一面没字的竖向硬切。
+    expect(drawn(90)).toBeCloseTo(0, 6)
+    expect(drawn(89.6)).toBeLessThan(0.1)
+    // 非法转角按已经翻过来的纸处理。
     expect(flipBackContentOpacity(Number.NaN)).toBeCloseTo(1, 6)
   })
 
-  it('整段翻页里只有侧对角域的带子可以无字', () => {
-    // 上面的断言按角度扫；这里用真实的 flipT 行程再扫一遍：
-    // 每条带只在它自己侧立的那一刻才允许没字，其余相位都得能读。
-    // 76°–84° 与 96°–104° 是两段斜坡，取值介于 0 与满可见度之间，这里只要求单调、不跳。
-    let blankPhases = 0
+  it('整段翻页里每一帧都有字可读：不存在整张纸同时无字的相位', () => {
+    // 这一条是「撕页」观的回归钉：中段无字纸板压在邻页上，就是用户看到的「撕开一条」。
     for (let step = 0; step <= 40; step += 1) {
       const poses = pose(step / 40)
-      let blank = 0
+      let best = 0
       for (const item of poses) {
-        const angle = Math.abs(item.angle)
         const visible = flipFaceVisible(item.angle).showFront
           ? flipContentOpacity(item.angle)
           : flipBackContentOpacity(item.angle)
-        const cos = Math.abs(Math.cos(item.angle * Math.PI / 180))
-        if (cos <= 0.55) {
-          expect(visible).toBeCloseTo(0, 6)
-          blank += 1
-        } else if (angle <= 40 || angle >= 140) {
-          expect(visible).toBeGreaterThanOrEqual(0.3)
-        } else {
-          // 斜坡上：必须是一个合法的 0–1 值，不能是 NaN。
-          expect(Number.isFinite(visible)).toBe(true)
-          expect(visible).toBeGreaterThanOrEqual(0)
-          expect(visible).toBeLessThanOrEqual(1)
-        }
+        expect(Number.isFinite(visible)).toBe(true)
+        expect(visible).toBeGreaterThanOrEqual(0)
+        expect(visible).toBeLessThanOrEqual(1)
+        best = Math.max(best, visible)
       }
-      if (blank === poses.length) blankPhases += 1
+      // 每一帧至少有一条带满字：纸扇面铺开，总有正对观者的那一段。
+      expect(best).toBeGreaterThanOrEqual(0.3)
     }
-    // 整张纸同时无字的相位必须很短：它只在整页几乎侧立的一瞬。
-    expect(blankPhases).toBeLessThanOrEqual(4)
   })
 
   it('竖带连续曲面：整段行程每一条带都连着前一条，首尾相接', () => {

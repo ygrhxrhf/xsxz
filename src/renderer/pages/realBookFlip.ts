@@ -12,11 +12,23 @@
  *   1. **纸角行程**（`tipProgress`）：被捏住的纸角甩到了全程的百分之多少。
  *      它领跑——先越过正对观者的位置，再落向对面。
  *   2. **书脊侧行程**（`rootProgress`）：还连在书上的那一端走到哪了。
- *      它**晚起**：纸角已经在飞了，书脊这一片还贴在书上。
+ *      它只比纸角**晚一小拍**：书纸有挺度，书脊那一段被纸角拽着一起掀起，
+ *      但整页的转轴始终在书脊上。
  *   3. **纸面离桌**（`liftEnvelope`）：整张纸离开桌面、上缘朝观者倾过去的量。
  *
  * 纸角的行程与书脊侧的行程之差，就是纸弯出来的那个弓。弯度自己起自己落，
  * 不需要额外维护。
+ *
+ * ## 翻动页必须**绕着书脊**转
+ *
+ * 早先书脊侧要晚起半程（ROOT_DELAY = 0.55），同时把弯度上限放到 120°。
+ * 于是书脊侧钉在桌上不动，外缘已经甩到接近正对观者，整页被拉成一个打开的折扇；
+ * 每一根竖带还按自己的转角把纵深推向观者，最外一条离桌面 300px 以上，
+ * 在透视里被放大三成——纸的上下缘都伸出书的轮廓，读起来就是「页面被从书里撕下来」。
+ *
+ * 现在转轴回到书脊：书脊侧只晚 0.14，弯度上限 20°（一页纸的挺度），
+ * 离桌量 12px。整页是一张略弯的硬纸绕书脊掀起、越过正对观者的位置、落到对面，
+ * 任何一帧都不会比静止页大出一圈。弯度只负责让纸不像塑料板。
  *
  * ## 曾经踩过的坑：钳制弯度会把纸角钉死
  *
@@ -25,8 +37,8 @@
  * 落位角。画面上就是纸的外缘卡住、只有里侧在转——那正是「僵硬、机械」的读感。
  *
  * 现在弯度上限是一条**软护栏**：几何按自己的曲线走，接近上限时用 tanh 压缩，
- * 增速变缓但不会停住。整页峰值弯度约 64°，书脊侧与纸角的相位差始终在变，
- * 不会出现某一段被钉死。三条时间线全程单调：纸角一旦回摆，画面上就是纸在抖。
+ * 增速变缓但不会停住。书脊侧与纸角的相位差始终在变，不会出现某一段被钉死。
+ * 三条时间线全程单调：纸角一旦回摆，画面上就是纸在抖。
  */
 
 /**
@@ -48,11 +60,13 @@ export const FLIP_DURATION_MS = 820
  * 这是「纸能弯，但弯不成铁皮」的护栏。真实书页在翻动中是**弓起来的**，
  * 不是卷成筒。
  *
- * 峰值取 72°：正常行程下的峰值弯度约 64°，接近上限时由 tanh 平滑压缩；
- * 万一触发也是整条曲线一起压缩——不会出现某一段被钉住不动的情况
- * （那正是早先实现「僵硬、机械」的根源）。
+ * 取 20°：一页书纸是**有挺度**的，翻动中最多在纸角那一小段弯出二十度上下。
+ * 早先放到 120° 时，中段的纸被弯成一把打开的折扇：书脊侧还贴在桌上，
+ * 外缘已经甩到 90°，整页沿宽度摊开成一个大扇面，每一帧都像一张被揭下来的纸。
+ * 现在弯度上限压到纸的挺度量级，整页像一张略弯的硬纸绕着书脊转，
+ * 弯度只负责让它不像塑料板，不负责把纸折成扇子。
  */
-export const FLIP_MAX_BEND_DEG = 72
+export const FLIP_MAX_BEND_DEG = 20
 
 /**
  * 翻动页浮在下面那页之上的纵深（px）。
@@ -62,8 +76,15 @@ export const FLIP_MAX_BEND_DEG = 72
  */
 const FLIP_SHEET_CLEARANCE_PX = 3
 
-/** 纸面飘起来的高度（px）：整张纸在飞行中离桌面多远。 */
-const FLIP_SAIL_PX = 46
+/**
+ * 纸面飘起来的高度（px）：整张纸在飞行中离桌面多远。
+ *
+ * 只取 12px：翻页是纸**绕书脊转**，不是把纸从书上揭起来举到空中。
+ * 早先取 46px 时，整张纸被平移到观者面前，透视把纸放大了三成，
+ * 纸的上下缘都伸到书的轮廓之外——读起来就是「页面被撕下来了」。
+ * 留一点离桌量只为脱离 z-fighting，并给投影一点余地。
+ */
+const FLIP_SAIL_PX = 12
 
 export interface FlipSlicePose {
   /** 该竖带相对观者平面的转角（deg，负值向外翻） */
@@ -100,7 +121,9 @@ export function flipLight(angleDeg: number): number {
   // 纸翻过 90° 之后，朝上的是纸的**里子**：它背对着上方来的光，
   // 所以要明显暗下来。少了这一层，折回来的那一片仍然是亮的，
   // 读起来像一张平贴的纸片，而不是从光里翻过去的纸。
-  const verso = absolute > 90 ? 1 - 0.5 * Math.min(1, (absolute - 90) / 80) : 1
+  // 纸背是同一张纸的另一面，只比正面略暗。压到 0.5 会让翻过去的那张纸变成
+  // 一块灰板——落定前它盖在左页上，读起来就是「一张别的纸贴在上面」。
+  const verso = absolute > 90 ? 1 - 0.16 * Math.min(1, (absolute - 90) / 80) : 1
   return Math.min(1, (base + gloss) * verso)
 }
 
@@ -351,11 +374,13 @@ function tipProgress(t: number): number {
  * 再重新归一化。延后而不是压缩，是为了让书脊侧的曲线与纸角**形状相同**——
  * 同一族曲线取不同的时间偏移，两端速度都连续，不会出现新的接缝。
  *
- * 0.30 意味着前 30% 的行程里书脊侧几乎不动：外角已经翻起、纸面弯成弓，
- * 内侧还压在书上。早先只延后 0.18 时整页最大转角差只有三十几度，
- * 投影出来仍像一块斜放的板；延后到 0.30 后中段弯度接近 64°，纸才真正“弓”起来。
+ * 0.14 意味着书脊侧只比纸角晚一小拍：整页几乎是一起绕书脊掀起来的。
+ * 早先延后到 0.55 时，前一半行程里书脊侧钉在桌上一动没动，外缘却已经甩到
+ * 正对观者的位置——纸被弯成一个固定的扇面，转轴从书脊跑到了纸面中间，
+ * 那一帧看起来就像有人捏着纸角把页面从书里揭下来。真书翻页的转轴始终在书脊，
+ * 书脊侧只比纸角晚一点点（纸在那里被压弯），不会晚到半程。
  */
-const ROOT_DELAY = 0.30
+const ROOT_DELAY = 0.14
 
 function rootProgress(t: number): number {
   if (t <= ROOT_DELAY) return 0
@@ -515,39 +540,20 @@ export function flipFacing(angleDeg: number): number {
 }
 
 /**
- * 纸面正文在侧对到底时留下的最低可见度（0–1）。
+ * 正文开始退 / 完全隐去的正视程度（|cos θ|）。
  *
- * 下限不为 0 是为了不让纸在中段整片发白：正面淡得太早、纸背又要转过 90° 才起淡，
- * 中间那段角域两面同时没字，纸上就是一条空白带。留一层薄字兜住这段过渡。
+ * 只有纸**真的侧立**时才把字收干净：0.07（约 86°）才到 0。
  *
- * 但「薄字」不能一直留到纸完全侧立——那正是另一头的错（见 `flipContentSideFalloff`）。
+ * ## 曾经踩过的坑：57°–123° 一律清零，整张纸成了无字纸板
+ *
+ * 早先按 |cos| ≤ 0.55 一票否决。可是书脊侧又晚起，中段整页的带子全落在那段角域里：
+ * 那一帧的翻动页上**一个字也没有**，它又已经扫到左页上方，左页正文在纸的轮廓处
+ * 被硬切一刀——读者看到的就是「页面被撕开一条」。
  */
-const FLIP_CONTENT_FLOOR = 0.36
+const FLIP_CONTENT_CLEAR_FACING = 0.5
+const FLIP_CONTENT_BLANK_FACING = 0.07
 
-/** 正文开始退的正视程度（|cos θ|）：约 46°，投影还有七成宽。 */
-const FLIP_CONTENT_CLEAR_FACING = 0.72
-/** 正文完全隐去的正视程度（|cos θ|）：约 57°，投影不足六成宽。 */
-const FLIP_CONTENT_BLANK_FACING = 0.55
-
-/**
- * 侧对角线的内容压暗系数（0–1），按**投影宽度**而不是按角度给。
- *
- * 一条带侧过去后，它在屏幕上只剩带宽的 |cos θ| 倍：窗口里那一段版面被压成
- * 几道竖着的墨色。那不是字，看起来就是「纸被撕开一条」。真人翻书在同一个相位
- * 看到的只有纸边和阴影，所以这时候把正文收干净。
- *
- * 阈值卡在 |cos| = 0.55（约 57°–123°）：实测逐带数据里，纸背 120°–126° 的带
- * 仍有 0.19–0.87 的内容可见度，投影宽度还有半宽以上，字被压成竖长条，
- * 和正面残字一样读成撕页。收到 0.55 后，整个侧立过程（57°–123°）只剩纸色。
- * 正面 46° 以前、纸背 137° 以后的字完整可读：那时用户确实在读那一面。
- *
- * 按 |cos θ| 判而不是按角度区间对称判，是因为
- * 正面与纸背侧立的距离并不对称：57° 的正面和 123° 的纸背投影一样窄（|cos|≈0.55），
- * 它们应该一起收掉。按角度划一个固定窗，两头的窄带总有一头盖不住。
- *
- * 两段边界用 smootherstep，对外一阶连续，扫描时不会看到内容闪一下。
- */
-export function flipContentSideFalloff(angleDeg: number): number {
+export function flipContentOpacity(angleDeg: number): number {
   const facing = flipFacing(angleDeg)
   if (facing >= FLIP_CONTENT_CLEAR_FACING) return 1
   if (facing <= FLIP_CONTENT_BLANK_FACING) return 0
@@ -556,56 +562,24 @@ export function flipContentSideFalloff(angleDeg: number): number {
 }
 
 /**
- * 正面正文的淡出系数（0–1）。
- *
- * 阈值要**晚**：正文淡得太早，纸还没立起来字就先没了，中段整片纸两面无字。
- * 但也不能不淡：一条带侧过去以后，投影宽度按 |cos θ| 缩，窗口里那一段版面被压成
- * 几十像素宽的色带。折中取正视 0.48（约 61°，半宽）起淡、0.06（约 87°）淡到下限：
- * 纸立到投影不足半宽时正文才开始退，退到底仍留一层薄字交给纸背接。
- *
- * 最后再乘侧对角域的压暗系数：投影不足半宽后，纸上的墨色不再是字。
- */
-export function flipContentOpacity(angleDeg: number): number {
-  const facing = flipFacing(angleDeg)
-  const fade = Math.min(1, Math.max(0, (facing - 0.06) / 0.42))
-  const base = FLIP_CONTENT_FLOOR + (1 - FLIP_CONTENT_FLOOR) * fade
-  return base * flipContentSideFalloff(angleDeg)
-}
-
-/**
- * 背面（纸的里子）的淡出系数（0–0.08）。
- *
- * 背面要**比正面留得多**：背面若跟着正面一起淡掉，纸翻过去的那一半就成了
- * 一片素净的灰板——灰板与字面之间那道直边是「机械」最扎眼的地方。
- *
- * 但背面不是正文：翻过去看到的是纸的**里子**，里子上只有透过来的淡淡字影，
- * 所以上限压得很低。
+ * 背面（纸的里子）的字影：上限压得很低，只在纸侧立时收掉。
  */
 export function flipBackOpacity(angleDeg: number): number {
   const facing = flipFacing(angleDeg)
-  const base = Math.min(1, Math.max(0, (facing - 0.15) / 0.5)) * 0.08
-  // 侧对时连字影也收干净：一条投影不足带宽四分之一的窄带里，
-  // 哪怕 8% 的淡影也会被压成几道竖着的墨痕，跟正文一样读成「撕开一条」。
-  return base * flipContentSideFalloff(angleDeg)
+  return Math.min(1, Math.max(0, (facing - 0.05) / 0.42)) * 0.08
 }
 
 /**
- * 纸背正文的淡入系数（0–1）。
- *
- * 纸背只有转过 90° 才参与合成（见 `flipFaceVisible`），所以它必须**接在正面
- * 淡变的下限上**，而不是从 0 起淡：从 0 起淡就会在换面那一刻把正面最后那层薄字
- * 一起收掉，纸上一段角域两面无字。
- *
- * 因此它与正面共用同一个下限（`FLIP_CONTENT_FLOOR`），也共用同一个侧对角域压暗系数：
- * 90° 两侧的过渡是连续的，约 115° 露全。
+ * 纸背正文的淡入：纸背转过 90° 才参与合成，所以 90° 起淡、108° 露全——
+ * 那时投影已有页宽的三成，字能读了。
  */
 export function flipBackContentOpacity(angleDeg: number): number {
   const angle = Number.isFinite(angleDeg) ? Math.abs(angleDeg) : 180
   if (angle <= 90) return 0
-  const facing = Math.abs(Math.cos((angle * Math.PI) / 180))
-  const fade = Math.min(1, Math.max(0, facing / 0.42))
-  const base = FLIP_CONTENT_FLOOR + (1 - FLIP_CONTENT_FLOOR) * fade
-  return base * flipContentSideFalloff(angle)
+  const full = 108
+  if (angle >= full) return 1
+  const t = (angle - 90) / (full - 90)
+  return t * t * (3 - 2 * t)
 }
 
 /**
@@ -655,9 +629,11 @@ export function flipSheetLift(progress: number, direction: 1 | -1 = 1): FlipShee
   const rise = Math.sin(Math.PI * tipProgress(t))
   return {
     lift: FLIP_SAIL_PX * rise,
-    tilt: 19 * rise,
+    // 倾角只取 6°：纸绕书脊转，不需要整页向后仰。早先 19° 让纸的上缘朝观者
+    // 压过来十几度，透视下纸的上半张被放大、向下缘收缩，整页读成一块斜插在书上的板。
+    tilt: 6 * rise,
     // 右页向左翻时纸角在右侧，先抬右下角；左页反向时镜像。
-    roll: direction * 2.8 * rise,
+    roll: direction * 1.2 * rise,
   }
 }
 
@@ -684,9 +660,11 @@ export function flipSway(progress: number, direction: 1 | -1): FlipSway {
   const lift = Math.sin(Math.PI * tipProgress(t))
   // 落定后的余颤：越来越小的一次摆动。
   const settle = t > 0.82 ? (t - 0.82) / 0.18 : 0
-  const wobble = t > 0.82 ? Math.sin(settle * Math.PI * 2.5) * (1 - settle) * 1.4 : 0
+  const wobble = t > 0.82 ? Math.sin(settle * Math.PI * 2.5) * (1 - settle) * 0.7 : 0
+  // 侧倾只取 1.6°：整本书跟着晃一下就够了。早先 3.2° 会把右半页推到观者面前，
+  // 再被透视放大——翻页时半本书看起来比另一半大一圈，那也是一层「纸被揭开」的错觉。
   return {
-    rotateY: direction * (3.2 * Math.pow(lift, 1.1) + wobble),
-    lift: 14 * Math.pow(lift, 1.2) + wobble * 3,
+    rotateY: direction * (1.6 * Math.pow(lift, 1.1) + wobble),
+    lift: 6 * Math.pow(lift, 1.2) + wobble * 2,
   }
 }
