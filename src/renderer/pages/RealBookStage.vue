@@ -15,7 +15,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { decorateText } from '@shared/paragraphSearch'
-import type { ReaderHandwritingFont } from '@shared/types'
+import type { ReaderHandwritingFont, ReaderTheme } from '@shared/types'
 import {
   createRealBookPaginator,
   findPageForInput,
@@ -87,6 +87,8 @@ const props = withDefaults(defineProps<{
   bookProgressRatio?: number
   /** 翻过一页对应的全书进度增量。 */
   bookProgressStep?: number
+  /** 阅读主题：只影响拟物书页的纸色与桌面，不参与分页 */
+  theme?: ReaderTheme
   /** 版式：`book` 是双页 3D 书台，`sheet` 是单张书页（书页模式）。 */
   variant?: 'book' | 'sheet'
   /** 书页模式每页栏数：1 单栏、2 双栏；书台版式忽略。 */
@@ -111,6 +113,7 @@ const props = withDefaults(defineProps<{
   startAnchor: null,
   startRatio: 0,
   restoreToken: 0,
+  theme: 'paper',
   variant: 'book',
   columns: 1,
   totalChars: 0,
@@ -129,6 +132,37 @@ const emit = defineEmits<{
   (event: 'edit-note', noteId: string): void
   (event: 'next-chapter'): void
 }>()
+
+/**
+ * 真实书籍的专属色板：暗绿灰桌面 + 暖象牙纸。
+ *
+ * 参考图里的书不套阅读主题的纸白——经典滚动模式的纸白是给整屏阅读的，
+ * 拟物书页需要更像旧纸：偏黄、偏暖、带一点纸垛的暗边。桌面三张参考图
+ * 一致是低饱和的深绿灰，不是暖棕桌布，也不是浅色画布。
+ *
+ * 夜间主题仍给深纸与近黑的桌面，保证暗环境阅读不刺眼。
+ */
+interface RealBookPalette {
+  /** 纸身 */
+  paper: string
+  /** 受光面（纸心微亮） */
+  lit: string
+  /** 暖阴影（纸边与切口） */
+  shade: string
+  /** 桌面 */
+  desk: string
+  /** 桌面中央的柔光 */
+  deskLit: string
+}
+
+const REALBOOK_PALETTE: Record<ReaderTheme, RealBookPalette> = {
+  paper: { paper: '#EFD8B3', lit: '#F9E9CC', shade: '#C6A374', desk: '#232A28', deskLit: '#303835' },
+  sepia: { paper: '#F0D6A4', lit: '#FAEDD2', shade: '#C39D66', desk: '#262C29', deskLit: '#333B37' },
+  gray: { paper: '#EDEEE9', lit: '#FAFBF6', shade: '#C2C5BD', desk: '#222927', deskLit: '#2F3634' },
+  night: { paper: '#1B1D20', lit: '#24262A', shade: '#111317', desk: '#111615', deskLit: '#1C2221' },
+}
+
+const realbookColors = computed<RealBookPalette>(() => REALBOOK_PALETTE[props.theme] ?? REALBOOK_PALETTE.paper)
 
 const hostRef = ref<HTMLElement | null>(null)
 const measureRef = ref<HTMLElement | null>(null)
@@ -821,16 +855,19 @@ const sheetLabel = computed(() => `第 ${Math.min(sheetPageIndex.value + 1, shee
  * 让纸堆跳变；只有翻页才重新分配左右厚度。
  */
 /**
- * 每层纸的纵深（px）。纯模块里的默认值同样是 4；
- * 书台要的是「看得见层、但整体薄」——一层 4px，整本最多 12 层也才 48px。
+ * 每层纸的纵深（px）。参考图里的书身就是纸页本身，没有装订壳：
+ * 纸垛只留几像素的边，一层 1.6px，整本最多 12 层也才 19px。
  */
-const BLOCK_DEPTH_PER_LAYER_PX = 4
+const BLOCK_DEPTH_PER_LAYER_PX = 1.6
 
 /**
  * V 形摊开角（deg）：两页以书脊为轴向外掀起的角度。
  * 翻页的起翻角与落位角都由它推出来——两处必须同一个数，否则落定时会错开一个折角。
+ *
+ * 参考图里摊开的纸几乎是平的，只在书脊有一条极浅的折痕；9° 的 V 形会把书脊
+ * 读成一道深谷，所以压到 4°。透视下两页外缘仍会微微向观者掀起来。
  */
-const BEND_DEG = 9
+const BEND_DEG = 4
 
 /**
  * 翻动页转轴到摊开中心线的距离（px）。
@@ -861,6 +898,13 @@ const rightBlockDepth = computed(() => Math.max(0, spine.value.remaining) * BLOC
 
 const stageStyle = computed(() => ({
   '--rb-pitch': `${pitch.value}deg`,
+  // 拟物书页的纸色与桌面来自主题色板：经典模式的纸白在书台上会读成白纸，
+  // 参考图要的是偏黄的旧纸与深绿灰桌面。
+  '--rb-paper-warm': realbookColors.value.paper,
+  '--rb-paper-lit': realbookColors.value.lit,
+  '--rb-paper-shade': realbookColors.value.shade,
+  '--rb-desk': realbookColors.value.desk,
+  '--rb-desk-lit': realbookColors.value.deskLit,
   // 翻页时书被手托起的量：投影随之变淡、变散（离桌面越远，影子越虚）。
   '--rb-lift': `${flipSwayState.value.lift.toFixed(2)}px`,
   // 翻页时整本书的侧倾：必须挂在书台上（有 perspective 的父层），挂在书体自身的
@@ -1280,19 +1324,20 @@ defineExpose({
   padding: 10px 14px 18px;
   background: var(--reader-outer, #e9e3d7);
   color: var(--reader-paper-text, #2f2a24);
-  /* 纸的三层色：暖底、受光面、暖阴影。
-     三层都从主题纸色派生，所以夜间主题下纸仍然是深色的，不会被暖色洗白。
-     真实书页不是纯白：它是带一点黄的老纸色，纸背比纸面更暗更黄。 */
-  --rb-paper-warm: color-mix(in srgb, var(--reader-paper, #f7f3e8) 72%, #d7a56c);
-  --rb-paper-lit: color-mix(in srgb, var(--reader-paper, #f7f3e8) 78%, #fff0c9);
-  --rb-paper-shade: color-mix(in srgb, var(--reader-paper, #f7f3e8) 76%, #6b4b27);
-  /* 封面色固定为一套深暖皮壳：它不与纸色联动，夜间主题才不会把封面洗成浅灰。 */
+  /* 纸的三层色：纸身、受光面、暖阴影。
+     真值由 JS 按主题下发（见 REALBOOK_PALETTE）；这里只留兜底，
+     保证组件脱离 Reader 单独渲染时仍是一张象牙纸。夜间主题下发深纸。 */
+  --rb-paper-warm: #efd8b3;
+  --rb-paper-lit: #f9e9cc;
+  --rb-paper-shade: #c6a374;
+  /* 桌面：参考图里的书摊在低饱和深绿灰上，不是暖棕桌布。 */
+  --rb-desk: #232a28;
+  --rb-desk-lit: #303835;
+  /* 封面色：参考图里没有装订壳，书体不再画封面；变量只作旧规则的兜底。 */
   --rb-cover-lit: #6a4a30;
   --rb-cover-mid: #452e1e;
   --rb-cover-deep: #24150d;
-  /* 纸垛的切口、折缝与书心的暗色：比纸自身的暖阴影深一档。
-     纸的暖阴影是「纸的暗面」，折缝是纸弯下去被遮住的那一面，
-     必须更深才读得出谷，否则整本书读成两块平贴的纸板。 */
+  /* 纸垛的切口、折缝与书心的暗色：比纸自身的暖阴影深一档。 */
   --rb-fold-shadow: 58 36 16;
   /* 页内批注：墨色跟着主题变亮/变深，底色仍从纸色派生，夜里不会出现一张白卡。 */
   --rb-note-ink: color-mix(in srgb, #a34230 62%, var(--reader-paper-text, #2f2a24));
@@ -1300,22 +1345,15 @@ defineExpose({
   --rb-note-bg: color-mix(in srgb, var(--rb-paper-lit) 64%, transparent);
 }
 
-/* 书台：书摊在一张深色桌面上。
-   设计图里暖奶油色的纸是压在深色桌布上的——深底把纸的厚度、弧度与投影
-   托了出来；浅底上摊开的书只是一块浅色矩形，读不出「一本有厚度的书」。 */
+/* 书台：参考图里的书摊在一张低饱和的深绿灰桌面上——背景是匀净的暗色，
+   层次全部由暖纸页承担；没有暖棕桌布、布纹与双重暗角。
+   桌面只用一层极淡的中央柔光和四周压深，让纸页从暗底里浮出来。 */
 .real-book-stage:not(.is-sheet) {
-  background:
-    /* 桌面不是一块纯色：低对比布纹 + 中央柔光 + 四周暗角，
-       把书从「放在色块上」变成「放在有反射的桌面上」。 */
-    radial-gradient(70% 58% at 50% 36%, rgba(148, 104, 62, 0.18), transparent 72%),
-    repeating-linear-gradient(96deg, rgba(255, 229, 190, 0.018) 0 1px, transparent 1px 5px),
-    repeating-linear-gradient(7deg, rgba(0, 0, 0, 0.02) 0 2px, transparent 2px 11px),
-    radial-gradient(
-      120% 96% at 50% 24%,
-      #4a3420 0%,
-      #352215 58%,
-      #22150c 100%
-    );
+  background-color: var(--rb-desk, #232a28);
+  background-image:
+    /* 中央一层很淡的柔光，四周压深：深底把暖纸托出来，但不再有布纹与暗角重影。 */
+    radial-gradient(120% 100% at 50% 14%, color-mix(in srgb, var(--rb-desk-lit, #303835) 88%, transparent), transparent 62%),
+    radial-gradient(135% 118% at 50% 46%, transparent 44%, rgba(0, 0, 0, 0.20) 100%);
 }
 
 .real-book-measure {
@@ -1510,39 +1548,34 @@ defineExpose({
   padding: var(--rb-pad-y) var(--rb-pad-x);
   box-sizing: border-box;
   overflow: hidden;
-  border-radius: 10px 3px 8px 4px;
-  /* 纸页自身几乎不投影：它压在书垛与封面上，真正的重量由书下投影表达。
-     这里只留一道极薄的纸边暗线，避免纸页像贴纸一样浮起来。 */
+  /* 外缘四角像参考图那样带一点圆弧，靠书脊的内角保持近乎直角。 */
+  border-radius: 2px;
+  /* 纸页落在浅色桌面上：外缘一圈极薄的接触影；纸面本身只留受光。 */
   box-shadow:
-    0 1px 1px rgba(30, 22, 12, 0.12),
-    inset 0 1px 0 rgba(255, 250, 234, 0.32);
+    0 2px 7px rgba(70, 60, 44, 0.10),
+    0 1px 2px rgba(70, 60, 44, 0.06),
+    inset 0 1px 0 rgba(255, 251, 240, 0.30);
   display: grid;
   grid-template-rows: var(--rb-head-height) 1fr var(--rb-foot-height);
-  /* 纸面质感：上缘受光 + 版心一团柔光 + 下缘转沉 + 沿页宽的弧面明暗。
-     全部从主题纸色派生（暖底 / 受光面 / 暖阴影），不直接叠纯白纯黑：
-     纯白高光在夜间主题下会把深色纸洗成灰纸，纯黑阴影在暖纸上会发脏。
-     弧面明暗画在纸面背景层（文字之下）而不是盖在文字上——光影是纸的属性，
-     不是盖在字上的一层膜。 */
+  /* 纸面质感：参考图是一张几乎均匀的象牙纸，只有中央微亮、四周略沉。
+     不再用「上缘强光 + 下缘强沉」的塑形光——那会把纸读成一块立起来的板。
+     纸色与明暗都从主题纸派生；弧面明暗仍画在背景层（文字之下）。 */
   background-color: var(--rb-paper-warm);
   background-image:
+    /* 上下缘的老纸暗边：参考图的页顶与页脚都压着一道暖影。 */
     linear-gradient(
       180deg,
-      color-mix(in srgb, var(--rb-paper-lit) 86%, transparent) 0%,
-      color-mix(in srgb, var(--rb-paper-lit) 28%, transparent) 10%,
-      transparent 32%,
-      transparent 84%,
-      color-mix(in srgb, var(--rb-paper-shade) 22%, transparent) 95%,
-      color-mix(in srgb, var(--rb-paper-shade) 52%, transparent) 100%
+      color-mix(in srgb, var(--rb-paper-shade) 15%, transparent) 0%,
+      transparent 8%,
+      transparent 90%,
+      color-mix(in srgb, var(--rb-paper-shade) 17%, transparent) 100%
     ),
+    /* 纸心微亮、四角收暗：参考图的纸边比纸心暗约 30/255。 */
     radial-gradient(
-      115% 86% at 42% 10%,
-      color-mix(in srgb, var(--rb-paper-lit) 48%, transparent),
-      transparent 64%
-    ),
-    radial-gradient(
-      72% 62% at 88% 88%,
-      color-mix(in srgb, var(--rb-paper-shade) 14%, transparent),
-      transparent 72%
+      62% 56% at 50% 44%,
+      color-mix(in srgb, var(--rb-paper-lit) 34%, transparent) 0%,
+      transparent 42%,
+      color-mix(in srgb, var(--rb-paper-shade) 32%, transparent) 100%
     ),
     var(--rb-page-curve, none);
   color: var(--reader-paper-text, #2f2a24);
@@ -1568,7 +1601,8 @@ defineExpose({
   inset: 0;
   z-index: 1;
   pointer-events: none;
-  opacity: 0.6;
+  /* 参考图的纸面有一层很淡的纤维与斑点：只做质感，不参与塑形。 */
+  opacity: 0.4;
   background-image:
     repeating-linear-gradient(93deg, rgba(78, 51, 24, 0.012) 0 1px, transparent 1px 5px),
     repeating-linear-gradient(3deg, rgba(255, 252, 238, 0.02) 0 1px, transparent 1px 8px),
@@ -1585,27 +1619,27 @@ defineExpose({
   top: 0;
   bottom: 0;
   z-index: 3;
-  width: 3px;
+  width: 2px;
   pointer-events: none;
-  opacity: 0.7;
+  opacity: 0.42;
   background:
     repeating-linear-gradient(
       180deg,
-      rgba(255, 250, 234, 0.28) 0 1px,
-      rgba(100, 68, 34, 0.06) 1px 2px,
-      transparent 2px 7px,
-      rgba(100, 68, 34, 0.04) 7px 8px
+      rgba(255, 250, 234, 0.20) 0 1px,
+      rgba(100, 82, 55, 0.05) 1px 2px,
+      transparent 2px 8px,
+      rgba(100, 82, 55, 0.04) 8px 9px
     );
 }
 
 .real-book-left::before {
   left: 0;
-  border-radius: 10px 0 0 8px;
+  border-radius: 12px 0 0 12px;
 }
 
 .real-book-right::before {
   right: 0;
-  border-radius: 0 3px 4px 0;
+  border-radius: 0 12px 12px 0;
 }
 
 /* 页眉：章节眉题。必须单行省略——占高是排版输入，不能随标题长短变。
@@ -1659,46 +1693,38 @@ defineExpose({
 /* V 形摊开：两页以书脊为轴向外掀起，外侧先靠近观者，透视下因此向书脊收拢。
    这是「摊开的书」和「两个并排矩形」的全部区别，扭转量只走 3D 变换、不动排版。 */
 .real-book-left {
-  border-radius: 10px 2px 9px 2px;
-  /* 靠脊不再压暗：中间只留纸面本身与一条极浅折缝，避免书心出现黑带。 */
-  box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.3);
+  /* 左上 / 左下是外缘，圆；靠脊的右侧两角直角。 */
+  border-radius: 12px 2px 2px 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.28);
   transform-origin: right center;
   transform: rotateY(var(--rb-bend, 0deg));
-  /* 靠脊一侧（右缘）压入一层暖色暗部：纸向折缝弯下去时，内侧先落入阴影，
-     宽度约占页宽 8–12%，强度约 15%，只用纸的暖阴影色，不用纯黑。
-     暗部外侧再补一段滚出的高光（12%–22%）：纸从谷里翻出来时接住光，
-     有了这层「暗—亮」的连续过渡，折缝才读成圆弧而不是一刀切开的直角。 */
+  /* 靠脊折痕：只留页宽 4–6% 的一小段柔暗，外侧补一层极浅滚光。
+     参考图的折缝是一条窄软影（约一手掌宽），不是一条宽暗带；
+     暗部再宽就回到「两块纸板拼在一起」的读感。 */
   --rb-page-curve: linear-gradient(
     270deg,
-    color-mix(in srgb, var(--rb-paper-shade) 15%, transparent) 0%,
-    color-mix(in srgb, var(--rb-paper-shade) 9%, transparent) 4%,
-    color-mix(in srgb, var(--rb-paper-shade) 3%, transparent) 8%,
-    transparent 11%,
-    color-mix(in srgb, var(--rb-paper-lit) 11%, transparent) 15%,
-    color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 22%,
-    transparent 29%,
-    color-mix(in srgb, var(--rb-paper-lit) 5%, transparent) 92%,
-    color-mix(in srgb, var(--rb-paper-lit) 12%, transparent) 100%
+    color-mix(in srgb, var(--rb-paper-shade) 10%, transparent) 0%,
+    color-mix(in srgb, var(--rb-paper-shade) 5%, transparent) 2.5%,
+    transparent 6%,
+    color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 9%,
+    transparent 14%
   );
 }
 
 .real-book-right {
-  border-radius: 2px 10px 2px 9px;
-  box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.3);
+  /* 右上 / 右下是外缘，圆；靠脊的左侧两角直角。 */
+  border-radius: 2px 12px 12px 2px;
+  box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.28);
   transform-origin: left center;
   transform: rotateY(calc(-1 * var(--rb-bend, 0deg)));
-  /* 右页靠脊一侧（左缘）同样压入暖色暗部与滚出高光，与左页镜像对称。 */
+  /* 右页靠脊一侧（左缘）同样只留一段窄柔影与极浅滚光，与左页镜像。 */
   --rb-page-curve: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--rb-paper-shade) 15%, transparent) 0%,
-    color-mix(in srgb, var(--rb-paper-shade) 9%, transparent) 4%,
-    color-mix(in srgb, var(--rb-paper-shade) 3%, transparent) 8%,
-    transparent 11%,
-    color-mix(in srgb, var(--rb-paper-lit) 11%, transparent) 15%,
-    color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 22%,
-    transparent 29%,
-    color-mix(in srgb, var(--rb-paper-lit) 5%, transparent) 92%,
-    color-mix(in srgb, var(--rb-paper-lit) 12%, transparent) 100%
+    color-mix(in srgb, var(--rb-paper-shade) 10%, transparent) 0%,
+    color-mix(in srgb, var(--rb-paper-shade) 5%, transparent) 2.5%,
+    transparent 6%,
+    color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 9%,
+    transparent 14%
   );
 }
 
@@ -1717,20 +1743,21 @@ defineExpose({
    这层画在两页之上、宽度只有 30px（每页 15px），把硬折读成一条圆弧；
    宽度受控就不会变成一条贯穿的黑缝。 */
 .real-book-gutter::before {
-  display: none;
   content: '';
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -15px;
-  right: -15px;
+  left: -9px;
+  right: -9px;
   pointer-events: none;
+  /* 参考图的折缝是一条窄软影：约 18px 宽，中心只比两侧略深，
+     没有贯穿的黑缝。它画在两页之上，让 4° 的硬折读成一条纸缝。 */
   background: linear-gradient(
     90deg,
     transparent 0%,
-    color-mix(in srgb, var(--rb-paper-shade) 8%, transparent) 26%,
-    color-mix(in srgb, var(--rb-paper-shade) 20%, transparent) 50%,
-    color-mix(in srgb, var(--rb-paper-shade) 8%, transparent) 74%,
+    color-mix(in srgb, var(--rb-paper-shade) 5%, transparent) 30%,
+    color-mix(in srgb, var(--rb-paper-shade) 12%, transparent) 50%,
+    color-mix(in srgb, var(--rb-paper-shade) 5%, transparent) 70%,
     transparent 100%
   );
 }
@@ -1776,21 +1803,22 @@ defineExpose({
   /* 锚在页脚下沿、顺着页面平面往下长：投影的最深处正好落在书脚，
      俯仰时它跟着页面一起转，不必另算屏幕坐标。 */
   top: 100%;
-  height: calc(58px + var(--rb-lift, 0px) * 0.8);
-  /* 三层影：贴着纸垛的接触暗影、向左右摊开的柔影、向桌面深处拖长的投影。 */
+  height: calc(44px + var(--rb-lift, 0px) * 0.8);
+  /* 参考图里的投影很轻：纸页压在浅色桌面上，只留一层柔和的接触影，
+     不是深色桌布下那种厚重的黑边。 */
   background:
-    radial-gradient(50% 46% at 50% 0%, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0) 76%),
-    radial-gradient(72% 80% at 50% 16%, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0) 72%),
-    radial-gradient(94% 96% at 50% 30%, rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0) 78%);
-  filter: blur(calc(14px + var(--rb-lift, 0px) * 0.5));
+    radial-gradient(46% 38% at 50% 0%, rgba(58, 52, 40, 0.20), rgba(0, 0, 0, 0) 78%),
+    radial-gradient(70% 74% at 50% 12%, rgba(58, 52, 40, 0.09), rgba(0, 0, 0, 0) 72%),
+    radial-gradient(92% 94% at 50% 26%, rgba(58, 52, 40, 0.05), rgba(0, 0, 0, 0) 78%);
+  filter: blur(calc(12px + var(--rb-lift, 0px) * 0.5));
   opacity: calc(1 - var(--rb-lift, 0px) * 0.018);
   pointer-events: none;
 }
 
-/* 硬壳封面：比纸页每边多出几像素。它藏在纸页之下（translateZ 为负），
-   只从外缘露一圈深色皮壳、压印线与厚度高光，页面本身仍是主角。
-   两块封面各自跟随本半页的 V 形折角，避免书脊处翘出一条平直的黑边。 */
+/* 硬壳封面：参考图里的书没有装订壳，只是两页摊开的纸。
+   保留元素与变换只为不牵动排版，视觉上整层收起。 */
 .real-book-board {
+  display: none;
   position: absolute;
   top: -7px;
   width: calc(var(--rb-page-width) + 8px);
@@ -1875,15 +1903,15 @@ defineExpose({
   border-radius: 0 0 3px 3px;
   /* 上缘贴着纸面要压深一点，否则纸垛会像是平铺在页脚的一张旧纸；
      每条 1px 暗线就是一页纸的纸边。 */
-  box-shadow: inset 0 2px 3px -1px rgba(58, 36, 16, 0.25);
+  box-shadow: inset 0 1px 2px rgba(72, 60, 42, 0.16);
   background:
-    /* 切口是**暖的**：一层层纸叠在一起的断面，每层之间压一道暖影。 */
-    linear-gradient(180deg, rgba(58, 36, 16, 0.44), rgba(58, 36, 16, 0.04) 18%, rgba(58, 36, 16, 0.2) 66%, rgba(58, 36, 16, 0.42)),
+    /* 切口是纸摞的断面：整面仍是象牙纸，只让每层之间压一道很淡的暖影。 */
+    linear-gradient(180deg, rgba(72, 60, 42, 0.16), rgba(72, 60, 42, 0.03) 24%, rgba(72, 60, 42, 0.09) 70%, rgba(72, 60, 42, 0.17)),
     repeating-linear-gradient(
       180deg,
-      color-mix(in srgb, var(--rb-paper-warm) 50%, #67451e) 0 1px,
-      color-mix(in srgb, var(--rb-paper-warm) 88%, #f4e8ca) 1px 2.1px,
-      color-mix(in srgb, var(--rb-paper-warm) 70%, #8b6434) 2.1px 2.6px
+      color-mix(in srgb, var(--rb-paper-warm) 86%, #b7a185) 0 1px,
+      color-mix(in srgb, var(--rb-paper-warm) 96%, #fffdf3) 1px 2px,
+      color-mix(in srgb, var(--rb-paper-warm) 90%, #cbb691) 2px 2.4px
     );
 }
 
@@ -1902,15 +1930,15 @@ defineExpose({
   border-radius: 0 3px 3px 0;
   background:
     /* 里侧贴着纸面那一段压深：那是纸叠进去的那一侧。 */
-    linear-gradient(90deg, rgba(58, 36, 16, 0.52), rgba(58, 36, 16, 0.05) 44%, rgba(58, 36, 16, 0.22)),
+    linear-gradient(90deg, rgba(72, 60, 42, 0.20), rgba(72, 60, 42, 0.04) 44%, rgba(72, 60, 42, 0.11)),
     /* 逐张纸的边：竖着的细纹，一层层数得出来。
        这一面是**侧着**看的书口，看到的是一页叠一页的厚度，
-       所以纹路要竖着走（沿进深方向分���层），不是一道道横线。 */
+       所以纹路要竖着走（沿进深方向分层），不是一道道横线。 */
     repeating-linear-gradient(
       90deg,
-      color-mix(in srgb, var(--rb-paper-warm) 52%, #5b401e) 0 0.9px,
-      color-mix(in srgb, var(--rb-paper-warm) 86%, #f0e1bf) 0.9px 2.4px,
-      color-mix(in srgb, var(--rb-paper-warm) 72%, #8c6738) 2.4px 2.9px
+      color-mix(in srgb, var(--rb-paper-warm) 84%, #b7a185) 0 0.9px,
+      color-mix(in srgb, var(--rb-paper-warm) 96%, #fdf9ec) 0.9px 2.4px,
+      color-mix(in srgb, var(--rb-paper-warm) 90%, #c6b08a) 2.4px 2.8px
     );
 }
 
@@ -1934,16 +1962,16 @@ defineExpose({
   transform: rotateX(60deg);
   border-radius: 3px 3px 0 0;
   background:
-    linear-gradient(180deg, rgba(255, 247, 224, 0.13), rgba(58, 36, 16, 0.1) 24%, rgba(58, 36, 16, 0.34)),
+    linear-gradient(180deg, rgba(255, 250, 235, 0.14), rgba(72, 60, 42, 0.06) 28%, rgba(72, 60, 42, 0.16)),
     repeating-linear-gradient(
       90deg,
-      color-mix(in srgb, var(--rb-paper-warm) 52%, #5b401e) 0 0.9px,
-      color-mix(in srgb, var(--rb-paper-warm) 88%, #f1e3c4) 0.9px 2.3px,
-      color-mix(in srgb, var(--rb-paper-warm) 74%, #8c6738) 2.3px 2.8px
+      color-mix(in srgb, var(--rb-paper-warm) 84%, #b7a185) 0 0.9px,
+      color-mix(in srgb, var(--rb-paper-warm) 97%, #fdf9ec) 0.9px 2.3px,
+      color-mix(in srgb, var(--rb-paper-warm) 90%, #c6b08a) 2.3px 2.8px
     );
   box-shadow:
-    inset 0 1px 0 rgba(255, 245, 218, 0.22),
-    inset 0 -1px 2px rgba(50, 31, 14, 0.3);
+    inset 0 1px 0 rgba(255, 248, 230, 0.20),
+    inset 0 -1px 1px rgba(72, 60, 42, 0.14);
 }
 
 /* 逐层纸边：每层沿页脚向下、向后错开一点，叠成数得清层数的纸摞。 */
@@ -1951,13 +1979,13 @@ defineExpose({
   position: absolute;
   left: 1px;
   right: 1px;
-  height: 2px;
+  height: 1.5px;
   border-radius: 0 0 2px 2px;
-  /* 纸边比纸面略深：从暖纸色里压出来，四套主题下都不会发灰或发紫。 */
-  background: color-mix(in srgb, var(--rb-paper-warm) 76%, #7a5a30);
+  /* 纸边比纸面略深：从象牙纸里压出来，四套主题下都不会发灰或发紫。 */
+  background: color-mix(in srgb, var(--rb-paper-warm) 88%, #9c8460);
   box-shadow:
-    0 1px 0 color-mix(in srgb, var(--reader-paper-text, #2f2a24) 10%, transparent),
-    0 -1px 0 rgba(255, 245, 220, 0.08);
+    0 1px 0 color-mix(in srgb, var(--reader-paper-text, #2f2a24) 8%, transparent),
+    0 -1px 0 rgba(255, 248, 232, 0.10);
 }
 
 .real-book-para {

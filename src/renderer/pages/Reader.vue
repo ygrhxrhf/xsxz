@@ -3223,6 +3223,7 @@ onUnmounted(() => {
             </n-button>
           </n-space>
           <RealBookStage
+            :theme="theme"
             :variant="bookView === 'sheet' ? 'sheet' : 'book'"
             :total-chars="bookTotalChars"
             :book-progress-ratio="bookProgressRatio"
