@@ -671,6 +671,21 @@ export interface ProxyKernelState {
   message?: string
 }
 
+/**
+ * 下载并安装内置内核（sing-box）的结果。
+ *
+ * 安装是「下载官方 Release → 解压 → 落到 userData/proxy-kernel」，
+ * 因此成功时带回文件路径与版本，界面不必再猜。
+ */
+export interface ProxyKernelInstallResult {
+  ok: boolean
+  message?: string
+  /** 安装后的可执行文件路径；成功时有值。 */
+  binaryPath?: string
+  /** 安装的版本号；成功时有值。 */
+  version?: string
+}
+
 /** 订阅解析结果概览，给界面显示节点数与协议分布。 */
 export interface ProxySubscriptionState {
   total: number

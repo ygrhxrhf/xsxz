@@ -303,7 +303,8 @@
 | `proxy.subscribe` | invoke | `{ url?: string }` | `{ ok: true; port: number; node: { name; protocol }; overview: ProxySubscriptionState } \| { ok: false; message: string }` |
 | `proxy.parseSubscription` | invoke | `{ body?: string }`（args 也可省略） | `{ ok: true; overview: ProxySubscriptionState } \| { ok: false; message: string }` |
 | `proxy.selectNode` | invoke | `{ index?: number; body?: string }`（args 也可省略） | `{ ok: true; port: number; node: { name; protocol } } \| { ok: false; message: string }` |
-| `proxy.kernelState` | invoke | 无 | `{ ok: true; state: ProxyKernelState }` |
+| `proxy.kernelState` | invoke | 无 | `{ ok: true; state: ProxyKernelState; installed: boolean }` |
+| `proxy.installKernel` | invoke | 无 | `{ ok: boolean; message?: string; binaryPath?: string; version?: string }` |
 | `proxy.stopKernel` | invoke | 无 | `{ ok: true }` |
 | `proxy.autoUpdateState` | invoke | 无 | `{ ok: true; prefs: ProxyAutoUpdatePrefs }` |
 | `proxy.setAutoUpdate` | invoke | `{ enabled?: boolean; intervalMinutes?: number }` | `{ ok: true; prefs: ProxyAutoUpdatePrefs } \| { ok: false; message: string }` |
@@ -327,7 +328,7 @@
 - `src/main/proxyRuntime.ts`：生命周期所有者。解析 → 挑端口 → 拉起 → 把 `persist:novel` 会话指到内核端口（`http://127.0.0.1:<port>` + `<local>` bypass）→ 断旧连接。换节点走「重启内核」，不做热重载。应用退出时必须 `stopSubscriptionProxy()`，否则留下孤儿进程。
 - `ProxyPrefs` 增加 `subscriptionUrl` / `subscriptionCached` / `nodeIndex`。订阅地址只收 `http`/`https`（订阅含节点凭据，允许 `file://` 等于让改 settings.json 的人读本机文件）。
 
-内核可执行文件**不随安装包分发**，从官方 GitHub Release 下载后放到 `userData/proxy-kernel/`。之所以只认官方源：代理内核是整条链路的信任根，从第三方镜像拿等于把凭据交给镜像方。
+内核可执行文件**不随安装包分发**。首次连接订阅前，在「网络代理 → 订阅（内置内核）」里点「下载内核」：`proxy.installKernel` 会从官方 GitHub Release 下载对应平台的包，解压出 `sing-box.exe` 放到 `userData/proxy-kernel/`（约 32MB，Windows 为 zip；其它平台目前返回手动安装提示）。之所以只认官方源：代理内核是整条链路的信任根，从第三方镜像拿等于把凭据交给镜像方。内核运行中时安装会被拒绝（Windows 上运行中的 exe 不能替换），需先 `proxy.stopKernel`。`proxy.kernelState` 的 `installed` 表示可执行文件是否已就位，手动放进去的也算。
 
 `proxy.scan` 只查本机回环地址上的常见代理端口（v2rayN 10808/10809、Clash 7890/7891、1080/1081、Nekoray 2080/2081），超时 400ms。它只回答「端口在不在监听」，**不**判断能否转发——「客户端开着但没选节点」时端口照样监听。真正的可用性由 `proxy.test` 确认，两步分开。
 
@@ -605,7 +606,7 @@ window.api = {
   mirror: { start, cancel, state, onProgress },
   settings: { get, set },
   map: { getKey, getImage, setImage, getPlaces, geocodePlaces, confirmPlace, searchPlaceCandidates, choosePlaceCandidate, addManualPlace },
-  proxy: { test, scan, subscribe, parseSubscription, selectNode, kernelState, stopKernel, autoUpdateState, setAutoUpdate, refreshSubscription, speedTest },
+  proxy: { test, scan, subscribe, parseSubscription, selectNode, kernelState, installKernel, stopKernel, autoUpdateState, setAutoUpdate, refreshSubscription, speedTest },
   ruleMarket: { list, apply, subscribe, unsubscribe },
   sync: { status, signIn, signOut, run },
   backup: { create, restore, runAuto },

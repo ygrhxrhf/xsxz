@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createServer, Socket } from 'node:net'
+import JSZip from 'jszip'
 
 /**
  * 内置代理内核（sing-box）的启动与管理。
@@ -126,7 +127,10 @@ export async function startKernel(
   const binary = kernelBinaryPath(options.userDataDir)
   const exists = deps.exists ?? existsSync
   if (!exists(binary)) {
-    return { ok: false, message: '还没有下载内置代理内核，请先在设置里点「下载内核」' }
+    return {
+      ok: false,
+      message: `还没有内置代理内核。请在「网络代理」里点「下载内核」（约 32MB），或把 sing-box 手动放到 ${binary}`,
+    }
   }
 
   const configPath = kernelConfigPath(options.userDataDir)
@@ -215,7 +219,10 @@ export async function startKernel(
  * 只从官方 GitHub Release 取——代理内核是整条链路的信任根，不从第三方镜像拿，
  * 哪怕镜像更快。下载慢的问题交给用户自己的网络条件解决。
  */
-export function kernelDownloadUrl(version = '1.14.4'): string {
+/** 应用内置的 sing-box 版本。升级时只改这一处，界面与文档都从这里取。 */
+export const KERNEL_VERSION = '1.14.4'
+
+export function kernelDownloadUrl(version = KERNEL_VERSION): string {
   const asset =
     process.platform === 'win32'
       ? `sing-box-${version}-windows-amd64.zip`
@@ -223,4 +230,117 @@ export function kernelDownloadUrl(version = '1.14.4'): string {
         ? `sing-box-${version}-darwin-arm64.tar.gz`
         : `sing-box-${version}-linux-amd64.tar.gz`
   return `https://github.com/SagerNet/sing-box/releases/download/v${version}/${asset}`
+}
+
+/**
+ * 低于这个大小的一律当作坏包。
+ *
+ * 真实内核约 80MB，压缩包约 32MB；设一个下限是为了拦住「下载到半截」
+ * 或「拿 HTML 错误页当压缩包」的情况，不是完整性校验。
+ */
+export const KERNEL_MIN_BYTES = 1_000_000
+
+/** 内核可执行文件是否已经在 userData 下（手动放的也算）。 */
+export function kernelInstalled(userDataDir: string): boolean {
+  return existsSync(kernelBinaryPath(userDataDir))
+}
+
+export interface KernelInstallResult {
+  ok: boolean
+  message?: string
+  /** 安装后的可执行文件路径；成功时有值。 */
+  binaryPath?: string
+  /** 安装的版本。 */
+  version?: string
+}
+
+export interface KernelInstallOptions {
+  userDataDir: string
+  /** 缺省用 KERNEL_VERSION。 */
+  version?: string
+  /** 已存在时是否重新下载覆盖。 */
+  force?: boolean
+  /** 下载实现；测试注入。生产走官方 GitHub Release。 */
+  download?: (url: string) => Promise<Uint8Array>
+}
+
+/**
+ * 下载并安装内置内核。
+ *
+ * 用户只有一条订阅链接时，不该再被要求「自己去 GitHub 下个 exe 放进某个目录」。
+ * 这里把下载 → 解压 → 落盘做成一步：只认官方 Release，不改文件名，
+ * 写临时文件再 rename，避免半截文件被下次启动当成可用内核。
+ *
+ * 目前只做 Windows 的 zip；其它平台返回可读的提示，由本人手动安装。
+ */
+export async function installKernel(options: KernelInstallOptions): Promise<KernelInstallResult> {
+  const version = options.version ?? KERNEL_VERSION
+  const binary = kernelBinaryPath(options.userDataDir)
+  if (!options.force && existsSync(binary)) {
+    return { ok: true, message: '内置内核已就位', binaryPath: binary, version }
+  }
+
+  // 非 Windows 的官方包是 tar.gz；自动安装只做 Windows 的 zip。
+  // 注入 download 是测试入口，跳过平台判断，便于在任何 CI 上验证解压逻辑。
+  if (process.platform !== 'win32' && !options.download) {
+    return {
+      ok: false,
+      message: `自动安装目前只支持 Windows。请手动下载 ${kernelDownloadUrl(version)} 并放到 ${binary}`,
+    }
+  }
+
+  let zipBytes: Uint8Array
+  try {
+    zipBytes = await (options.download ?? downloadBytes)(kernelDownloadUrl(version))
+  } catch (e) {
+    return { ok: false, message: `内核下载失败：${e instanceof Error ? e.message : String(e)}` }
+  }
+  if (zipBytes.byteLength < KERNEL_MIN_BYTES) {
+    return { ok: false, message: `下载的内核包不完整（只有 ${zipBytes.byteLength} 字节），请重试` }
+  }
+
+  let archive: JSZip
+  try {
+    archive = await JSZip.loadAsync(zipBytes)
+  } catch {
+    return { ok: false, message: '内核压缩包无法解压，请重试' }
+  }
+  const entry = Object.values(archive.files).find(
+    (file) => !file.dir && /(^|\/)sing-box\.exe$/i.test(file.name),
+  )
+  if (!entry) return { ok: false, message: '内核压缩包里没有 sing-box.exe' }
+
+  let exeBytes: Uint8Array
+  try {
+    exeBytes = await entry.async('uint8array')
+  } catch (e) {
+    return { ok: false, message: `解压内核失败：${e instanceof Error ? e.message : String(e)}` }
+  }
+  if (exeBytes.byteLength < KERNEL_MIN_BYTES) {
+    return { ok: false, message: '解压出的 sing-box.exe 不完整，请重试' }
+  }
+
+  const dir = join(options.userDataDir, 'proxy-kernel')
+  const tempPath = `${binary}.download`
+  try {
+    await mkdir(dir, { recursive: true })
+    await writeFile(tempPath, exeBytes)
+    // rename 覆盖旧文件：内核没在跑时才允许走到这里（调用方负责先停内核）。
+    await rename(tempPath, binary)
+  } catch (e) {
+    await rm(tempPath, { force: true }).catch(() => {})
+    return { ok: false, message: `写入内核失败：${e instanceof Error ? e.message : String(e)}` }
+  }
+  return { ok: true, message: `内核 ${version} 已安装`, binaryPath: binary, version }
+}
+
+/** 官方 Release 下载；跟随重定向（GitHub 会跳 release-assets）。 */
+async function downloadBytes(url: string): Promise<Uint8Array> {
+  const res = await fetch(url, {
+    redirect: 'follow',
+    headers: { 'user-agent': 'spbf/0.1' },
+    signal: AbortSignal.timeout(180_000),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return new Uint8Array(await res.arrayBuffer())
 }

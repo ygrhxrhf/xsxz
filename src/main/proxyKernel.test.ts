@@ -1,14 +1,18 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import JSZip from 'jszip'
 import {
   KERNEL_PORT_MAX,
   KERNEL_PORT_MIN,
+  installKernel,
   isPortListening,
   kernelBinaryPath,
   kernelConfigPath,
   kernelDownloadUrl,
+  kernelInstalled,
   pickFreePort,
   startKernel,
   waitForKernel,
@@ -164,6 +168,72 @@ describe('kernelDownloadUrl', () => {
     const url = kernelDownloadUrl('1.14.4')
     expect(url).toContain('github.com/SagerNet/sing-box/releases/download/v1.14.4/')
     expect(url).toContain('sing-box-1.14.4-')
+  })
+})
+
+describe('installKernel', () => {
+  /** 造一份「足够大」的假内核，zip 里体积也要过得了下限检查。 */
+  async function kernelZip(bytes = randomBytes(1_100_000)): Promise<Uint8Array> {
+    const zip = new JSZip()
+    zip.file('sing-box-1.14.4-windows-amd64/sing-box.exe', bytes)
+    return zip.generateAsync({ type: 'uint8array' })
+  }
+
+  it('下载 → 解压 → 落到 userData/proxy-kernel/sing-box.exe', async () => {
+    const dir = tempDir('install')
+    const res = await installKernel({ userDataDir: dir, download: async () => kernelZip() })
+    expect(res.ok).toBe(true)
+    expect(res.binaryPath).toBe(kernelBinaryPath(dir))
+    expect(res.version).toBeTruthy()
+    expect(kernelInstalled(dir)).toBe(true)
+    expect(existsSync(kernelBinaryPath(dir))).toBe(true)
+    expect(readFileSync(kernelBinaryPath(dir)).byteLength).toBe(1_100_000)
+  })
+
+  it('已安装时不再重复下载', async () => {
+    const dir = tempDir('installed')
+    await installKernel({ userDataDir: dir, download: async () => kernelZip() })
+    let calls = 0
+    const again = await installKernel({
+      userDataDir: dir,
+      download: async () => {
+        calls++
+        return kernelZip()
+      },
+    })
+    expect(again.ok).toBe(true)
+    expect(again.message).toContain('已就位')
+    expect(calls).toBe(0)
+  })
+
+  it('压缩包里没有 sing-box.exe 时给出可读错误，不落半截文件', async () => {
+    const dir = tempDir('noexe')
+    const zip = new JSZip()
+    zip.file('README.txt', randomBytes(1_100_000))
+    const bytes = await zip.generateAsync({ type: 'uint8array' })
+    const res = await installKernel({ userDataDir: dir, download: async () => bytes })
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.message).toContain('sing-box.exe')
+    expect(kernelInstalled(dir)).toBe(false)
+  })
+
+  it('下载失败时把原因带回界面', async () => {
+    const dir = tempDir('fail')
+    const res = await installKernel({
+      userDataDir: dir,
+      download: async () => {
+        throw new Error('HTTP 502')
+      },
+    })
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.message).toContain('HTTP 502')
+  })
+
+  it('下载到的包太小视为坏包', async () => {
+    const dir = tempDir('small')
+    const res = await installKernel({ userDataDir: dir, download: async () => new Uint8Array(100) })
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.message).toContain('不完整')
   })
 })
 

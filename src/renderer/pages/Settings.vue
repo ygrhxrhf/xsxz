@@ -71,6 +71,10 @@ const subscriptionLoading = ref(false)
 const subscriptionOverview = ref<ProxySubscriptionState | null>(null)
 const subscriptionError = ref('')
 const kernelState = ref<ProxyKernelState>({ status: 'stopped' })
+/** null = 还没查；false 时界面显示「下载内核」。 */
+const kernelInstalled = ref<boolean | null>(null)
+const kernelInstalling = ref(false)
+const kernelInstallError = ref('')
 const selectedNodeIndex = ref(0)
 
 /**
@@ -102,9 +106,36 @@ async function connectSubscription() {
 async function refreshKernelState() {
   try {
     const res = await window.api.proxy.kernelState()
-    if (res.ok) kernelState.value = res.state
+    if (res.ok) {
+      kernelState.value = res.state
+      kernelInstalled.value = res.installed
+    }
   } catch {
     /* 状态读不到不影响使用 */
+  }
+}
+
+/**
+ * 下载并安装内置内核。
+ *
+ * 内核不随安装包分发（体积与信任根），首次使用要单独下载一次。
+ * 安装按钮本身就是「设置里点下载内核」那句话指向的东西。
+ */
+async function installProxyKernel() {
+  kernelInstalling.value = true
+  kernelInstallError.value = ''
+  try {
+    const res = await window.api.proxy.installKernel()
+    if (!res.ok) {
+      kernelInstallError.value = res.message ?? '下载内核失败'
+      return
+    }
+    kernelInstalled.value = true
+    message.success(res.message ?? '内置内核已安装，可以连接订阅了')
+  } catch (e) {
+    kernelInstallError.value = e instanceof Error ? e.message : '下载内核失败'
+  } finally {
+    kernelInstalling.value = false
   }
 }
 
@@ -985,6 +1016,8 @@ watch(
 )
 
 onMounted(load)
+// 内核装没装不随设置变化：进页面时查一次，界面据此决定是否显示「下载内核」。
+onMounted(() => { void refreshKernelState() })
 // 引擎状态只在进设置页时查一次：装没装 tesseract.js 不会在运行中途变化
 onMounted(async () => {
   try {
@@ -1126,6 +1159,21 @@ onMounted(async () => {
               连接订阅
             </n-button>
           </n-input-group>
+
+          <div v-if="kernelInstalled === false" class="kernel-install">
+            <span class="kernel-install-text">
+              内置内核尚未安装（约 32MB）。首次使用需从官方 Releases 下载 sing-box，装好后才能连接订阅。
+            </span>
+            <n-button
+              size="small"
+              type="primary"
+              :loading="kernelInstalling"
+              @click="installProxyKernel"
+            >
+              下载内核
+            </n-button>
+          </div>
+          <n-alert v-if="kernelInstallError" type="error" :show-icon="false">{{ kernelInstallError }}</n-alert>
 
           <div class="kernel-bar">
             <span :class="['kernel-dot', kernelState.status]"></span>
@@ -1785,6 +1833,24 @@ onMounted(async () => {
   align-items: center;
   gap: var(--space-2);
   font-size: 13px;
+}
+
+.kernel-install {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+
+.kernel-install-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
 .kernel-dot {

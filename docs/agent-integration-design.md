@@ -389,7 +389,7 @@ export interface AgentCapability {
 | `tts.synthesize` | `tts_synthesize` | 网 | — | key | 输入 ≤ 500 字；返回本地 MP3 缓存路径，不返回字节流 |
 | `tts.cancel` | `tts_cancel` | 写 | — | 无 | |
 
-### 4.11 代理（11）
+### 4.11 代理（12）
 
 | 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
 |---|---|---|---|---|---|
@@ -399,6 +399,7 @@ export interface AgentCapability {
 | `proxy.parseSubscription` | `proxy_parse_subscription` | 读 | — | 无 | 纯转换，识别 base64/明文/JSON |
 | `proxy.selectNode` | `proxy_select_node` | 网 | dry | view | 换节点=重启内核，不做热重载 |
 | `proxy.kernelState` | `proxy_kernel_state` | 读 | — | 无 | |
+| `proxy.installKernel` | `proxy_install_kernel` | 网 | dry | disk | 官方 Release 下载并解压 sing-box；内核运行中拒绝覆盖 |
 | `proxy.stopKernel` | `proxy_stop_kernel` | 写 | — | 无 | 应用退出时必须调用，否则留孤儿进程 |
 | `proxy.autoUpdateState` | `proxy_auto_update_state` | 读 | — | disk | 读取定时重拉的开关、间隔与上次结果 |
 | `proxy.setAutoUpdate` | `proxy_set_auto_update` | 写 | dry | disk | 开关定时重拉；**不自动换节点**（换节点要重启内核） |

@@ -51,6 +51,7 @@ import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadCha
 import { atomicWriteText } from './atomicFile'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
 import { applyProxyToSession, judgeProxyProbe } from './proxy'
+import { installKernel, kernelInstalled } from './proxyKernel'
 import { describeScanResult, findOpenProxyPorts } from './proxyScan'
 import {
   cacheSubscriptionBody,
@@ -1491,8 +1492,38 @@ function registerIpc(): void {
     return res
   })
 
-  /** 内核状态：界面据此显示「运行中 / 端口 / 当前节点」。 */
-  ipcMain.handle('proxy.kernelState', () => ({ ok: true, state: getKernelState() }))
+  /** 内核状态：界面据此显示「运行中 / 端口 / 当前节点」，以及内核装没装。 */
+  ipcMain.handle('proxy.kernelState', () => ({
+    ok: true,
+    state: getKernelState(),
+    installed: kernelInstalled(app.getPath('userData')),
+  }))
+
+  /**
+   * 下载并安装内置内核（官方 sing-box Release）。
+   *
+   * 内核没在跑时才能覆盖：Windows 上运行中的 exe 不允许被替换。
+   * 下载和解压都在主进程做，渲染层只显示进度与结果。
+   */
+  ipcMain.handle('proxy.installKernel', async () => {
+    const status = getKernelState().status
+    if (status === 'running' || status === 'starting') {
+      return { ok: false, message: '内核正在运行，请先停止内核再更新' }
+    }
+    return installKernel({
+      userDataDir: app.getPath('userData'),
+      // 内核是整条链路的前提，下载走 Electron 的网络栈（跟随系统代理），
+      // 而不是 Node 的 fetch：后者不读系统代理，GitHub 直连往往拉不动。
+      download: async (url) => {
+        const res = await net.fetch(url, {
+          headers: { 'user-agent': 'spbf/0.1' },
+          signal: AbortSignal.timeout(300_000),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return new Uint8Array(await res.arrayBuffer())
+      },
+    })
+  })
 
   /** 停掉内核（切回直连或手填代理前调用）。 */
   ipcMain.handle('proxy.stopKernel', async () => {

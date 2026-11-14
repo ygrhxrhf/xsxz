@@ -47,6 +47,7 @@ import type {
   TtsPosition,
   ProxyAutoUpdatePrefs,
   ProxyKernelState,
+  ProxyKernelInstallResult,
   ProxyPrefs,
   ProxySpeedTestResult,
   ProxySubscriptionState,
@@ -308,7 +309,15 @@ const api = {
         { ok: true; port: number; node: { name: string; protocol: string } } | { ok: false; message: string }
       >,
     kernelState: () =>
-      ipcRenderer.invoke('proxy.kernelState') as Promise<{ ok: true; state: ProxyKernelState }>,
+      ipcRenderer.invoke('proxy.kernelState') as Promise<{
+        ok: true
+        state: ProxyKernelState
+        /** 内核可执行文件是否已就位（含手动放置）。 */
+        installed: boolean
+      }>,
+    /** 下载并安装内置内核；已安装时直接返回成功。 */
+    installKernel: () =>
+      ipcRenderer.invoke('proxy.installKernel') as Promise<ProxyKernelInstallResult>,
     stopKernel: () => ipcRenderer.invoke('proxy.stopKernel') as Promise<{ ok: true }>,
     /** 订阅自动更新的开关与上次结果。 */
     autoUpdateState: () =>
