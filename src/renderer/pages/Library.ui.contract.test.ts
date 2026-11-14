@@ -4,13 +4,20 @@ import { describe, expect, it } from 'vitest'
 describe('Library comfortable card contract', () => {
   it('keeps the fixed grid, generated cover, and keyboard-open structure', async () => {
     const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
-    expect(source).toContain('grid-template-columns: repeat(auto-fill, minmax(240px, 1fr))')
+    expect(source).toContain('grid-template-columns: repeat(auto-fill, minmax(380px, 1fr))')
     expect(source).toContain('width: 112px')
     expect(source).toContain('height: 156px')
     expect(source).toContain('width: 6px')
     expect(source).toContain('libraryCoverText(b.title)')
     expect(source).toContain(':style="coverStyle(b.id)"')
-    expect(source).toContain('<img v-if="b.coverPath" class="book-cover-img" :src="coverImgSrc(b) || undefined" alt="" />')
+    // 封面图：屏外延迟加载 + 异步解码，大书库滚动不被大图解码卡住。
+    expect(source).toContain('v-if="b.coverPath"')
+    expect(source).toContain('class="book-cover-img"')
+    expect(source).toContain(':src="coverImgSrc(b) || undefined"')
+    expect(source).toContain('loading="lazy"')
+    expect(source).toContain('decoding="async"')
+    // 封面地址只给（书 id, 文件名）；多传书库路径会让参数错位，封面整页全空。
+    expect(source).toContain('libraryCoverSrc(book.id, book.coverPath)')
     expect(source).toContain('<span v-else>{{ libraryCoverText(b.title) }}</span>')
     expect(source).toContain('libraryCoverSrc')
     expect(source).toContain('class="book-open-area"')

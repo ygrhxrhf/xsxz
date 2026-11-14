@@ -69,6 +69,8 @@ const statusFilter = ref<LibraryStatusFilter>('all')
 const selectedTags = ref<string[]>([])
 const tagsExpanded = ref(false)
 const sortKey = ref<LibrarySortKey>('updated')
+/** 书架密度：宽松两列，紧凑给大书库一屏多放几本。只影响列表排版，不落盘。 */
+const shelfDensity = ref<'relaxed' | 'compact'>('relaxed')
 const failedOpen = ref(false)
 const failedTitle = ref('')
 const failedBookId = ref('')
@@ -132,15 +134,6 @@ function shelfProgress(book: BookListItem): number {
   const index = match ? Number(match[1]) : 1
   return Math.max(2, Math.min(100, Math.round((index / book.chapterCount) * 100)))
 }
-
-const shelfRows = computed(() => {
-  const rows: BookListItem[][] = []
-  visibleBooks.value.forEach((book, index) => {
-    if (index % 8 === 0) rows.push([])
-    rows[rows.length - 1].push(book)
-  })
-  return rows
-})
 
 /**
  * 书多时开「跳过屏外卡片渲染」：卡片是响应式网格 + 变高内容（卡墙横幅、展开概览），
@@ -852,7 +845,8 @@ function coverStyle(id: string): Record<string, string> {
 }
 
 function coverImgSrc(book: BookListItem): string | null {
-  return libraryCoverSrc(libraryPath.value, book.id, book.coverPath)
+  // 封面走主进程的 spbf-cover 协议，只给书 id 与文件名；多传书库路径会让参数错位，封面全空。
+  return libraryCoverSrc(book.id, book.coverPath)
 }
 
 function isSelectedLibraryTag(tag: string): boolean {
@@ -1086,7 +1080,7 @@ onUnmounted(() => {
     <header class="library-header">
       <div>
         <h2 class="page-title">书架</h2>
-        <p class="library-subtitle">最近在读放在最前，其余按书架排开。</p>
+        <p class="library-subtitle">最近在读放在最前，其余按最近读过排开。</p>
       </div>
       <div class="library-header-actions">
         <span v-if="loading && books.length" class="library-refresh-status" role="status" aria-label="正在加载书库">
@@ -1115,9 +1109,31 @@ onUnmounted(() => {
       </div>
     </header>
     <div v-if="books.length" class="lib-toolbar">
-      <n-input ref="searchInputRef" v-model:value="query" clearable placeholder="按书名、作者或标签筛选" style="max-width:240px" />
-      <n-select v-model:value="statusFilter" :options="statusOptions" style="width:120px" />
-      <n-select v-model:value="sortKey" :options="sortOptions" style="width:132px" />
+      <div class="lib-toolbar-row">
+        <n-input
+          ref="searchInputRef"
+          v-model:value="query"
+          clearable
+          class="lib-search"
+          placeholder="按书名、作者或标签筛选"
+        />
+        <n-select v-model:value="statusFilter" :options="statusOptions" style="width:120px" />
+        <n-select v-model:value="sortKey" :options="sortOptions" style="width:132px" />
+        <div class="lib-density" role="group" aria-label="列表密度">
+          <button
+            type="button"
+            :class="{ active: shelfDensity === 'relaxed' }"
+            :aria-pressed="shelfDensity === 'relaxed'"
+            @click="shelfDensity = 'relaxed'"
+          >宽松</button>
+          <button
+            type="button"
+            :class="{ active: shelfDensity === 'compact' }"
+            :aria-pressed="shelfDensity === 'compact'"
+            @click="shelfDensity = 'compact'"
+          >紧凑</button>
+        </div>
+      </div>
       <div v-if="libraryTags.length" class="lib-tag-chips" :class="{ expanded: tagsExpanded }" role="list" aria-label="按标签筛选">
         <n-tag
           v-for="tag in libraryTags"
@@ -1146,9 +1162,11 @@ onUnmounted(() => {
     <div v-if="initialLoading" class="book-grid library-skeletons" role="status" aria-label="正在加载书库">
       <div v-for="index in 6" :key="index" class="book-card skeleton-card" aria-hidden="true">
         <div class="skeleton-block skeleton-cover" />
-        <div class="skeleton-block skeleton-title" />
-        <div class="skeleton-block skeleton-line" />
-        <div class="skeleton-block skeleton-line short" />
+        <div class="skeleton-copy">
+          <div class="skeleton-block skeleton-title" />
+          <div class="skeleton-block skeleton-line" />
+          <div class="skeleton-block skeleton-line short" />
+        </div>
       </div>
     </div>
 
@@ -1180,46 +1198,65 @@ onUnmounted(() => {
             <img v-if="continueBook.coverPath" class="book-cover-img" :src="coverImgSrc(continueBook) || undefined" alt="" />
             <span v-else>{{ libraryCoverText(continueBook.title) }}</span>
           </div>
-          <div>
+          <div class="shelf-continue-copy">
             <div class="shelf-kicker">最近在读</div>
             <div class="book-title" :title="continueBook.title">{{ continueBook.title }}</div>
             <div class="book-author">{{ continueBook.author || '未知作者' }}</div>
             <div class="book-progress">{{ fmtProgress(continueBook) }} · {{ fmtProgressTime(continueBook) }}</div>
           </div>
+          <span class="shelf-continue-cta" aria-hidden="true">继续阅读<i>›</i></span>
         </button>
       </section>
-      <div v-if="visibleBooks.length" class="book-grid" :class="{ 'book-grid-large': virtualizeBooks }">
-      <section v-for="(row, rowIndex) in shelfRows" :key="rowIndex" class="shelf-row">
-      <n-card v-for="b in row" :key="b.id" hoverable class="book-card">
+      <div v-if="visibleBooks.length" class="lib-list-head">
+        <span class="lib-count">{{ visibleBooks.length }} 本书</span>
+      </div>
+      <div
+        v-if="visibleBooks.length"
+        class="book-grid"
+        :class="{ 'book-grid-large': virtualizeBooks, 'book-grid-compact': shelfDensity === 'compact' }"
+      >
+      <n-card v-for="b in visibleBooks" :key="b.id" hoverable class="book-card">
         <button class="book-open-area" type="button" :aria-label="`打开《${b.title}》`" @click="emit('open-book', b.id)">
           <div class="book-cover" :style="coverStyle(b.id)" aria-hidden="true">
-            <img v-if="b.coverPath" class="book-cover-img" :src="coverImgSrc(b) || undefined" alt="" />
+            <!-- 大书库里封面不少：屏外延迟加载，解码放到主线程外，滚动时少卡顿。 -->
+            <img
+              v-if="b.coverPath"
+              class="book-cover-img"
+              :src="coverImgSrc(b) || undefined"
+              loading="lazy"
+              decoding="async"
+              alt=""
+            />
             <span v-else>{{ libraryCoverText(b.title) }}</span>
             <i v-if="shelfProgress(b)" class="cover-progress" :style="{ width: `${shelfProgress(b)}%` }" />
           </div>
-          <div class="book-title" :title="b.title">{{ b.title }}</div>
-          <div v-if="b.author" class="book-author" :title="b.author">{{ b.author }}</div>
-          <div class="book-meta">
-            <n-tag size="small" :type="statusType(b.status)">
-              {{ statusLabel(b.status) }}
-            </n-tag>
-          </div>
-          <div
-            v-if="libraryUnlockedNote(b)"
-            class="book-progress"
-            :title="libraryUnlockedNote(b)"
-          >
-            {{ libraryUnlockedNote(b) }}
-          </div>
-          <div class="book-progress" :title="fmtProgress(b)">{{ fmtProgress(b) }}</div>
-          <div class="book-progress-time" :title="fmtProgressTime(b)">{{ fmtProgressTime(b) }}</div>
-          <div
-            v-if="cardTaskLabel(b)"
-            class="check-msg"
-            :class="{ error: checkErr[b.id] }"
-            :title="cardTaskLabel(b)"
-          >
-            {{ cardTaskLabel(b) }}
+          <div class="book-copy">
+            <div class="book-title" :title="b.title">{{ b.title }}</div>
+            <div v-if="b.author" class="book-author" :title="b.author">{{ b.author }}</div>
+            <div class="book-meta">
+              <n-tag size="small" :type="statusType(b.status)">
+                {{ statusLabel(b.status) }}
+              </n-tag>
+            </div>
+            <div
+              v-if="libraryUnlockedNote(b)"
+              class="book-progress book-note"
+              :title="libraryUnlockedNote(b)"
+            >
+              {{ libraryUnlockedNote(b) }}
+            </div>
+            <div class="book-progress" :title="fmtProgress(b)">{{ fmtProgress(b) }}</div>
+            <!-- 没读过时 fmtProgress 已经说了「还没开始读」，不再补一行「未读」。 -->
+            <div v-if="b.progress" class="book-progress-time" :title="fmtProgressTime(b)">{{ fmtProgressTime(b) }}</div>
+            <div
+              v-if="cardTaskLabel(b)"
+              class="check-msg"
+              :class="{ error: checkErr[b.id] }"
+              :title="cardTaskLabel(b)"
+            >
+              {{ cardTaskLabel(b) }}
+            </div>
+            <span class="book-open-hint" aria-hidden="true">{{ shelfProgress(b) ? '继续阅读' : '开始阅读' }}<i>›</i></span>
           </div>
         </button>
         <!-- 书库发起的下载（检查更新/重试失败章）以前在书库页没有取消入口，
@@ -1261,11 +1298,10 @@ onUnmounted(() => {
           @select="(key: string | number) => handleCardMenu(b, key)"
         >
           <n-button class="card-more" size="small" quaternary :aria-label="`更多操作：《${b.title}》`">
-            更多
+            ⋯
           </n-button>
         </n-dropdown>
       </n-card>
-      </section>
       </div>
       <section v-if="webBooks.length" class="web-shelf">
         <div class="web-shelf-head">
@@ -1283,7 +1319,7 @@ onUnmounted(() => {
           <div v-for="book in webBooks" :key="book.id" class="web-shelf-card">
             <button class="web-shelf-open" type="button" :title="`继续读《${book.title}》`" @click="continueWebBook(book)">
               <div class="book-cover" :style="coverStyle(book.id)" aria-hidden="true">
-                <img v-if="book.coverUrl" class="book-cover-img" :src="book.coverUrl" alt="" />
+                <img v-if="book.coverUrl" class="book-cover-img" :src="book.coverUrl" loading="lazy" decoding="async" alt="" />
                 <span v-else>{{ libraryCoverText(book.title) }}</span>
                 <i v-if="webProgress(book)" class="cover-progress" :style="{ width: `${webProgress(book)}%` }" />
                 <em v-if="book.addedChapters > 0" class="web-update-badge">＋{{ book.addedChapters }} 章</em>
@@ -1601,16 +1637,61 @@ onUnmounted(() => {
 
 .lib-toolbar {
   display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.lib-toolbar-row {
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: var(--space-8);
+}
+
+.lib-search {
+  flex: 1 1 260px;
+  min-width: 200px;
+  max-width: 520px;
+}
+
+/* 密度切换做成一条轻量的分段控件，和右侧筛选下拉同一行，不额外占一行。 */
+.lib-density {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-1);
+}
+
+.lib-density button {
+  min-width: 48px;
+  height: 26px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lib-density button.active {
+  background: var(--surface-3);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.lib-density button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .lib-tag-chips {
   display: flex;
   flex-wrap: wrap;
-  flex: 1 0 100%;
   gap: var(--space-2);
   max-height: 32px;
   overflow: hidden;
@@ -1642,15 +1723,35 @@ onUnmounted(() => {
 
 .book-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 28px;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 20px;
+}
+
+/* 紧凑档：窄屏也能两列变三列，给大书库一屏多放几本。 */
+.book-grid-compact {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
 }
 
 /* 书多时跳过屏外卡片的布局与绘制（不改变外观，只在滚到附近时才真正排版）。
    与 Reader.vue 大章同一套思路：内容高度会变（卡墙横幅/展开概览），不能用固定行高虚拟列表。 */
 .book-grid-large .book-card {
   content-visibility: auto;
-  contain-intrinsic-size: auto 320px;
+  contain-intrinsic-size: auto 200px;
+}
+
+/* 网格上方的计数行：轻轻交代这一屏有多少本，替代以前每行一条的「书架板」。 */
+.lib-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.lib-count {
+  color: var(--text-muted);
+  font-size: 12px;
+  letter-spacing: 0.02em;
 }
 
 /* 网页书架：和本地书同排，但角标与工具更轻，一眼能分清来源 */
@@ -1727,6 +1828,7 @@ onUnmounted(() => {
 
 .web-shelf-open .book-cover {
   margin-inline: auto;
+  margin-bottom: var(--space-3);
 }
 
 .web-shelf-open .book-progress {
@@ -1753,38 +1855,56 @@ onUnmounted(() => {
 }
 
 .shelf-continue {
-  margin-bottom: 28px;
+  margin-bottom: var(--space-6);
 }
 
 .shelf-continue-open {
   display: flex;
   align-items: center;
-  gap: 18px;
-  width: min(560px, 100%);
-  border: 0;
-  border-radius: 16px;
-  padding: 14px;
+  gap: var(--space-4);
+  width: min(720px, 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
   color: inherit;
   background: var(--surface-1);
   text-align: left;
   cursor: pointer;
   box-shadow: var(--shadow-card);
+  transition: border-color var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing);
+}
+
+.shelf-continue-open:hover {
+  border-color: var(--card-hover-border);
+  box-shadow: var(--card-hover-shadow);
+}
+
+.shelf-continue-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shelf-continue-cta {
+  flex: 0 0 auto;
+  color: var(--focus);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.shelf-continue-cta i,
+.book-open-hint i {
+  margin-left: 2px;
+  font-style: normal;
 }
 
 .shelf-kicker {
-  margin-bottom: 4px;
-  color: var(--text-secondary);
+  margin-bottom: 2px;
+  color: var(--text-muted);
   font-size: 12px;
-}
-
-.shelf-row {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  gap: 18px 16px;
-  padding: 8px 8px 22px;
-  border-bottom: 10px solid color-mix(in srgb, var(--text-primary) 8%, var(--surface-1));
-  border-radius: 0 0 8px 8px;
+  letter-spacing: 0.06em;
 }
 
 .cover-progress {
@@ -1794,16 +1914,6 @@ onUnmounted(() => {
   bottom: 0;
   height: 3px;
   background: #c4554a;
-}
-
-.shelf-row .book-card {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
-}
-
-.shelf-row :deep(.book-card > .n-card__content) {
-  padding: 8px 4px 4px;
 }
 
 .book-card {
@@ -1826,16 +1936,19 @@ onUnmounted(() => {
   display: flex;
   height: 100%;
   flex-direction: column;
-  padding: var(--space-6) var(--space-4) var(--space-4);
+  gap: var(--space-3);
+  padding: var(--space-4);
 }
 
+/* 横向卡片：封面在左，书名与进度在右。窄屏自动落成一列，不必另写断点。 */
 .book-open-area {
   width: 100%;
   min-width: 0;
   display: flex;
   flex: 1;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--space-4);
   border: 0;
   border-radius: calc(var(--radius-card) - 4px);
   padding: 0;
@@ -1851,16 +1964,23 @@ onUnmounted(() => {
   outline-offset: 3px;
 }
 
+.book-copy {
+  min-width: 0;
+  flex: 1;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+
 .book-cover {
   position: relative;
   width: 112px;
   height: 156px;
-  flex: 0 0 156px;
-  align-self: center;
+  flex: 0 0 auto;
+  align-self: flex-start;
   display: grid;
   place-items: center;
   overflow: hidden;
-  margin-bottom: var(--space-6);
   border-radius: 3px 8px 8px 3px;
   color: #f7f3e8;
   background: linear-gradient(
@@ -1873,6 +1993,12 @@ onUnmounted(() => {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-shadow: 0 1px 2px rgba(47, 42, 36, 0.35);
+}
+
+.book-grid-compact .book-cover {
+  width: 84px;
+  height: 118px;
+  font-size: 20px;
 }
 
 .book-cover-img {
@@ -1917,29 +2043,25 @@ onUnmounted(() => {
   text-shadow: none;
 }
 
-.shelf-row .book-title {
-  min-height: 40px;
-  font-size: 14px;
-  text-align: center;
-}
-
-.shelf-row .book-author,
-.shelf-row .book-progress,
-.shelf-row .book-progress-time {
-  text-align: center;
-}
-
+/* 书名是卡片的主信息：两行封顶；卡片右上角有「更多」，右侧留出 44px 不让按钮压住第一行。 */
 .book-title {
-  min-height: 48px;
   display: -webkit-box;
   overflow: hidden;
   color: var(--text-primary);
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
-  line-height: 1.4;
+  line-height: 1.45;
   letter-spacing: 0.01em;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.book-card .book-title {
+  padding-right: 44px;
+}
+
+.book-grid-compact .book-title {
+  font-size: 15px;
 }
 
 .book-author,
@@ -1952,13 +2074,12 @@ onUnmounted(() => {
 }
 
 .book-author {
-  margin-top: var(--space-1);
+  margin-top: 3px;
   color: var(--text-secondary);
   font-size: 13px;
 }
 
 .book-meta {
-  min-height: 22px;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -1967,13 +2088,26 @@ onUnmounted(() => {
 
 .book-progress,
 .book-progress-time {
-  margin-top: var(--space-2);
-  color: var(--text-secondary);
+  margin-top: var(--space-1);
+  color: var(--text-muted);
   font-size: 12px;
 }
 
-.book-progress-time {
-  margin-top: var(--space-1);
+.book-note {
+  color: var(--text-secondary);
+}
+
+/* 「开始阅读」是卡片里唯一的主操作，压在文字区底部，和封面下缘对齐。 */
+.book-open-hint {
+  margin-top: auto;
+  padding-top: var(--space-2);
+  color: var(--focus);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.book-open-hint i {
+  opacity: 0.8;
 }
 
 .check-msg {
@@ -2003,8 +2137,19 @@ onUnmounted(() => {
   z-index: 2;
   top: var(--space-2);
   right: var(--space-2);
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
   border-radius: 999px;
   background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.book-card:hover .card-more,
+.card-more:focus-visible {
+  color: var(--text-primary);
 }
 
 .book-blocked {
@@ -2152,7 +2297,9 @@ onUnmounted(() => {
 }
 
 .skeleton-card {
-  min-height: 330px;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
   padding: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
@@ -2164,9 +2311,15 @@ onUnmounted(() => {
 }
 
 .skeleton-cover {
-  width: 104px;
-  height: 142px;
-  margin: 0 auto var(--space-3);
+  width: 112px;
+  height: 156px;
+  flex: 0 0 auto;
+  border-radius: 3px 8px 8px 3px;
+}
+
+.skeleton-copy {
+  min-width: 0;
+  flex: 1;
 }
 
 .skeleton-title {
@@ -2202,6 +2355,19 @@ onUnmounted(() => {
 
   .library-page :deep(.page-title) {
     font-size: 22px;
+  }
+}
+
+/* 窄窗口单列时把封面收小，留给书名和进度的横向空间。 */
+@media (max-width: 560px) {
+  .book-cover {
+    width: 84px;
+    height: 118px;
+    font-size: 20px;
+  }
+
+  .shelf-continue-cta {
+    display: none;
   }
 }
 
