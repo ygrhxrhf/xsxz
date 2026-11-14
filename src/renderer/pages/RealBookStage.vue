@@ -14,25 +14,45 @@
  * 单双页切换都会让同一页码对应不同文字，所以对外只报锚点。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { decorateText } from '@shared/paragraphSearch'
 import type { ReaderHandwritingFont, ReaderTheme } from '@shared/types'
 import {
   createRealBookPaginator,
   findPageForInput,
   pageRatio,
   type RealBookAnchor,
+  type RealBookLine,
   type RealBookNoteBlock,
   type RealBookPage,
 } from './realBookPager'
 import {
+  decorateTextWithNotes,
   estimateInlineNoteHeight,
   INLINE_NOTE_GAP_PX,
+  type NoteTextMark,
+  type NoteTextPart,
   type RealBookNote,
 } from './realBookNotes'
-import { MAX_SPINE_LAYERS, spineLayers, spineStack } from './realBookSpine'
+import { spineLayers, spineStack, spineTotalLayers } from './realBookSpine'
 import { measureLines } from './realBookMeasure'
-import { clampPitch, pitchFromDrag, pitchResetTarget } from './realBookPitch'
+import { clampPitch, MAX_PITCH_DEG, MAX_TILT_DEG, pitchFromDrag, pitchResetTarget, TILT_SENSITIVITY } from './realBookPitch'
 import { FLIP_DURATION_MS, flipAngles, flipBackContentOpacity, flipContentOpacity, flipFaceVisible, flipLight, flipPhases, flipPoses, flipSheetLift, flipSway } from './realBookFlip'
+import RealBookWebGLStage from './RealBookWebGLStage.vue'
+import {
+  PAGE_TEXTURE_HEIGHT,
+  PAGE_TEXTURE_MARGIN_BOTTOM,
+  PAGE_TEXTURE_MARGIN_INNER,
+  PAGE_TEXTURE_MARGIN_OUTER,
+  PAGE_TEXTURE_MARGIN_TOP,
+  PAGE_TEXTURE_WIDTH,
+  type RealBookTexturePage,
+} from './realBookTexture'
+import {
+  DEFAULT_ZOOM as WEBGL_DEFAULT_ZOOM,
+  MAX_ZOOM as WEBGL_MAX_ZOOM,
+  MIN_ZOOM as WEBGL_MIN_ZOOM,
+  type RealBookDesk,
+  type RealBookEndpaper,
+} from './realBookWebGLModel'
 
 interface HighlightSpan {
   /** 段落下标（原始下标，与经典模式一致） */
@@ -91,8 +111,19 @@ const props = withDefaults(defineProps<{
   theme?: ReaderTheme
   /** 是否显示舞台内悬浮工具条（书台版式；Reader 的真实书籍底栏会接管这些控件） */
   showToolbar?: boolean
+  /** 是否露出左上角圆形返回键：Reader 顶栏本身也有「书架」，顶栏展开时让位给它 */
+  backVisible?: boolean
   /** 版式：`book` 是双页 3D 书台，`sheet` 是单张书页（书页模式）。 */
   variant?: 'book' | 'sheet'
+  /** 书台渲染层：WebGL 复刻，CSS 3D 保留为回退。 */
+  renderer?: 'css' | 'webgl'
+  /** WebGL 桌面材质；CSS 3D 回退忽略。 */
+  desk?: RealBookDesk
+  /** WebGL 封内衬纸；CSS 3D 回退忽略。 */
+  endpaper?: RealBookEndpaper
+  /** 合上时的封面书名与作者。 */
+  bookTitle?: string
+  bookAuthor?: string
   /** 书页模式每页栏数：1 单栏、2 双栏；书台版式忽略。 */
   columns?: number
   /** 新写或刚编辑的批注 id：重排后跳到它所在页 */
@@ -117,7 +148,13 @@ const props = withDefaults(defineProps<{
   restoreToken: 0,
   theme: 'paper',
   showToolbar: true,
+  backVisible: true,
   variant: 'book',
+  renderer: 'css',
+  desk: 'walnut',
+  endpaper: 'ivory',
+  bookTitle: '',
+  bookAuthor: '',
   columns: 1,
   totalChars: 0,
   bookProgressStep: 0,
@@ -132,19 +169,23 @@ const emit = defineEmits<{
   (event: 'select', event: MouseEvent): void
   (event: 'update:pitch', pitch: number): void
   (event: 'update:zoom', zoom: number): void
+  /** WebGL 开合状态：Reader 底栏据此切换“合上/打开书籍”图标。 */
+  (event: 'update:open', open: boolean): void
   (event: 'update:show-notes', show: boolean): void
   (event: 'edit-note', noteId: string): void
   (event: 'next-chapter'): void
+  /** 左上角圆形返回键：回到书库 */
+  (event: 'back'): void
 }>()
 
 /**
- * 真实书籍的专属色板：暗绿灰桌面 + 暖象牙纸。
+ * 真实书籍的专属色板：浅暖桌面 + 暖象牙纸 + 深灰绿布壳。
  *
- * 参考图里的书不套阅读主题的纸白——经典滚动模式的纸白是给整屏阅读的，
- * 拟物书页需要更像旧纸：偏黄、偏暖、带一点纸垛的暗边。桌面三张参考图
- * 一致是低饱和的深绿灰，不是暖棕桌布，也不是浅色画布。
+ * 参考图是一张实拍感的书桌照：书摊在一张浅暖色桌面上，光从上方来，
+ * 四周略沉、画面下缘压出一道暗带；纸页是偏暖的旧纸；封面只从纸页四边
+ * 露出一圈深灰绿布壳。所以桌面取浅暖灰，不再用深色桌布。
  *
- * 夜间主题仍给深纸与近黑的桌面，保证暗环境阅读不刺眼。
+ * 夜间主题仍给深纸、深封面与近黑的桌面，保证暗环境阅读不刺眼。
  */
 interface RealBookPalette {
   /** 纸身 */
@@ -157,13 +198,37 @@ interface RealBookPalette {
   desk: string
   /** 桌面中央的柔光 */
   deskLit: string
+  /** 画面下缘的暗带与四周压暗 */
+  deskDeep: string
+  /** 封面布壳 */
+  cover: string
+  /** 布壳受光面 */
+  coverLit: string
+  /** 布壳背光与包边 */
+  coverDeep: string
 }
 
 const REALBOOK_PALETTE: Record<ReaderTheme, RealBookPalette> = {
-  paper: { paper: '#EFD8B3', lit: '#F9E9CC', shade: '#C6A374', desk: '#232A28', deskLit: '#303835' },
-  sepia: { paper: '#F0D6A4', lit: '#FAEDD2', shade: '#C39D66', desk: '#262C29', deskLit: '#333B37' },
-  gray: { paper: '#EDEEE9', lit: '#FAFBF6', shade: '#C2C5BD', desk: '#222927', deskLit: '#2F3634' },
-  night: { paper: '#1B1D20', lit: '#24262A', shade: '#111317', desk: '#111615', deskLit: '#1C2221' },
+  paper: {
+    paper: '#ECD3B0', lit: '#F7E3C6', shade: '#C29A66',
+    desk: '#C8B8A1', deskLit: '#DCCDB8', deskDeep: '#6C6255',
+    cover: '#48554C', coverLit: '#58665B', coverDeep: '#2A332D',
+  },
+  sepia: {
+    paper: '#F1D7A9', lit: '#FAECD3', shade: '#C0995F',
+    desk: '#CBB79A', deskLit: '#E2CFAE', deskDeep: '#6E604D',
+    cover: '#4C554B', coverLit: '#5D685A', coverDeep: '#2C332C',
+  },
+  gray: {
+    paper: '#EEEDE7', lit: '#FAF9F4', shade: '#C2C1B7',
+    desk: '#C7C4BD', deskLit: '#E0DCD5', deskDeep: '#6B6862',
+    cover: '#4A5255', coverLit: '#5B6467', coverDeep: '#2A3133',
+  },
+  night: {
+    paper: '#1B1D20', lit: '#24262A', shade: '#111317',
+    desk: '#20241F', deskLit: '#2E332C', deskDeep: '#0B0E0C',
+    cover: '#1D2521', coverLit: '#2A342E', coverDeep: '#0A0E0C',
+  },
 }
 
 const realbookColors = computed<RealBookPalette>(() => REALBOOK_PALETTE[props.theme] ?? REALBOOK_PALETTE.paper)
@@ -175,8 +240,24 @@ const noteMeasureRef = ref<HTMLElement | null>(null)
 const sheetRef = ref<HTMLElement | null>(null)
 /** 书台版式的书体：分区按左右两页的实际位置算，而不是整个舞台。 */
 const bookRef = ref<HTMLElement | null>(null)
+const webglRef = ref<{
+  paperEl?: HTMLElement | null
+  setOpen: (open: boolean) => void
+  toggleOpen: () => void
+  setPitch: (value: number) => void
+} | null>(null)
+const webglFailed = ref(false)
+const webglOpen = ref(true)
+const effectiveRenderer = computed(() => props.variant === 'book' && props.renderer === 'webgl' && !webglFailed.value)
+/** WebGL 用参考站的 62° 上限；CSS 3D 仍限 35° 以避免 DOM 正文被透视压糊。 */
+const pitchLimit = computed(() => (effectiveRenderer.value ? MAX_TILT_DEG : MAX_PITCH_DEG))
+/** WebGL 用参考站更慢的纸页行程；CSS 3D 保留 900ms。 */
+const flipDurationMs = computed(() => (effectiveRenderer.value ? 1500 : FLIP_DURATION_MS))
 const currentPage = ref(0)
-const zoom = ref(1)
+const defaultZoom = computed(() => (effectiveRenderer.value ? WEBGL_DEFAULT_ZOOM : 1))
+const minZoom = computed(() => (effectiveRenderer.value ? WEBGL_MIN_ZOOM : 0.7))
+const maxZoom = computed(() => (effectiveRenderer.value ? WEBGL_MAX_ZOOM : 1.8))
+const zoom = ref(defaultZoom.value)
 const pitchDragging = ref(false)
 let pitchDragState: { startY: number; startPitch: number } | null = null
 const flipping = ref<{ direction: 1 | -1; key: number } | null>(null)
@@ -197,6 +278,17 @@ const layout = ref({ pageWidth: 480, pageHeight: 640, paddingX: 43, paddingY: 38
 const lineHeightPx = computed(() => Math.max(1, props.fontSize) * Math.max(0.5, props.lineHeight))
 const paragraphGapPx = computed(() => Math.max(0, props.fontSize) * Math.max(0, props.paragraphGap))
 const handwritingNoteClass = computed(() => `handwriting-${props.handwritingFont}`)
+/** 原始段落下标 → 段内「注」标记。批注关闭时不挂标记，和卡片一起消失。 */
+const noteMarksByParagraph = computed(() => {
+  const groups = new Map<number, NoteTextMark[]>()
+  if (!props.showNotes) return groups
+  for (const note of props.notes) {
+    const list = groups.get(note.paragraph)
+    if (list) list.push({ id: note.id, offset: note.offset })
+    else groups.set(note.paragraph, [{ id: note.id, offset: note.offset }])
+  }
+  return groups
+})
 /** 书页模式的栏数与栏间距；栏间距跟着字号走，换字号不会把两栏挤到一起。 */
 const pageColumns = computed(() => (props.columns === 2 ? 2 : 1))
 const columnGapPx = computed(() => Math.round(Math.max(1, props.fontSize) * 3))
@@ -236,10 +328,14 @@ const reducedMotion = () =>
  */
 const paperEl = computed(() => {
   if (props.variant === 'sheet') return sheetRef.value
+  if (effectiveRenderer.value) return webglRef.value?.paperEl ?? hostRef.value
   return bookRef.value ?? hostRef.value
 })
 
-const pitch = computed(() => clampPitch(localPitch.value))
+const webglInk = computed(() => (props.theme === 'night' ? '#d8d1c4' : '#241c15'))
+const webglMuted = computed(() => (props.theme === 'night' ? 'rgba(216,209,196,0.58)' : 'rgba(36,28,21,0.52)'))
+
+const pitch = computed(() => clampPitch(localPitch.value, pitchLimit.value))
 
 /**
  * 俯仰角的真源在组件内部；父组件的 pitch prop 只是「外部设定值」。
@@ -248,10 +344,10 @@ const pitch = computed(() => clampPitch(localPitch.value))
  * 角度会在这一拍里弹回 0（父组件默认值）。改成「内部为准 + 外部变化才同步下来」，
  * 既不闪回，也仍然允许父组件（如「平放」）从外部改角度。
  */
-const localPitch = ref(clampPitch(props.pitch ?? 0))
+const localPitch = ref(clampPitch(props.pitch ?? 0, pitchLimit.value))
 
 watch(() => props.pitch, (value) => {
-  const next = clampPitch(value ?? 0)
+  const next = clampPitch(value ?? 0, pitchLimit.value)
   if (Math.abs(next - localPitch.value) > 0.001) localPitch.value = next
 })
 
@@ -260,7 +356,7 @@ watch(() => props.pitch, (value) => {
 watch(zoom, (value) => emit('update:zoom', value))
 
 function setPitch(value: number): void {
-  localPitch.value = clampPitch(value)
+  localPitch.value = clampPitch(value, pitchLimit.value)
   emit('update:pitch', localPitch.value)
 }
 
@@ -279,7 +375,12 @@ function beginPitchDrag(event: PointerEvent): void {
 function movePitchDrag(event: PointerEvent): void {
   if (!pitchDragging.value || !pitchDragState) return
   pitchDragged = true
-  setPitch(pitchFromDrag(pitchDragState, event.clientY))
+  setPitch(pitchFromDrag(
+    pitchDragState,
+    event.clientY,
+    effectiveRenderer.value ? TILT_SENSITIVITY : undefined,
+    pitchLimit.value,
+  ))
 }
 
 function endPitchDrag(event: PointerEvent): void {
@@ -320,6 +421,21 @@ function updateLayout(): void {
   if (!host) return
   const width = host.clientWidth || 960
   const height = host.clientHeight || 720
+  if (props.variant === 'book' && props.renderer === 'webgl' && !webglFailed.value) {
+    // WebGL 使用固定 640×920 逻辑页，再由相机适配视口；分页输入必须与纹理绘制
+    // 使用同一组边距，否则页面底部会多一行/少一行。
+    const foot = Math.max(1, Math.round(props.fontSize * 1.6))
+    const contentWidth = PAGE_TEXTURE_WIDTH - PAGE_TEXTURE_MARGIN_INNER - PAGE_TEXTURE_MARGIN_OUTER
+    layout.value = {
+      pageWidth: PAGE_TEXTURE_WIDTH,
+      pageHeight: PAGE_TEXTURE_HEIGHT,
+      paddingX: PAGE_TEXTURE_MARGIN_INNER,
+      paddingY: PAGE_TEXTURE_MARGIN_TOP,
+      contentWidth,
+      contentHeight: Math.max(120, PAGE_TEXTURE_HEIGHT - PAGE_TEXTURE_MARGIN_TOP - PAGE_TEXTURE_MARGIN_BOTTOM - foot),
+    }
+    return
+  }
   if (props.variant === 'sheet') {
     // 纸面铺满舞台可用区：内边留白从宿主盒子扣掉。
     // 不能读 .real-book-viewport 的 clientWidth：那个 flex 项的基础尺寸由纸面自身撑出，
@@ -346,14 +462,16 @@ function updateLayout(): void {
   }
   // 书尽量铺满可用宽度，只留一圈窄桌边：阅读面积优先。
   // 默认俯仰会把投影再放大，因此按 0.88 预留，而不是把整行宽度都塞给书页。
-  const availableHeight = Math.floor(height * 0.99) - BLOCK_THICKNESS_PX - REALBOOK_BAR_CLEARANCE_PX
+  const availableHeight = Math.floor(height * 0.99) - REALBOOK_STAGE_PADDING_Y_PX
+    - maxStackLiftPx.value - blockBandPx.value
   const widthLimit = Math.floor((width * 0.88 / 2) * 0.99)
-  // 开本固定为约 3:4 的竖版（1:1.42）。宽度同时受高度约束：
-  // 只按宽度算会在矮窗口里把书压成横向卡片——那不是书。
-  const heightLimit = Math.floor(availableHeight / 1.42)
+  // 开本按参考图取接近正方形的单页（宽高约 1:1）：摊开后是一本横向的宽书，
+  // 和参考图里「双页几乎占满画面宽度、上下留出桌面」的构图一致。
+  // 宽度同时受高度约束：只按宽度算会在矮窗口里把书压成横向卡片。
+  const heightLimit = Math.floor(availableHeight / BOOK_PAGE_ASPECT)
   const pageWidth = Math.max(260, Math.min(widthLimit, heightLimit))
   const pageHeight = Math.max(320, Math.min(
-    Math.floor(pageWidth * 1.42),
+    Math.floor(pageWidth * BOOK_PAGE_ASPECT),
     availableHeight,
   ))
   const paddingX = Math.round(pageWidth * 0.08)
@@ -412,7 +530,7 @@ function measuredNoteBlocks(): RealBookNoteBlock[] {
     const paragraph = inputIndexOf(note.paragraph)
     if (paragraph < 0) continue
     const height = measured.get(note.id)
-      ?? estimateInlineNoteHeight(note.text, layout.value.contentWidth, props.fontSize)
+      ?? estimateInlineNoteHeight(note.text, layout.value.contentWidth, props.fontSize, note.tags?.length ?? 0)
     out.push({
       id: note.id,
       paragraph,
@@ -428,9 +546,20 @@ function rebuildPages(): void {
   if (!measure) return
   const previousAnchor = pendingRestore ? null : anchorOf(pages.value[currentPage.value])
   const { contentHeight } = layout.value
+  // 「注」标记会占一个全角字符的宽度；量断行必须带上它，否则页表会少算一行。
+  const noteOffsetsByInput = new Map<number, number[]>()
+  if (props.showNotes) {
+    for (const note of props.notes) {
+      const paragraph = inputIndexOf(note.paragraph)
+      if (paragraph < 0) continue
+      const list = noteOffsetsByInput.get(paragraph)
+      if (list) list.push(note.offset)
+      else noteOffsetsByInput.set(paragraph, [note.offset])
+    }
+  }
   const created = createRealBookPaginator(
     props.paragraphs,
-    (text) => measureLines(text, measure),
+    (text, index) => measureLines(text, measure, noteOffsetsByInput.get(index) ?? []),
     { pageHeight: contentHeight, lineHeight: lineHeightPx.value, paragraphGap: paragraphGapPx.value },
     measuredNoteBlocks(),
   )
@@ -496,7 +625,7 @@ function goToPage(index: number, animate: boolean): void {
     syncAnchor()
     emit('update:page-count', pages.value.length)
     emit('update:page', target)
-  }, FLIP_DURATION_MS)
+  }, flipDurationMs.value)
 }
 
 /**
@@ -509,7 +638,7 @@ function startFlipAnimation(): void {
   if (typeof requestAnimationFrame !== 'function') return
   const started = performance.now()
   const tick = () => {
-    const t = Math.min(1, (performance.now() - started) / FLIP_DURATION_MS)
+    const t = Math.min(1, (performance.now() - started) / flipDurationMs.value)
     flipT.value = t
     flipRaf = t < 1 ? requestAnimationFrame(tick) : 0
   }
@@ -522,6 +651,12 @@ function stopFlipAnimation(): void {
 }
 
 function nextPage(): void {
+  // WebGL 合上的书：第一次“下一页”只负责把封面打开。
+  if (effectiveRenderer.value && !webglOpen.value) {
+    webglRef.value?.setOpen(true)
+    webglOpen.value = true
+    return
+  }
   // 已经是本章最后一页：把「下一页」交给父组件换下一章。
   if (!hasNextPage.value) {
     emit('next-chapter')
@@ -575,11 +710,21 @@ function applyReveal(): void {
   goToAnchor({ paragraph: note.paragraph, offset: note.offset })
 }
 
+function clampZoom(value: number): number {
+  return Math.min(maxZoom.value, Math.max(minZoom.value, Math.round(value * 1000) / 1000))
+}
+
 function onWheel(e: WheelEvent): void {
+  // WebGL 复刻沿用参考站：滚轮缩放，翻页交给按钮/方向键/拖页。
+  if (effectiveRenderer.value) {
+    const delta = Math.max(-120, Math.min(120, e.deltaY))
+    zoom.value = clampZoom(zoom.value * Math.exp(-delta * 0.001))
+    e.preventDefault()
+    return
+  }
   if (e.ctrlKey) {
-    // 双指捏合在桌面端会带 ctrlKey；这是缩放，不翻页。
-    const next = Math.min(1.8, Math.max(0.7, zoom.value - e.deltaY * 0.002))
-    zoom.value = Math.round(next * 100) / 100
+    // CSS 3D 回退：双指捏合在桌面端会带 ctrlKey；这是缩放，不翻页。
+    zoom.value = clampZoom(zoom.value - e.deltaY * 0.002)
     e.preventDefault()
     return
   }
@@ -590,15 +735,35 @@ function onWheel(e: WheelEvent): void {
 }
 
 function zoomIn(): void {
-  zoom.value = Math.min(1.8, Math.round((zoom.value + 0.1) * 100) / 100)
+  zoom.value = clampZoom(effectiveRenderer.value ? zoom.value * 1.25 : zoom.value + 0.1)
 }
 
 function zoomOut(): void {
-  zoom.value = Math.max(0.7, Math.round((zoom.value - 0.1) * 100) / 100)
+  zoom.value = clampZoom(effectiveRenderer.value ? zoom.value * 0.8 : zoom.value - 0.1)
 }
 
 function resetZoom(): void {
-  zoom.value = 1
+  zoom.value = defaultZoom.value
+}
+
+function handleWebglUnsupported(): void {
+  webglFailed.value = true
+  void nextTick(() => {
+    updateLayout()
+    rebuildPages()
+  })
+}
+
+function onWebglOpen(value: boolean): void {
+  webglOpen.value = value
+  emit('update:open', value)
+}
+
+function toggleOpen(): void {
+  if (!effectiveRenderer.value) return
+  webglOpen.value = !webglOpen.value
+  webglRef.value?.setOpen(webglOpen.value)
+  emit('update:open', webglOpen.value)
 }
 
 /** 一页里要渲染的文字片段。 */
@@ -610,7 +775,8 @@ interface PageTextPiece {
   start: number
   end: number
   continued: boolean
-  segs: ReturnType<typeof decorateText>
+  lines: readonly RealBookLine[]
+  segs: NoteTextPart[]
 }
 
 interface PageNotePiece {
@@ -647,6 +813,10 @@ function piecesOf(page: RealBookPage | undefined): PagePiece[] {
         color: h.color,
       }))
       .filter((h) => h.end > h.start)
+    // 「注」标记只在真正包含锚点的那一段片段里出现；跨页续排时不能每页都挂一个。
+    const marks = (noteMarksByParagraph.value.get(original) ?? [])
+      .map((mark) => ({ id: mark.id, offset: mark.offset - item.start }))
+      .filter((mark) => mark.offset >= 0 && mark.offset <= slice.length && (mark.offset > 0 || item.start === 0))
     out.push({
       kind: 'text',
       key: `${item.paragraph}-${item.start}-${item.end}`,
@@ -655,7 +825,8 @@ function piecesOf(page: RealBookPage | undefined): PagePiece[] {
       start: item.start,
       end: item.end,
       continued: item.continued,
-      segs: decorateText(slice, props.searchQuery, local),
+      lines: item.lines ?? [{ start: item.start, end: item.end }],
+      segs: decorateTextWithNotes(slice, props.searchQuery, local, marks),
     })
   }
   return out
@@ -702,6 +873,52 @@ const flipBackIndex = computed(() => {
   return direction === 1 ? currentPage.value + 1 : currentPage.value - 2
 })
 const flipBackPieces = computed(() => piecesOf(pages.value[flipBackIndex.value]))
+
+/**
+ * 把分页结果投影成 WebGL 纹理数据。
+ *
+ * 注意这里不再走 `decorateTextWithNotes` 的 DOM 片段，而是把整段文本和行区间
+ * 一起交给纹理层，让 Canvas 按与分页完全相同的断行绘制。
+ */
+function texturePageOf(index: number): RealBookTexturePage | null {
+  const page = pages.value[index]
+  if (!page || !page.items.length) return null
+  const items: Array<RealBookTexturePage['items'][number]> = []
+  for (const item of page.items) {
+    if (item.kind === 'note') {
+      const note = props.notes.find((candidate) => candidate.id === item.noteId)
+      if (note) items.push({ kind: 'note', note, height: item.height })
+      continue
+    }
+    const original = props.paragraphIndexes[item.paragraph]
+    if (original === undefined) continue
+    const highlights = props.highlights
+      .filter((highlight) => highlight.index === original)
+      .map((highlight) => ({ start: highlight.start, end: highlight.end, color: highlight.color }))
+    const noteMarks = (noteMarksByParagraph.value.get(original) ?? []).map((mark) => mark.offset)
+    items.push({
+      kind: 'text',
+      text: props.paragraphs[item.paragraph] ?? '',
+      originalIndex: original,
+      start: item.start,
+      end: item.end,
+      continued: item.continued,
+      lines: item.lines ?? [{ start: item.start, end: item.end }],
+      highlights,
+      noteMarks,
+    })
+  }
+  return {
+    pageNumber: index + 1,
+    chapterTitle: props.chapterTitle,
+    items,
+  }
+}
+
+const webglLeftPage = computed(() => texturePageOf(leftViewIndex.value))
+const webglRightPage = computed(() => texturePageOf(rightViewIndex.value))
+const webglFlipFrontPage = computed(() => (flipping.value ? texturePageOf(flipSheetIndex.value) : null))
+const webglFlipBackPage = computed(() => (flipping.value ? texturePageOf(flipBackIndex.value) : null))
 /**
  * 卷页竖带：角度与位置由 `flipPoses` 算（折线积分），这里只铺成 style。
  * 每条带各渲染一份整页内容、按 −i×带宽 错开，相当于把同一页切成一条条窗格。
@@ -793,6 +1010,18 @@ const flipSlices = computed(() => {
 const flipSheetState = computed(() => flipSheetLift(flipT.value))
 
 /**
+ * 翻动页的竖向起点与落点：静态页被自己那一摞纸托起，翻动页若从 y=0 起飞，
+ * 起翻那一帧会向下跳一截（深俯仰下可达几十像素）。这里按翻页进度把抬升量
+ * 从「出发页的抬升」连续过渡到「落点页的抬升」，起落都不跳。
+ */
+const flipLiftY = computed(() => {
+  if (!flipping.value) return 0
+  const from = flipping.value.direction === 1 ? rightStackLiftPx.value : leftStackLiftPx.value
+  const to = flipping.value.direction === 1 ? leftStackLiftPx.value : rightStackLiftPx.value
+  return -(from + (to - from) * flipT.value)
+})
+
+/**
  * 翻页时整本书的随动。
  *
  * 真书是用手指把页角甩过去，书身会被这一推带得微微侧倾、离桌一下，纸落定后还有余颤。
@@ -865,10 +1094,16 @@ const sheetLabel = computed(() => `第 ${Math.min(sheetPageIndex.value + 1, shee
  * 让纸堆跳变；只有翻页才重新分配左右厚度。
  */
 /**
- * 每层纸的纵深（px）。参考图里的书身就是纸页本身，没有装订壳：
- * 纸垛只留几像素的边，一层 1.6px，整本最多 12 层也才 19px。
+ * 每层纸的纵深（px）。参考图是一本厚书：书脚露出的纸垛接近半指高，
+ * 一层 3.4px，整本最多 12 层约 41px，书脚才读得出「一摞纸」。
  */
-const BLOCK_DEPTH_PER_LAYER_PX = 1.6
+const BLOCK_DEPTH_PER_LAYER_PX = 3.4
+
+/**
+ * 真实书籍的开本：单页宽高比。参考图是一本接近正方形的书（单页约 1:1），
+ * 摊开后的双页近乎占满画面宽度，上下留出一条桌面——这就是它「方」的来源。
+ */
+const BOOK_PAGE_ASPECT = 1
 
 /**
  * V 形摊开角（deg）：两页以书脊为轴向外掀起的角度。
@@ -887,15 +1122,31 @@ const BEND_DEG = 4
  */
 const FLIP_ANCHOR_OFFSET_PX = 0
 
-/** 书厚纸垛占用的高度：页面在下方让出这一段，纸垛的切口才不会被视口裁掉。 */
-const BLOCK_THICKNESS_PX = MAX_SPINE_LAYERS * BLOCK_DEPTH_PER_LAYER_PX + 8
-
 /**
  * 底栏让位（px）：真实书籍的图标底栏常驻在视口底部，
  * 书要在它上方留出一段，封面下沿、纸垛切口的层线才看得见，
  * 不会被底栏压住。参考图里书脚与底栏之间也有一段空桌。
  */
 const REALBOOK_BAR_CLEARANCE_PX = 56
+
+/**
+ * 俯仰角到纸垛可见高度的换算：以 16° 为基准（此时纸垛的屏幕高度≈纸垛纵深），
+ * 俯仰越深，纸垛与页面拱起在屏幕上越高。35° 约为 2.05 倍。
+ * 参考图 2 是浅俯仰（纸垛只露一窄条），参考图 1 是深俯仰（纸垛与拱起都很高），
+ * 两张图对应的是同一条连续曲线。
+ */
+const MAX_PITCH_VIEW_FACTOR = Math.sin(35 * Math.PI / 180) / Math.sin(16 * Math.PI / 180)
+
+/**
+ * 这本书在最深俯仰下页面被纸垛抬起的最大高度（px）。
+ * 页面抬起会把整本书向上顶，版面上要同时让出顶部这一截和书脚的一小截。
+ */
+const maxStackLiftPx = computed(() =>
+  Math.round(spineTotalLayers(props.totalChars) * BLOCK_DEPTH_PER_LAYER_PX * MAX_PITCH_VIEW_FACTOR))
+
+/** 书脚让位：封面包边 + 投影 + 常驻底栏。 */
+const REALBOOK_STAGE_PADDING_Y_PX = 28
+const blockBandPx = computed(() => REALBOOK_BAR_CLEARANCE_PX + 20)
 
 const readRatio = computed(() => pageRatio(currentPage.value, Math.max(1, pageCount.value)))
 const stackProgress = computed(() => {
@@ -913,8 +1164,25 @@ const rightBlockLayers = computed(() => spineLayers(spine.value.remaining, { dir
 const leftBlockDepth = computed(() => Math.max(0, spine.value.read) * BLOCK_DEPTH_PER_LAYER_PX)
 const rightBlockDepth = computed(() => Math.max(0, spine.value.remaining) * BLOCK_DEPTH_PER_LAYER_PX)
 
+/**
+ * 纸垛在屏幕上的可见度：随俯仰角的正弦连续增长。
+ * 平放（0°）时为 0，默认俯仰（16°）约 0.68，高俯仰（32°–35°）约 1.3–1.4，
+ * 同一本书在浅俯仰（图 2）与深俯仰（图 1）下自然呈现对应的纸垛高度与页面拱起量。
+ */
+const edgeVisibility = computed(() => {
+  const radians = Math.max(0, pitch.value) * Math.PI / 180
+  return Math.max(0, Math.sin(radians) / Math.sin(16 * Math.PI / 180))
+})
+const leftStackLiftPx = computed(() => leftBlockDepth.value * edgeVisibility.value)
+const rightStackLiftPx = computed(() => rightBlockDepth.value * edgeVisibility.value)
+
 const stageStyle = computed(() => ({
   '--rb-pitch': `${pitch.value}deg`,
+  '--rb-edge-visibility': edgeVisibility.value.toFixed(3),
+  '--rb-lift-left': `${leftStackLiftPx.value.toFixed(2)}px`,
+  '--rb-lift-right': `${rightStackLiftPx.value.toFixed(2)}px`,
+  '--rb-arch-left': `${(leftStackLiftPx.value * 0.68).toFixed(2)}px`,
+  '--rb-arch-right': `${(rightStackLiftPx.value * 0.68).toFixed(2)}px`,
   // 拟物书页的纸色与桌面来自主题色板：经典模式的纸白在书台上会读成白纸，
   // 参考图要的是偏黄的旧纸与深绿灰桌面。
   '--rb-paper-warm': realbookColors.value.paper,
@@ -922,6 +1190,14 @@ const stageStyle = computed(() => ({
   '--rb-paper-shade': realbookColors.value.shade,
   '--rb-desk': realbookColors.value.desk,
   '--rb-desk-lit': realbookColors.value.deskLit,
+  '--rb-desk-deep': realbookColors.value.deskDeep,
+  // 封面是深灰绿布壳：只从纸页四边露出一圈，书脚再露出一段纸垛。
+  '--rb-cover-lit': realbookColors.value.coverLit,
+  '--rb-cover-mid': realbookColors.value.cover,
+  '--rb-cover-deep': realbookColors.value.coverDeep,
+  // 浮在桌面上的描边控件（左上返回键）：日间是浅色半透明胶囊、夜间转深。
+  '--rb-ui-bg': props.theme === 'night' ? 'rgba(26, 30, 27, 0.72)' : 'rgba(250, 244, 232, 0.78)',
+  '--rb-ui-ink': props.theme === 'night' ? 'rgba(238, 232, 220, 0.90)' : 'rgba(46, 44, 38, 0.82)',
   // 翻页时书被手托起的量：投影随之变淡、变散（离桌面越远，影子越虚）。
   '--rb-lift': `${flipSwayState.value.lift.toFixed(2)}px`,
   // 翻页时整本书的侧倾：必须挂在书台上（有 perspective 的父层），挂在书体自身的
@@ -946,8 +1222,10 @@ const stageStyle = computed(() => ({
   // 纸垛挤出块的进深：跟着层数走，读到哪儿厚到哪儿。
   '--rb-block-left': `${leftBlockDepth.value}px`,
   '--rb-block-right': `${rightBlockDepth.value}px`,
-  // 书脚下面要留出的高度：参考图底边有明显纸垛与软影，不让它贴到视口边缘。
-  '--rb-block-band': `${Math.round(BLOCK_THICKNESS_PX * 0.86 + REALBOOK_BAR_CLEARANCE_PX)}px`,
+  // 书脚下面要留出的高度：参考图底边有软影与常驻底栏，不让它贴到视口边缘。
+  '--rb-block-band': `${blockBandPx.value}px`,
+  // 页面被纸垛抬起后整本书会向上顶：顶部要预留这一截，书页顶缘才不会被视口裁掉。
+  '--rb-lift-max': `${maxStackLiftPx.value}px`,
   '--rb-font-size': `${props.fontSize}px`,
   // 必须是长度：CSS 用它当 line-height，裸数字会被当成「字号的倍数」，一行会被撑成几十倍高。
   '--rb-line-height': `${lineHeightPx.value}px`,
@@ -975,6 +1253,8 @@ watch(
     props.notes,
     props.showNotes,
     props.handwritingFont,
+    props.totalChars,
+    props.renderer,
     headHeightPx.value,
     footHeightPx.value,
   ],
@@ -986,6 +1266,17 @@ watch(
   },
   { deep: false },
 )
+
+watch(() => props.renderer, (renderer) => {
+  webglFailed.value = false
+  webglOpen.value = true
+  zoom.value = renderer === 'webgl' ? WEBGL_DEFAULT_ZOOM : 1
+  localPitch.value = clampPitch(localPitch.value, pitchLimit.value)
+  void nextTick(() => {
+    updateLayout()
+    rebuildPages()
+  })
+})
 
 watch(() => props.startAnchor, (anchor) => {
   if (anchor) goToAnchor(anchor)
@@ -1051,6 +1342,8 @@ defineExpose({
   currentPage,
   pageCount,
   readEnd,
+  toggleOpen,
+  isOpen: webglOpen,
 })
 </script>
 
@@ -1066,8 +1359,11 @@ defineExpose({
         :class="['real-book-note', handwritingNoteClass]"
         :data-measure-note-id="note.id"
       >
-        <span class="real-book-note-label">批注</span>
+        <span class="real-book-note-label">笔记</span>
         <span class="real-book-note-text">{{ note.text }}</span>
+        <span v-if="note.tags?.length" class="real-book-note-tags">
+          <span v-for="tag in note.tags" :key="tag" class="real-book-note-tag">#{{ tag }}</span>
+        </span>
       </aside>
     </div>
 
@@ -1090,6 +1386,19 @@ defineExpose({
       </span>
     </div>
 
+    <!-- 参考图左上角的圆形返回键：一直浮在桌面左上角，不随工具栏显隐。 -->
+    <button
+      v-if="variant === 'book' && backVisible"
+      class="real-book-back"
+      type="button"
+      title="返回书库"
+      aria-label="返回书库"
+      @click.stop="emit('back')"
+      @mouseup.stop
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5" /></svg>
+    </button>
+
     <div class="real-book-viewport" @wheel="onWheel">
       <!-- 书页版式：一整张纸，栏数由偏好决定；没有书脊、伪页与俯仰 -->
       <section v-if="variant === 'sheet'" ref="sheetRef" class="rb-sheet" aria-label="书页">
@@ -1107,7 +1416,7 @@ defineExpose({
                 class="real-book-para"
                 :data-p="piece.original"
                 :class="{ 'para-continued': piece.continued }"
-              ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+              ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
               <aside
                 v-else
                 :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
@@ -1120,8 +1429,11 @@ defineExpose({
                 @keydown.enter.stop.prevent="emit('edit-note', piece.note.id)"
                 @keydown.space.stop.prevent="emit('edit-note', piece.note.id)"
               >
-                <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                <span class="real-book-note-label">笔记<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
                 <span class="real-book-note-text">{{ piece.note.text }}</span>
+                <span v-if="piece.note.tags?.length" class="real-book-note-tags">
+                  <span v-for="tag in piece.note.tags" :key="tag" class="real-book-note-tag">#{{ tag }}</span>
+                </span>
               </aside>
             </template>
           </div>
@@ -1130,6 +1442,38 @@ defineExpose({
           <span class="rb-sheet-page-label" role="status">{{ sheetLabel }}</span>
         </footer>
       </section>
+      <RealBookWebGLStage
+        v-if="effectiveRenderer"
+        ref="webglRef"
+        :left-page="webglLeftPage"
+        :right-page="webglRightPage"
+        :flip-front-page="webglFlipFrontPage"
+        :flip-back-page="webglFlipBackPage"
+        :flipping="Boolean(flipping)"
+        :flip-progress="flipT"
+        :flip-direction="flipping?.direction ?? 1"
+        :font-size="fontSize"
+        :line-height="lineHeight"
+        :font-family="fontFamily"
+        :paragraph-gap="paragraphGap"
+        :search-query="searchQuery"
+        :paper="realbookColors.paper"
+        :ink="webglInk"
+        :muted="webglMuted"
+        :desk="desk"
+        :endpaper="endpaper"
+        :tilt="pitch"
+        :zoom="zoom"
+        :open="webglOpen"
+        :total-chars="totalChars"
+        :page-count="pageCount"
+        :progress="stackProgress"
+        :book-title="bookTitle || chapterTitle"
+        :book-author="bookAuthor"
+        @update:pitch="setPitch"
+        @update:open="onWebglOpen"
+        @unsupported="handleWebglUnsupported"
+      />
       <div
         v-else
         ref="bookRef"
@@ -1184,7 +1528,7 @@ defineExpose({
                   class="real-book-para"
                   :data-p="piece.original"
                   :class="{ 'para-continued': piece.continued }"
-                ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
                 <aside
                   v-else
                   :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
@@ -1197,8 +1541,11 @@ defineExpose({
                   @keydown.enter.stop.prevent="emit('edit-note', piece.note.id)"
                   @keydown.space.stop.prevent="emit('edit-note', piece.note.id)"
                 >
-                  <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                  <span class="real-book-note-label">笔记<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
                   <span class="real-book-note-text">{{ piece.note.text }}</span>
+                  <span v-if="piece.note.tags?.length" class="real-book-note-tags">
+                    <span v-for="tag in piece.note.tags" :key="tag" class="real-book-note-tag">#{{ tag }}</span>
+                  </span>
                 </aside>
               </template>
             </div>
@@ -1227,7 +1574,7 @@ defineExpose({
                   class="real-book-para"
                   :data-p="piece.original"
                   :class="{ 'para-continued': piece.continued }"
-                ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
                 <aside
                   v-else
                   :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
@@ -1240,8 +1587,11 @@ defineExpose({
                   @keydown.enter.stop.prevent="emit('edit-note', piece.note.id)"
                   @keydown.space.stop.prevent="emit('edit-note', piece.note.id)"
                 >
-                  <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                  <span class="real-book-note-label">笔记<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
                   <span class="real-book-note-text">{{ piece.note.text }}</span>
+                  <span v-if="piece.note.tags?.length" class="real-book-note-tags">
+                    <span v-for="tag in piece.note.tags" :key="tag" class="real-book-note-tag">#{{ tag }}</span>
+                  </span>
                 </aside>
               </template>
             </div>
@@ -1265,10 +1615,11 @@ defineExpose({
               left: flipping.direction === 1
                 ? `calc(50% + ${FLIP_ANCHOR_OFFSET_PX}px)`
                 : `calc(50% - ${FLIP_ANCHOR_OFFSET_PX}px)`,
+              // 竖向起点跟着本半页的纸垛抬升走（见 flipLiftY）：起翻与落位都不能跳。
               // 只沿观者方向抬离纸面：书脊侧那条边必须一直落在书缝里。
               // 后仰（rotateX）与屏面内滚（rotateZ）会把这条边推离书脊，
               // 中缝上就露出一条两边带硬边的空白纸带——就是「书被撕开」的读感。
-              transform: `translateZ(${flipSheetState.lift.toFixed(2)}px)`,
+              transform: `translateY(${flipLiftY.toFixed(2)}px) translateZ(${flipSheetState.lift.toFixed(2)}px)`,
             }"
             aria-hidden="true"
           >
@@ -1288,14 +1639,17 @@ defineExpose({
                         v-if="piece.kind === 'text'"
                         class="real-book-para"
                         :data-p="piece.original"
-                      ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                      ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
                       <aside
                         v-else
                         :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
                         :data-note-id="piece.note.id"
                       >
-                        <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                        <span class="real-book-note-label">笔记<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
                         <span class="real-book-note-text">{{ piece.note.text }}</span>
+                        <span v-if="piece.note.tags?.length" class="real-book-note-tags">
+                          <span v-for="tag in piece.note.tags" :key="tag" class="real-book-note-tag">#{{ tag }}</span>
+                        </span>
                       </aside>
                     </template>
                   </div>
@@ -1314,14 +1668,17 @@ defineExpose({
                           v-if="piece.kind === 'text'"
                           class="real-book-para"
                           :data-p="piece.original"
-                        ><template v-for="(s, j) in piece.segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                        ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
                         <aside
                           v-else
                           :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
                           :data-note-id="piece.note.id"
                         >
-                          <span class="real-book-note-label">批注<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                          <span class="real-book-note-label">笔记<span v-if="piece.note.source === 'ai'" class="real-book-note-source">AI</span></span>
                           <span class="real-book-note-text">{{ piece.note.text }}</span>
+                          <span v-if="piece.note.tags?.length" class="real-book-note-tags">
+                            <span v-for="tag in piece.note.tags" :key="tag" class="real-book-note-tag">#{{ tag }}</span>
+                          </span>
                         </aside>
                       </template>
                     </div>
@@ -1353,31 +1710,40 @@ defineExpose({
   --rb-paper-warm: #efd8b3;
   --rb-paper-lit: #f9e9cc;
   --rb-paper-shade: #c6a374;
-  /* 桌面：参考图里的书摊在低饱和深绿灰上，不是暖棕桌布。 */
-  --rb-desk: #232a28;
-  --rb-desk-lit: #303835;
-  /* 封面与书脊：参考图是一本浅色纸面软装书——封面只比纸页深一档，
-     从四边露出一圈，书脊在上下两端露出一小截脊头。不是深色皮壳。 */
-  --rb-cover-lit: color-mix(in srgb, var(--rb-paper-warm) 58%, var(--rb-paper-shade));
-  --rb-cover-mid: color-mix(in srgb, var(--rb-paper-warm) 40%, var(--rb-paper-shade));
-  --rb-cover-deep: color-mix(in srgb, var(--rb-paper-warm) 24%, var(--rb-paper-shade));
+  /* 桌面：参考图是一张浅暖色的书桌，光从上方来，画面下缘压出一道暗带。 */
+  --rb-desk: #c8b8a1;
+  --rb-desk-lit: #e0d1bb;
+  --rb-desk-deep: #6c6255;
+  /* 封面与书脊：参考图是一本深灰绿布壳书——封面只从纸页四边露出一圈，
+     书脊在上下两端露出一小截脊头。日间主题不用浅色纸壳。 */
+  --rb-cover-lit: #58665b;
+  --rb-cover-mid: #48554c;
+  --rb-cover-deep: #2a332d;
   /* 纸垛的切口、折缝与书心的暗色：比纸自身的暖阴影深一档。 */
   --rb-fold-shadow: 58 36 16;
   /* 页内批注：墨色跟着主题变亮/变深，底色仍从纸色派生，夜里不会出现一张白卡。 */
-  --rb-note-ink: color-mix(in srgb, #a34230 62%, var(--reader-paper-text, #2f2a24));
-  --rb-note-line: color-mix(in srgb, #a34230 44%, transparent);
-  --rb-note-bg: color-mix(in srgb, var(--rb-paper-lit) 64%, transparent);
+  --rb-note-ink: color-mix(in srgb, #a33e2f 72%, var(--reader-paper-text, #2f2a24));
+  --rb-note-label: color-mix(in srgb, #8a6648 76%, var(--reader-paper-text, #2f2a24));
+  --rb-note-tag: color-mix(in srgb, #8b5e3c 82%, var(--reader-paper-text, #2f2a24));
+  --rb-note-line: color-mix(in srgb, #a9552e 52%, transparent);
+  --rb-note-anchor-bg: color-mix(in srgb, #a9552e 88%, var(--reader-paper-text, #2f2a24));
+  --rb-note-anchor-ink: color-mix(in srgb, #fff7e6 94%, var(--rb-paper-lit));
 }
 
-/* 书台：参考图里的书摊在一张低饱和的深绿灰桌面上——背景是匀净的暗色，
-   层次全部由暖纸页承担；没有暖棕桌布、布纹与双重暗角。
-   桌面只用一层极淡的中央柔光和四周压深，让纸页从暗底里浮出来。 */
+/* 书台：参考图是一张实拍感的书桌照——浅暖色桌面、顶光、四周轻压暗，
+   画面下缘还压着一道深色带。层次由暖纸页与桌面阴影共同承担。 */
 .real-book-stage:not(.is-sheet) {
-  background-color: var(--rb-desk, #232a28);
+  background-color: var(--rb-desk, #c8b8a1);
   background-image:
-    /* 中央一层很淡的柔光，四周压深：深底把暖纸托出来，但不再有布纹与暗角重影。 */
-    radial-gradient(120% 100% at 50% 14%, color-mix(in srgb, var(--rb-desk-lit, #303835) 88%, transparent), transparent 62%),
-    radial-gradient(135% 118% at 50% 46%, transparent 44%, rgba(0, 0, 0, 0.20) 100%);
+    /* 顶光：中上方一片柔光，桌面四角自然收暗。 */
+    radial-gradient(92% 80% at 48% 3%, color-mix(in srgb, var(--rb-desk-lit, #dccdb8) 82%, transparent) 0%, transparent 64%),
+    /* 书桌四周的压暗：让书从桌面里浮出来，而不是贴在一张平色卡上。 */
+    radial-gradient(136% 116% at 50% 40%, transparent 44%, color-mix(in srgb, var(--rb-desk-deep, #6c6255) 30%, transparent) 100%),
+    /* 画面下缘的暗带：参考图底部是一条沉下去的深色边。 */
+    linear-gradient(180deg, transparent 82%, color-mix(in srgb, var(--rb-desk-deep, #6c6255) 62%, transparent) 100%),
+    /* 桌面细纹：极淡的直纹，只在放大时看得出，不做成布纹。 */
+    repeating-linear-gradient(94deg, rgba(255, 255, 255, 0.022) 0 1px, transparent 1px 5px),
+    linear-gradient(180deg, color-mix(in srgb, var(--rb-desk-lit, #e0d1bb) 30%, transparent), transparent 34%);
 }
 
 .real-book-measure {
@@ -1432,6 +1798,46 @@ defineExpose({
   padding: 3px 9px;
   font: inherit;
   cursor: pointer;
+}
+
+/* 左上角的圆形返回键：参考图里它浮在桌面左上角，浅色半透明圆钮 + 深色箭头。
+   它属于「看书的场景」而不是工具栏，不随顶栏一起收起。 */
+.real-book-back {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 14;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--rb-ui-ink, #2e2c26) 10%, transparent);
+  border-radius: 50%;
+  background: var(--rb-ui-bg, rgba(250, 244, 232, 0.78));
+  color: var(--rb-ui-ink, rgba(46, 44, 38, 0.82));
+  box-shadow:
+    0 2px 10px rgba(52, 44, 32, 0.14),
+    inset 0 1px 0 rgba(255, 252, 243, 0.40);
+  backdrop-filter: blur(8px) saturate(0.9);
+  cursor: pointer;
+  transition: background 140ms ease, transform 140ms ease;
+}
+
+.real-book-back:hover {
+  background: color-mix(in srgb, var(--rb-ui-bg, rgba(250, 244, 232, 0.78)) 84%, var(--rb-ui-ink, #2e2c26) 16%);
+}
+
+.real-book-back:active { transform: scale(0.96); }
+.real-book-back:focus-visible { outline: 2px solid var(--r-focus, #2f7fd0); outline-offset: 2px; }
+.real-book-back svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .real-book-btn:disabled { opacity: 0.5; cursor: default; }
@@ -1525,8 +1931,9 @@ defineExpose({
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  /* 书台版式把书整体上移这一段：书脚下面还要露出纸垛切口与投影，
-     视口是 overflow:hidden，不留这段余量切口就被切在底边。 */
+  /* 页面浮在纸垛上会把整本书向上顶：顶部让出这一截，书页顶缘才不会被裁掉。
+     书脚下面还要露出封面包边与投影，同样留出一段。 */
+  padding-top: var(--rb-lift-max, 0px);
   padding-bottom: var(--rb-block-band, 0px);
 }
 
@@ -1572,13 +1979,15 @@ defineExpose({
   padding: var(--rb-pad-y) var(--rb-pad-x);
   box-sizing: border-box;
   overflow: hidden;
-  /* 外缘四角像参考图那样带一点圆弧，靠书脊的内角保持近乎直角。 */
+  /* 硬壳书的书页四角是裁切出来的硬角：只留 2px 防锯齿，不做圆角卡片。 */
   border-radius: 2px;
-  /* 纸页落在浅色桌面上：外缘一圈极薄的接触影；纸面本身只留受光。 */
+  /* 纸页浮在纸垛上：外缘落到桌面上留一道柔影，纸页自身的边再收一线暗边，
+     浅色桌面上才看得出纸的边界。 */
   box-shadow:
-    0 2px 7px rgba(70, 60, 44, 0.10),
-    0 1px 2px rgba(70, 60, 44, 0.06),
-    inset 0 1px 0 rgba(255, 251, 240, 0.30);
+    0 2px 8px rgba(64, 52, 36, 0.20),
+    0 12px 26px rgba(64, 52, 36, 0.10),
+    inset 0 1px 0 rgba(255, 251, 240, 0.34),
+    inset 0 -1px 0 rgba(96, 74, 46, 0.10);
   display: grid;
   grid-template-rows: var(--rb-head-height) 1fr var(--rb-foot-height);
   /* 纸面质感：参考图是一张几乎均匀的象牙纸，只有中央微亮、四周略沉。
@@ -1594,12 +2003,28 @@ defineExpose({
       transparent 90%,
       color-mix(in srgb, var(--rb-paper-shade) 17%, transparent) 100%
     ),
-    /* 纸心微亮、四角收暗：参考图的纸边比纸心暗约 30/255。 */
+    /* 页脚与纸垛的交界只压一线接触影：更深的影子由纸垛自己的上缘承担。 */
+    linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--rb-paper-shade) 8%, transparent) 0%,
+      transparent 3.5%
+    ),
+    /* 纸心微亮、四角收暗：参考图的纸面几乎是一个均匀的暖乳色，
+       只在四角极轻地压一点，不能读成打了聚光灯。 */
     radial-gradient(
-      62% 56% at 50% 44%,
-      color-mix(in srgb, var(--rb-paper-lit) 34%, transparent) 0%,
-      transparent 42%,
-      color-mix(in srgb, var(--rb-paper-shade) 32%, transparent) 100%
+      68% 60% at 50% 42%,
+      color-mix(in srgb, var(--rb-paper-lit) 16%, transparent) 0%,
+      transparent 52%,
+      color-mix(in srgb, var(--rb-paper-shade) 18%, transparent) 100%
+    ),
+    /* 纸面受光：光从上方斜落，纸的上半页偏亮、下半页转暖沉下去。
+       参考图的纸不是一张均匀的色卡，这条极缓的斜面光是「纸有弧面」的线索。 */
+    linear-gradient(
+      172deg,
+      color-mix(in srgb, var(--rb-paper-lit) 12%, transparent) 0%,
+      transparent 38%,
+      color-mix(in srgb, var(--rb-paper-shade) 5%, transparent) 82%,
+      color-mix(in srgb, var(--rb-paper-shade) 9%, transparent) 100%
     ),
     var(--rb-page-curve, none);
   color: var(--reader-paper-text, #2f2a24);
@@ -1626,7 +2051,7 @@ defineExpose({
   z-index: 1;
   pointer-events: none;
   /* 参考图的纸面有一层很淡的纤维与斑点：只做质感，不参与塑形。 */
-  opacity: 0.4;
+  opacity: 0.52;
   background-image:
     repeating-linear-gradient(93deg, rgba(78, 51, 24, 0.012) 0 1px, transparent 1px 5px),
     repeating-linear-gradient(3deg, rgba(255, 252, 238, 0.02) 0 1px, transparent 1px 8px),
@@ -1658,12 +2083,12 @@ defineExpose({
 
 .real-book-left::before {
   left: 0;
-  border-radius: 12px 0 0 12px;
+  border-radius: 2px 0 0 2px;
 }
 
 .real-book-right::before {
   right: 0;
-  border-radius: 0 12px 12px 0;
+  border-radius: 0 2px 2px 0;
 }
 
 /* 页眉：章节眉题。必须单行省略——占高是排版输入，不能随标题长短变。
@@ -1717,39 +2142,63 @@ defineExpose({
 /* V 形摊开：两页以书脊为轴向外掀起，外侧先靠近观者，透视下因此向书脊收拢。
    这是「摊开的书」和「两个并排矩形」的全部区别，扭转量只走 3D 变换、不动排版。 */
 .real-book-left {
-  /* 左上 / 左下是外缘，圆；靠脊的右侧两角直角。 */
-  border-radius: 12px 2px 2px 12px;
+  /* 硬壳书的书页：外缘两角是硬角。靠书脊的上角按纸垛厚度拱起一段，
+     从书脊到平直段画出一道圆弧——这是参考图里右页（或左页）上缘的弯。
+     整页还按本半摞纸的厚度向上抬起（--rb-lift-left），页面才浮在纸垛上。 */
+  border-radius: 2px;
+  /* 书脊侧的上角不是一小截圆角：纸页从书脊向外是一段很长的缓拱，
+     横向半径取页宽的三分之一，才画得出参考图那条横跨近半页的弧。 */
+  border-top-right-radius: calc(var(--rb-page-width) * 0.34) var(--rb-arch-left, 0px);
   box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.28);
   transform-origin: right center;
-  transform: rotateY(var(--rb-bend, 0deg));
-  /* 靠脊折痕：只留页宽 4–6% 的一小段柔暗，外侧补一层极浅滚光。
+  transform: translateY(calc(-1 * var(--rb-lift-left, 0px))) rotateY(var(--rb-bend, 0deg));
+  /* 外缘（左侧）的弯折：纸边伏向桌面，最外一线受光，随即转暗再散开；
+     靠脊折痕只留页宽 4–6% 的一小段柔暗，外侧补一层极浅滚光。
      参考图的折缝是一条窄软影（约一手掌宽），不是一条宽暗带；
      暗部再宽就回到「两块纸板拼在一起」的读感。 */
-  --rb-page-curve: linear-gradient(
-    270deg,
-    color-mix(in srgb, var(--rb-paper-shade) 10%, transparent) 0%,
-    color-mix(in srgb, var(--rb-paper-shade) 5%, transparent) 2.5%,
-    transparent 6%,
-    color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 9%,
-    transparent 14%
-  );
+  --rb-page-curve:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--rb-paper-shade) 16%, transparent) 0%,
+      color-mix(in srgb, var(--rb-paper-lit) 18%, transparent) 1.4%,
+      color-mix(in srgb, var(--rb-paper-lit) 8%, transparent) 4%,
+      transparent 9%
+    ),
+    linear-gradient(
+      270deg,
+      color-mix(in srgb, var(--rb-paper-shade) 10%, transparent) 0%,
+      color-mix(in srgb, var(--rb-paper-shade) 5%, transparent) 2.5%,
+      transparent 6%,
+      color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 9%,
+      transparent 14%
+    );
 }
 
 .real-book-right {
-  /* 右上 / 右下是外缘，圆；靠脊的左侧两角直角。 */
-  border-radius: 2px 12px 12px 2px;
+  /* 右上 / 右下是外缘，硬角；靠脊的左上角按纸垛厚度拱起一段。 */
+  border-radius: 2px;
+  border-top-left-radius: calc(var(--rb-page-width) * 0.34) var(--rb-arch-right, 0px);
   box-shadow: inset 0 1px 0 rgba(255, 250, 234, 0.28);
   transform-origin: left center;
-  transform: rotateY(calc(-1 * var(--rb-bend, 0deg)));
-  /* 右页靠脊一侧（左缘）同样只留一段窄柔影与极浅滚光，与左页镜像。 */
-  --rb-page-curve: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--rb-paper-shade) 10%, transparent) 0%,
-    color-mix(in srgb, var(--rb-paper-shade) 5%, transparent) 2.5%,
-    transparent 6%,
-    color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 9%,
-    transparent 14%
-  );
+  transform: translateY(calc(-1 * var(--rb-lift-right, 0px))) rotateY(calc(-1 * var(--rb-bend, 0deg)));
+  /* 右页靠脊一侧（左缘）同样只留一段窄柔影与极浅滚光，与左页镜像；
+     外缘（右侧）也有一道弯折的明暗，纸边伏向桌面。 */
+  --rb-page-curve:
+    linear-gradient(
+      270deg,
+      color-mix(in srgb, var(--rb-paper-shade) 16%, transparent) 0%,
+      color-mix(in srgb, var(--rb-paper-lit) 18%, transparent) 1.4%,
+      color-mix(in srgb, var(--rb-paper-lit) 8%, transparent) 4%,
+      transparent 9%
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--rb-paper-shade) 10%, transparent) 0%,
+      color-mix(in srgb, var(--rb-paper-shade) 5%, transparent) 2.5%,
+      transparent 6%,
+      color-mix(in srgb, var(--rb-paper-lit) 4%, transparent) 9%,
+      transparent 14%
+    );
 }
 
 /* 书心不占宽度：左右页的装订边直接落在中心线上。
@@ -1798,35 +2247,27 @@ defineExpose({
   pointer-events: none;
 }
 
-/* 折缝的桥：书脊处那条把左右两页连起来的弯折纸面。
-   两页各自绕中线转 9°，交界的内缘本是一道尖角；这道桥盖住尖角，
-   画出纸从一页弯到另一页的那段圆弧——谷底最暗、两侧转亮，
-   于是书脊读成连续弯下去的纸，而不是两张平贴的纸板。 */
+/* 书脚的桥：左右两摞纸各自绕书脊转 4°，中间会裂开一道 V 形缝，
+   书脊从缝里露出来。这道窄桥按同一套页边纹理补住书心，让纸垛在书脊下连成一片。 */
 .real-book-fold-bridge {
   display: none;
   position: absolute;
-  top: -1px;
-  bottom: -1px;
-  left: -13px;
-  width: 26px;
+  top: 100%;
+  left: -18px;
+  width: 36px;
+  height: calc(max(1px, var(--rb-block-left, 0px), var(--rb-block-right, 0px)) * 2.1 * var(--rb-edge-visibility, 1));
   pointer-events: none;
-  /* 圆弧桥：左右两侧的边缘是纸翻过去时的高光，中间是谷底。
-     宽度只有 26px，遮住的正是两页内缘那道 9° 硬折的交线。 */
-  border-radius: 46% 46% 46% 46% / 3% 3% 3% 3%;
+  border-radius: 0 0 50% 50% / 0 0 20px 20px;
   background:
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--rb-paper-lit) 26%, transparent) 0%,
-      color-mix(in srgb, var(--rb-paper-shade) 22%, transparent) 34%,
-      color-mix(in srgb, var(--rb-paper-shade) 34%, transparent) 50%,
-      color-mix(in srgb, var(--rb-paper-shade) 22%, transparent) 66%,
-      color-mix(in srgb, var(--rb-paper-lit) 26%, transparent) 100%
-    );
-  /* 桥两侧的落影：纸离开谷底时在两侧各留一道细影，
-     圆弧才有厚度，而不是一条画上去的线。 */
-  box-shadow:
-    -1px 0 3px rgba(58, 36, 16, 0.22),
-    1px 0 3px rgba(58, 36, 16, 0.22);
+    linear-gradient(180deg, rgba(72, 60, 42, 0.18) 0%, rgba(72, 60, 42, 0.01) 18%, rgba(255, 252, 240, 0.10) 52%, rgba(72, 60, 42, 0.08) 86%, rgba(72, 60, 42, 0.16) 100%),
+    repeating-linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--rb-paper-warm) 86%, #a89273) 0 0.6px,
+      color-mix(in srgb, var(--rb-paper-lit) 96%, #fffdf3) 0.6px 1.5px,
+      color-mix(in srgb, var(--rb-paper-warm) 90%, #c3ac86) 1.5px 1.8px
+    ),
+    linear-gradient(180deg, var(--rb-paper-warm), var(--rb-paper-lit) 34%, var(--rb-paper-warm) 78%, var(--rb-paper-shade));
+  box-shadow: 0 3px 7px rgba(58, 46, 30, 0.20);
 }
 
 /* 书下投影：书体与纸垛落在地面上的影子。退到书体后方（translateZ），
@@ -1839,59 +2280,67 @@ defineExpose({
   /* 锚在页脚下沿、顺着页面平面往下长：投影的最深处正好落在书脚，
      俯仰时它跟着页面一起转，不必另算屏幕坐标。 */
   top: 100%;
-  height: calc(44px + var(--rb-lift, 0px) * 0.8);
-  /* 参考图里的投影很轻：纸页压在浅色桌面上，只留一层柔和的接触影，
-     不是深色桌布下那种厚重的黑边。 */
+  height: calc(58px + var(--rb-lift, 0px) * 0.8);
+  /* 参考图里的书压在浅暖桌面上：书脚一圈接触影较实，远处散开成一片柔灰。
+     深色桌布下那种厚重的黑边在这里会显得脏。 */
   background:
-    radial-gradient(46% 38% at 50% 0%, rgba(58, 52, 40, 0.20), rgba(0, 0, 0, 0) 78%),
-    radial-gradient(70% 74% at 50% 12%, rgba(58, 52, 40, 0.09), rgba(0, 0, 0, 0) 72%),
-    radial-gradient(92% 94% at 50% 26%, rgba(58, 52, 40, 0.05), rgba(0, 0, 0, 0) 78%);
-  filter: blur(calc(12px + var(--rb-lift, 0px) * 0.5));
+    radial-gradient(52% 34% at 50% 0%, rgba(54, 46, 34, 0.26), rgba(0, 0, 0, 0) 76%),
+    radial-gradient(74% 66% at 50% 10%, rgba(54, 46, 34, 0.12), rgba(0, 0, 0, 0) 72%),
+    radial-gradient(96% 92% at 50% 22%, rgba(54, 46, 34, 0.07), rgba(0, 0, 0, 0) 78%);
+  filter: blur(calc(13px + var(--rb-lift, 0px) * 0.5));
   opacity: calc(1 - var(--rb-lift, 0px) * 0.018);
   pointer-events: none;
 }
 
-/* 浅色纸面封面：参考图是一本软装书，封面只比纸页深一档，
-   从四边露出一圈包边，读者才读得出「这是一本书」，而不是两张浮在桌上的纸。 */
+/* 深灰绿布壳：参考图里封面只从纸页四边露出一圈，书脊侧包边更宽。
+   布壳比页面多出「纸垛厚度」那一段，书脚下面才看得到它兜着整本书。 */
 .real-book-board {
   position: absolute;
-  top: -10px;
-  width: calc(var(--rb-page-width) + 16px);
-  height: calc(var(--rb-page-height) + 20px);
-  border-radius: 16px 6px 14px 7px;
+  top: -6px;
+  width: calc(var(--rb-page-width) + 18px);
+  /* 封面是平摊在桌面上的硬壳：高度固定，纸页浮在纸垛上时从封面包边上方露头。
+     若跟着纸垛加高，书脚会出现一道台阶——参考图的封面下沿始终是一条直线。 */
+  height: calc(var(--rb-page-height) + 16px);
+  border-radius: 4px;
   background:
-    linear-gradient(180deg, rgba(255, 248, 232, 0.34), transparent 10%, transparent 88%, rgba(86, 66, 40, 0.12)),
-    linear-gradient(180deg, var(--rb-cover-lit), var(--rb-cover-mid) 55%, var(--rb-cover-deep));
+    /* 布面受光与包边：上缘提亮一线，下缘压深，四周有一圈布纹的细边。 */
+    linear-gradient(180deg, rgba(255, 255, 255, 0.13), transparent 10%, transparent 86%, rgba(0, 0, 0, 0.20)),
+    repeating-linear-gradient(96deg, rgba(255, 255, 255, 0.028) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(6deg, rgba(0, 0, 0, 0.05) 0 1px, transparent 1px 4px),
+    linear-gradient(180deg, var(--rb-cover-lit, #58665b), var(--rb-cover-mid, #48554c) 52%, var(--rb-cover-deep, #2a332d));
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--rb-cover-deep) 46%, transparent),
-    inset 0 0 0 3px rgba(96, 74, 46, 0.08),
-    inset 0 1px 0 rgba(255, 249, 234, 0.30),
-    0 4px 10px rgba(60, 50, 35, 0.16);
+    inset 0 0 0 1px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 2px 5px rgba(44, 38, 28, 0.26),
+    0 16px 34px rgba(48, 40, 30, 0.16);
   transform-style: preserve-3d;
   pointer-events: none;
 }
 
+/* 包边压槽：布壳比纸页大一整圈，槽线贴着纸页外缘，读起来才像「纸页装进壳里」。 */
+/* 封面包边只有 3px：参考图的封面是一条很窄的深色边，不是一圈厚壳。 */
 .real-book-board::after {
   content: '';
   position: absolute;
-  inset: 4px;
-  border: 1px solid color-mix(in srgb, var(--rb-cover-deep) 68%, transparent);
-  border-radius: 10px 3px 8px 4px;
-  box-shadow: 0 0 0 1px rgba(255, 248, 230, 0.18);
+  inset: 5px;
+  border: 1px solid rgba(0, 0, 0, 0.30);
+  border-radius: 2px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 0 5px rgba(0, 0, 0, 0.18);
   pointer-events: none;
 }
 
 .real-book-board-left {
-  left: -8px;
+  left: -9px;
   transform-origin: right center;
-  transform: rotateY(var(--rb-bend, 0deg)) translateZ(-10px);
+  transform: rotateY(var(--rb-bend, 0deg)) translateZ(-12px);
 }
 
 .real-book-board-right {
-  right: -8px;
+  right: -9px;
   transform-origin: left center;
-  transform: rotateY(calc(-1 * var(--rb-bend, 0deg))) translateZ(-10px);
-  border-radius: 6px 16px 7px 14px;
+  transform: rotateY(calc(-1 * var(--rb-bend, 0deg))) translateZ(-12px);
 }
 
 /* 书脊：封面在中间折成的圆弧脊背。它藏在两页后面，只在封面高出纸页的
@@ -1899,11 +2348,13 @@ defineExpose({
 .real-book-spine {
   position: absolute;
   left: 50%;
-  top: -12px;
-  bottom: -12px;
+  top: -5px;
+  /* 脊背只到封面的下缘：参考图的书脊顶与书脚都被封面包边压平，不另凸出一截。 */
+  bottom: -8px;
   width: 22px;
   transform: translateX(-50%) translateZ(-6px);
-  border-radius: 11px;
+  /* 书脊下端与封面平齐：画成圆头会在书脚正中出现一个半圆的小凸起。 */
+  border-radius: 11px 11px 0 0;
   background:
     /* 脊背的圆弧：中间被压深，两侧滚出受光。 */
     linear-gradient(
@@ -1942,11 +2393,12 @@ defineExpose({
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--rb-cover-deep) 38%, transparent);
 }
 
-.real-book-spine::before { top: 0; }
-.real-book-spine::after { bottom: 0; }
+/* 书脊顶与书脚都被包边压住，不再画外露的脊头锁线。 */
+.real-book-spine::before { display: none; }
+.real-book-spine::after { display: none; }
 
 .real-book-board-right::after {
-  border-radius: 2px 9px 3px 7px;
+  border-radius: 2px 13px 13px 2px;
 }
 
 /* 书厚：左右两半各一摞纸。纸垛必须跟着本半页折同一个角，
@@ -1964,80 +2416,95 @@ defineExpose({
 
 .real-book-block-left {
   left: 0;
-  --rb-block-h: var(--rb-block-left, 0px);
+  /* 本半摞纸的可见高度 = 页面抬起的量：书脚那一面正好从页脚长到封面。
+     靠书脊的上角按拱起量削掉一块，纸页的纸色从缺口里露出来。 */
+  --rb-block-h: var(--rb-lift-left, 0px);
+  --rb-block-arch: var(--rb-arch-left, 0px);
 }
 
 .real-book-block-right {
   right: 0;
-  --rb-block-h: var(--rb-block-right, 0px);
+  --rb-block-h: var(--rb-lift-right, 0px);
+  --rb-block-arch: var(--rb-arch-right, 0px);
   transform-origin: left center;
   transform: rotateY(calc(-1 * var(--rb-bend, 0deg)));
 }
 
-/* 切口：从页脚下沿向后倒过去的一面，一摞纸的厚度就画在这个面上。
-   平放时只露一道细边，俯仰后整面立起来，厚度才读得出来。 */
+/* 纸垫：书页被纸垛抬起后，页脚下面是纸页的延续。书脊侧的拱起缺口露出的是
+   这层纸（而不是封面），所以参考图里页脚在书脊一侧是「纸往下多弯了一段」。 */
+.real-book-block::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 纸垫在下、断面在上：::after 默认会盖在 ::before 上，必须显式压回去。 */
+  z-index: 0;
+  /* 多出 2px 压进页脚：纸页与纸垫之间不能留一道发白的分界线。 */
+  height: calc(max(1px, var(--rb-block-h, 0px)) + 2px);
+  background:
+    linear-gradient(90deg, rgba(255, 252, 240, 0.16) 0%, transparent 16%, transparent 84%, rgba(96, 74, 46, 0.06) 100%),
+    linear-gradient(
+      180deg,
+      var(--rb-paper-warm) 0%,
+      color-mix(in srgb, var(--rb-paper-warm) 90%, var(--rb-paper-shade)) 70%,
+      color-mix(in srgb, var(--rb-paper-warm) 86%, var(--rb-paper-shade)) 100%
+    );
+  pointer-events: none;
+}
+
+/* 书口（纸垛断面）：参考图里书脚是一摞很厚的纸——几百道细页边叠成一条
+   沉下去的暖褐色带子，靠书脊一侧的顶边向上拱起，落在封面上的下缘是一条直线。
+
+   面画在**书页同一平面**里：立面在俯看时会被纸页自己挡掉；而参考图的厚纸垛
+   正好是书页被托起后、页脚到封面之间露出的那一条带子，高度就是页面的抬升量。
+   靠书脊的上角用椭圆圆角削开，露出底下那层纸——就是参考图页脚下缘的拱弯。 */
 .real-book-block::before {
   content: '';
   position: absolute;
   left: 0;
   right: 0;
-  top: 0;
+  bottom: 0;
+  z-index: 1;
   height: max(1px, var(--rb-block-h, 0px));
-  transform-origin: center top;
-  transform: rotateX(-60deg);
-  border-radius: 0 0 3px 3px;
-  /* 上缘贴着纸面要压深一点，否则纸垛会像是平铺在页脚的一张旧纸；
-     每条 1px 暗线就是一页纸的纸边。 */
-  box-shadow: inset 0 1px 2px rgba(72, 60, 42, 0.16);
+  border-radius: 0;
+  /* 页脚与纸垛的交界压一道窄影；整摞纸落在封面上再留一道接触影。 */
+  box-shadow:
+    inset 0 2px 3px rgba(60, 44, 26, 0.34),
+    0 2px 5px rgba(50, 38, 24, 0.26);
   background:
-    /* 切口是纸摞的断面：整面仍是象牙纸，只让每层之间压一道很淡的暖影。 */
-    linear-gradient(180deg, rgba(72, 60, 42, 0.16), rgba(72, 60, 42, 0.03) 24%, rgba(72, 60, 42, 0.09) 70%, rgba(72, 60, 42, 0.17)),
+    /* 断面受光：上缘贴着纸页有一线亮边，往下沉入阴影，落到封面再收一道暗边。 */
+    linear-gradient(180deg, rgba(255, 250, 236, 0.14) 0%, rgba(60, 44, 26, 0.02) 10%, rgba(60, 44, 26, 0.04) 64%, rgba(60, 44, 26, 0.16) 100%),
+    /* 逐张纸的页边：极低对比的细线，远看是一条沉静的纸边，近看数得出层数。 */
     repeating-linear-gradient(
       180deg,
-      color-mix(in srgb, var(--rb-paper-warm) 86%, #b7a185) 0 1px,
-      color-mix(in srgb, var(--rb-paper-warm) 96%, #fffdf3) 1px 2px,
-      color-mix(in srgb, var(--rb-paper-warm) 90%, #cbb691) 2px 2.4px
+      rgba(46, 36, 22, 0.10) 0 1px,
+      rgba(255, 250, 235, 0.035) 1px 2.6px
+    ),
+    /* 整面墙比页面的纸暗一大截：它是侧对光的纸边，不是又一张纸。 */
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--rb-paper-warm) 48%, #3a352a),
+      color-mix(in srgb, var(--rb-paper-warm) 44%, #373328) 60%,
+      color-mix(in srgb, var(--rb-paper-warm) 40%, #333026)
     );
 }
 
-/* 外侧书口：贴着外缘向后立起来的一面。左右两半的外缘不在同一边，旋转方向相反。
-   书口是书的外轮廓：它必须看得出是一��摞纸的边，而不是一条亮边。
-   亮边读起来像「页面镶了一道边」，暗边读起来才像「纸叠起来的厚度」。 */
-.real-book-block::after {
-  content: '';
-  position: absolute;
-  top: calc(-1 * var(--rb-page-height));
-  left: 0;
-  width: max(1px, var(--rb-block-h, 0px));
-  height: var(--rb-page-height);
-  transform-origin: left center;
-  transform: rotateY(90deg);
-  border-radius: 0 3px 3px 0;
-  background:
-    /* 里侧贴着纸面那一段压深：那是纸叠进去的那一侧。 */
-    linear-gradient(90deg, rgba(72, 60, 42, 0.20), rgba(72, 60, 42, 0.04) 44%, rgba(72, 60, 42, 0.11)),
-    /* 逐张纸的边：竖着的细纹，一层层数得出来。
-       这一面是**侧着**看的书口，看到的是一页叠一页的厚度，
-       所以纹路要竖着走（沿进深方向分层），不是一道道横线。 */
-    repeating-linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--rb-paper-warm) 84%, #b7a185) 0 0.9px,
-      color-mix(in srgb, var(--rb-paper-warm) 96%, #fdf9ec) 0.9px 2.4px,
-      color-mix(in srgb, var(--rb-paper-warm) 90%, #c6b08a) 2.4px 2.8px
-    );
+/* 靠书脊一侧的上角拱起：纸垛在书脊处最薄，往外逐渐长到满高。
+   横向半径同样取页宽的三分之一，与纸页上缘的缓拱对齐，交界才是一条连续的弧。 */
+.real-book-block-left::before {
+  border-top-right-radius: calc(var(--rb-page-width) * 0.34) var(--rb-block-arch, 0px);
 }
 
-.real-book-block-right::after {
-  left: auto;
-  right: 0;
-  transform-origin: right center;
-  transform: rotateY(-90deg);
-  border-radius: 3px 0 0 3px;
+.real-book-block-right::before {
+  border-top-left-radius: calc(var(--rb-page-width) * 0.34) var(--rb-block-arch, 0px);
 }
 
 /* 上切口：书页顶端那一面。它和底切口使用同一套纸层线，
    只是绕页顶向后倒过去；没有它，俯看时书的上缘仍是一条剪纸边。 */
 .real-book-block-top {
+  /* 上切口被封面的上包边压住；纸页顶端不露断面，画出来反而像书顶开了一条口。 */
+  display: none;
   position: absolute;
   top: calc(-1 * var(--rb-page-height));
   left: 0;
@@ -2047,30 +2514,33 @@ defineExpose({
   transform: rotateX(60deg);
   border-radius: 3px 3px 0 0;
   background:
-    linear-gradient(180deg, rgba(255, 250, 235, 0.14), rgba(72, 60, 42, 0.06) 28%, rgba(72, 60, 42, 0.16)),
+    linear-gradient(180deg, rgba(255, 250, 235, 0.16), rgba(72, 60, 42, 0.06) 26%, rgba(72, 60, 42, 0.18)),
     repeating-linear-gradient(
       90deg,
-      color-mix(in srgb, var(--rb-paper-warm) 84%, #b7a185) 0 0.9px,
-      color-mix(in srgb, var(--rb-paper-warm) 97%, #fdf9ec) 0.9px 2.3px,
-      color-mix(in srgb, var(--rb-paper-warm) 90%, #c6b08a) 2.3px 2.8px
+      color-mix(in srgb, var(--rb-paper-warm) 82%, #ab9270) 0 0.8px,
+      color-mix(in srgb, var(--rb-paper-lit) 97%, #fdf9ec) 0.8px 2.1px,
+      color-mix(in srgb, var(--rb-paper-warm) 90%, #c1a97f) 2.1px 2.6px
     );
   box-shadow:
     inset 0 1px 0 rgba(255, 248, 230, 0.20),
     inset 0 -1px 1px rgba(72, 60, 42, 0.14);
 }
 
-/* 逐层纸边：每层沿页脚向下、向后错开一点，叠成数得清层数的纸摞。 */
+/* 逐层纸边：每层沿页脚向下、向后错开一点，叠成数得清层数的纸摞。
+   断面现在由 ::before 的密线一次画完，这些逐层片只保留 DOM 与偏移量
+   （书厚读数、测试与调试都还认它们），视觉上不再重复画一遍。 */
 .real-book-block i {
+  display: none;
   position: absolute;
   left: 1px;
   right: 1px;
-  height: 1.5px;
+  height: 2px;
   border-radius: 0 0 2px 2px;
   /* 纸边比纸面略深：从象牙纸里压出来，四套主题下都不会发灰或发紫。 */
-  background: color-mix(in srgb, var(--rb-paper-warm) 88%, #9c8460);
+  background: color-mix(in srgb, var(--rb-paper-warm) 86%, #9a825c);
   box-shadow:
-    0 1px 0 color-mix(in srgb, var(--reader-paper-text, #2f2a24) 8%, transparent),
-    0 -1px 0 rgba(255, 248, 232, 0.10);
+    0 1px 0 color-mix(in srgb, var(--reader-paper-text, #2f2a24) 10%, transparent),
+    0 -1px 0 rgba(255, 248, 232, 0.12);
 }
 
 .real-book-para {
@@ -2083,19 +2553,21 @@ defineExpose({
 }
 
 /*
- * 页内批注：像读者用铅笔写在段落下面的旁批。
- * 卡片高度由三行截断固定，完整内容在点击后的编辑浮层里看。
+ * 页内批注：读者写在段落下面的旁批。
+ *
+ * 不是卡片：不铺底色、不画圆角，只用左侧一道竖线把批注和正文分开。
+ * 竖线从行首缩进处起笔，标签、批注、#tag 都排在线的右边，像书页边缘的手写批注。
  */
 .real-book-note {
   display: block;
-  margin: 0;
-  padding: 0.42em 0.68em 0.5em;
-  border-left: 2px solid var(--rb-note-line, #a34230);
-  border-radius: 2px 6px 6px 2px;
-  background: var(--rb-note-bg, rgba(255, 240, 201, 0.24));
-  color: var(--rb-note-ink, #9c3f2f);
-  font-size: 0.8em;
-  line-height: 1.5;
+  margin: 0.08em 0 0 2em;
+  padding: 0.02em 0 0.08em 0.8em;
+  border-left: 1.5px solid var(--rb-note-line, rgba(169, 85, 46, 0.52));
+  border-radius: 0;
+  background: none;
+  color: var(--rb-note-ink, #8f3d2d);
+  font-size: 0.92em;
+  line-height: 1.68;
   text-align: left;
   text-indent: 0;
   cursor: pointer;
@@ -2103,7 +2575,7 @@ defineExpose({
 }
 
 .real-book-note + .real-book-note {
-  margin-top: 8px;
+  margin-top: 0.38em;
 }
 
 .real-book-note:focus-visible {
@@ -2112,22 +2584,24 @@ defineExpose({
 }
 
 .real-book-note-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35em;
-  margin-bottom: 0.18em;
-  font-size: 0.78em;
+  display: block;
+  margin-bottom: 0.2em;
+  color: var(--rb-note-label, #8a6648);
+  font-size: 0.62em;
   letter-spacing: 0.08em;
-  opacity: 0.72;
+  line-height: 1.4;
+  opacity: 1;
 }
 
 .real-book-note-source {
+  display: inline-block;
+  margin-left: 0.35em;
   padding: 0 0.35em;
   border: 1px solid currentColor;
   border-radius: 3px;
-  font-size: 0.86em;
+  font-size: 0.9em;
   letter-spacing: 0;
-  line-height: 1.35;
+  line-height: 1.3;
 }
 
 .real-book-note-text {
@@ -2139,8 +2613,50 @@ defineExpose({
   overflow-wrap: anywhere;
 }
 
+.real-book-note-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08em;
+  margin-top: 0.28em;
+  color: var(--rb-note-tag, #8b5e3c);
+  font-family: var(--rb-font-family);
+  font-size: 0.72em;
+  line-height: 1.45;
+}
+
+.real-book-note-tag {
+  display: block;
+  white-space: pre-wrap;
+}
+
 .real-book-note.handwriting-kai { font-family: 'KaiTi', '楷体', serif; }
 .real-book-note.handwriting-xingshu { font-family: 'STXingkai', '华文行楷', 'KaiTi', serif; }
+
+/* 行内「注」标记：圆形暖褐底、米白字，贴在划线末尾。
+   文字用伪元素给，正文文本节点里没有这个字——否则选区与进度坐标会整体偏移。 */
+.real-book-note-anchor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.32em;
+  height: 2.32em;
+  margin: 0 0.16em;
+  border: 0;
+  border-radius: 50%;
+  background: var(--rb-note-anchor-bg, #a9552e);
+  color: var(--rb-note-anchor-ink, #fff7e6);
+  font-family: var(--rb-font-family);
+  font-size: 0.58em;
+  font-weight: 600;
+  line-height: 1;
+  text-indent: 0;
+  vertical-align: 0.18em;
+  cursor: pointer;
+  user-select: none;
+}
+
+.real-book-note-anchor::before { content: '注'; }
+.real-book-note-anchor:focus-visible { outline: 2px solid var(--r-focus, #2f7fd0); outline-offset: 2px; }
 
 .real-book-empty {
   color: var(--r-muted, #6b6257);

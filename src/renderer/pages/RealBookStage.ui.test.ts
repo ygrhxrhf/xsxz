@@ -68,6 +68,7 @@ async function mountStage(options: MountOptions = {}) {
         events.push({ type: 'show-notes', payload: show })
       },
       'onEditNote': (id: string) => events.push({ type: 'edit-note', payload: id }),
+      onBack: () => events.push({ type: 'back', payload: null }),
     }),
   })
   app.mount(host)
@@ -119,6 +120,27 @@ describe('RealBookStage（真实书籍舞台）', () => {
     expect(document.querySelector('.real-book-left')).not.toBeNull()
     expect(document.querySelector('.real-book-right')).not.toBeNull()
     expect(document.querySelector('.real-book-page-label')?.textContent).toContain('页')
+    app.unmount()
+  })
+
+  it('开本接近方形：单页宽高比 1:1（参考图的宽书）', async () => {
+    const { app } = await mountStage()
+    const style = document.querySelector<HTMLElement>('.real-book-stage')?.getAttribute('style') ?? ''
+    const width = Number(/--rb-page-width:\s*(\d+(?:\.\d+)?)px/.exec(style)?.[1] ?? NaN)
+    const height = Number(/--rb-page-height:\s*(\d+(?:\.\d+)?)px/.exec(style)?.[1] ?? NaN)
+    expect(Number.isFinite(width)).toBe(true)
+    expect(Number.isFinite(height)).toBe(true)
+    expect(width).toBeCloseTo(height, 5)
+    app.unmount()
+  })
+
+  it('左上角有圆形返回键：点按发出 back 事件', async () => {
+    const { app, events } = await mountStage()
+    const back = document.querySelector<HTMLElement>('.real-book-back')
+    expect(back).not.toBeNull()
+    expect(back?.getAttribute('aria-label')).toBe('返回书库')
+    back?.click()
+    expect(events.some((event) => event.type === 'back')).toBe(true)
     app.unmount()
   })
 
@@ -385,8 +407,19 @@ describe('RealBookStage（真实书籍舞台）', () => {
     expect(anchored).not.toBeNull()
     // 卡片必须排在被批注段落之后，而不是浮在页角。
     expect(anchored!.nextElementSibling).toBe(card)
-    expect(card?.querySelector('.real-book-note-label')?.textContent).toContain('批注')
+    expect(card?.querySelector('.real-book-note-label')?.textContent).toContain('笔记')
     expect(card?.querySelector('.real-book-note-text')?.textContent).toBe('这是一条页内批注')
+    app.unmount()
+  })
+
+  it('批注带 #tag，段末显示「注」标记且不污染原文文本', async () => {
+    const { app } = await mountStage({ notes: [note({ tags: ['quote'] })] })
+    const para = document.querySelector<HTMLElement>('.real-book-right .real-book-para[data-p="2"]')
+    const marker = para?.querySelector<HTMLElement>('.real-book-note-anchor[data-note-anchor-id="n1"]')
+    expect(marker).not.toBeNull()
+    // 标记字由 CSS 伪元素提供，正文文本节点仍逐字对应原文。
+    expect(para?.textContent).toBe('第3段文字。')
+    expect(document.querySelector('.real-book-right .real-book-note-tag')?.textContent).toBe('#quote')
     app.unmount()
   })
 

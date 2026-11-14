@@ -355,6 +355,66 @@ describe('Reader 真实书籍模式接线', () => {
     app.unmount()
   })
 
+  it('真实书籍底栏默认收进底部横条，点横条展开，再点书页中区收回', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    const bar = () => document.querySelector<HTMLElement>('.reader-bottombar')
+    // 不交互时整条图标带收起，只剩底边那根横条：工具栏不该在书桌照上常驻。
+    expect(bar()?.getAttribute('aria-hidden')).toBe('true')
+    expect(bar()?.classList.contains('reader-tools-hidden')).toBe(true)
+    const dock = document.querySelector<HTMLElement>('.real-book-dock')
+    expect(dock).not.toBeNull()
+    expect(dock?.getAttribute('aria-label')).toBe('显示工具栏')
+
+    // 点横条：图标带展开、横条让位。
+    dock?.click()
+    await nextTick()
+    expect(bar()?.getAttribute('aria-hidden')).toBe('false')
+    expect(bar()?.classList.contains('reader-tools-hidden')).toBe(false)
+    expect(document.querySelector('.real-book-dock')).toBeNull()
+
+    // 点书页中区：收回，横条回来（复用了顶栏/经典底栏的同一个显隐真源）。
+    const paper = document.querySelector<HTMLElement>('.real-book-book')!
+    Object.defineProperty(paper, 'clientWidth', { configurable: true, value: 600 })
+    paper.getBoundingClientRect = () => ({ left: 0, width: 600 } as DOMRect)
+    paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300 }))
+    await nextTick()
+    expect(bar()?.getAttribute('aria-hidden')).toBe('true')
+    expect(document.querySelector('.real-book-dock')).not.toBeNull()
+    app.unmount()
+  })
+
+  it('面板开着时点书页中区：面板先关，底栏再收进横条，不留下无主浮层', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    document.querySelector<HTMLElement>('.real-book-dock')?.click()
+    await nextTick()
+    document.querySelector<HTMLElement>('.bottom-button[aria-label="背景"]')?.click()
+    await nextTick()
+    expect(document.querySelector('.bottom-panel')).not.toBeNull()
+
+    const paper = document.querySelector<HTMLElement>('.real-book-book')!
+    Object.defineProperty(paper, 'clientWidth', { configurable: true, value: 600 })
+    paper.getBoundingClientRect = () => ({ left: 0, width: 600 } as DOMRect)
+    paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300 }))
+    await nextTick()
+
+    // 面板挂在一个已收起的栏上会变成看不见却还活着的浮层：收起时一并关掉。
+    expect(document.querySelector('.bottom-panel')).toBeNull()
+    expect(document.querySelector('.reader-bottombar')?.getAttribute('aria-hidden')).toBe('true')
+    expect(document.querySelector('.real-book-dock')).not.toBeNull()
+    app.unmount()
+  })
+
+  it('经典模式不出现底部横条：横条只属于真实书籍底栏', async () => {
+    installReaderApi({ bookView: 'classic' })
+    const app = await mountReader()
+    expect(document.querySelector('.real-book-dock')).toBeNull()
+    app.unmount()
+  })
+
   it('真实书籍下点左侧回翻：章首停住，不跳到上一章', async () => {
     installReaderApi({ bookView: 'realbook', body: LONG_BODY })
     const app = await mountReader()
@@ -533,13 +593,18 @@ describe('Reader 真实书籍模式接线', () => {
     const textarea = editor!.querySelector<HTMLTextAreaElement>('textarea')!
     textarea.value = '改写后的批注'
     textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    const tagInput = editor!.querySelector<HTMLInputElement>('input')!
+    tagInput.value = '#quote'
+    tagInput.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
     buttonByText(editor!, '保存')?.click()
     await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(annotationUpdates).toContainEqual({ id: 'a-note', patch: { note: '改写后的批注' } })
+    expect(annotationUpdates).toContainEqual({ id: 'a-note', patch: { note: '改写后的批注', tags: ['quote'] } })
     expect(document.querySelector('.inline-note-editor')).toBeNull()
-    expect(document.querySelector('.real-book-note[data-note-id="a-note"]')?.textContent).toContain('改写后的批注')
+    const card = document.querySelector('.real-book-note[data-note-id="a-note"]')
+    expect(card?.textContent).toContain('改写后的批注')
+    expect(card?.querySelector('.real-book-note-tag')?.textContent).toBe('#quote')
     app.unmount()
   })
 
@@ -589,15 +654,20 @@ describe('Reader 真实书籍模式接线', () => {
       body: '第一段。\n\n第二段。',
       annotations: [{
         id: 'a-note', bookId: 'book-1', chapterId: 'c1', kind: 'highlight',
-        start: 0, end: 3, excerpt: '第一段', note: '段落下方的批注',
+        start: 0, end: 3, excerpt: '第一段', note: '段落下方的批注', tags: ['quote'],
         createdAt: '2026-11-09T00:00:00.000Z',
       }],
     })
     const app = await mountReader()
     const card = document.querySelector<HTMLElement>('.real-book-note[data-note-id="a-note"]')
     expect(card?.textContent).toContain('段落下方的批注')
+    expect(card?.querySelector('.real-book-note-tag')?.textContent).toBe('#quote')
     const paragraph = document.querySelector<HTMLElement>('[data-p="0"]')
     expect(paragraph?.nextElementSibling).toBe(card)
+    // 「注」标记是伪元素，正文文本节点仍只有原文。
+    expect(document.querySelector('[data-note-anchor-id="a-note"]')).not.toBeNull()
+    expect(paragraph?.textContent).toContain('第一段。')
+    expect(paragraph?.textContent).not.toContain('注')
 
     const toggle = document.querySelector<HTMLElement>('.real-book-note-toggle')!
     expect(toggle.getAttribute('aria-pressed')).toBe('true')

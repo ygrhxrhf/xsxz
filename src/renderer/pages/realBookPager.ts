@@ -41,6 +41,14 @@ export interface RealBookTextItem {
   end: number
   /** 是否为上一页延续下来的片段 */
   continued: boolean
+  /**
+   * 这个片段实际包含的断行。
+   *
+   * 分页器本来就能拿到量测结果；把行区间一起带出去，WebGL 纹理层就能按
+   * 与 DOM 分页完全相同的断行绘制，不必再用 Canvas 重新猜一遍换行。
+   * 旧调用方可以忽略，因此保持可选。
+   */
+  lines?: readonly RealBookLine[]
 }
 
 /**
@@ -184,10 +192,82 @@ export function createRealBookPaginator(
   }
 
   /**
+   * 批注锚点落在哪一行：取「行尾 >= 段内结束偏移」的第一行。
+   * 锚点正好落在行尾时挂在这一行（而不是下一行），卡片才会贴在被划线的那行下面。
+   */
+  function lineForAnchor(lines: readonly RealBookLine[], offset: number): number {
+    for (let i = 0; i < lines.length; i += 1) {
+      if (offset <= lines[i]!.end) return i
+    }
+    return Math.max(0, lines.length - 1)
+  }
+
+  /**
+   * 带批注的段落：按「划线所在行」切开正文，把批注块插在这一行后面。
+   *
+   * 不能等整段排完再插：长段跨页时，卡片会被推到段落末尾甚至下一页，
+   * 读者在当前页只能看到「注」标记、看不到批注内容。切开后的后半段标
+   * `continued`，CSS 会取消首行缩进，读起来仍是同一段。
+   */
+  function placeAnnotatedParagraph(
+    paragraph: number,
+    lines: readonly RealBookLine[],
+    notes: readonly RealBookNoteBlock[],
+  ): void {
+    const notesAfterLine = new Map<number, RealBookNoteBlock[]>()
+    for (const note of notes) {
+      const line = lineForAnchor(lines, note.anchorOffset)
+      const list = notesAfterLine.get(line)
+      if (list) list.push(note)
+      else notesAfterLine.set(line, [note])
+    }
+    notesAfter.delete(paragraph)
+
+    let line = 0
+    let started = false
+    while (line < lines.length) {
+      const gapNow = pageItems.length && !started ? gap : 0
+      let room = remaining(gapNow)
+      if (room <= 0) {
+        if (pageItems.length) {
+          flush()
+          continue
+        }
+        room = 1
+      }
+      let take = Math.min(room, lines.length - line)
+      // 一段要在批注所在行的行尾断开，先放这一行，再放卡片。
+      for (let i = line; i < line + take; i += 1) {
+        if (notesAfterLine.has(i)) {
+          take = i - line + 1
+          break
+        }
+      }
+      const first = lines[line]!
+      const last = lines[line + take - 1]!
+      pageItems.push({
+        kind: 'text',
+        paragraph,
+        start: first.start,
+        end: last.end,
+        continued: started,
+        lines: lines.slice(line, line + take),
+      })
+      used += gapNow + take * lineHeight
+      const after = notesAfterLine.get(line + take - 1)
+      if (after?.length) {
+        for (const note of after) placeNote(note)
+      }
+      line += take
+      started = true
+    }
+  }
+
+  /**
    * 排下一段；返回是否还有段落没排。
    *
    * 「段不腰斩」是这里的核心规则：一段要么整段落在某页，要么（它本身就比一整页还高）
-   * 才允许按行切开续排。
+   * 才允许按行切开续排。带批注的段落例外：必须在批注所在行的行尾断开。
    */
   function step(): void {
     if (nextParagraph >= paragraphs.length) {
@@ -203,6 +283,11 @@ export function createRealBookPaginator(
       placeNotesAfter(paragraphIndex)
       return
     }
+    const paragraphNotes = notesAfter.get(paragraphIndex)
+    if (paragraphNotes?.length) {
+      placeAnnotatedParagraph(paragraphIndex, lines, paragraphNotes)
+      return
+    }
 
     const paragraphHeight = lines.length * lineHeight
     // 这一段要付的段间距：只有它不是本页第一块内容时才付。
@@ -214,7 +299,7 @@ export function createRealBookPaginator(
       const gapNow = pageItems.length ? gap : 0
       const first = lines[0]!
       const last = lines[lines.length - 1]!
-      pageItems.push({ kind: 'text', paragraph: paragraphIndex, start: first.start, end: last.end, continued: false })
+      pageItems.push({ kind: 'text', paragraph: paragraphIndex, start: first.start, end: last.end, continued: false, lines })
       used += gapNow + paragraphHeight
       if (used >= pageHeight) flush()
       placeNotesAfter(paragraphIndex)
@@ -239,7 +324,14 @@ export function createRealBookPaginator(
       const take = Math.min(room, lines.length - line)
       const first = lines[line]!
       const last = lines[line + take - 1]!
-      pageItems.push({ kind: 'text', paragraph: paragraphIndex, start: first.start, end: last.end, continued })
+      pageItems.push({
+        kind: 'text',
+        paragraph: paragraphIndex,
+        start: first.start,
+        end: last.end,
+        continued,
+        lines: lines.slice(line, line + take),
+      })
       used += gapNow + take * lineHeight
       line += take
       if (line < lines.length) flush()

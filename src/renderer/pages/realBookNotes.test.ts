@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Annotation } from '@shared/types'
-import { deriveRealBookNotes, estimateInlineNoteHeight } from './realBookNotes'
+import { decorateTextWithNotes, deriveRealBookNotes, estimateInlineNoteHeight } from './realBookNotes'
 
 function annotation(partial: Partial<Annotation> = {}): Annotation {
   return {
@@ -43,12 +43,24 @@ describe('realBookNotes（真实书籍页内批注）', () => {
     expect(notes.map((note) => note.id)).toEqual(['earlier', 'later'])
   })
 
-  it('AI 来源被保留，读者手写按 user 处理', () => {
+  it('AI 来源被保留，读者手写按 user 处理，并带上 #tag', () => {
     const notes = deriveRealBookNotes([
-      annotation({ id: 'ai', note: 'AI 解释', noteSource: 'ai' }),
+      annotation({ id: 'ai', note: 'AI 解释', noteSource: 'ai', tags: ['quote'] }),
       annotation({ id: 'me', note: '我的话' }),
     ], 'c1', new Set(), starts)
     expect(notes.map((note) => note.source)).toEqual(['ai', 'user'])
+    expect(notes.find((note) => note.id === 'ai')?.tags).toEqual(['quote'])
+    expect(notes.find((note) => note.id === 'me')?.tags).toEqual([])
+  })
+
+  it('「注」标记按段内偏移插入，且不把标记字写进正文片段', () => {
+    const parts = decorateTextWithNotes('甲乙丙丁', '', [], [{ id: 'n1', offset: 2 }])
+    expect(parts.map((part) => part.noteId ? 'marker' : part.text)).toEqual(['甲乙', 'marker', '丙丁'])
+    expect(parts.filter((part) => !part.noteId).map((part) => part.text).join('')).toBe('甲乙丙丁')
+    expect(parts.find((part) => part.noteId)?.text).toBe('')
+
+    const atEnd = decorateTextWithNotes('甲乙', '', [], [{ id: 'n1', offset: 2 }])
+    expect(atEnd.map((part) => part.noteId ? 'marker' : part.text)).toEqual(['甲乙', 'marker'])
   })
 
   it('高度估算随正文长度增长但不超过三行', () => {

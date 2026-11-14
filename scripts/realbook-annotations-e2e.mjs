@@ -53,7 +53,7 @@ await writeFile(join(bookDir, 'annotations.json'), JSON.stringify({
   items: [{
     id: 'anno-1', bookId, chapterId: 'c0001', kind: 'highlight',
     start: 0, end: 4, excerpt: '第1段：', color: 'red',
-    note: '预置批注：这里该多留意。', noteSource: 'user',
+    note: '预置批注：这里该多留意。', noteSource: 'user', tags: ['quote'],
     createdAt: now,
   }],
 }, null, 2), 'utf-8')
@@ -188,10 +188,13 @@ try {
     highlight: document.querySelector('.real-book-stage mark.hl-mark')?.textContent || '',
     pressed: document.querySelector('.real-book-note-toggle')?.getAttribute('aria-pressed') || '',
     handwriting: document.querySelector('.real-book-note[data-note-id="anno-1"]')?.className || '',
+    anchor: Boolean(document.querySelector('.real-book-note-anchor[data-note-anchor-id="anno-1"]')),
+    tag: document.querySelector('.real-book-note[data-note-id="anno-1"] .real-book-note-tag')?.textContent || '',
   };`)
   check('预置批注显示在书页上', initial.card.includes('预置批注'), initial.card.slice(0, 80))
   check('划线底色仍在', initial.highlight.includes('第1段'), initial.highlight)
   check('批注默认开启且带手写体', initial.pressed === 'true' && initial.handwriting.includes('handwriting-kai'), initial.handwriting)
+  check('批注有行内「注」标记与 #tag', initial.anchor && initial.tag === '#quote', JSON.stringify({ anchor: initial.anchor, tag: initial.tag }))
 
   // 就地编辑 → 保存 → 磁盘落盘
   const edited = await ev(`
@@ -237,14 +240,13 @@ try {
   // 四套主题截图
   await resetPitch(ev)
   const applyTheme = async (label) => ev(`
-    const toggle = document.querySelector('.bottom-button[aria-label="背景"]');
-    if (!toggle) return { error: 'no background button' };
+    // 底栏不交互时收进底边横条：先点横条把它展开，再去点「背景」。
     if (document.querySelector('.reader-bottombar')?.classList.contains('reader-tools-hidden')) {
-      const book = document.querySelector('.real-book-book');
-      const r = book.getBoundingClientRect();
-      book.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
+      document.querySelector('.real-book-dock')?.click();
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
+    const toggle = document.querySelector('.bottom-button[aria-label="背景"]');
+    if (!toggle) return { error: 'no background button' };
     toggle.click();
     await new Promise((resolve) => setTimeout(resolve, 200));
     const target = [...document.querySelectorAll('.bottom-panel .option-grid button')]

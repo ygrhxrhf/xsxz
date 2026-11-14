@@ -64,7 +64,7 @@ import {
   progressAnchorBodyMatches,
 } from './readerHelpers'
 import type { ReaderDownloadSignal as DownloadSignal, ReaderImmersiveMode, ReaderDownloadToolsIntent } from './readerHelpers'
-import { DEFAULT_PITCH_DEG } from './realBookPitch'
+import { DEFAULT_PITCH_DEG, DEFAULT_TILT_DEG } from './realBookPitch'
 import {
   adjacentVisualPage,
   estimateParagraphHeight,
@@ -85,7 +85,26 @@ import { decorateText } from '@shared/paragraphSearch'
 import { isSiteTailParagraph } from './readerTail'
 import RealBookStage from './RealBookStage.vue'
 import type { RealBookAnchor } from './realBookPager'
-import { deriveRealBookNotes, type RealBookNote } from './realBookNotes'
+import {
+  detectWebGL,
+  readRealBookRenderer,
+  writeRealBookRenderer,
+  type RealBookRenderer,
+} from './realBookRenderer'
+import {
+  DEFAULT_REALBOOK_LOOK,
+  readRealBookLook,
+  writeRealBookLook,
+  type RealBookLook,
+} from './realBookLook'
+import { DEFAULT_ZOOM, DESK_PALETTES, ENDPAPER_PALETTES, type RealBookDesk, type RealBookEndpaper } from './realBookWebGLModel'
+import {
+  decorateTextWithNotes,
+  deriveRealBookNotes,
+  type NoteTextMark,
+  type NoteTextPart,
+  type RealBookNote,
+} from './realBookNotes'
 
 /** 真实书籍舞台对外暴露的操作（由 defineExpose 决定）。 */
 type RealBookStageHandle = {
@@ -97,6 +116,8 @@ type RealBookStageHandle = {
   zoomIn: () => void
   zoomOut: () => void
   resetZoom: () => void
+  resetPitch: () => void
+  toggleOpen?: () => void
   currentPage: number
   pageCount: number
   readEnd: () => { paragraphIndex: number; characterOffset: number } | null
@@ -182,8 +203,22 @@ const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
 const bookView = ref<ReaderBookView>(DEFAULT_READER_PREFS.bookView ?? 'classic')
 /** 真实书籍的底栏由 Reader 自己画（参考图的图标条），舞台内悬浮条让位。 */
 const isRealBook = computed(() => bookView.value === 'realbook')
+/** 渲染层偏好：WebGL 复刻；没有 WebGL 的机器和测试环境自动留在 CSS 3D。 */
+const webglSupported = detectWebGL()
+const storedRenderer = readRealBookRenderer()
+// 支持 WebGL 时默认走复刻层；用户显式选过 CSS 3D 才回退，无 WebGL 的机器/测试环境保持 CSS。
+const realBookRenderer = ref<RealBookRenderer>(webglSupported && storedRenderer !== 'css' ? 'webgl' : 'css')
+const realBookLook = ref<RealBookLook>(readRealBookLook())
+const realBookOpen = ref(true)
 /** 真实书籍底栏显示的缩放倍率：真源在舞台内，靠 update:zoom 同步上来。 */
-const realBookZoom = ref(1)
+const realBookZoom = ref(realBookRenderer.value === 'webgl' ? DEFAULT_ZOOM : 1)
+const realBookDeskOptions = Object.entries(DESK_PALETTES).map(([id, palette]) => ({ id: id as RealBookDesk, ...palette }))
+const realBookEndpaperOptions = Object.entries(ENDPAPER_PALETTES).map(([id, palette]) => ({ id: id as RealBookEndpaper, ...palette }))
+const realBookPitchPresets = [
+  { value: 1, label: '平视' },
+  { value: DEFAULT_TILT_DEG, label: '默认' },
+  { value: 52, label: '斜视' },
+]
 const sheetColumns = ref<ReaderSheetColumns>(DEFAULT_READER_PREFS.sheetColumns ?? 'double')
 /** 分页渲染层：书页模式与真实书籍共用同一套页表舞台，分支点集中在这一个判据上。 */
 const pagedView = computed(() => bookView.value === 'sheet' || bookView.value === 'realbook')
@@ -227,6 +262,13 @@ const temporaryToolReveal = ref(false)
 const pointerInToolbar = ref(false)
 const activeToolPanel = ref<'tts' | 'ai' | 'shortcuts' | null>(null)
 const activeBottomPanel = ref<'catalog' | 'progress' | 'background' | 'font' | null>(null)
+/**
+ * 真实书籍底栏收起后只剩底边那根小横条（iPhone 的 Home 指示条读法）：
+ * 不交互时把整条图标带收走，书桌照完整露出来；点横条或点书页中区再展开。
+ * 面板 / 目录抽屉开着时必须保持展开，否则它们会挂在一个看不见的栏上。
+ */
+const realBookBarCollapsed = computed(() =>
+  isRealBook.value && !toolsVisible.value && !activeBottomPanel.value && !showDrawer.value)
 let lastToolActivityAt = Date.now()
 let toolHideTimer: ReturnType<typeof setTimeout> | null = null
 // 阅读页用 v-show 常驻挂载：靠根元素的真实尺寸判断「是不是又回到这一页」。
@@ -634,6 +676,17 @@ const classicInlineNotes = computed(() => {
   }
   return groups
 })
+/** 段内「注」标记：与卡片共用同一个开关；关闭后正文回到纯划线。 */
+const inlineNoteMarks = computed(() => {
+  const groups = new Map<number, NoteTextMark[]>()
+  if (!showInlineNotes.value) return groups
+  for (const note of realBookInlineNotes.value) {
+    const list = groups.get(note.paragraph)
+    if (list) list.push({ id: note.id, offset: note.offset })
+    else groups.set(note.paragraph, [{ id: note.id, offset: note.offset }])
+  }
+  return groups
+})
 
 /** 新写/编辑批注后让舞台跳到卡片所在页；token 递增用于强制重查。 */
 const inlineNoteRevealId = ref('')
@@ -656,6 +709,7 @@ interface InlineNoteEditorState {
 }
 const inlineNoteEditor = ref<InlineNoteEditorState | null>(null)
 const inlineNoteDraft = ref('')
+const inlineNoteTagsDraft = ref('')
 const inlineNoteSaving = ref(false)
 const inlineNoteDeleteArmed = ref(false)
 const inlineNoteError = ref('')
@@ -679,6 +733,7 @@ function openInlineNoteEditor(id: string) {
     if (top > window.innerHeight - 260) top = Math.max(12, rect.top - 250)
   }
   inlineNoteDraft.value = annotation.note
+  inlineNoteTagsDraft.value = annotation.tags?.join(' ') ?? ''
   inlineNoteError.value = ''
   inlineNoteDeleteArmed.value = false
   inlineNoteEditor.value = { id, left, top }
@@ -688,6 +743,7 @@ function closeInlineNoteEditor() {
   if (inlineNoteSaving.value) return
   inlineNoteEditor.value = null
   inlineNoteDraft.value = ''
+  inlineNoteTagsDraft.value = ''
   inlineNoteDeleteArmed.value = false
   inlineNoteError.value = ''
 }
@@ -708,13 +764,15 @@ async function saveInlineNote() {
   }
   inlineNoteSaving.value = true
   try {
-    const saved = await saveNoteText(annotation, text)
+    const tags = inlineNoteTagsDraft.value.split(/[\s,，]+/).map((tag) => tag.replace(/^#+/, '')).filter(Boolean)
+    const saved = await saveNoteText(annotation, text, tags)
     if (!saved) {
       inlineNoteError.value = '批注保存失败，请重试。'
       return
     }
     inlineNoteEditor.value = null
     inlineNoteDraft.value = ''
+    inlineNoteTagsDraft.value = ''
     inlineNoteDeleteArmed.value = false
     inlineNoteError.value = ''
     revealRealBookNote(annotation.id)
@@ -745,6 +803,7 @@ async function deleteInlineNote() {
     }
     inlineNoteEditor.value = null
     inlineNoteDraft.value = ''
+    inlineNoteTagsDraft.value = ''
     inlineNoteDeleteArmed.value = false
     inlineNoteError.value = ''
   } finally {
@@ -795,13 +854,14 @@ const renderedParas = computed(() => {
   const q = searchQuery.value.trim()
   const searchingNow = showSearch.value && !!q
   const highlights = currentHighlightRanges.value
+  const noteMarks = inlineNoteMarks.value
   const indexes = visibleParaIndexes.value.filter((index) => index >= start && index < count)
-  if (!searchingNow && highlights.length === 0) {
+  if (!searchingNow && highlights.length === 0 && noteMarks.size === 0) {
     return indexes.map((index) => ({ index, segs: plainDecoratedParas.value[index]! }))
   }
   const starts = paraNormStarts.value
   const large = paras.value.length > 2000
-  const out: Array<{ index: number; segs: ReturnType<typeof decorateText> }> = []
+  const out: Array<{ index: number; segs: NoteTextPart[] }> = []
   for (const i of indexes) {
     const text = paras.value[i]!
     if (searchingNow && large && Math.abs(i - searchHighlightCenter.value) > 80) {
@@ -813,7 +873,10 @@ const renderedParas = computed(() => {
       searchingNow && q
         ? []
         : highlights.map((a) => ({ start: a.start - base, end: a.end - base, color: a.color }))
-    out.push({ index: i, segs: decorateText(text, searchingNow ? q : '', localHl) })
+    out.push({
+      index: i,
+      segs: decorateTextWithNotes(text, searchingNow ? q : '', localHl, noteMarks.get(i) ?? []),
+    })
   }
   return out
 })
@@ -839,7 +902,8 @@ const realBookPageCount = ref(1)
  * M3.3 俯仰角：会话内视觉状态，不进入 ReaderPrefs、不写进度。
  * 初值是默认俯仰角而不是平放：书台一进来就要看得出纸垛厚度和落地投影。
  */
-const realBookPitch = ref(DEFAULT_PITCH_DEG)
+// WebGL 复刻使用参考站的默认 25°；CSS 3D 回退保持原来的 18°。
+const realBookPitch = ref(realBookRenderer.value === 'webgl' ? DEFAULT_TILT_DEG : DEFAULT_PITCH_DEG)
 /** 换章/重进递增：页表重排后据此重新落位。 */
 const realBookRestoreToken = ref(0)
 /** 经典 → 真实书籍切换时待恢复的位置（段落锚点）。 */
@@ -880,11 +944,21 @@ function classicViewportAnchor(): RealBookAnchor | null {
   return { paragraph: anchor.paragraphIndex, offset: anchor.paragraphOffset }
 }
 
-/** 真实书籍当前页在全书比例里的位置（0..1）。 */
+/**
+ * 真实书籍当前页在全书比例里的位置（0..1）。
+ *
+ * 不能拿「当前页 / 已排出的页数」：页表是惰性排的，刚打开一本书时只排到当前位置
+ * 附近，读到第 4 页就报 4/6 = 67%，书厚会整摞翻到左边、进度条也一上来就过半。
+ * 按当前锚点在正文里的段落下标折算，比例与已排出多少页无关，翻页时才连续推进。
+ */
 function realBookRatio(): number {
-  const count = Math.max(1, realBookPageCount.value)
-  if (count <= 1) return 0
-  return Math.min(1, Math.max(0, realBookPage.value / (count - 1)))
+  const lists = realBookVisibleParas.value
+  const total = lists.length
+  if (total <= 1) return realBookPage.value > 0 ? 1 : 0
+  const paragraph = realBookAnchor.value?.paragraph ?? 0
+  const index = lists.indexOf(paragraph)
+  if (index < 0) return 0
+  return Math.min(1, Math.max(0, index / (total - 1)))
 }
 
 /**
@@ -912,6 +986,19 @@ watch(bookView, (view, previous) => {
     scrollToRatio(ratio)
   })
 })
+
+watch(realBookRenderer, (value) => {
+  writeRealBookRenderer(value)
+  realBookOpen.value = true
+  realBookZoom.value = value === 'webgl' ? DEFAULT_ZOOM : 1
+  if (value === 'webgl' && Math.abs(realBookPitch.value - DEFAULT_PITCH_DEG) < 0.5) {
+    realBookPitch.value = DEFAULT_TILT_DEG
+  }
+})
+
+watch(realBookLook, (value) => {
+  writeRealBookLook(value)
+}, { deep: true })
 
 /** 把渲染层选区换算成规范化正文里的字符区间 */
 
@@ -1215,12 +1302,32 @@ function downloadKeepsTools(): boolean {
   return isCurrentBookDownloading(downloadProgress.value, book.value?.id)
 }
 
+/**
+ * 关掉底栏的面板 / 目录抽屉，不再经过 toggleBottomPanel——那个入口会顺手把
+ * 工具层重新露出来，收起底栏时反而把它顶回展开态。
+ */
+function closeBottomPanel() {
+  if (activeBottomPanel.value === 'catalog') showDrawer.value = false
+  activeBottomPanel.value = null
+}
+
+/** 从底边横条展开底栏：横条本身随即卸载，键盘焦点要跟着落进底栏第一个按钮。 */
+function revealReaderToolsFromDock() {
+  toggleReaderTools()
+  void nextTick(() => {
+    const bar = readerRootRef.value?.querySelector<HTMLElement>('.reader-bottombar')
+    bar?.querySelector<HTMLElement>('button:not([disabled])')?.focus()
+  })
+}
+
 function toggleReaderTools() {
   const downloading = isCurrentBookDownloading(downloadProgress.value, book.value?.id)
   if (toolsVisible.value) {
     toolsVisible.value = false
     temporaryToolReveal.value = false
     clearToolHideTimer()
+    // 面板是底栏的子浮层：底栏要收进横条，面板不能跟着一起消失在半空。
+    closeBottomPanel()
     // 手动收起也算表过态：下载 running 期间不再被自动逻辑顶回来。
     if (downloading) downloadToolsIntent.value = 'collapsed'
     return
@@ -1335,12 +1442,13 @@ function toggleToolPanel(panel: 'tts' | 'ai' | 'shortcuts') {
 }
 
 function toggleBottomPanel(panel: 'catalog' | 'progress' | 'background' | 'font') {
-  activeBottomPanel.value = activeBottomPanel.value === panel ? null : panel
-  if (activeBottomPanel.value) {
+  const next = activeBottomPanel.value === panel ? null : panel
+  if (next) {
+    activeBottomPanel.value = next
     activeToolPanel.value = null
     if (panel === 'catalog') showDrawer.value = true
-  } else if (panel === 'catalog') {
-    showDrawer.value = false
+  } else {
+    closeBottomPanel()
   }
   revealTools(immersiveMode.value === 'locked')
 }
@@ -1637,6 +1745,22 @@ function onReaderKeydown(e: KeyboardEvent) {
       scheduleToolHide()
       return
     }
+  }
+  // WebGL 真实书籍借用参考站的 T：循环 平视/默认/斜视。CSS 3D 与经典模式仍保留 T=目录。
+  if (
+    !isTextEntry
+    && !(e.ctrlKey || e.metaKey)
+    && !e.shiftKey
+    && isRealBook.value
+    && realBookRenderer.value === 'webgl'
+    && e.key.toLowerCase() === 't'
+    && !anyDrawerOpen()
+  ) {
+    e.preventDefault()
+    const values = realBookPitchPresets.map((preset) => preset.value)
+    const nearest = values.findIndex((value) => Math.abs(value - realBookPitch.value) < 0.6)
+    realBookPitch.value = values[nearest >= 0 ? (nearest + 1) % values.length : 0]!
+    return
   }
   const action = resolveReaderKey({
     key: e.key,
@@ -3267,7 +3391,7 @@ onUnmounted(() => {
       </div>
 
       <div class="reader-stage">
-        <div class="reader-body" :class="{ 'reader-body-paged': pagedView }">
+        <div class="reader-body" :class="{ 'reader-body-paged': pagedView, 'reader-body-realbook': isRealBook }">
         <div v-if="bookView === 'classic'" class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentZoneMouseup">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
@@ -3292,7 +3416,7 @@ onUnmounted(() => {
               <p
                 :data-p="i"
                 :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: paras.length }) }]"
-              ><template v-for="(s, j) in segs" :key="j"><mark v-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
+              ><template v-for="(s, j) in segs" :key="j"><span v-if="s.noteId" class="classic-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="openInlineNoteEditor(s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="openInlineNoteEditor(s.noteId)" @keydown.space.stop.prevent="openInlineNoteEditor(s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
               <aside
                 v-for="note in classicInlineNotes.get(i) ?? []"
                 :key="note.id"
@@ -3306,8 +3430,11 @@ onUnmounted(() => {
                 @keydown.enter.stop.prevent="openInlineNoteEditor(note.id)"
                 @keydown.space.stop.prevent="openInlineNoteEditor(note.id)"
               >
-                <span class="real-book-note-label">批注<span v-if="note.source === 'ai'" class="real-book-note-source">AI</span></span>
+                <span class="real-book-note-label">笔记<span v-if="note.source === 'ai'" class="real-book-note-source">AI</span></span>
                 <span class="real-book-note-text">{{ note.text }}</span>
+                <span v-if="note.tags?.length" class="real-book-note-tags">
+                  <span v-for="tag in note.tags" :key="tag" class="real-book-note-tag">#{{ tag }}</span>
+                </span>
               </aside>
             </template>
             <!-- 窗口化：跳到后段时，跳过的段用等高的占位撑住，滚动条始终按整章长度显示 -->
@@ -3319,6 +3446,8 @@ onUnmounted(() => {
             </div>
           </template>
         </div>
+        <!-- 书脚留白不随底栏显隐变化：收起时多出来的那一截只是空桌面，
+             展开时书不会往上跳一截（否则每次显隐都要重排页表，阅读位置会晃）。 -->
         <div v-else ref="realBookHostRef" class="real-book-host" @mouseup="onPagedZoneMouseup">
           <p v-if="chapterFailHint" class="chapter-hint">{{ chapterFailHint }}</p>
           <n-space v-if="canRetryChapter || chapterError" justify="center" style="margin-bottom:16px">
@@ -3332,7 +3461,13 @@ onUnmounted(() => {
           <RealBookStage
             :theme="theme"
             :show-toolbar="bookView !== 'realbook'"
+            :back-visible="!toolsVisible"
             :variant="bookView === 'sheet' ? 'sheet' : 'book'"
+            :renderer="bookView === 'realbook' ? realBookRenderer : 'css'"
+            :desk="realBookLook.desk"
+            :endpaper="realBookLook.endpaper"
+            :book-title="book?.title ?? ''"
+            :book-author="book?.author ?? ''"
             :total-chars="bookTotalChars"
             :book-progress-ratio="bookProgressRatio"
             :book-progress-step="bookTotalChars > 0 && realBookPageCount > 1 ? currentChapterChars / bookTotalChars / Math.max(1, realBookPageCount - 1) : 0"
@@ -3361,10 +3496,12 @@ onUnmounted(() => {
             @update:page-count="realBookPageCount = $event"
             @update:pitch="realBookPitch = $event"
             @update:zoom="realBookZoom = $event"
+            @update:open="realBookOpen = $event"
             @update:show-notes="showInlineNotes = $event"
             @edit-note="openInlineNoteEditor"
             @select="onRealBookMouseup"
             @next-chapter="nextChapter"
+            @back="emit('back')"
           />
         </div>
         <div v-if="dim > 0" class="reader-dim" :style="{ opacity: dim / 100 }" aria-hidden="true" />
@@ -3375,8 +3512,8 @@ onUnmounted(() => {
       <div
         class="reader-bottombar"
         :class="{ 'reader-tools-hidden': !toolsVisible, 'is-realbook': isRealBook }"
-        :aria-hidden="!toolsVisible && !isRealBook"
-        :inert="!toolsVisible && !isRealBook"
+        :aria-hidden="isRealBook ? realBookBarCollapsed : !toolsVisible"
+        :inert="isRealBook ? realBookBarCollapsed : !toolsVisible"
         @mouseenter="onToolbarEnter"
         @mouseleave="onToolbarLeave"
       >
@@ -3390,7 +3527,8 @@ onUnmounted(() => {
         <template v-else>
           <!-- 真实书籍底栏：按参考图排成一条图标带——书库 / 目录 / 翻页 /
                进度滑条 / 背景 / 缩放 / 全屏 / 批注。控件本身仍在 Reader，
-               缩放与翻页由舞台暴露的方法执行。 -->
+               缩放与翻页由舞台暴露的方法执行。
+               不交互时整条收进底边横条（见下方 .real-book-dock），书桌照完整露出。 -->
           <button class="rb-btn" type="button" aria-label="书库" title="书库" @click="emit('back')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6.5C10 5 6.8 4.6 4 5v13.5c2.8-.4 6 0 8 1.5 2-1.5 5.2-1.9 8-1.5V5c-2.8-.4-6 0-8 1.5z"/><path d="M12 6.5V20"/></svg></button>
           <button class="rb-btn bottom-button" type="button" aria-label="目录" title="目录" :class="{ active: showDrawer }" @click="toggleBottomPanel('catalog')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
           <span class="rb-sep" aria-hidden="true"></span>
@@ -3418,6 +3556,14 @@ onUnmounted(() => {
             <span class="rb-progress-label">{{ rbPercent }}%</span>
           </div>
           <button class="rb-btn" type="button" aria-label="下一页" title="下一页" @click="realBookStageRef?.nextPage()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button>
+          <button
+            v-if="realBookRenderer === 'webgl'"
+            class="rb-btn"
+            type="button"
+            :aria-label="realBookOpen ? '合上书籍' : '打开书籍'"
+            :title="realBookOpen ? '合上书籍' : '打开书籍'"
+            @click="realBookStageRef?.toggleOpen?.()"
+          ><svg viewBox="0 0 24 24" aria-hidden="true"><template v-if="realBookOpen"><path d="M6 4h12v16H6z"/><path d="M6 4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2M10 8h5"/></template><template v-else><path d="M4 5.5C6.5 4.4 9.5 4.4 12 6c2.5-1.6 5.5-1.6 8-.5V19c-2.5-1.1-5.5-1.1-8 .5-2.5-1.6-5.5-1.6-8-.5z"/><path d="M12 6v13.5"/></template></svg></button>
           <span class="rb-sep" aria-hidden="true"></span>
           <button class="rb-btn bottom-button" type="button" aria-label="背景" title="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16"/></svg></button>
           <button class="rb-btn" type="button" aria-label="缩小" title="缩小" @click="realBookStageRef?.zoomOut()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
@@ -3441,6 +3587,29 @@ onUnmounted(() => {
               <div class="control-label">屏幕压暗 {{ dim > 0 ? `${dim}%` : '关' }}</div>
               <n-slider v-model:value="dim" :min="0" :max="70" :step="5" :format-tooltip="(v: number) => (v > 0 ? `压暗 ${v}%` : '不压暗')" />
               <div class="control-label">夜间想更暗时拉高；只压暗正文区，导航箭头与页码不受影响</div>
+              <template v-if="isRealBook">
+                <div class="control-label">书籍渲染</div>
+                <div class="option-grid" role="group" aria-label="书籍渲染">
+                  <button type="button" :class="{ active: realBookRenderer === 'webgl' }" :aria-pressed="realBookRenderer === 'webgl'" :disabled="!webglSupported" @click="realBookRenderer = 'webgl'">WebGL 3D</button>
+                  <button type="button" :class="{ active: realBookRenderer === 'css' }" :aria-pressed="realBookRenderer === 'css'" @click="realBookRenderer = 'css'">CSS 3D 回退</button>
+                </div>
+                <div class="control-label">{{ webglSupported ? 'WebGL 提供连续纸面、书脊厚度和自由视角；CSS 3D 保留原实现。' : '当前环境不支持 WebGL，已使用 CSS 3D。' }}</div>
+                <template v-if="realBookRenderer === 'webgl'">
+                  <div class="control-label">书桌</div>
+                  <div class="option-grid" role="group" aria-label="书桌材质">
+                    <button v-for="item in realBookDeskOptions" :key="item.id" type="button" :class="{ active: realBookLook.desk === item.id }" :aria-pressed="realBookLook.desk === item.id" @click="realBookLook.desk = item.id"><i class="real-book-swatch" :style="{ background: item.swatch }"></i>{{ item.label }}</button>
+                  </div>
+                  <div class="control-label">衬纸</div>
+                  <div class="option-grid" role="group" aria-label="衬纸颜色">
+                    <button v-for="item in realBookEndpaperOptions" :key="item.id" type="button" :class="{ active: realBookLook.endpaper === item.id }" :aria-pressed="realBookLook.endpaper === item.id" @click="realBookLook.endpaper = item.id"><i class="real-book-swatch" :style="{ background: item.swatch }"></i>{{ item.label }}</button>
+                  </div>
+                  <div class="control-label">视角 {{ Math.round(realBookPitch) }}°</div>
+                  <div class="option-grid" role="group" aria-label="书籍视角">
+                    <button v-for="item in realBookPitchPresets" :key="item.value" type="button" :class="{ active: Math.abs(realBookPitch - item.value) < 0.5 }" :aria-pressed="Math.abs(realBookPitch - item.value) < 0.5" @click="realBookPitch = item.value">{{ item.label }}</button>
+                  </div>
+                  <div class="control-label">右键拖动书桌，或按住 Alt 拖动，可连续调整视角。</div>
+                </template>
+              </template>
             </template>
             <template v-else>
               <strong>字体</strong>
@@ -3480,7 +3649,7 @@ onUnmounted(() => {
                   @click="handwritingFont = item.v as ReaderHandwritingFont"
                 >{{ item.l }}</button>
               </div>
-              <div class="control-label">此设置用于标记抽屉中的批注预览。</div>
+              <div class="control-label">此设置用于页内批注与标记抽屉中的批注预览。</div>
               <div class="control-label">字体</div>
               <div class="option-grid"><button v-for="item in [{v:'serif',l:'宋体阅读'},{v:'system',l:'系统黑体'},{v:'mono',l:'等宽'}]" :key="item.v" :class="{ active: fontFamily === item.v }" @click="fontFamily = item.v as ReaderFontFamily">{{ item.l }}</button></div>
               <div class="control-label">字号 {{ fontSize }}</div><n-slider v-model:value="fontSize" :min="12" :max="36" :step="1" />
@@ -3518,6 +3687,19 @@ onUnmounted(() => {
             </template>
           </div>
       </div>
+
+      <!-- 真实书籍底栏收起后的「底边横条」：iPhone 的 Home 指示条读法。
+           它不是装饰——点它把整条图标带唤回来；键盘也能 Tab 到（工具栏收起时
+           唯一的底栏入口，不能只留给鼠标）。 -->
+      <button
+        v-if="realBookBarCollapsed"
+        class="real-book-dock"
+        type="button"
+        aria-label="显示工具栏"
+        @click.stop="revealReaderToolsFromDock"
+      >
+        <span class="real-book-dock-bar" aria-hidden="true"></span>
+      </button>
 
       <div
         ref="progressTrackRef"
@@ -4058,6 +4240,7 @@ onUnmounted(() => {
           @keydown.ctrl.enter.prevent="saveInlineNote"
           @keydown.meta.enter.prevent="saveInlineNote"
         />
+        <n-input v-model:value="inlineNoteTagsDraft" size="small" placeholder="标签，用空格分隔（如 quote）" />
         <p v-if="inlineNoteError" class="inline-note-error">{{ inlineNoteError }}</p>
         <n-space justify="end">
           <n-button size="small" :type="inlineNoteDeleteArmed ? 'error' : 'default'" :disabled="inlineNoteSaving" @click="deleteInlineNote">
@@ -5065,6 +5248,8 @@ onUnmounted(() => {
 /* 书页 / 真实书籍不需要 96px 的书页内边距：纸面自己按舞台尺寸排版，
    96px 会和舞台的 40px 叠成两道白边，把纸面挤窄一大截。 */
 .reader-body.reader-body-paged { padding-left: 24px; padding-right: 24px; }
+/* 真实书籍是整屏的书桌照：桌面要铺到窗口四边，不能再留一圈外壳底色的边框。 */
+.reader-body.reader-body-realbook { padding: 0; }
 .reader-body {
   position: relative; flex: 1 1 auto; min-width: 0;
   padding: 24px 96px 24px; justify-content: center; overflow: hidden;
@@ -5108,21 +5293,53 @@ onUnmounted(() => {
 .reader-toolbar .bottom-button:hover { background: var(--r-hover); }
 .reader-toolbar .bottom-button.active { background: var(--r-hover); color: var(--active-chapter); }
 
-/* 真实书籍底栏：按参考图排成一条图标带。与经典底栏不同，这条栏常驻——
-   工具自动隐藏只收顶栏，底栏要一直能翻页、调缩放、开目录。 */
+/* 真实书籍底栏：按参考图排成一条图标带。与经典底栏不同，这条栏只是「抽屉展开态」——
+   不交互（点书页中区收起）时整条收进底边横条，书桌照完整露出；
+   点横条或书页中区再展开。收起时面板 / 目录抽屉本就不该开着（见 realBookBarCollapsed）。 */
 .reader-bottombar.is-realbook {
   gap: 2px;
   padding: 6px 10px;
   border-radius: 20px;
-  /* 参考图的底栏是常驻的：backdrop-filter 会在翻页动画期间每帧重算模糊，
-     把 60fps 的翻页拖到二十几帧。常驻栏改为半透明实底，不要模糊。 */
+  /* backdrop-filter 会在翻页动画期间每帧重算模糊，把 60fps 的翻页拖到二十几帧：
+     这条栏用半透明实底，不要模糊。 */
   backdrop-filter: none;
 }
+/* 收起与展开都要像抽屉：往下缩一点、淡出，不能整条凭空消失。 */
 .reader-bottombar.is-realbook.reader-tools-hidden {
-  opacity: 1 !important;
-  visibility: visible !important;
-  pointer-events: auto !important;
-  transform: translateX(-50%) !important;
+  transform: translateX(-50%) translateY(10px) scale(0.98);
+}
+
+/* 收起后的底边横条：一个深色小胶囊，里面一根浅色横条，居中钉在视口底边。
+   点击热区比视觉大一圈（48px 宽 × 26px 高），手指不用瞄准那根 4px 的线。 */
+.real-book-dock {
+  position: absolute;
+  z-index: 29;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(233, 220, 188, 0.14);
+  border-radius: 999px;
+  background: rgba(24, 28, 25, 0.82);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  animation: real-book-dock-in 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.real-book-dock:hover { background: rgba(34, 39, 35, 0.9); }
+.real-book-dock:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
+.real-book-dock-bar {
+  width: 26px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(244, 235, 211, 0.72);
+}
+@keyframes real-book-dock-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 .rb-btn {
   display: grid;
@@ -5388,6 +5605,10 @@ onUnmounted(() => {
     top: auto; right: auto; bottom: 20px; left: 50%; width: auto;
     flex-direction: row; gap: 8px; padding: 0; transform: translateX(-50%);
   }
+  /* 真实书籍的图标带本来就是横条（参考图在窄窗口下也不折行）：
+     窄屏的 42px 方块按钮与 8px 间距会把整条撑出视口，这里让它保持紧凑横排。 */
+  .reader-bottombar.is-realbook { gap: 2px; padding: 6px 10px; }
+  .reader-bottombar.is-realbook .rb-btn { width: 32px; height: 32px; }
   .bottom-button { width: 42px; height: 42px; }
   .bottom-panel {
     top: auto; right: auto; bottom: calc(100% + 12px); left: 50%;
@@ -5413,19 +5634,83 @@ onUnmounted(() => {
 .chapter-end-card.finished { display: flex; flex-direction: column; align-items: center; gap: 12px; cursor: default; }
 .para { position: relative; text-indent: var(--paragraph-indent, 2em); margin-bottom: var(--paragraph-spacing, .45em); }
 .large-chapter .para { content-visibility: auto; contain-intrinsic-size: auto 4em; }
-/* 经典模式页内批注：紧跟被批注段落，与书台卡片共用编辑入口和纯文本渲染。 */
+/* 经典模式页内批注：紧跟被批注段落，与书台旁批共用同一套墨色与分行。 */
 .classic-inline-note {
   position: relative;
   z-index: 1;
-  margin: 0 0 var(--paragraph-spacing, .45em);
-  border-left-color: var(--note-accent);
-  background: color-mix(in srgb, var(--r-surface) 80%, transparent);
-  color: var(--note-accent);
-  font-size: 0.86em;
-  line-height: 1.55;
+  margin: 0.08em 0 calc(var(--paragraph-spacing, .45em) + .08em) var(--paragraph-indent, 2em);
+  padding: 0.02em 0 0.08em 0.8em;
+  border-left: 1.5px solid color-mix(in srgb, #a9552e 52%, transparent);
+  border-radius: 0;
+  background: none;
+  color: color-mix(in srgb, #a33e2f 72%, var(--reader-paper-text));
+  font-size: 0.92em;
+  line-height: 1.68;
+  text-indent: 0;
+  text-align: left;
 }
 .classic-inline-note:focus-visible { outline-color: var(--active-chapter); }
-.classic-inline-note + .classic-inline-note { margin-top: calc(var(--paragraph-spacing, .45em) * -1 + 8px); }
+.classic-inline-note + .classic-inline-note { margin-top: 0.38em; }
+.classic-inline-note .real-book-note-label {
+  display: block;
+  margin-bottom: 0.2em;
+  color: color-mix(in srgb, #8a6648 76%, var(--reader-paper-text));
+  font-size: 0.62em;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+}
+.classic-inline-note .real-book-note-source {
+  display: inline-block;
+  margin-left: 0.35em;
+  padding: 0 0.35em;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 0.9em;
+  letter-spacing: 0;
+  line-height: 1.3;
+}
+.classic-inline-note .real-book-note-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.classic-inline-note .real-book-note-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08em;
+  margin-top: 0.28em;
+  color: color-mix(in srgb, #8b5e3c 82%, var(--reader-paper-text));
+  font-size: 0.72em;
+  line-height: 1.45;
+}
+.classic-inline-note .real-book-note-tag { display: block; white-space: pre-wrap; }
+.classic-inline-note.handwriting-kai { font-family: 'KaiTi', '楷体', serif; }
+.classic-inline-note.handwriting-xingshu { font-family: 'STXingkai', '华文行楷', 'KaiTi', serif; }
+
+/* 经典模式的「注」标记：字形用伪元素，正文文本节点保持原文，不改选区与进度坐标。 */
+.classic-note-anchor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.32em;
+  height: 2.32em;
+  margin: 0 0.16em;
+  border-radius: 50%;
+  background: color-mix(in srgb, #a9552e 88%, var(--reader-paper-text));
+  color: color-mix(in srgb, #fff7e6 94%, var(--reader-paper));
+  font-size: 0.58em;
+  font-weight: 600;
+  line-height: 1;
+  text-indent: 0;
+  vertical-align: 0.18em;
+  cursor: pointer;
+  user-select: none;
+}
+.classic-note-anchor::before { content: '注'; }
+.classic-note-anchor:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
 /* 窗口化占位间隙：不参与段落定位（无 .para/data-p），纯占高，跳过强制布局风暴 */
 .large-chapter .reader-gap { contain: strict; }
 .large-chapter .reader-gap.top { margin-top: var(--paragraph-spacing, .45em); }
@@ -5456,6 +5741,15 @@ onUnmounted(() => {
 
 .option-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
 .option-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.option-grid .real-book-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 5px;
+  border-radius: 4px;
+  vertical-align: -2px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 18%, transparent);
+}
 .option-grid button {
   min-height: 30px;
   padding: 4px 5px;

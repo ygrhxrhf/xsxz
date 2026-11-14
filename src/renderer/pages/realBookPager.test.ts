@@ -135,6 +135,36 @@ describe('realBookPager（真实书籍分页）', () => {
     expect(pages[0]!.items[1]).toMatchObject({ kind: 'note', noteId: 'n1', paragraph: 0, height: 40 })
   })
 
+  it('批注插在划线结束所在行的后面，而不是整段末尾', () => {
+    // 一行一个字符：锚点 offset=2 落在第 2 行（字符 1 的行尾），
+    // 批注必须跟在这一行之后，后面还有正文继续排。
+    const pager = createRealBookPaginator(
+      ['abcdef'],
+      fixedLines,
+      LAYOUT,
+      [{ id: 'n1', paragraph: 0, anchorOffset: 2, height: 40 }],
+    )
+    pager.ensure(0)
+    const page = pager.pages[0]!
+    expect(page.items.map((item) => item.kind)).toEqual(['text', 'note', 'text'])
+    expect(page.items[0]).toMatchObject({ kind: 'text', start: 0, end: 2, continued: false })
+    expect(page.items[1]).toMatchObject({ kind: 'note', noteId: 'n1' })
+    expect(page.items[2]).toMatchObject({ kind: 'text', start: 2, continued: true })
+  })
+
+  it('批注切开后的后半段跨页时仍标 continued，不再缩进', () => {
+    const pager = createRealBookPaginator(
+      ['abcdef'],
+      fixedLines,
+      LAYOUT,
+      [{ id: 'n1', paragraph: 0, anchorOffset: 2, height: 40 }],
+    )
+    pager.ensure(2)
+    const tail = pager.pages.flatMap((page) => page.items)
+      .find((item) => item.kind === 'text' && item.start >= 2)
+    expect(tail).toMatchObject({ start: 2, continued: true })
+  })
+
   it('当前页放不下批注时整张移到下一页，不拆卡片', () => {
     // 第一段 3 行（60），批注 60：本页只剩 40，必须先把本页封掉。
     const pager = createRealBookPaginator(

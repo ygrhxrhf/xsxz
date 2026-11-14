@@ -220,14 +220,19 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
   }
 
   /** 保存对已有标记备注的编辑；改写过的备注按读者手写算（出处跟着落盘结果走）。 */
-  async function saveNoteText(annotation: Annotation, text: string): Promise<boolean> {
+  async function saveNoteText(annotation: Annotation, text: string, tags?: string[]): Promise<boolean> {
     const bookId = deps.bookId()
     const note = text.trim()
     if (!bookId || !note) return false
-    const res = await window.api.annotations.update(bookId, annotation.id, { note })
+    const res = await window.api.annotations.update(bookId, annotation.id, {
+      note,
+      ...(tags !== undefined ? { tags: tags.map((tag) => tag.trim().replace(/^#+/, '')).filter(Boolean) } : {}),
+    })
     if (res.ok) {
       annotation.note = res.item.note
       annotation.noteSource = res.item.noteSource
+      if (res.item.tags?.length) annotation.tags = res.item.tags
+      else delete annotation.tags
       deps.notify('success', '批注已保存')
       return true
     } else {
