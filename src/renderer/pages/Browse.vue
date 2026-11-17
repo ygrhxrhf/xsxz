@@ -139,7 +139,13 @@ const readingStyle = computed(() => {
     '--web-paper': colors.paper,
     '--web-ink': colors.text,
     '--web-outer': colors.outer,
-    '--web-font': p.fontFamily === 'serif' ? '"STSong", "Songti SC", "SimSun", serif' : p.fontFamily === 'mono' ? '"Cascadia Mono", "Consolas", monospace' : '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
+    '--web-font': p.fontFamily === 'serif'
+      ? '"STSong", "Songti SC", "SimSun", serif'
+      : p.fontFamily === 'mono'
+        ? '"Cascadia Mono", "Consolas", monospace'
+        : p.fontFamily === 'wenkai'
+          ? '"LXGW WenKai Screen", "LXGW WenKai", "STSong", "Songti SC", "SimSun", serif'
+          : '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
     '--web-width': p.contentWidth === 'narrow' ? '32em' : p.contentWidth === 'wide' ? '46em' : '38em',
     '--web-size': `${p.fontSize}px`,
     '--web-line': String(p.lineHeight),

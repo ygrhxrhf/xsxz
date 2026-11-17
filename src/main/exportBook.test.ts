@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import JSZip from 'jszip'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createBookFromBootstrap, setLibraryPath, writeChapterFile } from './library'
+import { createBookFromBootstrap, loadBook, setLibraryPath, writeChapterFile } from './library'
+import { importEpub } from './importEpub'
 import { exportBook, sanitizeExportName } from './exportBook'
 
 describe('exportBook', () => {
@@ -62,6 +63,73 @@ describe('exportBook', () => {
     expect(text).toContain('## 第二章')
     expect(text).toContain('正文乙')
     expect(text).not.toContain('失败章')
+  })
+
+  it('exports inline images into the epub with manifest and figcaption', async () => {
+    const book = await createBookFromBootstrap({
+      bookId: 'i_exportimg000001',
+      title: '带图书',
+      author: '丙',
+      importType: 'epub',
+      chapterTitles: ['第一章'],
+    })
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAYAAACM/rhtAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABFSURBVFhH7c4hAQAgEAAxIn4cItIKQswgTsxvnT33ZwVVQVVQFVQFVUFVUBVUBVVBVVAVVAVVQVVQFVQFVUFVUH0enPsADzr+opQvf9EAAAAASUVORK5CYII=',
+      'base64',
+    )
+    await mkdir(join(lib, book.id, 'images'), { recursive: true })
+    await writeFile(join(lib, book.id, 'images', 'c0001-1.png'), png)
+    await writeChapterFile(book.id, book.chapters[0].id, {
+      title: '第一章',
+      body: `图前正文。
+
+[图]c0001-1.png|40|40|示意图
+
+图后正文。`,
+      status: 'ready',
+    })
+    const res = await exportBook(book.id, 'epub', dest)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    const zip = await JSZip.loadAsync(await readFile(res.path))
+    expect(zip.file('OEBPS/images/c0001-1.png')).not.toBeNull()
+    const xhtml = await zip.file('OEBPS/ch0001.xhtml')!.async('text')
+    expect(xhtml).toContain('<figure><img src="images/c0001-1.png"')
+    expect(xhtml).toContain('<figcaption>示意图</figcaption>')
+    expect(xhtml).not.toContain('[图]')
+    const opf = await zip.file('OEBPS/content.opf')!.async('text')
+    expect(opf).toContain('href="images/c0001-1.png" media-type="image/png"')
+
+    // 往返：导出的 epub 再导入，图片应被重新抽出来并落回 [图] 标记。
+    const imported = await importEpub(res.path)
+    const importedBook = await loadBook(imported.bookId)
+    const importedChapter = JSON.parse(await readFile(join(lib, imported.bookId, importedBook.chapters[0].file), 'utf-8'))
+    expect(importedChapter.body).toMatch(/\[图\][^|]+\|40\|40\|示意图/)
+  })
+
+  it('renders image markers as readable text in the txt export', async () => {
+    const book = await createBookFromBootstrap({
+      bookId: 'i_exportimgtxt0001',
+      title: '带图 txt',
+      author: '丁',
+      importType: 'epub',
+      chapterTitles: ['第一章'],
+    })
+    await writeChapterFile(book.id, book.chapters[0].id, {
+      title: '第一章',
+      body: `正文甲。
+
+[图]c0001-1.png|40|40|示意图
+
+正文乙。`,
+      status: 'ready',
+    })
+    const res = await exportBook(book.id, 'txt', dest)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    const text = await readFile(res.path, 'utf-8')
+    expect(text).toContain('［图片：示意图］')
+    expect(text).not.toContain('[图]')
   })
 
   it('exports a local epub that can be unzipped', async () => {

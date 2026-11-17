@@ -194,6 +194,8 @@ const fontSize = ref(DEFAULT_READER_PREFS.fontSize)
 const lineHeight = ref(DEFAULT_READER_PREFS.lineHeight)
 const theme = ref<ReaderTheme>(DEFAULT_READER_PREFS.theme)
 const fontFamily = ref<ReaderFontFamily>(DEFAULT_READER_PREFS.fontFamily)
+/** 真实书籍的书页字体；参考站默认霞鹜文楷，与经典模式的正文字体分开存。 */
+const bookFontFamily = ref<ReaderFontFamily>(DEFAULT_READER_PREFS.bookFontFamily ?? 'wenkai')
 const contentWidth = ref<ReaderContentWidth>(DEFAULT_READER_PREFS.contentWidth)
 const paragraphSpacing = ref<ReaderParagraphSpacing>(DEFAULT_READER_PREFS.paragraphSpacing)
 const paragraphIndent = ref(DEFAULT_READER_PREFS.paragraphIndent)
@@ -836,6 +838,7 @@ const {
   directNoteDraft,
   selectionOffsets,
   onContentMouseup,
+  presentSelectionRange,
   closeSelectionTools,
   copySelectedText,
   openDirectNote,
@@ -1844,7 +1847,16 @@ const fontStacks: Record<ReaderFontFamily, string> = {
   serif: '"STSong", "Songti SC", "SimSun", serif',
   system: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
   mono: '"Cascadia Mono", "Consolas", monospace',
+  wenkai: '"LXGW WenKai Screen", "LXGW WenKai", "STSong", "Songti SC", "SimSun", serif',
 }
+/**
+ * 真实书籍的页面排印：参考站是 22px / 行距 1.5 的 640×920 版心。
+ * 阅读偏好仍是 18px / 1.8 的经典模式默认值，这里按比例换算，
+ * 用户调字号/行距时书页仍跟着变，只是落在参考站的尺度上。
+ */
+const realBookFontSize = computed(() => Math.max(12, Math.min(40, Math.round(fontSize.value * (22 / 18)))))
+const realBookLineHeight = computed(() => Math.max(1.2, Math.round(lineHeight.value * (1.5 / 1.8) * 100) / 100))
+const realBookFontFamilyStack = computed(() => fontStacks[bookFontFamily.value])
 const widthValues: Record<ReaderContentWidth, string> = { narrow: '32em', medium: '38em', wide: '46em' }
 const spacingValues: Record<ReaderParagraphSpacing, string> = { compact: '0.2em', normal: '0.45em', relaxed: '0.8em' }
 /** 段间距的数值形式（em）：真实书籍分页要按像素算段间距，不能用 CSS 字符串。 */
@@ -2297,6 +2309,25 @@ function onRealBookMouseup(e: MouseEvent) {
   onContentMouseup(e)
 }
 
+/**
+ * WebGL 跨页选择：翻页后原生选区已经不在了，书台给的是
+ * 「段落原始下标 + 段内偏移」，这里换算成规范化正文坐标再抬工具条。
+ */
+function onRealBookSelectRange(range: {
+  startParagraph: number
+  startOffset: number
+  endParagraph: number
+  endOffset: number
+  x: number
+  y: number
+}): void {
+  const starts = paraNormStarts.value
+  const start = (starts[range.startParagraph] ?? 0) + range.startOffset
+  const end = (starts[range.endParagraph] ?? 0) + range.endOffset
+  if (end <= start) return
+  presentSelectionRange({ start, end }, { x: range.x, y: range.y })
+}
+
 /** 真实书籍翻页落定：更新页码并排期写进度（滚动进度在经典模式由 onScroll 排期）。 */
 function onRealBookPage(page: number) {
   realBookPage.value = page
@@ -2682,6 +2713,7 @@ function currentReaderPrefs(): ReaderPrefs {
     lineHeight: lineHeight.value,
     theme: theme.value,
     fontFamily: fontFamily.value,
+    bookFontFamily: bookFontFamily.value,
     contentWidth: contentWidth.value,
     paragraphSpacing: paragraphSpacing.value,
     paragraphIndent: paragraphIndent.value,
@@ -2740,6 +2772,7 @@ function restoreDefaultReaderPrefs() {
   lineHeight.value = DEFAULT_READER_PREFS.lineHeight
   theme.value = DEFAULT_READER_PREFS.theme
   fontFamily.value = DEFAULT_READER_PREFS.fontFamily
+  bookFontFamily.value = DEFAULT_READER_PREFS.bookFontFamily ?? 'wenkai'
   contentWidth.value = DEFAULT_READER_PREFS.contentWidth
   paragraphSpacing.value = DEFAULT_READER_PREFS.paragraphSpacing
   paragraphIndent.value = DEFAULT_READER_PREFS.paragraphIndent
@@ -2771,6 +2804,7 @@ async function loadPrefs() {
   lineHeight.value = s.reader.lineHeight
   theme.value = s.reader.theme
   fontFamily.value = s.reader.fontFamily
+  bookFontFamily.value = s.reader.bookFontFamily ?? 'wenkai'
   contentWidth.value = s.reader.contentWidth
   paragraphSpacing.value = s.reader.paragraphSpacing
   paragraphIndent.value = s.reader.paragraphIndent
@@ -3043,7 +3077,7 @@ const {
 } = assistant
 
 watch(
-  [fontSize, lineHeight, theme, fontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, showInlineNotes, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
+  [fontSize, lineHeight, theme, fontFamily, bookFontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, showInlineNotes, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()
@@ -3468,6 +3502,7 @@ onUnmounted(() => {
             :endpaper="realBookLook.endpaper"
             :book-title="book?.title ?? ''"
             :book-author="book?.author ?? ''"
+            :book-id="book?.id ?? ''"
             :total-chars="bookTotalChars"
             :book-progress-ratio="bookProgressRatio"
             :book-progress-step="bookTotalChars > 0 && realBookPageCount > 1 ? currentChapterChars / bookTotalChars / Math.max(1, realBookPageCount - 1) : 0"
@@ -3479,9 +3514,9 @@ onUnmounted(() => {
             :chapter-title="currentChapter?.title ?? ''"
             :highlights="realBookHighlightSpans"
             :search-query="showSearch ? searchQuery : ''"
-            :font-size="fontSize"
-            :line-height="lineHeight"
-            :font-family="fontStacks[fontFamily]"
+            :font-size="realBookFontSize"
+            :line-height="realBookLineHeight"
+            :font-family="realBookFontFamilyStack"
             :paragraph-gap="spacingEmValues[paragraphSpacing]"
             :notes="realBookInlineNotes"
             :show-notes="showInlineNotes"
@@ -3499,6 +3534,7 @@ onUnmounted(() => {
             @update:open="realBookOpen = $event"
             @update:show-notes="showInlineNotes = $event"
             @edit-note="openInlineNoteEditor"
+            @select-range="onRealBookSelectRange"
             @select="onRealBookMouseup"
             @next-chapter="nextChapter"
             @back="emit('back')"
@@ -3594,6 +3630,17 @@ onUnmounted(() => {
                   <button type="button" :class="{ active: realBookRenderer === 'css' }" :aria-pressed="realBookRenderer === 'css'" @click="realBookRenderer = 'css'">CSS 3D 回退</button>
                 </div>
                 <div class="control-label">{{ webglSupported ? 'WebGL 提供连续纸面、书脊厚度和自由视角；CSS 3D 保留原实现。' : '当前环境不支持 WebGL，已使用 CSS 3D。' }}</div>
+                <div class="control-label">书籍字体</div>
+                <div class="option-grid four" role="group" aria-label="书籍字体">
+                  <button
+                    v-for="item in [{ v: 'wenkai', l: '霞鹜文楷' }, { v: 'serif', l: '宋体' }, { v: 'system', l: '黑体' }, { v: 'mono', l: '等宽' }]"
+                    :key="item.v"
+                    type="button"
+                    :class="{ active: bookFontFamily === item.v }"
+                    :aria-pressed="bookFontFamily === item.v"
+                    @click="bookFontFamily = item.v as ReaderFontFamily"
+                  >{{ item.l }}</button>
+                </div>
                 <template v-if="realBookRenderer === 'webgl'">
                   <div class="control-label">书桌</div>
                   <div class="option-grid" role="group" aria-label="书桌材质">

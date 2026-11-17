@@ -92,6 +92,32 @@ function onContentMouseup(_e: MouseEvent) {
   }, 0)
 }
 
+/**
+ * 跨页选择：翻页后原生选区已经不存在，两端坐标由书台算好（段落原始下标 + 段内偏移），
+ * 这里换算成规范化正文的 start/end，直接把工具条抬起来。
+ */
+function presentSelectionRange(range: { start: number; end: number }, anchor?: { x: number; y: number }): boolean {
+  if (!hasContent()) return false
+  const text = normalizedBody().slice(range.start, range.end)
+  if (!text.trim()) return false
+  selectedRange.value = { ...range, text }
+  selectedExcerpt.value = text.trim()
+  const point = anchor ?? { x: window.innerWidth / 2, y: window.innerHeight * 0.6 }
+  lastSelRect.value = {
+    top: point.y - 12,
+    right: point.x + 40,
+    bottom: point.y + 12,
+    left: point.x - 40,
+    width: 80,
+    height: 24,
+  }
+  showDirectNote.value = false
+  directNoteDraft.value = ''
+  applySelPopupPosition({ width: 360, height: 88 })
+  showSelPopup.value = true
+  return true
+}
+
 function closeSelectionTools(clearBrowserSelection = true) {
   showSelPopup.value = false
   showDirectNote.value = false
@@ -145,6 +171,7 @@ async function addHighlight() {
     directNoteDraft,
     selectionOffsets,
     onContentMouseup,
+    presentSelectionRange,
     closeSelectionTools,
     copySelectedText,
     openDirectNote,

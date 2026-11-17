@@ -101,6 +101,32 @@ describe('importEpub', () => {
     expect(ch1.body).not.toContain('<head>')
   })
 
+  it('把 EPUB 内的图片抽到 images/，正文留 [图] 标记', async () => {
+    // 1×1 透明 PNG：宽高能从文件头读出来，够验证抽取与标记。
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    )
+    const src = join(dir, 'images.epub')
+    const zip = new JSZip()
+    zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
+    zip.file('META-INF/container.xml', CONTAINER)
+    zip.file('OEBPS/content.opf', OPF)
+    zip.file('OEBPS/toc.ncx', NCX)
+    zip.file('OEBPS/ch1.xhtml', xhtml('第一章', '第一章', [
+      '图前的正文，长度足够避免被判成插图页。',
+    ]).replace('</body>', '<img src="images/pic.png" alt="示意图"/>\n</body>'))
+    zip.file('OEBPS/ch2.xhtml', xhtml('第二章', '第二章', ['第二章的正文，长度同样足够。']))
+    zip.file('OEBPS/images/pic.png', png)
+    await writeFile(src, await zip.generateAsync({ type: 'nodebuffer' }))
+
+    const { bookId } = await importEpub(src)
+    const book = await loadBook(bookId)
+    const ch1 = JSON.parse(await readFile(join(dir, bookId, book.chapters[0].file), 'utf-8'))
+    expect(ch1.body).toContain('[图]c0001-1.png|1|1|示意图')
+    expect(await readFile(join(dir, bookId, 'images', 'c0001-1.png'))).toEqual(png)
+  })
+
   it('保留段落换行并解码实体', async () => {
     const src = join(dir, 'entities.epub')
     await makeEpub(

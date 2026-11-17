@@ -554,7 +554,7 @@ export interface WebShelfBook {
 }
 
 export type ReaderTheme = 'paper' | 'sepia' | 'gray' | 'night'
-export type ReaderFontFamily = 'serif' | 'system' | 'mono'
+export type ReaderFontFamily = 'serif' | 'system' | 'mono' | 'wenkai'
 export type ReaderContentWidth = 'narrow' | 'medium' | 'wide'
 export type ReaderParagraphSpacing = 'compact' | 'normal' | 'relaxed'
 export type ReaderFocusMode = 'off' | 'one' | 'three' | 'five'
@@ -575,6 +575,11 @@ export interface ReaderPrefs {
   lineHeight: number
   theme: ReaderTheme
   fontFamily: ReaderFontFamily
+  /**
+   * 真实书籍的书页字体；缺省 `wenkai`（参考站默认的霞鹜文楷）。
+   * 只影响书页排版，不改经典模式的正文。
+   */
+  bookFontFamily?: ReaderFontFamily
   contentWidth: ReaderContentWidth
   paragraphSpacing: ReaderParagraphSpacing
   paragraphIndent: boolean
@@ -1397,6 +1402,7 @@ export interface AiChatFileV2 {
 export const DEFAULT_READER_PREFS: ReaderPrefs = {
   theme: 'paper',
   fontFamily: 'serif',
+  bookFontFamily: 'wenkai',
   fontSize: 18,
   lineHeight: 1.8,
   contentWidth: 'medium',

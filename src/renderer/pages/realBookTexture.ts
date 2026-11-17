@@ -54,13 +54,28 @@ export interface RealBookTextureNoteItem {
   height: number
 }
 
-export type RealBookTextureItem = RealBookTextureTextItem | RealBookTextureNoteItem
+/** 页内图片块：正文里以 `[图]` 标记占位，纹理层按版心宽度画出来。 */
+export interface RealBookTextureImageItem {
+  kind: 'image'
+  /** 书目录 images/ 下的文件名 */
+  file: string
+  /** 原图像素尺寸 */
+  width: number
+  height: number
+  caption: string
+  /** 版心里的显示高度（px），由书台按版心宽度换算 */
+  displayHeight: number
+}
+
+export type RealBookTextureItem = RealBookTextureTextItem | RealBookTextureNoteItem | RealBookTextureImageItem
 
 /** 一页纹理的输入数据。 */
 export interface RealBookTexturePage {
   /** 1-based 页码；0 表示空页 */
   pageNumber: number
   chapterTitle: string
+  /** 页眉文字；缺省用章节名。参考站左页印书名、右页印章节名。 */
+  header?: string
   items: readonly RealBookTextureItem[]
 }
 
@@ -87,6 +102,15 @@ export interface RealBookTextureStyle {
   marginBottom?: number
   headHeight?: number
   footHeight?: number
+  /** 已解码的章内图片：按文件名取；缺图时画占位框。 */
+  images?: ReadonlyMap<string, CanvasImageSource>
+  /** 图片加载轮次：新图落下来后加一，纹理缓存据此重画。 */
+  imageEpoch?: number
+  /**
+   * 不把正文画进纹理：静态页的正文由上层 DOM 文本层显示（更清晰、可选字）；
+   * 飞页仍需要纹理里的字，所以这个开关只给静态页用。
+   */
+  omitBodyText?: boolean
 }
 
 export interface PageTextureLine {
@@ -95,6 +119,8 @@ export interface PageTextureLine {
   start: number
   /** 相对段落的结束字符 */
   end: number
+  /** 原始段落下标：透明 DOM 文本层用它挂 data-p。 */
+  paragraphIndex: number
   x: number
   y: number
   height: number
@@ -123,9 +149,28 @@ export interface PageTexturePlan {
   footHeight: number
   pageNumber: number
   chapterTitle: string
+  /** 实际画在页眉的文本（书名/章节名由页面自己决定）。 */
+  header: string
+  /** 页眉字号与 alphabetic 基线：纹理与 DOM 文本层共用，两层不会错位。 */
+  headerFontSize: number
+  headerBaseline: number
+  /** 页脚文本（空页不印页码）；字号与基线的约定同页眉。 */
+  footer: string
+  footerFontSize: number
+  footerBaseline: number
   lines: PageTextureLine[]
   notes: PageTextureNoteBox[]
+  images: PageTextureImageBox[]
   side: 'left' | 'right'
+}
+
+export interface PageTextureImageBox {
+  file: string
+  caption: string
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
 const DEFAULT_HIGHLIGHT = 'rgba(240, 185, 90, 0.34)'
@@ -182,16 +227,38 @@ export function buildPageTexturePlan(
   const marginBottom = Math.max(16, Math.round(style.marginBottom ?? PAGE_TEXTURE_MARGIN_BOTTOM))
   const headHeight = Math.max(12, Math.round(style.headHeight ?? style.fontSize * 1.8))
   const footHeight = Math.max(12, Math.round(style.footHeight ?? style.fontSize * 1.6))
+  // 页眉页脚的字号/基线只在这里算一次：纹理（非 DOM 路径）与 DOM 文本层都读它。
+  const chromeFontSize = Math.max(8, style.fontSize)
+  const headerFontSize = Math.max(10, chromeFontSize * 0.62)
+  const footerFontSize = Math.max(9, chromeFontSize * 0.62)
   const lineHeight = Math.max(1, style.lineHeight)
   const paragraphGap = Math.max(0, style.paragraphGap)
   const contentWidth = Math.max(80, width - marginInner - marginOuter)
   const contentBottom = height - marginBottom - footHeight
   const lines: PageTextureLine[] = []
   const notes: PageTextureNoteBox[] = []
+  const images: PageTextureImageBox[] = []
   let y = marginTop
   let firstItem = true
 
   for (const item of page.items) {
+    if (item.kind === 'image') {
+      const captionHeight = item.caption ? lineHeight : 0
+      const boxHeight = Math.max(24, item.displayHeight)
+      if (y + boxHeight + captionHeight > contentBottom + 0.5) break
+      if (!firstItem) y += paragraphGap
+      images.push({
+        file: item.file,
+        caption: item.caption,
+        x: marginX,
+        y,
+        width: contentWidth,
+        height: boxHeight,
+      })
+      y += boxHeight + captionHeight
+      firstItem = false
+      continue
+    }
     if (item.kind === 'note') {
       const noteHeight = Math.max(24, item.height)
       if (y + noteHeight > height - marginBottom) break
@@ -221,6 +288,7 @@ export function buildPageTexturePlan(
         text,
         start: line.start,
         end: line.end,
+        paragraphIndex: item.originalIndex,
         x: marginX + (firstLine ? Math.min(style.fontSize * 2, contentWidth * 0.18) : 0),
         y,
         height: lineHeight,
@@ -244,8 +312,15 @@ export function buildPageTexturePlan(
     footHeight,
     pageNumber: page.pageNumber,
     chapterTitle: page.chapterTitle,
+    header: page.header ?? page.chapterTitle,
+    headerFontSize,
+    headerBaseline: marginTop - 10,
+    footer: page.pageNumber > 0 ? String(page.pageNumber) : '',
+    footerFontSize,
+    footerBaseline: height - marginBottom + chromeFontSize * 0.8,
     lines,
     notes,
+    images,
     side,
   }
 }
@@ -277,7 +352,11 @@ function lineMarksWithText(
   }
 }
 
-function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+/**
+ * 按当前 canvas 字体断行。导出给 DOM 层：批注卡的换行必须和纹理里一模一样，
+ * 否则同一张卡在两种渲染路径里会排成不同的行数。
+ */
+export function wrapTextureText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
   const source = text.replace(/\s+/g, ' ').trim()
   if (!source) return []
   if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
@@ -327,6 +406,7 @@ export function drawPageTexture(
   if (!ctx) return null
   ctx.scale(scale, scale)
   const fontSize = Math.max(8, style.fontSize)
+  const lineHeight = Math.max(1, style.lineHeight)
   const family = style.fontFamily || 'serif'
   const ink = style.ink || '#241c15'
   const muted = style.muted || 'rgba(36,28,21,0.52)'
@@ -350,40 +430,101 @@ export function drawPageTexture(
   ctx.fillStyle = gutter
   ctx.fillRect(0, 0, plan.width, plan.height)
 
-  // 页眉
-  ctx.fillStyle = muted
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'alphabetic'
-  ctx.font = `italic 440 ${Math.max(10, fontSize * 0.68)}px ${family}`
-  ctx.fillText(plan.chapterTitle || '', plan.width / 2, plan.marginTop - 10)
+  // 页眉页脚：参考站是正体小字，不用斜体；两侧由页面自己决定印书名还是章节名。
+  // 走 DOM 的页面（静态页、顶层飞页）不再画进纹理，否则纹理里会留下一层糊字。
+  if (!style.omitBodyText) {
+    ctx.fillStyle = muted
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'alphabetic'
+    ctx.font = `400 ${plan.headerFontSize}px ${family}`
+    ctx.fillText(plan.header || '', plan.width / 2, plan.headerBaseline)
+    if (plan.footer) {
+      ctx.font = `440 ${plan.footerFontSize}px ${family}`
+      ctx.fillText(plan.footer, plan.width / 2, plan.footerBaseline)
+    }
+  }
 
   // 正文：先铺标记，再压字，避免半透明色块盖住笔画。
+  // 走 DOM 的页面把划线与「注」点也交给文本层，纹理里只留纸面。
   ctx.textAlign = 'left'
   for (const line of plan.lines) {
     ctx.font = `440 ${fontSize}px ${family}`
     const baseline = line.y + line.height * 0.76
-    for (const mark of line.marks) {
-      const before = ctx.measureText(line.text.slice(0, mark.start)).width
-      const width = ctx.measureText(line.text.slice(mark.start, mark.end)).width
-      ctx.fillStyle = mark.color
-      ctx.fillRect(line.x + before - 1, line.y + line.height * 0.18, Math.max(1, width + 2), line.height * 0.74)
+    if (!style.omitBodyText) {
+      for (const mark of line.marks) {
+        const before = ctx.measureText(line.text.slice(0, mark.start)).width
+        const width = ctx.measureText(line.text.slice(mark.start, mark.end)).width
+        ctx.fillStyle = mark.color
+        ctx.fillRect(line.x + before - 1, line.y + line.height * 0.18, Math.max(1, width + 2), line.height * 0.74)
+      }
+      ctx.fillStyle = ink
+      ctx.fillText(line.text, line.x, baseline)
+      // 纹理在屏幕上是缩小的：22px 的字映射到 12px 左右，细笔画经 mipmap 采样后会被纸色冲淡。
+      // 沿字形描一条极细的边补回笔画重量；线宽按字号走，放大字号时不会变成粗体。
+      ctx.strokeStyle = ink
+      ctx.lineWidth = Math.max(0.3, fontSize * 0.02)
+      ctx.strokeText(line.text, line.x, baseline)
+      for (const offset of line.noteMarks) {
+        const before = ctx.measureText(line.text.slice(0, offset)).width
+        ctx.fillStyle = 'rgba(186,112,57,0.9)'
+        ctx.beginPath()
+        ctx.arc(line.x + before + Math.max(2, fontSize * 0.34), baseline - fontSize * 0.28, Math.max(3, fontSize * 0.18), 0, Math.PI * 2)
+        ctx.fill()
+        ctx.fillStyle = '#fff9ef'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.font = `500 ${Math.max(5, fontSize * 0.22)}px sans-serif`
+        ctx.fillText('注', line.x + before + Math.max(2, fontSize * 0.34), baseline - fontSize * 0.28)
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'alphabetic'
+        ctx.font = `440 ${fontSize}px ${family}`
+      }
     }
-    ctx.fillStyle = ink
-    ctx.fillText(line.text, line.x, baseline)
-    for (const offset of line.noteMarks) {
-      const before = ctx.measureText(line.text.slice(0, offset)).width
-      ctx.fillStyle = 'rgba(186,112,57,0.9)'
-      ctx.beginPath()
-      ctx.arc(line.x + before + Math.max(2, fontSize * 0.34), baseline - fontSize * 0.28, Math.max(3, fontSize * 0.18), 0, Math.PI * 2)
-      ctx.fill()
-      ctx.fillStyle = '#fff9ef'
+  }
+
+  // 页内图片与批注卡：走 DOM 的页面（静态页、顶层飞页）交给文本层，
+  // 纹理里只留纸面；仍用纹理带字的飞页照旧画在这里。
+  if (!style.omitBodyText) {
+  // 页内图片：按 contain 装进版心块；还没解码时画一个占位框，图注始终照画。
+  for (const box of plan.images) {
+    const source = style.images?.get(box.file)
+    let sourceWidth = 0
+    let sourceHeight = 0
+    if (source) {
+      sourceWidth = Number((source as { naturalWidth?: number }).naturalWidth ?? 0)
+        || Number((source as { width?: number }).width ?? 0)
+      sourceHeight = Number((source as { naturalHeight?: number }).naturalHeight ?? 0)
+        || Number((source as { height?: number }).height ?? 0)
+    }
+    if (source && sourceWidth > 0 && sourceHeight > 0) {
+      const scale = Math.min(box.width / sourceWidth, box.height / sourceHeight)
+      const drawWidth = sourceWidth * scale
+      const drawHeight = sourceHeight * scale
+      ctx.drawImage(
+        source,
+        box.x + (box.width - drawWidth) / 2,
+        box.y + (box.height - drawHeight) / 2,
+        drawWidth,
+        drawHeight,
+      )
+    } else {
+      ctx.fillStyle = 'rgba(83, 67, 42, 0.06)'
+      ctx.fillRect(box.x, box.y, box.width, box.height)
+      ctx.strokeStyle = 'rgba(120, 90, 50, 0.28)'
+      ctx.lineWidth = 1
+      ctx.strokeRect(box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1)
+      ctx.fillStyle = muted
+      ctx.font = `${Math.max(10, fontSize * 0.62)}px ${family}`
       ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.font = `500 ${Math.max(5, fontSize * 0.22)}px sans-serif`
-      ctx.fillText('注', line.x + before + Math.max(2, fontSize * 0.34), baseline - fontSize * 0.28)
+      ctx.fillText('图片', box.x + box.width / 2, box.y + box.height / 2)
       ctx.textAlign = 'left'
-      ctx.textBaseline = 'alphabetic'
-      ctx.font = `440 ${fontSize}px ${family}`
+    }
+    if (box.caption) {
+      ctx.fillStyle = muted
+      ctx.textAlign = 'center'
+      ctx.font = `${Math.max(9, fontSize * 0.6)}px ${family}`
+      ctx.fillText(box.caption, box.x + box.width / 2, box.y + box.height + lineHeight * 0.72)
+      ctx.textAlign = 'left'
     }
   }
 
@@ -398,7 +539,7 @@ export function drawPageTexture(
     ctx.fillText(box.note.source === 'ai' ? '笔记 · AI' : '笔记', box.x + 10, box.y + fontSize * 0.8)
     ctx.fillStyle = ink
     ctx.font = `440 ${Math.max(9, fontSize * 0.82)}px ${family}`
-    const lines = wrapText(ctx, box.note.text, box.width - 20).slice(0, 3)
+    const lines = wrapTextureText(ctx, box.note.text, box.width - 20).slice(0, 3)
     lines.forEach((text, index) => {
       ctx.fillText(text, box.x + 10, box.y + fontSize * 1.55 + index * fontSize * 0.95)
     })
@@ -408,15 +549,9 @@ export function drawPageTexture(
       ctx.fillText(box.note.tags.map((tag) => `#${tag}`).join(' '), box.x + 10, box.y + box.height - 8)
     }
   }
-
-  // 页脚页码
-  if (plan.pageNumber > 0) {
-    ctx.fillStyle = muted
-    ctx.textAlign = 'center'
-    ctx.font = `440 ${Math.max(9, fontSize * 0.62)}px ${family}`
-    ctx.fillText(String(plan.pageNumber), plan.width / 2, plan.height - plan.marginBottom + fontSize * 0.8)
-    ctx.textAlign = 'left'
   }
+
+  // 页脚页码也由 DOM 文本层画（见上方页眉页脚段），这里不再重复。
 
   // 纸边轻微压暗，模拟裁切后的纸口。
   const edge = ctx.createLinearGradient(0, 0, 0, plan.height)
@@ -434,8 +569,11 @@ export function textureStyleSignature(page: RealBookTexturePage, style: RealBook
   return JSON.stringify({
     pageNumber: page.pageNumber,
     chapterTitle: page.chapterTitle,
-    items: page.items.map((item) => item.kind === 'text'
-      ? [
+    header: page.header ?? page.chapterTitle,
+    items: page.items.map((item) => {
+      if (item.kind === 'text') {
+        return [
+          'text',
           item.originalIndex,
           item.start,
           item.end,
@@ -445,7 +583,14 @@ export function textureStyleSignature(page: RealBookTexturePage, style: RealBook
           item.highlights.map((highlight) => [highlight.start, highlight.end, highlight.color ?? '']),
           item.noteMarks,
         ]
-      : [item.note.id, item.note.text, item.note.tags ?? [], item.height]),
+      }
+      if (item.kind === 'image') {
+        return ['image', item.file, item.width, item.height, item.caption, Math.round(item.displayHeight)]
+      }
+      return ['note', item.note.id, item.note.text, item.note.tags ?? [], item.height]
+    }),
+    imageEpoch: style.imageEpoch ?? 0,
+    omitBodyText: style.omitBodyText === true,
     fontSize: style.fontSize,
     lineHeight: style.lineHeight,
     fontFamily: style.fontFamily,

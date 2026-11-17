@@ -1,4 +1,4 @@
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import JSZip from 'jszip'
@@ -6,11 +6,14 @@ import {
   bookIdFromBytes,
   copyOriginFile,
   createBookFromBootstrap,
+  getLibraryPath,
   isBookComplete,
   refreshBookStatus,
   setCover,
   writeChaptersBatch,
 } from './library'
+import { chapterImageText } from '../shared/chapterImages'
+import { imageBytesInfo } from '../shared/imageBytes'
 import type { ChapterFile } from '../shared/types'
 
 /** 段落级结束标签换成空行：直接按标签切会把每段切成一行，正文结构全丢。 */
@@ -40,6 +43,82 @@ function stripXhtml(html: string): string {
     .replace(/[ \t]*\n[ \t]*/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
+
+/** 把 zip 里的相对路径解析成 zip 根路径（处理 ../ 与百分号编码）。 */
+function resolveZipPath(chapterPath: string, src: string): string {
+  const clean = src.split('#')[0]!.split('?')[0]!
+  const dir = chapterPath.includes('/') ? chapterPath.slice(0, chapterPath.lastIndexOf('/') + 1) : ''
+  const combined = clean.startsWith('/') ? clean.slice(1) : dir + clean
+  const parts: string[] = []
+  for (const part of combined.split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..') { parts.pop(); continue }
+    parts.push(part)
+  }
+  return parts.join('/')
+}
+
+function nearbyCaption(html: string, from: number): string {
+  const window = html.slice(from, from + 400)
+  const match = /<figcaption[^>]*>([\s\S]*?)<\/figcaption>/i.exec(window)
+  if (!match) return ''
+  return stripXhtml(match[1] ?? '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * EPUB 章内图片：把 `<img>` 换成正文标记，并把图存到书目录的 images/ 下。
+ *
+ * 只处理 zip 内的相对路径图片；外链图片（http/data:）不下载——那属于下载器的事，
+ * 导入阶段不该偷偷联网。拿不到尺寸的图片跳过，免得把版面算错。
+ */
+async function inlineChapterImages(
+  zip: JSZip,
+  xhtml: string,
+  chapterZipPath: string,
+  bookId: string,
+  chapterIndex: number,
+): Promise<string> {
+  const imagesDir = join(getLibraryPath(), bookId, 'images')
+  const imgTag = /<img\b[^>]*>/gi
+  let out = ''
+  let cursor = 0
+  let counter = 0
+  let match: RegExpExecArray | null
+  while ((match = imgTag.exec(xhtml)) !== null) {
+    out += xhtml.slice(cursor, match.index)
+    cursor = match.index + match[0].length
+    const src = attrOf(match[0], 'src')
+    if (!src || /^(?:data:|https?:)/i.test(src)) continue
+    const decoded = decodeEntities(src)
+    const resolved = resolveZipPath(chapterZipPath, decoded)
+    const entry = zip.file(resolved) || zip.file(decoded)
+    if (!entry) continue
+    const ext = extname(resolved).toLowerCase()
+    if (!IMAGE_EXTENSIONS.has(ext)) continue
+    let bytes: Uint8Array
+    try {
+      bytes = await entry.async('uint8array')
+    } catch {
+      continue
+    }
+    const size = imageBytesInfo(bytes)
+    if (!size || size.width <= 0 || size.height <= 0) continue
+    counter += 1
+    const file = `c${String(chapterIndex).padStart(4, '0')}-${counter}${size.ext}`
+    try {
+      await mkdir(imagesDir, { recursive: true })
+      await writeFile(join(imagesDir, file), bytes)
+    } catch {
+      continue
+    }
+    const caption = (attrOf(match[0], 'alt') || attrOf(match[0], 'title') || nearbyCaption(xhtml, imgTag.lastIndex)).trim()
+    out += `\n\n${chapterImageText({ file, width: size.width, height: size.height, caption: decodeEntities(caption) })}\n\n`
+  }
+  out += xhtml.slice(cursor)
+  return out
 }
 
 function xmlAttr(xml: string, tag: string, attr: string): string[] {
@@ -175,7 +254,9 @@ export async function importEpub(filePath: string): Promise<{ bookId: string }> 
     const file = zip.file(fullPath) || zip.file(href)
     if (!file) continue
     const xhtml = await file.async('text')
-    const body = stripXhtml(xhtml)
+    // 先抽图再剥标签：图片会变成正文里的 [图] 标记段落，落盘到书目录 images/。
+    const withImages = await inlineChapterImages(zip, xhtml, fullPath, bookId, chapterNo + 1)
+    const body = stripXhtml(withImages)
     // 章号按「已生成的章节数」走，不用 spine 下标：跳过的插图页/空页会让章号断号
     const fallbackTitle = `第${chapterNo + 1}章`
     if (body.length < 10) {

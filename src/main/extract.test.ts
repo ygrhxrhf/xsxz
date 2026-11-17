@@ -256,6 +256,18 @@ describe('extractCatalog', () => {
 })
 
 describe('extractBody', () => {
+  it('正文图片在抽取结果里保留原位标记', () => {
+    const paragraph = (label: string) => `<p>${label}${'这是一段用来撑起正文长度的测试文字。'.repeat(12)}</p>`
+    const html = `<html><body><div id="content">${paragraph('第一段开头。')}<img src="/img/a.jpg" alt="插图">${paragraph('第二段开头。')}</div></body></html>`
+    const rule: SiteRule = { host: 'example.com', body: '#content' }
+    const result = extractBody(html, 'https://example.com/ch/1.html', rule)
+    expect(result.ok).toBe(true)
+    const tokenAt = result.body.indexOf('[[SPBFIMG|')
+    expect(tokenAt).toBeGreaterThan(-1)
+    expect(tokenAt).toBeGreaterThan(result.body.indexOf('第一段开头。'))
+    expect(tokenAt).toBeLessThan(result.body.indexOf('第二段开头。'))
+  })
+
   it('extracts body from chapter HTML', () => {
     const html = fixture('chapter.html')
     const result = extractBody(html, 'https://example.com/book/1.html')

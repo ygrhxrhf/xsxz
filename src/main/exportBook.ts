@@ -1,7 +1,8 @@
-import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { extname, join } from 'node:path'
 import JSZip from 'jszip'
-import { loadBook, readChapter } from './library'
+import { getLibraryPath, loadBook, readChapter } from './library'
+import { parseChapterImage } from '../shared/chapterImages'
 
 export type ExportFormat = 'txt' | 'epub'
 
@@ -18,20 +19,89 @@ function escapeXml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
-function bodyToXhtml(title: string, body: string): string {
-  const paras = body
+const IMAGE_MEDIA: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+}
+
+interface ExportImageEntry {
+  id: string
+  href: string
+}
+
+interface ExportImagesContext {
+  bookId: string
+  zip: JSZip
+  images: Map<string, ExportImageEntry>
+  manifest: string[]
+}
+
+/** TXT 导出：图片没有承载位置，退化成一行可见说明，不把内部标记漏给用户。 */
+function bodyToPlainText(body: string): string {
+  return body
     .split(/\n{2,}/)
-    .map((p) => p.trim())
+    .map((part) => part.trim())
     .filter(Boolean)
-    .map((p) => `<p>${escapeXml(p).replace(/\n/g, '<br/>')}</p>`)
-    .join('\n')
+    .map((part) => {
+      const image = parseChapterImage(part)
+      return image ? `［图片：${image.caption || image.file}］` : part
+    })
+    .join('\n\n')
+}
+
+/**
+ * 章节正文 → EPUB 的 XHTML。
+ *
+ * `[图]` 段落导出成 `<figure><img/><figcaption/>`，图片文件按需塞进 zip 并在
+ * manifest 里登记；同一张图跨章只放一份。图片文件缺失时退化成一段说明文字，
+ * 不让整章导出失败。
+ */
+async function bodyToXhtml(
+  title: string,
+  body: string,
+  ctx: ExportImagesContext,
+): Promise<string> {
+  const paragraphs = body.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean)
+  const blocks: string[] = []
+  for (const paragraph of paragraphs) {
+    const image = parseChapterImage(paragraph)
+    if (!image) {
+      blocks.push(`<p>${escapeXml(paragraph).replace(/\n/g, '<br/>')}</p>`)
+      continue
+    }
+    const ext = extname(image.file).toLowerCase()
+    const mediaType = IMAGE_MEDIA[ext]
+    let entry = mediaType ? ctx.images.get(image.file) : undefined
+    if (!entry && mediaType) {
+      try {
+        const data = await readFile(join(getLibraryPath(), ctx.bookId, 'images', image.file))
+        const id = `img${String(ctx.images.size + 1).padStart(3, '0')}`
+        const href = `images/${image.file}`
+        ctx.zip.file(`OEBPS/${href}`, data)
+        ctx.manifest.push(`<item id="${id}" href="${href}" media-type="${mediaType}"/>`)
+        entry = { id, href }
+        ctx.images.set(image.file, entry)
+      } catch {
+        entry = undefined
+      }
+    }
+    if (!entry) {
+      blocks.push(`<p>［图片缺失：${escapeXml(image.caption || image.file)}］</p>`)
+      continue
+    }
+    const caption = image.caption ? `<figcaption>${escapeXml(image.caption)}</figcaption>` : ''
+    blocks.push(`<figure><img src="${entry.href}" alt="${escapeXml(image.caption || image.file)}"/>${caption}</figure>`)
+  }
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>${escapeXml(title)}</title><meta charset="utf-8"/></head>
 <body>
 <h1>${escapeXml(title)}</h1>
-${paras || '<p></p>'}
+${blocks.join('\n') || '<p></p>'}
 </body>
 </html>`
 }
@@ -85,7 +155,7 @@ export async function exportBook(
   if (format === 'txt') {
     const parts = [`《${book.title}》`, book.author ? `作者：${book.author}` : '', '']
     for (const ch of chunks) {
-      parts.push(`## ${ch.title}`, '', ch.body.trim(), '')
+      parts.push(`## ${ch.title}`, '', bodyToPlainText(ch.body), '')
     }
     const dest = join(dir, `${base}.txt`)
     try {
@@ -110,12 +180,14 @@ export async function exportBook(
   )
 
   const manifestItems: string[] = []
+  const imageManifest: string[] = []
+  const imageContext: ExportImagesContext = { bookId, zip, images: new Map(), manifest: imageManifest }
   const spineItems: string[] = []
   const ncxPoints: string[] = []
   for (let i = 0; i < chunks.length; i++) {
     const id = `ch${String(i + 1).padStart(4, '0')}`
     const href = `${id}.xhtml`
-    zip.file(`OEBPS/${href}`, bodyToXhtml(chunks[i].title, chunks[i].body))
+    zip.file(`OEBPS/${href}`, await bodyToXhtml(chunks[i].title, chunks[i].body, imageContext))
     manifestItems.push(`<item id="${id}" href="${href}" media-type="application/xhtml+xml"/>`)
     spineItems.push(`<itemref idref="${id}"/>`)
     ncxPoints.push(
@@ -147,6 +219,7 @@ export async function exportBook(
   <manifest>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
     ${manifestItems.join('\n    ')}
+    ${imageManifest.join('\n    ')}
   </manifest>
   <spine toc="ncx">
     ${spineItems.join('\n    ')}

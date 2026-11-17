@@ -308,9 +308,12 @@ describe('Reader 真实书籍模式接线', () => {
     await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 250))
     await nextTick()
 
-    // 翻页而不是换章：页码往前走，页眉仍是本章章名（换章会把整章跳过去）。
+    // 翻页而不是换章：页码往前走，页眉仍印着本章章名（换章会把整章跳过去）。
     expect(label()).not.toBe(before)
-    expect(document.querySelector('.real-book-page-head')?.textContent).toBe('第一章')
+    const heads = [...document.querySelectorAll('.real-book-page-head')].map((node) => node.textContent)
+    expect(heads).toContain('第一章')
+    // 参考站的页眉：左页印书名、右页印章节名。
+    expect(heads).toContain('真实书')
     // 双页摊开一次翻 2 页，第 1 页翻过去后就不再显示；只确认正文仍在本章。
     expect(document.querySelectorAll('.real-book-para').length).toBeGreaterThan(0)
     app.unmount()
@@ -432,7 +435,7 @@ describe('Reader 真实书籍模式接线', () => {
     await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS + 250))
     await nextTick()
     expect(pageNo()).toBe(before)
-    expect(document.querySelector('.real-book-page-head')?.textContent).toBe('第一章')
+    expect([...document.querySelectorAll('.real-book-page-head')].map((node) => node.textContent)).toContain('第一章')
     app.unmount()
   })
 

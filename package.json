@@ -24,7 +24,8 @@
     "pack": "npm run typecheck && electron-vite build && electron-builder --dir",
     "dist": "npm run typecheck && electron-vite build && electron-builder",
     "pack:local": "set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& npm run typecheck && electron-vite build && electron-builder --dir",
-    "dist:local": "set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& npm run typecheck && electron-vite build && electron-builder"
+    "dist:local": "set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& npm run typecheck && electron-vite build && electron-builder",
+    "e2e:download-images": "node scripts/download-images-e2e.mjs"
   },
   "dependencies": {
     "@ghostery/adblocker": "^2.18.2",
@@ -32,6 +33,7 @@
     "@mozilla/readability": "^0.6.0",
     "jsdom": "^30.0.1",
     "jszip": "^3.10.1",
+    "lxgw-wenkai-screen-webfont": "^1.7.0",
     "tesseract.js": "^7.0.0",
     "three": "^0.187.0"
   },

@@ -6,6 +6,7 @@ import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import { canonicalizeUrl } from '../shared/urlHash'
 import { installCoverProtocol, registerCoverScheme } from './coverProtocol'
+import { installImageProtocol, registerImageScheme } from './imageProtocol'
 import {
   listBooks,
   getBook,
@@ -2753,8 +2754,9 @@ function registerIpc(): void {
 }
 
 app.setName('spbf')
-// 封面协议的 scheme 注册必须早于 app ready（见 coverProtocol.ts）
+// 封面与章内图片协议的 scheme 注册必须早于 app ready（见 coverProtocol.ts / imageProtocol.ts）
 registerCoverScheme()
+registerImageScheme()
 
 // 单实例锁：双开时两个进程都写书库，而书库的写锁只在进程内有效
 // （docs/agent-integration-design.md §6）。第二个实例直接退出；
@@ -2848,6 +2850,7 @@ app.whenReady().then(async () => {
   // 这套英文菜单只白占一条标题栏空间。代价是菜单自带的刷新/DevTools 快捷键不再生效。
   Menu.setApplicationMenu(null)
   installCoverProtocol()
+  installImageProtocol()
   // 订阅自动更新：建运行时再注册频道，因为 registerIpc 要用到它。
   proxyAutoUpdate = createProxyAutoUpdate({
     dir: join(app.getPath('userData'), 'proxy-auto-update'),

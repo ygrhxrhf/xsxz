@@ -15,6 +15,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import type { ReaderHandwritingFont, ReaderTheme } from '@shared/types'
+import { chapterImageHeight, parseChapterImage } from '@shared/chapterImages'
 import {
   createRealBookPaginator,
   findPageForInput,
@@ -37,6 +38,8 @@ import { measureLines } from './realBookMeasure'
 import { clampPitch, MAX_PITCH_DEG, MAX_TILT_DEG, pitchFromDrag, pitchResetTarget, TILT_SENSITIVITY } from './realBookPitch'
 import { FLIP_DURATION_MS, flipAngles, flipBackContentOpacity, flipContentOpacity, flipFaceVisible, flipLight, flipPhases, flipPoses, flipSheetLift, flipSway } from './realBookFlip'
 import RealBookWebGLStage from './RealBookWebGLStage.vue'
+import type { RealBookSceneFlip } from './realBookWebGLScene'
+import type { CrossSelectionRange } from './realBookCrossSelection'
 import {
   PAGE_TEXTURE_HEIGHT,
   PAGE_TEXTURE_MARGIN_BOTTOM,
@@ -124,6 +127,8 @@ const props = withDefaults(defineProps<{
   /** 合上时的封面书名与作者。 */
   bookTitle?: string
   bookAuthor?: string
+  /** 书 id：章内图片按它拼 spbf-image:// 协议地址。 */
+  bookId?: string
   /** 书页模式每页栏数：1 单栏、2 双栏；书台版式忽略。 */
   columns?: number
   /** 新写或刚编辑的批注 id：重排后跳到它所在页 */
@@ -155,6 +160,7 @@ const props = withDefaults(defineProps<{
   endpaper: 'ivory',
   bookTitle: '',
   bookAuthor: '',
+  bookId: '',
   columns: 1,
   totalChars: 0,
   bookProgressStep: 0,
@@ -173,6 +179,8 @@ const emit = defineEmits<{
   (event: 'update:open', open: boolean): void
   (event: 'update:show-notes', show: boolean): void
   (event: 'edit-note', noteId: string): void
+  /** WebGL 跨页选择完成：两端是段落原始下标 + 段内偏移。 */
+  (event: 'select-range', range: CrossSelectionRange): void
   (event: 'next-chapter'): void
   /** 左上角圆形返回键：回到书库 */
   (event: 'back'): void
@@ -210,7 +218,9 @@ interface RealBookPalette {
 
 const REALBOOK_PALETTE: Record<ReaderTheme, RealBookPalette> = {
   paper: {
-    paper: '#ECD3B0', lit: '#F7E3C6', shade: '#C29A66',
+    // 参考站纸色是偏灰的米白（受光后约 #EDD7BA），不是偏橙的牛皮纸；
+    // 纹理底色要留出灯光乘色的余量，所以取比成品更亮、更不饱和的米白。
+    paper: '#FAF1E1', lit: '#FFF9ED', shade: '#D8BE98',
     desk: '#C8B8A1', deskLit: '#DCCDB8', deskDeep: '#6C6255',
     cover: '#48554C', coverLit: '#58665B', coverDeep: '#2A332D',
   },
@@ -251,24 +261,63 @@ const webglOpen = ref(true)
 const effectiveRenderer = computed(() => props.variant === 'book' && props.renderer === 'webgl' && !webglFailed.value)
 /** WebGL 用参考站的 62° 上限；CSS 3D 仍限 35° 以避免 DOM 正文被透视压糊。 */
 const pitchLimit = computed(() => (effectiveRenderer.value ? MAX_TILT_DEG : MAX_PITCH_DEG))
-/** WebGL 用参考站更慢的纸页行程；CSS 3D 保留 900ms。 */
-const flipDurationMs = computed(() => (effectiveRenderer.value ? 1500 : FLIP_DURATION_MS))
+/**
+ * WebGL 用参考站的 0.4s quick 翻页；CSS 3D 保留 900ms 的纸页行程。
+ * 早先 WebGL 是 1.5s，会把「翻一张纸」读成慢动作，连翻时更难分辨是第几张。
+ */
+const WEBGL_FLIP_DURATION_MS = 400
+const flipDurationMs = computed(() => (effectiveRenderer.value ? WEBGL_FLIP_DURATION_MS : FLIP_DURATION_MS))
 const currentPage = ref(0)
 const defaultZoom = computed(() => (effectiveRenderer.value ? WEBGL_DEFAULT_ZOOM : 1))
 const minZoom = computed(() => (effectiveRenderer.value ? WEBGL_MIN_ZOOM : 0.7))
 const maxZoom = computed(() => (effectiveRenderer.value ? WEBGL_MAX_ZOOM : 1.8))
 const zoom = ref(defaultZoom.value)
+/** 窄屏单页：窗口宽度小于 768 或本机调试开关打开时启用。 */
+const phone = ref(false)
+const forcePhone = (() => {
+  try {
+    return localStorage.getItem('spore:reader-realbook-phone:v1') === '1'
+  } catch {
+    return false
+  }
+})()
 const pitchDragging = ref(false)
 let pitchDragState: { startY: number; startPitch: number } | null = null
-const flipping = ref<{ direction: 1 | -1; key: number } | null>(null)
+/**
+ * 一次翻页：从哪一页起到哪一页落，进度自己走。
+ *
+ * 快速连按时会同时有好几张纸在飞，所以这里按「一张纸」而不是「一次翻页」记。
+ * `from` 是起翻时所在的页，`to` 是这张纸落定后要提交的页；后起的纸从前一张的
+ * `to` 接着数，整条链按顺序提交，页面内容就不会被后来的纸提前改写。
+ */
+interface FlipRun {
+  id: number
+  direction: 1 | -1
+  from: number
+  to: number
+  progress: number
+  /** 已经走过的时长（ms）。用累计而不是「开始时间戳」：rAF 的时间原点与 performance.now() 不一定同源。 */
+  elapsed: number
+  duration: number
+  /** 拖页中：进度由手指写，rAF 不推进它。 */
+  follow: boolean
+}
+const flips = ref<FlipRun[]>([])
+/** 同时在飞的纸上限：WebGL 场景有 6 个飞页槽位，CSS 3D 回退只有一张纸。 */
+const MAX_RUNS_WEBGL = 6
+const flipping = computed<{ direction: 1 | -1; key: number } | null>(() => {
+  const head = flips.value[0]
+  return head ? { direction: head.direction, key: head.id } : null
+})
+/** 翻页进度 0–1：驱动竖带卷曲与飞页，不参与任何排版计算。 */
+const flipT = computed(() => flips.value[0]?.progress ?? 0)
+/** 快速连按/连点时的翻页队列：超出同时在飞的上限才排队，最多 12 条。 */
+const turnQueue = ref<(1 | -1)[]>([])
 /** 俯仰拖拽是否真的拖过：拖过之后松手的那一下 mouseup 不能被当成点按（否则拖完角就翻页）。 */
 let pitchDragged = false
-/** 翻页进度 0–1：由 rAF 推进，只驱动竖带卷曲，不参与任何排版计算。 */
-const flipT = ref(0)
 const pages = shallowRef<RealBookPage[]>([])
 let lastRevealToken = 0
 
-let flipTimer: ReturnType<typeof setTimeout> | null = null
 let flipRaf = 0
 let flipKey = 0
 let observer: ResizeObserver | null = null
@@ -303,7 +352,7 @@ const pageStep = computed(() => (props.variant === 'sheet' ? pageColumns.value :
  *
  * 书页模式一张纸折几栏就是翻几步，用 pageStep。
  */
-const advance = computed(() => (props.variant === 'book' ? 2 : pageStep.value))
+const advance = computed(() => (props.variant === 'book' ? (phone.value ? 1 : 2) : pageStep.value))
 /**
  * 页眉页脚占高（px）：它们是排版输入，必须参与页表签名。
  * 不传时按字号推导；显式传入主要是为了让签名可测——同一字号下改占高，页数必须变。
@@ -421,7 +470,24 @@ function updateLayout(): void {
   if (!host) return
   const width = host.clientWidth || 960
   const height = host.clientHeight || 720
+  phone.value = props.variant === 'book' && (width < 768 || forcePhone)
   if (props.variant === 'book' && props.renderer === 'webgl' && !webglFailed.value) {
+    if (phone.value) {
+      // 窄屏单页：逻辑页就是视口，版心四边留 24/44，字号沿用用户偏好。
+      const marginX = 24
+      const marginTop = 44
+      const marginBottom = 44
+      const foot = Math.max(1, Math.round(props.fontSize * 1.6))
+      layout.value = {
+        pageWidth: width,
+        pageHeight: height,
+        paddingX: marginX,
+        paddingY: marginTop,
+        contentWidth: Math.max(80, width - marginX * 2),
+        contentHeight: Math.max(120, height - marginTop - marginBottom - foot),
+      }
+      return
+    }
     // WebGL 使用固定 640×920 逻辑页，再由相机适配视口；分页输入必须与纹理绘制
     // 使用同一组边距，否则页面底部会多一行/少一行。
     const foot = Math.max(1, Math.round(props.fontSize * 1.6))
@@ -490,6 +556,9 @@ function updateLayout(): void {
 
 /** 排版签名：字号、行距、版面、段落集合任一变化就整表重算。 */
 const paginator = shallowRef<ReturnType<typeof createRealBookPaginator> | null>(null)
+/** 字体是否已经等过一次：没有 WebFont 的环境（jsdom）视为已就绪。 */
+const fontsPrimed = ref(typeof document === 'undefined' || !document.fonts?.load)
+let rebuildPending = false
 
 /** 待落位：换章后要回到旧位置，等页表重排完再执行。 */
 let pendingRestore = false
@@ -544,6 +613,12 @@ function measuredNoteBlocks(): RealBookNoteBlock[] {
 function rebuildPages(): void {
   const measure = measureRef.value
   if (!measure) return
+  // 首屏量断行必须等正文分片就位：字体没落下来时量出的是回退字体的页表，
+  // 页数和断行都会在分片载入后跳一次——翻页翻到一半页数变了就是这么来的。
+  if (!fontsPrimed.value) {
+    rebuildPending = true
+    return
+  }
   const previousAnchor = pendingRestore ? null : anchorOf(pages.value[currentPage.value])
   const { contentHeight } = layout.value
   // 「注」标记会占一个全角字符的宽度；量断行必须带上它，否则页表会少算一行。
@@ -559,7 +634,16 @@ function rebuildPages(): void {
   }
   const created = createRealBookPaginator(
     props.paragraphs,
-    (text, index) => measureLines(text, measure, noteOffsetsByInput.get(index) ?? []),
+    (text, index) => {
+      // 图片段落按「占多少行」参与分页：显示高度按版心宽度换算，图注再占一行。
+      const image = parseChapterImage(text)
+      if (image) {
+        const displayHeight = chapterImageHeight(image, layout.value.contentWidth, layout.value.contentHeight * 0.7)
+        const count = Math.max(1, Math.ceil(displayHeight / Math.max(1, lineHeightPx.value)) + (image.caption ? 1 : 0))
+        return Array.from({ length: count }, () => ({ start: 0, end: 0 }))
+      }
+      return measureLines(text, measure, noteOffsetsByInput.get(index) ?? [])
+    },
     { pageHeight: contentHeight, lineHeight: lineHeightPx.value, paragraphGap: paragraphGapPx.value },
     measuredNoteBlocks(),
   )
@@ -590,15 +674,25 @@ function syncAnchor(): void {
   if (anchor) emit('update:anchor', anchor)
 }
 
+/**
+ * 把页下标对齐到整页并对齐页表：书页按整页翻，目标页永远落在这一页的第一栏。
+ *
+ * 页表是惰性排的，`ensure` 会顺手把目标页排出来并更新 `pages`。
+ */
+function alignPageIndex(index: number): number {
+  const created = paginator.value
+  if (!created) return currentPage.value
+  const step = pageStep.value
+  const aligned = step > 1 ? Math.floor(Math.max(0, index) / step) * step : Math.max(0, index)
+  const count = created.ensure(aligned + step)
+  pages.value = created.pages
+  return Math.max(0, Math.min(aligned, count - 1))
+}
+
 function goToPage(index: number, animate: boolean): void {
   const created = paginator.value
   if (!created) return
-  const step = pageStep.value
-  // 书页翻页按整页走：目标页永远对齐到这一页的第一栏。
-  const aligned = step > 1 ? Math.floor(Math.max(0, index) / step) * step : Math.max(0, index)
-  const count = created.ensure(aligned + step)
-  const target = Math.max(0, Math.min(aligned, count - 1))
-  pages.value = created.pages
+  const target = alignPageIndex(index)
   if (target === currentPage.value) {
     syncAnchor()
     emit('update:page-count', pages.value.length)
@@ -614,40 +708,154 @@ function goToPage(index: number, animate: boolean): void {
     return
   }
   // 翻页中态：那页纸卷起来，落定后才换页内容。
-  flipping.value = { direction: target > currentPage.value ? 1 : -1, key: ++flipKey }
-  startFlipAnimation()
-  if (flipTimer) clearTimeout(flipTimer)
-  flipTimer = setTimeout(() => {
-    flipTimer = null
-    stopFlipAnimation()
-    currentPage.value = target
-    flipping.value = null
-    syncAnchor()
-    emit('update:page-count', pages.value.length)
-    emit('update:page', target)
-  }, flipDurationMs.value)
+  startFlipRun(target > currentPage.value ? 1 : -1, target)
+}
+
+/** 这一侧还能不能再起一张纸：链尾之后还有页可翻。 */
+function flipTargetFor(direction: 1 | -1): number | null {
+  const created = paginator.value
+  if (!created) return null
+  const tail = flips.value[flips.value.length - 1]
+  const from = tail ? tail.to : currentPage.value
+  const to = alignPageIndex(from + direction * advance.value)
+  return to === from ? null : to
 }
 
 /**
- * 推进卷页进度。用 rAF 而不是 CSS 动画：竖带的位置是逐帧算的折线积分，
- * 只有进度这一个标量可以交给动画时钟，形状得自己算。
+ * 起一张新纸。
+ *
+ * 后起的纸从前一张的落点接着数，几张贴在空中的纸因此是一条连续的页链；
+ * 提交仍然按顺序来——只有最前面那张落定了才真的换页。
  */
-function startFlipAnimation(): void {
-  stopFlipAnimation()
-  flipT.value = 0
-  if (typeof requestAnimationFrame !== 'function') return
-  const started = performance.now()
-  const tick = () => {
-    const t = Math.min(1, (performance.now() - started) / flipDurationMs.value)
-    flipT.value = t
-    flipRaf = t < 1 ? requestAnimationFrame(tick) : 0
+function startFlipRun(direction: 1 | -1, explicitTarget?: number, follow = false): FlipRun | null {
+  const created = paginator.value
+  if (!created) return null
+  const tail = flips.value[flips.value.length - 1]
+  const from = tail ? tail.to : currentPage.value
+  const to = explicitTarget ?? flipTargetFor(direction)
+  if (to === null || to === from) return null
+  if (tail && tail.direction !== direction) {
+    // 先往后翻、立刻又往回翻：两张纸的落点会互相盖住，这种只按一张纸串（排队）。
+    return null
   }
-  flipRaf = requestAnimationFrame(tick)
+  const duration = Math.max(1, flipDurationMs.value)
+  // 后起的纸不跟前面那张同时起步：等前面那张走了这么远再动，几张纸才是「追着翻」的，
+  // 而不是三张纸并排一起飞、一起落。
+  const delay = tail && !follow ? FLIP_START_GAP * duration : 0
+  const run: FlipRun = {
+    id: ++flipKey,
+    direction,
+    from,
+    to,
+    progress: 0,
+    elapsed: -delay,
+    duration,
+    follow,
+  }
+  flips.value = [...flips.value, run]
+  if (!follow) {
+    ensureFlipLoop()
+    scheduleRunFinish(run, delay + duration)
+  }
+  return run
+}
+
+/** 后一张纸等前一张走过多远才开始动（0–1）：参考站 0.07s / 0.4s = 0.175。 */
+const FLIP_START_GAP = 0.175
+
+/**
+ * 落定的兜底定时器。
+ *
+ * 进度靠 rAF 推进，但窗口被切到后台时 rAF 会停——只靠 rAF 的话，翻到一半切走再回来
+ * 才会发现这一页还没落定。定时器到点直接把纸按到位并提交，画面回来时已经是新的一页。
+ */
+const runTimers = new Map<number, ReturnType<typeof setTimeout>>()
+
+function scheduleRunFinish(run: FlipRun, delayMs: number): void {
+  const existing = runTimers.get(run.id)
+  if (existing) clearTimeout(existing)
+  runTimers.set(run.id, setTimeout(() => {
+    runTimers.delete(run.id)
+    const current = flips.value.find((item) => item.id === run.id)
+    if (!current || current.follow) return
+    updateRun(run.id, { progress: 1, elapsed: current.duration })
+    commitFinishedFlips()
+    if (flips.value.length) ensureFlipLoop()
+  }, Math.max(0, delayMs)))
+}
+
+function clearRunTimer(id: number): void {
+  const timer = runTimers.get(id)
+  if (timer) clearTimeout(timer)
+  runTimers.delete(id)
+}
+
+/** 本轮最多同时飞几张纸：CSS 3D 回退只画一张，WebGL 层有 3 个槽位。 */
+function maxFlipRuns(): number {
+  return effectiveRenderer.value ? MAX_RUNS_WEBGL : 1
+}
+
+function updateRun(id: number, patch: Partial<FlipRun>): void {
+  flips.value = flips.value.map((run) => (run.id === id ? { ...run, ...patch } : run))
+}
+
+/**
+ * 翻页时钟：用 rAF 而不是 CSS 动画——竖带的位置是逐帧算的折线积分，
+ * 只有进度这一个标量可以交给动画时钟，形状得自己算。
+ *
+ * 所有在飞的纸共用这一个循环，各自的进度按自己的 `startedAt`/`duration` 走。
+ */
+function ensureFlipLoop(): void {
+  if (flipRaf || typeof requestAnimationFrame !== 'function') return
+  flipRaf = requestAnimationFrame(tickFlips)
+}
+
+/** 上一帧的 rAF 时间戳：每张纸按帧间隔累加自己走过的时长。 */
+let flipFrameAt = 0
+
+function tickFlips(now: number): void {
+  flipRaf = 0
+  const dt = flipFrameAt ? Math.max(0, Math.min(100, now - flipFrameAt)) : 16
+  flipFrameAt = now
+  if (!flips.value.length) return
+  let list = flips.value
+  let changed = false
+  for (let index = 0; index < list.length; index += 1) {
+    const run = list[index]!
+    if (run.follow || run.progress >= 1) continue
+    const elapsed = run.elapsed + dt
+    // elapsed 可以是负的：后起的纸要等前面那张走一段才开始动。
+    const t = Math.max(0, Math.min(1, elapsed / Math.max(1, run.duration)))
+    if (!changed) {
+      list = list.slice()
+      changed = true
+    }
+    list[index] = { ...run, elapsed, progress: t }
+  }
+  if (changed) flips.value = list
+  commitFinishedFlips()
+  if (flips.value.length) ensureFlipLoop()
+}
+
+/** 最前面那张纸落定：换页，然后把排队的方向接着放出来。 */
+function commitFinishedFlips(): void {
+  const head = flips.value[0]
+  if (!head || head.follow || head.progress < 1) return
+  flips.value = flips.value.slice(1)
+  currentPage.value = head.to
+  syncAnchor()
+  emit('update:page-count', pages.value.length)
+  emit('update:page', head.to)
+  const next = turnQueue.value.shift()
+  if (next === 1) nextPage()
+  else if (next === -1) prevPage()
 }
 
 function stopFlipAnimation(): void {
   if (flipRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(flipRaf)
   flipRaf = 0
+  // 下一轮用自己的第一帧当基准，中间停了多久都不算进纸的行程。
+  flipFrameAt = 0
 }
 
 function nextPage(): void {
@@ -657,16 +865,45 @@ function nextPage(): void {
     webglOpen.value = true
     return
   }
-  // 已经是本章最后一页：把「下一页」交给父组件换下一章。
-  if (!hasNextPage.value) {
-    emit('next-chapter')
+  // 空中有位置就直接再起一张纸：这就是连翻时几页同时在飞的那条路。
+  if (!instantFlip() && flips.value.length < maxFlipRuns()) {
+    const target = flipTargetFor(1)
+    if (target === null) {
+      // 链上已经到本章最后一页：把「下一页」交给父组件换下一章。
+      if (!flips.value.length) emit('next-chapter')
+      return
+    }
+    if (startFlipRun(1, target)) return
+  }
+  if (instantFlip()) {
+    // 减动效 / 书页版式没有飞页：直接换页（goToPage 自己会走瞬间分支）。
+    if (!hasNextPage.value) {
+      emit('next-chapter')
+      return
+    }
+    goToPage(currentPage.value + advance.value, true)
     return
   }
-  goToPage(currentPage.value + advance.value, true)
+  if (turnQueue.value.length < 12) turnQueue.value.push(1)
 }
 
 function prevPage(): void {
-  goToPage(currentPage.value - advance.value, true)
+  if (!instantFlip() && flips.value.length < maxFlipRuns()) {
+    const target = flipTargetFor(-1)
+    // 已经在第一页：没有可往回翻的页，什么也不做（不要留在队列里反复触发）。
+    if (target === null) return
+    if (startFlipRun(-1, target)) return
+  }
+  if (instantFlip()) {
+    goToPage(currentPage.value - advance.value, true)
+    return
+  }
+  if (turnQueue.value.length < 12) turnQueue.value.push(-1)
+}
+
+/** 这一档不画飞页：书页版式只有一张纸，减动效则根本不要动画。 */
+function instantFlip(): boolean {
+  return reducedMotion() || props.variant === 'sheet'
 }
 
 /** 按锚点跳页：真实书籍与经典模式互转位置的唯一接口。 */
@@ -746,6 +983,108 @@ function resetZoom(): void {
   zoom.value = defaultZoom.value
 }
 
+function onWebglPageTurn(direction: 1 | -1): void {
+  if (direction === 1) nextPage()
+  else prevPage()
+}
+
+/**
+ * 跨页选择请求的翻页：只在本章内翻。
+ *
+ * 走 `nextPage()` 会在本章最后一页把「下一页」交给父组件续章——跨页选择拖到章末
+ * 就突然跳章，选区也跟着没了。这里拿不到下一页就什么也不做，书台那边 720ms 后自己收尾。
+ */
+function onWebglCrossTurn(direction: 1 | -1): void {
+  if (flips.value.length >= maxFlipRuns()) return
+  const target = flipTargetFor(direction)
+  if (target === null) return
+  startFlipRun(direction, target)
+}
+
+/**
+ * 拖页：纸跟着手走，松手时按手指走过的比例决定落定还是回弹。
+ *
+ * 这里只维护「翻页中态 + 进度」两个量，几何、纹理、明暗仍由 `flipT` 和 `flipping`
+ * 一路派生——拖页不是另一套动画，只是把同一个进度交给手指来写。
+ */
+const peel = ref<{ direction: 1 | -1; accepted: boolean; runId: number } | null>(null)
+
+/**
+ * 这一侧此刻还有没有页可翻。
+ *
+ * 拖页只在空中一张纸都没有时起手——手上只有一根手指，同时再拖一张纸说不清是谁跟谁。
+ */
+function canPeel(direction: 1 | -1): boolean {
+  if (flips.value.length) return false
+  if (reducedMotion() || props.variant === 'sheet') return false
+  return direction === 1 ? hasNextPage.value : currentPage.value > 0
+}
+
+function onPeelStart(direction: 1 | -1): void {
+  if (peel.value) return
+  if (!canPeel(direction)) {
+    peel.value = { direction, accepted: false, runId: 0 }
+    return
+  }
+  const target = flipTargetFor(direction)
+  const run = target === null ? null : startFlipRun(direction, target, true)
+  peel.value = { direction, accepted: Boolean(run), runId: run?.id ?? 0 }
+}
+
+function onPeelProgress(progress: number): void {
+  const active = peel.value
+  if (!active?.accepted) return
+  updateRun(active.runId, { progress: Math.max(0, Math.min(1, progress)) })
+}
+
+function onPeelEnd(complete: boolean): void {
+  const active = peel.value
+  peel.value = null
+  if (!active) return
+  if (!active.accepted) {
+    if (complete) onWebglPageTurn(active.direction)
+    return
+  }
+  const run = flips.value.find((item) => item.id === active.runId)
+  if (!run) return
+  if (complete) {
+    // 松手后剩下的行程走快一点：纸已经在手上掀起来了，不该再慢慢挪完。
+    const duration = Math.max(80, flipDurationMs.value * (1 - run.progress) * 0.55)
+    updateRun(run.id, { follow: false, elapsed: run.progress * duration, duration })
+    ensureFlipLoop()
+    scheduleRunFinish(run, duration)
+    return
+  }
+  settlePeelBack(run.id)
+}
+
+/** 取消拖页：纸收回原位，页面内容不变。 */
+function settlePeelBack(runId: number): void {
+  const run = flips.value.find((item) => item.id === runId)
+  if (!run) return
+  const from = run.progress
+  clearRunTimer(runId)
+  if (from <= 0.002 || typeof requestAnimationFrame !== 'function') {
+    flips.value = flips.value.filter((item) => item.id !== runId)
+    return
+  }
+  const started = performance.now()
+  // 回弹比落定快：手松开之后纸是被弹回去的，不是又慢慢飘回去。
+  const duration = Math.max(120, flipDurationMs.value * 0.32 * from)
+  const tick = () => {
+    const t = Math.min(1, (performance.now() - started) / duration)
+    const eased = 1 - Math.pow(1 - t, 3)
+    updateRun(runId, { progress: from * (1 - eased) })
+    if (t < 1) {
+      flipRaf = requestAnimationFrame(tick)
+      return
+    }
+    flipRaf = 0
+    flips.value = flips.value.filter((item) => item.id !== runId)
+  }
+  flipRaf = requestAnimationFrame(tick)
+}
+
 function handleWebglUnsupported(): void {
   webglFailed.value = true
   void nextTick(() => {
@@ -785,7 +1124,24 @@ interface PageNotePiece {
   note: RealBookNote
 }
 
-type PagePiece = PageTextPiece | PageNotePiece
+/** CSS 3D 回退里的页内图片块。 */
+interface PageImagePiece {
+  kind: 'image'
+  key: string
+  file: string
+  width: number
+  height: number
+  caption: string
+  displayHeight: number
+}
+
+type PagePiece = PageTextPiece | PageNotePiece | PageImagePiece
+
+/** CSS 3D 回退的图片地址：与 WebGL 同一套 spbf-image 协议。 */
+function bookImageSrc(file: string): string {
+  if (!props.bookId || !file) return ''
+  return `spbf-image://i/${encodeURIComponent(props.bookId)}/${encodeURIComponent(file)}`
+}
 
 function blockOfNote(noteId: string, key: string): PageNotePiece | null {
   const note = props.notes.find((item) => item.id === noteId)
@@ -801,9 +1157,26 @@ function piecesOf(page: RealBookPage | undefined): PagePiece[] {
       if (block) out.push(block)
       continue
     }
+    const paragraphText = props.paragraphs[item.paragraph] ?? ''
+    const image = parseChapterImage(paragraphText)
+    if (image) {
+      // 图片段落被拆到续页时只画一次：后面的片段是空占位。
+      if (!item.continued) {
+        out.push({
+          kind: 'image',
+          key: `img-${item.paragraph}`,
+          file: image.file,
+          width: image.width,
+          height: image.height,
+          caption: image.caption,
+          displayHeight: chapterImageHeight(image, layout.value.contentWidth, layout.value.contentHeight * 0.7),
+        })
+      }
+      continue
+    }
     const original = props.paragraphIndexes[item.paragraph]
     if (original === undefined) continue
-    const text = props.paragraphs[item.paragraph] ?? ''
+    const text = paragraphText
     const slice = text.slice(item.start, item.end)
     const local = props.highlights
       .filter((h) => h.index === original)
@@ -839,13 +1212,26 @@ function piecesOf(page: RealBookPage | undefined): PagePiece[] {
  * 下面露出来的就该是下一页（否则抬起的纸底下压着和自己一模一样的同一页，看着像没动）；
  * 纸要落下的那一侧保持旧内容到落定为止——它此刻还被纸压着，提前换等于凭空抠掉一页。
  */
-const slotPage = computed(() => currentPage.value + (flipping.value ? flipping.value.direction * advance.value : 0))
-const leftViewIndex = computed(() => (flipping.value?.direction === 1
-  ? currentPage.value - 1
-  : slotPage.value - 1))
-const rightViewIndex = computed(() => (flipping.value?.direction === -1
-  ? currentPage.value
-  : slotPage.value))
+const flipHead = computed(() => flips.value[0] ?? null)
+const flipTail = computed(() => flips.value[flips.value.length - 1] ?? null)
+/**
+ * 静态页此刻摊开的是哪一页。
+ *
+ * 空中有纸时按**整条纸链**算：抬起的那一侧显示最终落点（每张纸都是从它上面掀起来的），
+ * 落下的那一侧一直停在翻页前的内容，直到最前面那张纸落定才换——两张纸同时飞的时候
+ * 中间那张的落点还压在旧内容上，提前换会让纸底下凭空多出一页。
+ */
+const slotPage = computed(() => flipTail.value?.to ?? currentPage.value)
+const leftViewIndex = computed(() => {
+  const head = flipHead.value
+  if (!head) return currentPage.value - 1
+  return head.direction === 1 ? head.from - 1 : slotPage.value - 1
+})
+const rightViewIndex = computed(() => {
+  const head = flipHead.value
+  if (!head) return currentPage.value
+  return head.direction === 1 ? slotPage.value : head.from
+})
 const leftViewPieces = computed(() => piecesOf(pages.value[leftViewIndex.value]))
 const rightViewPieces = computed(() => piecesOf(pages.value[rightViewIndex.value]))
 
@@ -856,9 +1242,11 @@ const rightViewPieces = computed(() => piecesOf(pages.value[rightViewIndex.value
  * 铺在落点那一页上会读成一块灰影，翻页时看着像左边多了个影子。背面保持
  * 不透明纸面，落定后静态页再一次性换成新内容，读者不会看到半透明旧字。
  */
-const flipSheetIndex = computed(() => (flipping.value?.direction === -1
-  ? currentPage.value - 1
-  : currentPage.value))
+const flipSheetIndex = computed(() => {
+  const head = flipHead.value
+  if (!head) return currentPage.value
+  return head.direction === -1 ? head.from - 1 : head.from
+})
 const flipSheetPieces = computed(() => piecesOf(pages.value[flipSheetIndex.value]))
 /**
  * 翻动纸背的内容：一张纸的正面是右页，背面就是落到对面后露出的左页。
@@ -868,11 +1256,14 @@ const flipSheetPieces = computed(() => piecesOf(pages.value[flipSheetIndex.value
  * 只在转角越过 90° 后画**另一页**内容，并沿纸面镜像；正反面互斥后不会再重影。
  */
 const flipBackIndex = computed(() => {
-  const direction = flipping.value?.direction
-  if (!direction) return -1
-  return direction === 1 ? currentPage.value + 1 : currentPage.value - 2
+  const head = flipHead.value
+  if (!head) return -1
+  return head.direction === 1 ? head.from + 1 : head.from - 2
 })
 const flipBackPieces = computed(() => piecesOf(pages.value[flipBackIndex.value]))
+/** 飞页页眉也随纸的侧面：左页印书名、右页印章节名。 */
+const flipSheetHeader = computed(() => (flipSheetIndex.value % 2 === 1 ? leftHeader.value : rightHeader.value))
+const flipBackHeader = computed(() => (flipBackIndex.value % 2 === 1 ? leftHeader.value : rightHeader.value))
 
 /**
  * 把分页结果投影成 WebGL 纹理数据。
@@ -880,7 +1271,7 @@ const flipBackPieces = computed(() => piecesOf(pages.value[flipBackIndex.value])
  * 注意这里不再走 `decorateTextWithNotes` 的 DOM 片段，而是把整段文本和行区间
  * 一起交给纹理层，让 Canvas 按与分页完全相同的断行绘制。
  */
-function texturePageOf(index: number): RealBookTexturePage | null {
+function texturePageOf(index: number, header = props.chapterTitle): RealBookTexturePage | null {
   const page = pages.value[index]
   if (!page || !page.items.length) return null
   const items: Array<RealBookTexturePage['items'][number]> = []
@@ -888,6 +1279,19 @@ function texturePageOf(index: number): RealBookTexturePage | null {
     if (item.kind === 'note') {
       const note = props.notes.find((candidate) => candidate.id === item.noteId)
       if (note) items.push({ kind: 'note', note, height: item.height })
+      continue
+    }
+    const paragraphText = props.paragraphs[item.paragraph] ?? ''
+    const image = parseChapterImage(paragraphText)
+    if (image) {
+      items.push({
+        kind: 'image',
+        file: image.file,
+        width: image.width,
+        height: image.height,
+        caption: image.caption,
+        displayHeight: chapterImageHeight(image, layout.value.contentWidth, layout.value.contentHeight * 0.7),
+      })
       continue
     }
     const original = props.paragraphIndexes[item.paragraph]
@@ -911,14 +1315,38 @@ function texturePageOf(index: number): RealBookTexturePage | null {
   return {
     pageNumber: index + 1,
     chapterTitle: props.chapterTitle,
+    header,
     items,
   }
 }
 
-const webglLeftPage = computed(() => texturePageOf(leftViewIndex.value))
-const webglRightPage = computed(() => texturePageOf(rightViewIndex.value))
-const webglFlipFrontPage = computed(() => (flipping.value ? texturePageOf(flipSheetIndex.value) : null))
-const webglFlipBackPage = computed(() => (flipping.value ? texturePageOf(flipBackIndex.value) : null))
+/** 参考站的书页页眉：左页印书名，右页印章节名；手机单页印章节名。 */
+const leftHeader = computed(() => props.bookTitle || props.chapterTitle)
+const rightHeader = computed(() => props.chapterTitle)
+const webglLeftPage = computed(() => (phone.value ? null : texturePageOf(leftViewIndex.value, leftHeader.value)))
+const webglRightPage = computed(() => (phone.value
+  ? texturePageOf(slotPage.value, rightHeader.value)
+  : texturePageOf(rightViewIndex.value, rightHeader.value)))
+/**
+ * 交给 WebGL 层的飞页列表（从旧到新）。
+ *
+ * 每张纸自带正反面该印哪一页：正面是起手朝上的那一页，背面是落定后朝上的那一页。
+ * 单页模式下没有"对面"，正面就是当前页、背面就是落点页。
+ */
+const webglFlips = computed<RealBookSceneFlip[]>(() => flips.value.map((run) => ({
+  id: run.id,
+  direction: run.direction,
+  progress: run.progress,
+  follow: run.follow,
+  front: texturePageOf(
+    phone.value ? run.from : (run.direction === -1 ? run.from - 1 : run.from),
+    phone.value ? rightHeader.value : (run.direction === -1 ? leftHeader.value : rightHeader.value),
+  ),
+  back: texturePageOf(
+    phone.value ? run.to : (run.direction === 1 ? run.from + 1 : run.from - 2),
+    phone.value ? rightHeader.value : (run.direction === 1 ? leftHeader.value : rightHeader.value),
+  ),
+})))
 /**
  * 卷页竖带：角度与位置由 `flipPoses` 算（折线积分），这里只铺成 style。
  * 每条带各渲染一份整页内容、按 −i×带宽 错开，相当于把同一页切成一条条窗格。
@@ -1078,7 +1506,9 @@ const sheetPieces = computed<PagePiece[][]>(() => {
 const hasNextPage = computed(() => {
   const created = paginator.value
   if (!created) return false
-  const target = currentPage.value + advance.value
+  // 空中有纸时，「下一页」是从最后那张纸的落点往后数。
+  const tail = flips.value[flips.value.length - 1]
+  const target = (tail ? tail.to : currentPage.value) + advance.value
   return created.ensure(target) > target
 })
 const sheetPageCount = computed(() => Math.max(1, Math.ceil(pages.value.length / pageStep.value)))
@@ -1249,6 +1679,7 @@ watch(
     props.paragraphs,
     props.fontSize,
     props.lineHeight,
+    props.fontFamily,
     props.paragraphGap,
     props.notes,
     props.showNotes,
@@ -1265,6 +1696,22 @@ watch(
     })
   },
   { deep: false },
+)
+
+// 换书页字体/字号时要重新等分片：先按回退字体量出来的页表会在字体就位后整体跳。
+watch(
+  () => [props.fontFamily, props.fontSize],
+  () => {
+    if (typeof document === 'undefined' || !document.fonts?.load) return
+    fontsPrimed.value = false
+    void ensureBookFont().then(() => {
+      fontsPrimed.value = true
+      void nextTick(() => {
+        updateLayout()
+        rebuildPages()
+      })
+    })
+  },
 )
 
 watch(() => props.renderer, (renderer) => {
@@ -1284,12 +1731,39 @@ watch(() => props.startAnchor, (anchor) => {
 
 // 换章：页表要重排，落位必须等重排完，否则会跳到旧页表的页。
 watch(() => props.restoreToken, () => {
+  turnQueue.value = []
+  peel.value = null
   pendingRestore = true
   void nextTick(() => rebuildPages())
 })
 watch(() => props.revealNoteToken, () => {
   void nextTick(() => applyReveal())
 })
+let fontListener: (() => void) | null = null
+let fontReloadTimer = 0
+
+/**
+ * 等当前页字体真正可用。
+ *
+ * 霞鹜文楷是按 unicode-range 分片的 webfont：等到用到某个字才去下载那一片。
+ * 量断行发生在字体就绪之前时，页表会按回退字体算出一版（页数、断行都不同），
+ * 等分片落下来又整体跳一次——翻页翻到一半页数从 3 变成 5 就是这么来的。
+ * 所以首屏排版先等一次 load；拿不到（离线/字体缺失）就按回退字体继续，不阻塞阅读。
+ */
+async function ensureBookFont(): Promise<void> {
+  const fonts = typeof document === 'undefined' ? null : document.fonts
+  if (!fonts?.load) return
+  const sample = props.paragraphs.join('').slice(0, 6000) || '书页'
+  const timeout = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
+  try {
+    await Promise.race([
+      fonts.load(`400 ${props.fontSize}px ${props.fontFamily}`, sample),
+      timeout(1500),
+    ])
+  } catch { /* 字体不可用：按回退字体排版 */ }
+  await Promise.race([fonts.ready, timeout(400)]).catch(() => {})
+}
+
 onMounted(() => {
   updateLayout()
   observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
@@ -1298,19 +1772,41 @@ onMounted(() => {
   })
   if (observer && hostRef.value) observer.observe(hostRef.value)
   pendingRestore = true
-  void nextTick(() => rebuildPages())
-  // 字体就绪后重排一次：量测依赖字体度量，自定义手写字体加载完成前量出的换行会偏。
-  void document.fonts?.ready?.then(() => {
-    updateLayout()
-    rebuildPages()
-  }).catch(() => { /* 字体未就绪：用当前度量排版 */ })
+  // 首屏先等正文用到的分片落下来，再量断行；否则页表会先按回退字体算一版。
+  void ensureBookFont().then(() => {
+    fontsPrimed.value = true
+    rebuildPending = false
+    return nextTick(() => {
+      updateLayout()
+      rebuildPages()
+    })
+  })
+  // 后续分片（换章后出现的新字）载入完成时，字体度量变了，重排一次。
+  fontListener = () => {
+    if (fontReloadTimer) clearTimeout(fontReloadTimer)
+    const retry = (attempt: number): void => {
+      fontReloadTimer = window.setTimeout(() => {
+        fontReloadTimer = 0
+        // 翻页中重排会改页数、改落点，等纸落定后再排。
+        if (flips.value.length && attempt < 40) { retry(attempt + 1); return }
+        updateLayout()
+        rebuildPages()
+      }, 120)
+    }
+    retry(0)
+  }
+  document.fonts?.addEventListener?.('loadingdone', fontListener)
 })
 
 onBeforeUnmount(() => {
   observer?.disconnect()
   observer = null
+  if (fontListener) document.fonts?.removeEventListener?.('loadingdone', fontListener)
+  fontListener = null
+  if (fontReloadTimer) clearTimeout(fontReloadTimer)
+  fontReloadTimer = 0
   stopFlipAnimation()
-  if (flipTimer) clearTimeout(flipTimer)
+  for (const id of [...runTimers.keys()]) clearRunTimer(id)
 })
 
 /** 已读上界：右页最后一段的末尾（段落下标 + 段内偏移），与经典模式同构。 */
@@ -1417,8 +1913,12 @@ defineExpose({
                 :data-p="piece.original"
                 :class="{ 'para-continued': piece.continued }"
               ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+              <figure v-else-if="piece.kind === 'image'" class="real-book-image" :style="{ height: `${piece.displayHeight}px` }">
+                <img v-if="bookImageSrc(piece.file)" :src="bookImageSrc(piece.file)" :alt="piece.caption" draggable="false" />
+                <figcaption v-if="piece.caption">{{ piece.caption }}</figcaption>
+              </figure>
               <aside
-                v-else
+                v-else-if="piece.kind === 'note'"
                 :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
                 :data-note-id="piece.note.id"
                 role="button"
@@ -1447,11 +1947,7 @@ defineExpose({
         ref="webglRef"
         :left-page="webglLeftPage"
         :right-page="webglRightPage"
-        :flip-front-page="webglFlipFrontPage"
-        :flip-back-page="webglFlipBackPage"
-        :flipping="Boolean(flipping)"
-        :flip-progress="flipT"
-        :flip-direction="flipping?.direction ?? 1"
+        :flips="webglFlips"
         :font-size="fontSize"
         :line-height="lineHeight"
         :font-family="fontFamily"
@@ -1462,6 +1958,13 @@ defineExpose({
         :muted="webglMuted"
         :desk="desk"
         :endpaper="endpaper"
+        :single-page="phone"
+        :page-width="layout.pageWidth"
+        :page-height="layout.pageHeight"
+        :margin-inner="phone ? 24 : 80"
+        :margin-outer="phone ? 24 : 58"
+        :margin-top="phone ? 44 : 78"
+        :margin-bottom="phone ? 44 : 100"
         :tilt="pitch"
         :zoom="zoom"
         :open="webglOpen"
@@ -1470,8 +1973,16 @@ defineExpose({
         :progress="stackProgress"
         :book-title="bookTitle || chapterTitle"
         :book-author="bookAuthor"
+        :book-id="bookId"
         @update:pitch="setPitch"
         @update:open="onWebglOpen"
+        @page-turn="onWebglPageTurn"
+        @peel-start="onPeelStart"
+        @peel-progress="onPeelProgress"
+        @peel-end="onPeelEnd"
+        @edit-note="emit('edit-note', $event)"
+        @select-range="emit('select-range', $event)"
+        @cross-turn="onWebglCrossTurn"
         @unsupported="handleWebglUnsupported"
       />
       <div
@@ -1519,7 +2030,7 @@ defineExpose({
             ></i>
           </div>
           <section class="real-book-page real-book-left" aria-label="左页">
-            <header class="real-book-page-head">{{ chapterTitle }}</header>
+            <header class="real-book-page-head">{{ leftHeader }}</header>
             <div class="real-book-page-body">
               <div v-if="!leftViewPieces.length" class="real-book-empty">书页已到开头</div>
               <template v-for="piece in leftViewPieces" :key="piece.key">
@@ -1529,8 +2040,12 @@ defineExpose({
                   :data-p="piece.original"
                   :class="{ 'para-continued': piece.continued }"
                 ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                <figure v-else-if="piece.kind === 'image'" class="real-book-image" :style="{ height: `${piece.displayHeight}px` }">
+                  <img v-if="bookImageSrc(piece.file)" :src="bookImageSrc(piece.file)" :alt="piece.caption" draggable="false" />
+                  <figcaption v-if="piece.caption">{{ piece.caption }}</figcaption>
+                </figure>
                 <aside
-                  v-else
+                  v-else-if="piece.kind === 'note'"
                   :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
                   :data-note-id="piece.note.id"
                   role="button"
@@ -1565,7 +2080,7 @@ defineExpose({
           </div>
 
           <section class="real-book-page real-book-right" aria-label="右页">
-            <header class="real-book-page-head">{{ chapterTitle }}</header>
+            <header class="real-book-page-head">{{ rightHeader }}</header>
             <div class="real-book-page-body">
               <div v-if="!rightViewPieces.length" class="real-book-empty">本章没有正文了</div>
               <template v-for="piece in rightViewPieces" :key="piece.key">
@@ -1575,8 +2090,12 @@ defineExpose({
                   :data-p="piece.original"
                   :class="{ 'para-continued': piece.continued }"
                 ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                <figure v-else-if="piece.kind === 'image'" class="real-book-image" :style="{ height: `${piece.displayHeight}px` }">
+                  <img v-if="bookImageSrc(piece.file)" :src="bookImageSrc(piece.file)" :alt="piece.caption" draggable="false" />
+                  <figcaption v-if="piece.caption">{{ piece.caption }}</figcaption>
+                </figure>
                 <aside
-                  v-else
+                  v-else-if="piece.kind === 'note'"
                   :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
                   :data-note-id="piece.note.id"
                   role="button"
@@ -1632,7 +2151,7 @@ defineExpose({
               <div class="real-book-flip-face real-book-flip-front" v-if="slice.showFront">
                 <div class="real-book-flip-window">
                   <div class="real-book-flip-content" :style="slice.contentStyle">
-                  <header class="real-book-page-head">{{ chapterTitle }}</header>
+                  <header class="real-book-page-head">{{ flipSheetHeader }}</header>
                   <div class="real-book-page-body">
                     <template v-for="piece in flipSheetPieces" :key="`front-${piece.key}`">
                       <p
@@ -1640,8 +2159,12 @@ defineExpose({
                         class="real-book-para"
                         :data-p="piece.original"
                       ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                      <figure v-else-if="piece.kind === 'image'" class="real-book-image" :style="{ height: `${piece.displayHeight}px` }">
+                        <img v-if="bookImageSrc(piece.file)" :src="bookImageSrc(piece.file)" :alt="piece.caption" draggable="false" />
+                        <figcaption v-if="piece.caption">{{ piece.caption }}</figcaption>
+                      </figure>
                       <aside
-                        v-else
+                        v-else-if="piece.kind === 'note'"
                         :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
                         :data-note-id="piece.note.id"
                       >
@@ -1661,7 +2184,7 @@ defineExpose({
               <div class="real-book-flip-face real-book-flip-back" v-if="slice.showBack">
                 <div class="real-book-flip-window">
                   <div class="real-book-flip-content" :style="slice.backContentStyle">
-                    <header class="real-book-page-head">{{ chapterTitle }}</header>
+                    <header class="real-book-page-head">{{ flipBackHeader }}</header>
                     <div class="real-book-page-body">
                       <template v-for="piece in flipBackPieces" :key="`back-${piece.key}`">
                         <p
@@ -1669,8 +2192,12 @@ defineExpose({
                           class="real-book-para"
                           :data-p="piece.original"
                         ><template v-for="(s, j) in piece.segs" :key="j"><span v-if="s.noteId" class="real-book-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="emit('edit-note', s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="emit('edit-note', s.noteId)" @keydown.space.stop.prevent="emit('edit-note', s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></p>
+                        <figure v-else-if="piece.kind === 'image'" class="real-book-image" :style="{ height: `${piece.displayHeight}px` }">
+                          <img v-if="bookImageSrc(piece.file)" :src="bookImageSrc(piece.file)" :alt="piece.caption" draggable="false" />
+                          <figcaption v-if="piece.caption">{{ piece.caption }}</figcaption>
+                        </figure>
                         <aside
-                          v-else
+                          v-else-if="piece.kind === 'note'"
                           :class="['real-book-note', handwritingNoteClass, { 'is-ai': piece.note.source === 'ai' }]"
                           :data-note-id="piece.note.id"
                         >
@@ -2550,6 +3077,36 @@ defineExpose({
 
 .real-book-para.para-continued {
   text-indent: 0;
+}
+
+/* CSS 3D 回退的页内图片：高度由书台按版心换算，图按 contain 装进去。 */
+.real-book-image {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0.2em 0;
+  overflow: hidden;
+}
+
+.real-book-image img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100% - 1.5em);
+  object-fit: contain;
+}
+
+.real-book-image figcaption {
+  max-width: 100%;
+  margin-top: 0.25em;
+  overflow: hidden;
+  font-size: 0.72em;
+  line-height: 1.3;
+  color: color-mix(in srgb, var(--reader-paper-text, #2f2a24) 55%, transparent);
+  text-align: center;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /*

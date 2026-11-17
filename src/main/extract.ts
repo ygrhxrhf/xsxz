@@ -9,6 +9,7 @@ import { JSDOM } from 'jsdom'
 import type { CatalogChapter, ExtractBootstrap, FailCode, PageKind, SiteRule, UnlockMethod } from '../shared/types'
 import { FAIL_CODE_ZH } from '../shared/types'
 import { canonicalizeUrl, isPathLikeHash } from '../shared/urlHash'
+import { injectImageTokens } from '../shared/chapterImageSource'
 import { bodyText, cleanBodyText, effectiveLength, linkDensity, looksGarbled, visibleText } from './bodyText'
 import { unlockAllowed, unlockPaywalledBody } from './paywallUnlock'
 
@@ -921,6 +922,10 @@ export interface ExtractBodyResult extends Partial<UnlockMeta> {
  * 从章页 HTML 提取正文。撞付费墙时先尝试页面内恢复（见 paywallUnlock.ts）。
  */
 export function extractBody(html: string, pageUrl: string, rule?: SiteRule): ExtractBodyResult {
+  // 抽取前把正文图换成文本标记：三条正文路径（选择器/Readability/付费墙恢复）
+  // 都会把标记当普通文字带出来，下载器就能原位换回 [图] 段落。
+  const injected = injectImageTokens(html, pageUrl)
+  html = injected.html
   const dom = new JSDOM(html, { url: pageUrl })
   const doc = dom.window.document
   const unlockOut: { reason?: string } = {}

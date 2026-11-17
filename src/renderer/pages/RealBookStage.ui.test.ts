@@ -36,6 +36,7 @@ interface MountOptions {
   notes?: RealBookNote[]
   showNotes?: boolean
   handwritingFont?: 'none' | 'kai' | 'xingshu'
+  bookId?: string
 }
 
 async function mountStage(options: MountOptions = {}) {
@@ -60,6 +61,7 @@ async function mountStage(options: MountOptions = {}) {
       notes: options.notes ?? [],
       showNotes: showNotes.value,
       handwritingFont: options.handwritingFont ?? 'none',
+      bookId: options.bookId ?? '',
       'onUpdate:anchor': (anchor: unknown) => events.push({ type: 'anchor', payload: anchor }),
       'onUpdate:page': (page: number) => events.push({ type: 'page', payload: page }),
       'onUpdate:page-count': (count: number) => events.push({ type: 'page-count', payload: count }),
@@ -94,6 +96,17 @@ function note(partial: Partial<RealBookNote> = {}): RealBookNote {
 }
 
 describe('RealBookStage（真实书籍舞台）', () => {
+  it('CSS 3D 回退渲染页内图片并走 spbf-image 协议', async () => {
+    const paragraphs = ['第一段正文。', '[图]c0001-1.png|640|360|图 1 示意', '第二段正文。']
+    const { app } = await mountStage({ paragraphs, bookId: 'd_css' })
+    const figure = document.querySelector('.real-book-image')
+    expect(figure).not.toBeNull()
+    const img = figure?.querySelector('img')
+    expect(img?.getAttribute('src')).toBe('spbf-image://i/d_css/c0001-1.png')
+    expect(figure?.querySelector('figcaption')?.textContent).toBe('图 1 示意')
+    app.unmount()
+  })
+
   it('行高以 px 长度下发：CSS 不能把它当成字号倍数', async () => {
     const { app } = await mountStage()
     const style = document.querySelector<HTMLElement>('.real-book-stage')?.getAttribute('style') ?? ''
@@ -172,6 +185,23 @@ describe('RealBookStage（真实书籍舞台）', () => {
     // 只前进 1 页会把「翻一张纸」读成「挪一个窗口」。
     expect(after).toBe(before + 2)
     expect(events.some((e) => e.type === 'anchor')).toBe(true)
+    app.unmount()
+  })
+
+  it('连点三次：一次都不会丢，也不会一次跨两页', async () => {
+    // 正文要够长：这条用例要连翻三张纸（六页），书太短会在中途撞到末页去换章。
+    const paragraphs = Array.from({ length: 90 }, (_, i) => `第${i + 1}段文字，重复一遍凑够版面。第${i + 1}段文字，重复一遍凑够版面。`)
+    const { app, stage } = await mountStage({ paragraphs })
+    const pageNo = () => Number(document.querySelector('.real-book-page-label')?.textContent?.match(/第 (\d+)/)?.[1] ?? '1')
+    const before = pageNo()
+    // 快速连点：CSS 回退只有一张纸，多出来的方向会排队，落定后依次消费。
+    stage.nextPage()
+    stage.nextPage()
+    stage.nextPage()
+    await new Promise((resolve) => setTimeout(resolve, FLIP_DURATION_MS * 3 + 900))
+    await nextTick()
+    // 每次翻一张纸换两页：三次 = 六页。
+    expect(pageNo()).toBe(before + 6)
     app.unmount()
   })
 

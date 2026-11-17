@@ -15,6 +15,7 @@
     tts-position.json      # 可选，每本书独立的听书续播位置
     reading-frontier.json  # 段落级已读边界、旧进度确认与阅读会话
     origin\                 # 导入时保留的源文件
+    images\                 # 章内图片（EPUB 导入抽取），文件名如 c0001-1.png；正文以 [图] 标记引用
     chapters\
       0001.json
     map\

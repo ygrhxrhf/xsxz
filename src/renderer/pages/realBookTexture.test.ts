@@ -52,6 +52,28 @@ describe('buildPageTexturePlan', () => {
     expect(plan.lines[1]!.x).toBe(PAGE_TEXTURE_MARGIN_OUTER)
     expect(plan.lines[0]!.firstLine).toBe(true)
     expect(plan.lines[1]!.firstLine).toBe(false)
+    expect(plan.lines[0]!.paragraphIndex).toBe(2)
+  })
+
+  it('页眉优先用页面自己的 header：左页书名、右页章节名', () => {
+    expect(buildPageTexturePlan(page({ header: '智人之后' }), STYLE).header).toBe('智人之后')
+    expect(buildPageTexturePlan(page({ header: undefined }), STYLE).header).toBe('第一章 测试')
+    expect(textureStyleSignature(page({ header: '甲' }), STYLE))
+      .not.toBe(textureStyleSignature(page({ header: '乙' }), STYLE))
+  })
+
+  it('页眉页脚的字号与基线随计划给出，DOM 文本层按同一组数值贴字', () => {
+    const plan = buildPageTexturePlan(page({ header: '书名', pageNumber: 12 }), STYLE)
+    expect(plan.headerFontSize).toBeCloseTo(18 * 0.62)
+    expect(plan.headerBaseline).toBe(plan.marginTop - 10)
+    expect(plan.footer).toBe('12')
+    expect(plan.footerFontSize).toBeCloseTo(18 * 0.62)
+    // 与画布页脚同一套基线：页底页边距往上留一个字号的高度。
+    expect(plan.footerBaseline).toBeCloseTo(plan.height - plan.marginBottom + 18 * 0.8)
+    // 空页不印页码，但页眉（书名/章节名）照旧。
+    const blank = buildPageTexturePlan(page({ pageNumber: 0, items: [] }), STYLE)
+    expect(blank.footer).toBe('')
+    expect(blank.header).toBe('第一章 测试')
   })
 
   it('划线按字符区间映射到行内坐标，搜索命中单独叠加', () => {

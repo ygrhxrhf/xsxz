@@ -204,6 +204,13 @@ describe('normalizeReaderPrefs', () => {
     expect(normalizeReaderPrefs('broken')).toEqual(DEFAULT_READER_PREFS)
   })
 
+  it('defaults the real-book font to WenKai and keeps a valid override', () => {
+    expect(normalizeReaderPrefs(undefined).bookFontFamily).toBe('wenkai')
+    expect(normalizeReaderPrefs({ bookFontFamily: 'serif' }).bookFontFamily).toBe('serif')
+    expect(normalizeReaderPrefs({ bookFontFamily: 'comic' }).bookFontFamily).toBe('wenkai')
+    expect(normalizeReaderPrefs({ fontFamily: 'wenkai' }).fontFamily).toBe('wenkai')
+  })
+
   it('prefers a valid new theme over the legacy nightMode field', () => {
     expect(normalizeReaderPrefs({ theme: 'sepia', nightMode: true }).theme).toBe('sepia')
     expect(normalizeReaderPrefs({ theme: 'gray', nightMode: false }).theme).toBe('gray')

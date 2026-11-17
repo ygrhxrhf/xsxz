@@ -44,7 +44,7 @@ import { normalizeProxyPrefs } from './proxy'
 const SKINS: readonly Skin[] = ['light', 'dark']
 const DOWNLOAD_PACES: readonly DownloadPace[] = ['slow', 'standard', 'fast']
 const READER_THEMES: readonly ReaderTheme[] = ['paper', 'sepia', 'gray', 'night']
-const READER_FONT_FAMILIES: readonly ReaderFontFamily[] = ['serif', 'system', 'mono']
+const READER_FONT_FAMILIES: readonly ReaderFontFamily[] = ['serif', 'system', 'mono', 'wenkai']
 const READER_CONTENT_WIDTHS: readonly ReaderContentWidth[] = ['narrow', 'medium', 'wide']
 const READER_PARAGRAPH_SPACINGS: readonly ReaderParagraphSpacing[] = ['compact', 'normal', 'relaxed']
 const READER_FOCUS_MODES: readonly ReaderFocusMode[] = ['off', 'one', 'three', 'five']
@@ -212,6 +212,11 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
       reader.fontFamily,
       READER_FONT_FAMILIES,
       DEFAULT_READER_PREFS.fontFamily,
+    ),
+    bookFontFamily: readEnum(
+      reader.bookFontFamily,
+      READER_FONT_FAMILIES,
+      DEFAULT_READER_PREFS.bookFontFamily ?? 'wenkai',
     ),
     contentWidth: readEnum(
       reader.contentWidth,

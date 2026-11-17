@@ -70,21 +70,29 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
-/** 与参考站点同一套适配：双页摊开留出桌边，FOV 24°。 */
-export function fitDistance(aspect: number): number {
+/** 与参考站点同一套适配：双页摊开留出桌边，FOV 24°；窄屏单页时只适配一张纸。 */
+export function fitDistance(aspect: number, singlePage = false, pageHeight = BOOK_HEIGHT): number {
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1
   const halfFov = Math.tan((CAMERA_FOV * Math.PI) / 360)
-  const targetWidth = (BOOK_WIDTH * 2 + 2.6) * 1.12
-  const targetHeight = (BOOK_HEIGHT + 2.2) * 1.12
+  const targetWidth = (singlePage ? BOOK_WIDTH + 1.0 : BOOK_WIDTH * 2 + 2.6) * 1.12
+  const targetHeight = (pageHeight + 2.2) * 1.12
   return Math.max(targetHeight / 2 / halfFov, targetWidth / 2 / halfFov / safeAspect)
 }
 
 /** 相机始终看向书本中心；tilt 越大越接近平视，不是自由轨道。 */
-export function cameraPose(tiltRad: number, zoom = DEFAULT_ZOOM, x = 0, y = 0, aspect = 1): CameraPose {
+export function cameraPose(
+  tiltRad: number,
+  zoom = DEFAULT_ZOOM,
+  x = 0,
+  y = 0,
+  aspect = 1,
+  singlePage = false,
+  pageHeight = BOOK_HEIGHT,
+): CameraPose {
   const safeTilt = clamp(Number.isFinite(tiltRad) ? tiltRad : DEFAULT_TILT_RAD, 0, MAX_TILT_RAD)
   const safeZoom = clamp(Number.isFinite(zoom) ? zoom : DEFAULT_ZOOM, MIN_ZOOM, MAX_ZOOM)
   // 参考站的 zoom 以 0.9 为默认构图，dist = fitDist / zoom；100% 仍表示整书适配。
-  const distance = fitDistance(aspect) / safeZoom
+  const distance = fitDistance(aspect, singlePage, pageHeight) / safeZoom
   return {
     position: [x, y - distance * Math.sin(safeTilt), distance * Math.cos(safeTilt)],
     lookAt: [x, y, 0],
@@ -115,8 +123,9 @@ export function bookThickness(pageCount: number, totalChars = 0, progress = 0): 
   }
 }
 
-/** 摊开时整本书向书脊中心平移；合上时回到单本书的居中位置。 */
-export function bookOffsetX(open01: number, hingeZ: number): number {
+/** 摊开时整本书向书脊中心平移；合上时回到单本书的居中位置。窄屏单页始终居中。 */
+export function bookOffsetX(open01: number, hingeZ: number, singlePage = false): number {
+  if (singlePage) return 0
   return -(BOOK_WIDTH / 2 + hingeZ * 0.1) * (1 - clamp(open01, 0, 1))
 }
 

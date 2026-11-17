@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { JSDOM } from 'jsdom'
 import { extractPage, extractCatalog, extractBody, findCatalogPageUrls } from './extract'
+import { attachChapterImages } from './chapterImages'
+import { stripImageTokens } from '../shared/chapterImageSource'
 import { findSiteRuleForUrl, normalizeHost } from './siteRules'
 import {
   bookExists,
@@ -847,6 +849,37 @@ export async function loadPageHtml(url: string): Promise<string> {
   return loadAndGetHtml(getHiddenView(), url)
 }
 
+const MAX_CHAPTER_IMAGE_BYTES = 8 * 1024 * 1024
+
+/**
+ * 在下载页的上下文里取图：带当前会话的 Cookie/Referer，跨域被 CORS 拦下就放弃。
+ *
+ * 不用主进程 net.fetch：书的站点可能把图片挂在需要登录的会话后面，
+ * 只有隐藏视图里的同源 fetch 才带着用户刚拿到的会话。
+ */
+async function fetchChapterImageBytes(url: string): Promise<Uint8Array | null> {
+  const script = `(async () => {
+    try {
+      const response = await fetch(${JSON.stringify(url)}, { credentials: 'include' })
+      if (!response.ok) return null
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      if (bytes.length > ${MAX_CHAPTER_IMAGE_BYTES}) return null
+      let binary = ''
+      const chunk = 0x8000
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
+      }
+      return btoa(binary)
+    } catch { return null }
+  })()`
+  try {
+    const encoded = await getHiddenView().webContents.executeJavaScript(script) as string | null
+    return encoded ? Uint8Array.from(Buffer.from(encoded, 'base64')) : null
+  } catch {
+    return null
+  }
+}
+
 async function ruleForPage(pageUrl: string): Promise<SiteRule | undefined> {
   try {
     return await findSiteRuleForUrl(pageUrl)
@@ -1086,7 +1119,7 @@ export async function previewDownload(): Promise<
       const sampleHtml = await loadPageHtml(candidate.url)
       const body = extractBody(sampleHtml, candidate.url, await ruleForPage(candidate.url))
       if (body.ok) {
-        sampleBody = body.body.slice(0, 800)
+        sampleBody = stripImageTokens(body.body).slice(0, 800)
         sampleError = undefined
         break
       }
@@ -1162,7 +1195,7 @@ export async function previewCurrentSiteRule(rule: SiteRule): Promise<
     pageUrl, title: bootstrap?.bookTitle || '', author: bootstrap?.author || '',
     chapterCount: bootstrap?.chapters.length || 0,
     chapterTitles: bootstrap?.chapters.slice(0, 5).map((chapter) => chapter.title) || [],
-    bodySample: body.ok ? body.body.slice(0, 500) : '', diagnostics,
+    bodySample: body.ok ? stripImageTokens(body.body).slice(0, 500) : '', diagnostics,
   } }
 }
 
@@ -1498,7 +1531,7 @@ async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownloa
       const bodyResult = extractBody(html, chapterUrl, bodyRule)
       if (bodyResult.ok) {
         let body = bodyResult.body
-        let bodyRaw = bodyResult.bodyRaw ?? bodyResult.body
+        let bodyRaw = stripImageTokens(bodyResult.bodyRaw ?? bodyResult.body)
         let unlockedBy: UnlockMethod | undefined = bodyResult.unlockedBy
         if (unlockedBy && bodyResult.continuationUrls?.length) {
           const merged = await appendContinuationPages(
@@ -1508,14 +1541,23 @@ async function attemptChapter(bookId: string, ch: ChapterMeta, dl: ActiveDownloa
           )
           if (merged.appended > 0) {
             body = merged.body
-            bodyRaw = merged.body
+            bodyRaw = stripImageTokens(merged.body)
             unlockedBy = 'paged'
           }
         }
+        // 配图：抓下来存到 images/，正文末尾追加 [图] 标记；抓不到就保持纯正文。
+        const bodyWithImages = await attachChapterImages({
+          bookId,
+          chapterKey: ch.id,
+          pageUrl: chapterUrl,
+          html,
+          body,
+          fetchImage: fetchChapterImageBytes,
+        })
         const chapterData: ChapterFile = {
           title: ch.title,
           url: chapterUrl,
-          body,
+          body: bodyWithImages,
           bodyRaw,
           status: 'ready',
         }
@@ -1938,9 +1980,17 @@ export async function redownloadChapter(
         message = extracted.failMessage || failMessage(extracted.failCode)
         return { ok: false, message }
       }
+      const retryBody = await attachChapterImages({
+        bookId,
+        chapterKey: chapterId,
+        pageUrl: url.toString(),
+        html,
+        body: extracted.body,
+        fetchImage: fetchChapterImageBytes,
+      })
       await writeChapterFile(bookId, chapterId, {
-        title: chapter.title, url: url.toString(), body: extracted.body,
-        bodyRaw: extracted.bodyRaw ?? extracted.body, status: 'ready',
+        title: chapter.title, url: url.toString(), body: retryBody,
+        bodyRaw: stripImageTokens(extracted.bodyRaw ?? extracted.body), status: 'ready',
       })
       await refreshBookStatus(bookId)
       dl.done = 1
