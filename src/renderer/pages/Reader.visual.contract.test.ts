@@ -33,6 +33,16 @@ describe('Reader visual surface contract', () => {
     expect(source).toContain('background: var(--r-surface);\n  color: inherit;')
   })
 
+  it('keeps the real-book appearance overlay on the dark dock palette', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    // 真实书籍底栏是深色图标带：外观/字体浮层必须跟着刷暗，不能被经典模式的
+    // 浅色面板规则盖回白底（白底 + 继承来的奶油白字色 = 整块不可读）。
+    expect(source).toContain('.reader-bottombar.is-realbook .bottom-panel {\n  border-color: rgba(233, 220, 188, 0.16);\n  background: rgba(24, 28, 25, 0.96);')
+    expect(source).toContain('.reader-bottombar.is-realbook .bottom-panel .control-label { color: rgba(244, 235, 211, 0.58); }')
+    expect(source).toContain('.reader-bottombar.is-realbook .bottom-panel .option-grid button {')
+    expect(source).toContain('.reader-bottombar.is-realbook .bottom-panel .option-grid button.active {')
+  })
+
   it('preserves the reader interaction structure and motion safety rails', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
     expect(source).toContain('class="reader-toolbar"')

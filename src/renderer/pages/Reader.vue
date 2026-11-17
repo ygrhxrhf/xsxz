@@ -116,6 +116,8 @@ type RealBookStageHandle = {
   zoomIn: () => void
   zoomOut: () => void
   resetZoom: () => void
+  /** 适应屏幕：整本书收进视口（参考站底栏的 fit-book / 0 键）。 */
+  fitBook?: () => void
   resetPitch: () => void
   toggleOpen?: () => void
   currentPage: number
@@ -1763,6 +1765,13 @@ function onReaderKeydown(e: KeyboardEvent) {
     const values = realBookPitchPresets.map((preset) => preset.value)
     const nearest = values.findIndex((value) => Math.abs(value - realBookPitch.value) < 0.6)
     realBookPitch.value = values[nearest >= 0 ? (nearest + 1) % values.length : 0]!
+    return
+  }
+  // 参考站的 fit-book：0 把整本书收进视口。复原回到的是 90% 的默认构图，
+  // 比整书略推近——两者是不同的动作，别把 0 做成第二个复原。
+  if (!isTextEntry && !(e.ctrlKey || e.metaKey) && !e.shiftKey && isRealBook.value && e.key === '0' && !anyDrawerOpen()) {
+    e.preventDefault()
+    realBookStageRef.value?.fitBook?.()
     return
   }
   const action = resolveReaderKey({
@@ -3605,6 +3614,7 @@ onUnmounted(() => {
           <button class="rb-btn" type="button" aria-label="缩小" title="缩小" @click="realBookStageRef?.zoomOut()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
           <button class="rb-zoom" type="button" title="复原缩放" @click="realBookStageRef?.resetZoom()">{{ Math.round(realBookZoom * 100) }}%</button>
           <button class="rb-btn" type="button" aria-label="放大" title="放大" @click="realBookStageRef?.zoomIn()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg></button>
+          <button class="rb-btn" type="button" aria-label="适应屏幕" title="适应屏幕（0）" @click="realBookStageRef?.fitBook?.()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
           <button class="rb-btn" type="button" :aria-label="isFullscreen ? '退出全屏' : '全屏'" :title="isFullscreen ? '退出全屏' : '全屏'" @click="toggleReaderFullscreen"><svg viewBox="0 0 24 24" aria-hidden="true"><path v-if="!isFullscreen" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/><path v-else d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
           <button class="rb-btn rb-pen real-book-note-toggle" type="button" :aria-label="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :title="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :aria-pressed="showInlineNotes" :class="{ active: showInlineNotes }" @click="showInlineNotes = !showInlineNotes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.2-4.2L15.5 5.5l3 3L8.2 18.8 4 20z"/><path d="m13.5 7.5 3 3"/></svg></button>
         </template>
@@ -5480,6 +5490,39 @@ onUnmounted(() => {
     left: 50%;
     transform: translateX(-50%);
   }
+}
+
+/* 真实书籍的外观浮层跟随参考站刷成暗色：底栏本身就是深色图标带，浮层再用浅色
+   应用底就像在书桌上贴了一张白纸。面板是底栏子节点，会继承奶油白字色；这里把
+   浮层自己的底色与选项按钮一起翻到暗色，并保留浅色面板那套语义规则给经典模式。
+   不用 backdrop-filter：面板开着也允许翻页，每帧重算模糊会拖慢翻页。 */
+.reader-bottombar.is-realbook .bottom-panel {
+  border-color: rgba(233, 220, 188, 0.16);
+  background: rgba(24, 28, 25, 0.96);
+  color: rgba(244, 235, 211, 0.86);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 245, 216, 0.06);
+}
+.reader-bottombar.is-realbook .bottom-panel strong { color: #f2d887; }
+.reader-bottombar.is-realbook .bottom-panel .control-label { color: rgba(244, 235, 211, 0.58); }
+.reader-bottombar.is-realbook .bottom-panel .option-grid button {
+  border-color: rgba(244, 235, 211, 0.14);
+  background: rgba(244, 235, 211, 0.06);
+  color: rgba(244, 235, 211, 0.84);
+}
+.reader-bottombar.is-realbook .bottom-panel .option-grid button:hover {
+  border-color: rgba(242, 216, 135, 0.42);
+  background: rgba(244, 235, 211, 0.12);
+}
+.reader-bottombar.is-realbook .bottom-panel .option-grid button.active {
+  border-color: rgba(242, 216, 135, 0.62);
+  background: rgba(242, 216, 135, 0.16);
+  color: #f2d887;
+}
+.reader-bottombar.is-realbook .bottom-panel .real-book-swatch {
+  box-shadow: inset 0 0 0 1px rgba(244, 235, 211, 0.22);
+}
+.reader-bottombar.is-realbook .bottom-panel .reader-progress-row.panel {
+  background: rgba(244, 235, 211, 0.14);
 }
 .bottom-panel {
   position: absolute; top: 50%; right: calc(100% + 12px); width: min(390px, calc(100vw - 96px));

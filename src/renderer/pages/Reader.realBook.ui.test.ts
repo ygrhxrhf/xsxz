@@ -411,6 +411,35 @@ describe('Reader 真实书籍模式接线', () => {
     app.unmount()
   })
 
+  it('真实书籍底栏有「适应屏幕」：0 键与按钮都把倍率拉回整书适配', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    document.querySelector<HTMLElement>('.real-book-dock')?.click()
+    await nextTick()
+    const fit = document.querySelector<HTMLElement>('.rb-btn[aria-label="适应屏幕"]')
+    expect(fit).not.toBeNull()
+    const zoomLabel = () => document.querySelector('.rb-zoom')?.textContent ?? ''
+    // CSS 3D 回退的 1 就是舞台原尺寸，也就是整书适配。
+    expect(zoomLabel()).toBe('100%')
+
+    // 推近之后：0 键回整书适配。复原回的是 90% 的默认构图，两者不是同一个动作。
+    document.querySelector<HTMLElement>('.rb-btn[aria-label="放大"]')?.click()
+    await nextTick()
+    expect(zoomLabel()).toBe('110%')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '0', bubbles: true }))
+    await nextTick()
+    expect(zoomLabel()).toBe('100%')
+
+    // 底栏按钮走同一个暴露方法。
+    document.querySelector<HTMLElement>('.rb-btn[aria-label="放大"]')?.click()
+    await nextTick()
+    fit?.click()
+    await nextTick()
+    expect(zoomLabel()).toBe('100%')
+    app.unmount()
+  })
+
   it('经典模式不出现底部横条：横条只属于真实书籍底栏', async () => {
     installReaderApi({ bookView: 'classic' })
     const app = await mountReader()

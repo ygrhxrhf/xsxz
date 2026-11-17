@@ -983,6 +983,17 @@ function resetZoom(): void {
   zoom.value = defaultZoom.value
 }
 
+/**
+ * 适应屏幕：整本书收进视口。
+ *
+ * WebGL 的倍率以「整书适配」为 100%（`cameraPose` 里 `dist = fitDistance / zoom`），
+ * 所以适应屏幕就是 1；CSS 3D 回退的 1 也是舞台原尺寸。参考站底栏的 fit-book
+ * 与 0 键是同一个动作——复原（90%）比整书略微推近，两者不是一回事。
+ */
+function fitBook(): void {
+  zoom.value = clampZoom(1)
+}
+
 function onWebglPageTurn(direction: 1 | -1): void {
   if (direction === 1) nextPage()
   else prevPage()
@@ -1834,6 +1845,7 @@ defineExpose({
   zoomIn,
   zoomOut,
   resetZoom,
+  fitBook,
   resetPitch,
   currentPage,
   pageCount,
