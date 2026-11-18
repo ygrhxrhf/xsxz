@@ -103,7 +103,18 @@ async function mountReader() {
 }
 
 async function openFontPanel() {
-  document.querySelector<HTMLElement>('.bottom-button[aria-label="字体"]')?.click()
+  const direct = document.querySelector<HTMLElement>('.bottom-button[aria-label="字体"]')
+  if (direct) {
+    direct.click()
+  } else {
+    // 真实书籍不摆应用顶栏：字体面板从底栏「更多」进来。
+    document.querySelector<HTMLElement>('.real-book-dock')?.click()
+    await nextTick()
+    document.querySelector<HTMLElement>('.reader-bottombar [aria-label="更多"]')?.click()
+    await nextTick()
+    ;[...document.querySelectorAll<HTMLElement>('.bottom-panel button')]
+      .find((button) => (button.textContent ?? '').trim() === '字体 / 排版')?.click()
+  }
   await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
 }
 

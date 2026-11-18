@@ -263,8 +263,13 @@ describe('Reader 真实书籍模式接线', () => {
     // 拖 100px = 10°；初值是默认俯仰角，不是平放。
     expect(document.querySelector<HTMLElement>('.real-book-stage')?.getAttribute('style')).toContain(`--rb-pitch: ${DEFAULT_PITCH_DEG + 10}deg`)
     // 模拟换章：当前测试书只有一章，重新打开相同章节仍不得把会话角度重置。
-    document.querySelector<HTMLElement>('[aria-label="字体"]')?.click()
+    document.querySelector<HTMLElement>('.real-book-dock')?.click()
     await nextTick()
+    document.querySelector<HTMLElement>('.reader-bottombar [aria-label="更多"]')?.click()
+    await nextTick()
+    buttonByText(document.querySelector('.bottom-panel')!, '字体 / 排版')?.click()
+    await nextTick()
+    expect(document.querySelector('.bottom-panel')?.textContent).toContain('阅读界面')
     expect(settingsWrites.every((write) => !('realBookPitch' in (write.reader ?? {})))).toBe(true)
     app.unmount()
   })
@@ -347,13 +352,14 @@ describe('Reader 真实书籍模式接线', () => {
     await nextTick()
     expect(pageNo()).toBe(before)
 
-    // 中间三分之一：只显隐工具条，不翻页。
+    // 中间三分之一：只显隐底栏图标带，不翻页。真实书籍没有应用顶栏，
+    // 用户看得见的「工具条」是底栏。
     const afterPage = pageNo()
-    const toolbar = () => document.querySelector('.reader-toolbar')
-    const hiddenBefore = toolbar()?.getAttribute('aria-hidden')
+    const dockBar = () => document.querySelector('.reader-bottombar')
+    const hiddenBefore = dockBar()?.getAttribute('aria-hidden')
     paper.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300 }))
     await nextTick()
-    expect(toolbar()?.getAttribute('aria-hidden')).not.toBe(hiddenBefore)
+    expect(dockBar()?.getAttribute('aria-hidden')).not.toBe(hiddenBefore)
     expect(pageNo()).toBe(afterPage)
     app.unmount()
   })
@@ -438,6 +444,55 @@ describe('Reader 真实书籍模式接线', () => {
     await nextTick()
     expect(zoomLabel()).toBe('100%')
     app.unmount()
+  })
+
+  it('真实书籍不摆应用顶栏：工具入口收进底栏「更多」，页码仍在', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    // 顶栏里不再有标题与任何应用入口，只剩一条隐藏的页码文本。
+    expect(document.querySelector('.reader-toolbar .reader-book-title')).toBeNull()
+    expect(document.querySelector('.reader-toolbar [aria-label="搜索"]')).toBeNull()
+    expect(document.querySelector('.real-book-page-label')?.textContent).toContain('页')
+
+    document.querySelector<HTMLElement>('.real-book-dock')?.click()
+    await nextTick()
+    document.querySelector<HTMLElement>('.reader-bottombar [aria-label="更多"]')?.click()
+    await nextTick()
+    const text = document.querySelector('.bottom-panel')?.textContent ?? ''
+    for (const label of ['搜索', '标记', '书中地图', '朗读', 'AI', '字体 / 排版', '快捷键', '设置', '浏览', '书架']) {
+      expect(text).toContain(label)
+    }
+    app.unmount()
+  })
+
+  it('真实书籍的目录抽屉刷成暗色面板', async () => {
+    installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+    const app = await mountReader()
+
+    document.querySelector<HTMLElement>('.real-book-dock')?.click()
+    await nextTick()
+    document.querySelector<HTMLElement>('.reader-bottombar [aria-label="目录"]')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const content = document.querySelector('.reader-drawer-realbook')
+    expect(content).not.toBeNull()
+    expect(content?.textContent).toContain('目录')
+    app.unmount()
+  })
+
+  it('手机单页固定 20px 档，不沿用桌面字号偏好', async () => {
+    localStorage.setItem('spore:reader-realbook-phone:v1', '1')
+    try {
+      installReaderApi({ bookView: 'realbook', body: LONG_BODY })
+      const app = await mountReader()
+      await nextTick()
+      // 桌面偏好 18 会按 22/18 换成 22px；手机单页按参考站固定 20px。
+      expect(document.querySelector<HTMLElement>('.real-book-stage')?.getAttribute('style')).toContain('--rb-font-size: 20px')
+      app.unmount()
+    } finally {
+      localStorage.removeItem('spore:reader-realbook-phone:v1')
+    }
   })
 
   it('经典模式不出现底部横条：横条只属于真实书籍底栏', async () => {
@@ -545,14 +600,20 @@ describe('Reader 真实书籍模式接线', () => {
     app.unmount()
   })
 
-  it('真实书籍下字体面板隐藏经典专属的「阅读方式」与自动滚屏', async () => {
+  it('真实书籍下字体面板经底栏「更多」进入，且隐藏经典专属的「阅读方式」与自动滚屏', async () => {
     installReaderApi({ bookView: 'realbook' })
     const app = await mountReader()
 
-    document.querySelector<HTMLElement>('.bottom-button[aria-label="字体"]')?.click()
+    document.querySelector<HTMLElement>('.real-book-dock')?.click()
+    await nextTick()
+    document.querySelector<HTMLElement>('.reader-bottombar [aria-label="更多"]')?.click()
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
+    buttonByText(document.querySelector('.bottom-panel')!, '字体 / 排版')?.click()
     await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
 
     const panel = document.querySelector('.bottom-panel')?.textContent ?? ''
+    expect(panel).toContain('阅读界面')
+    expect(panel).toContain('字号')
     expect(panel).not.toContain('连续滚动')
     expect(panel).not.toContain('开始自动滚屏')
     app.unmount()

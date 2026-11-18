@@ -33,6 +33,19 @@ describe('Reader visual surface contract', () => {
     expect(source).toContain('background: var(--r-surface);\n  color: inherit;')
   })
 
+  it('keeps real-book chrome immersive: no app toolbar, tools in the dock, dark drawer', async () => {
+    const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
+    // 真实书籍不摆应用顶栏：工具栏容器只剩一个零高度锚点，入口收进底栏「更多」。
+    expect(source).toContain("'reader-toolbar-realbook': isRealBook")
+    expect(source).toContain('.reader-toolbar.reader-toolbar-realbook {')
+    expect(source).toContain('aria-label="更多"')
+    expect(source).toContain("activeBottomPanel === 'more'")
+    // 目录 / 标记抽屉跟随参考站刷成暗色。
+    expect(source).toContain(':theme="realBookDrawerTheme"')
+    expect(source).toContain("'reader-drawer-realbook': isRealBook")
+    expect(source).toContain('.reader-drawer-realbook .drawer-tab.active')
+  })
+
   it('keeps the real-book appearance overlay on the dark dock palette', async () => {
     const source = await readFile(new URL('./Reader.vue', import.meta.url), 'utf-8')
     // 真实书籍底栏是深色图标带：外观/字体浮层必须跟着刷暗，不能被经典模式的
@@ -48,10 +61,13 @@ describe('Reader visual surface contract', () => {
     expect(source).toContain('class="reader-toolbar"')
     expect(source).not.toContain(':class="[\'reader-toolbar\', { visible: toolsVisible }]"')
     expect(source).toContain('class="tool-panel"')
-    expect(source).toContain('v-model:show="showDrawer" placement="left" :width="drawerTab === \'mindmap\' ? 560 : 320"')
+    expect(source).toContain('v-model:show="showDrawer"')
+    expect(source).toContain('placement="left"')
+    expect(source).toContain(':width="drawerTab === \'mindmap\' ? 560 : 320"')
     expect(source).not.toContain('v-model:show="showAiResult"')
     expect(source).toContain('v-model:show="showAiAssistant" placement="right" :width="420"')
-    expect(source).toContain('v-model:show="showMarks" placement="left" :width="340"')
+    expect(source).toContain('v-model:show="showMarks"')
+    expect(source).toContain(':width="340"')
     expect(source).toContain('v-model:show="showSearch" placement="right" :width="420"')
     expect(source).toContain('@media (prefers-reduced-motion: reduce)')
     expect(source).toContain('transition: none !important; animation: none !important; scroll-behavior: auto !important;')

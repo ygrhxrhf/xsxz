@@ -274,6 +274,8 @@ const maxZoom = computed(() => (effectiveRenderer.value ? WEBGL_MAX_ZOOM : 1.8))
 const zoom = ref(defaultZoom.value)
 /** 窄屏单页：窗口宽度小于 768 或本机调试开关打开时启用。 */
 const phone = ref(false)
+/** 手机单页走参考站的固定 20px 档：桌面字号偏好（18→22）在窄屏上会把一页挤成两行。 */
+const layoutFontSize = computed(() => (phone.value ? 20 : Math.max(1, props.fontSize)))
 const forcePhone = (() => {
   try {
     return localStorage.getItem('spore:reader-realbook-phone:v1') === '1'
@@ -324,8 +326,8 @@ let observer: ResizeObserver | null = null
 
 /** 版面尺寸：双页摊开，每页宽度取舞台的一半，页高按开本比例约束。 */
 const layout = ref({ pageWidth: 480, pageHeight: 640, paddingX: 43, paddingY: 38, contentWidth: 420, contentHeight: 560 })
-const lineHeightPx = computed(() => Math.max(1, props.fontSize) * Math.max(0.5, props.lineHeight))
-const paragraphGapPx = computed(() => Math.max(0, props.fontSize) * Math.max(0, props.paragraphGap))
+const lineHeightPx = computed(() => Math.max(1, layoutFontSize.value) * Math.max(0.5, props.lineHeight))
+const paragraphGapPx = computed(() => Math.max(0, layoutFontSize.value) * Math.max(0, props.paragraphGap))
 const handwritingNoteClass = computed(() => `handwriting-${props.handwritingFont}`)
 /** 原始段落下标 → 段内「注」标记。批注关闭时不挂标记，和卡片一起消失。 */
 const noteMarksByParagraph = computed(() => {
@@ -340,7 +342,7 @@ const noteMarksByParagraph = computed(() => {
 })
 /** 书页模式的栏数与栏间距；栏间距跟着字号走，换字号不会把两栏挤到一起。 */
 const pageColumns = computed(() => (props.columns === 2 ? 2 : 1))
-const columnGapPx = computed(() => Math.round(Math.max(1, props.fontSize) * 3))
+const columnGapPx = computed(() => Math.round(Math.max(1, layoutFontSize.value) * 3))
 /** 一张书页折几栏就是一页翻几步：书台一页=一页，书页一页=栏数个分页器页。 */
 const pageStep = computed(() => (props.variant === 'sheet' ? pageColumns.value : 1))
 /**
@@ -359,14 +361,14 @@ const advance = computed(() => (props.variant === 'book' ? (phone.value ? 1 : 2)
  */
 const headHeightPx = computed(() => props.headHeight > 0
   ? Math.round(props.headHeight)
-  : Math.round(Math.max(1, props.fontSize) * 1.8))
+  : Math.round(Math.max(1, layoutFontSize.value) * 1.8))
 const footHeightPx = computed(() => props.footHeight > 0
   ? Math.round(props.footHeight)
-  : Math.round(Math.max(1, props.fontSize) * 1.6))
+  : Math.round(Math.max(1, layoutFontSize.value) * 1.6))
 /** 书页页脚放翻页按钮，比书台的页码占高得多，必须单独算进版心高度。 */
 const sheetFootHeightPx = computed(() => props.footHeight > 0
   ? Math.round(props.footHeight)
-  : Math.round(Math.max(1, props.fontSize) * 3.2))
+  : Math.round(Math.max(1, layoutFontSize.value) * 3.2))
 
 const reducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true
@@ -477,7 +479,7 @@ function updateLayout(): void {
       const marginX = 24
       const marginTop = 44
       const marginBottom = 44
-      const foot = Math.max(1, Math.round(props.fontSize * 1.6))
+      const foot = Math.max(1, Math.round(layoutFontSize.value * 1.6))
       layout.value = {
         pageWidth: width,
         pageHeight: height,
@@ -490,7 +492,7 @@ function updateLayout(): void {
     }
     // WebGL 使用固定 640×920 逻辑页，再由相机适配视口；分页输入必须与纹理绘制
     // 使用同一组边距，否则页面底部会多一行/少一行。
-    const foot = Math.max(1, Math.round(props.fontSize * 1.6))
+    const foot = Math.max(1, Math.round(layoutFontSize.value * 1.6))
     const contentWidth = PAGE_TEXTURE_WIDTH - PAGE_TEXTURE_MARGIN_INNER - PAGE_TEXTURE_MARGIN_OUTER
     layout.value = {
       pageWidth: PAGE_TEXTURE_WIDTH,
@@ -599,7 +601,7 @@ function measuredNoteBlocks(): RealBookNoteBlock[] {
     const paragraph = inputIndexOf(note.paragraph)
     if (paragraph < 0) continue
     const height = measured.get(note.id)
-      ?? estimateInlineNoteHeight(note.text, layout.value.contentWidth, props.fontSize, note.tags?.length ?? 0)
+      ?? estimateInlineNoteHeight(note.text, layout.value.contentWidth, layoutFontSize.value, note.tags?.length ?? 0)
     out.push({
       id: note.id,
       paragraph,
@@ -1667,7 +1669,7 @@ const stageStyle = computed(() => ({
   '--rb-block-band': `${blockBandPx.value}px`,
   // 页面被纸垛抬起后整本书会向上顶：顶部要预留这一截，书页顶缘才不会被视口裁掉。
   '--rb-lift-max': `${maxStackLiftPx.value}px`,
-  '--rb-font-size': `${props.fontSize}px`,
+  '--rb-font-size': `${layoutFontSize.value}px`,
   // 必须是长度：CSS 用它当 line-height，裸数字会被当成「字号的倍数」，一行会被撑成几十倍高。
   '--rb-line-height': `${lineHeightPx.value}px`,
   '--rb-font-family': props.fontFamily,
@@ -1675,7 +1677,7 @@ const stageStyle = computed(() => ({
 
 const measureStyle = computed(() => ({
   width: `${layout.value.contentWidth}px`,
-  fontSize: `${props.fontSize}px`,
+  fontSize: `${layoutFontSize.value}px`,
   lineHeight: `${lineHeightPx.value}px`,
   fontFamily: props.fontFamily,
   // 正文段落有 2em 首行缩进（.real-book-para）；量断行不带它，首行就会多盛两个字，
@@ -1688,7 +1690,7 @@ const measureStyle = computed(() => ({
 watch(
   () => [
     props.paragraphs,
-    props.fontSize,
+    layoutFontSize.value,
     props.lineHeight,
     props.fontFamily,
     props.paragraphGap,
@@ -1711,7 +1713,7 @@ watch(
 
 // 换书页字体/字号时要重新等分片：先按回退字体量出来的页表会在字体就位后整体跳。
 watch(
-  () => [props.fontFamily, props.fontSize],
+  () => [props.fontFamily, layoutFontSize.value],
   () => {
     if (typeof document === 'undefined' || !document.fonts?.load) return
     fontsPrimed.value = false
@@ -1768,7 +1770,7 @@ async function ensureBookFont(): Promise<void> {
   const timeout = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
   try {
     await Promise.race([
-      fonts.load(`400 ${props.fontSize}px ${props.fontFamily}`, sample),
+      fonts.load(`400 ${layoutFontSize.value}px ${props.fontFamily}`, sample),
       timeout(1500),
     ])
   } catch { /* 字体不可用：按回退字体排版 */ }
@@ -1856,7 +1858,7 @@ defineExpose({
 </script>
 
 <template>
-  <div ref="hostRef" :class="['real-book-stage', { 'is-sheet': variant === 'sheet' }]" :style="stageStyle" @mouseup="onStageMouseup">
+  <div ref="hostRef" :class="['real-book-stage', { 'is-sheet': variant === 'sheet', 'is-phone': phone }]" :style="stageStyle" @mouseup="onStageMouseup">
     <!-- 离屏量测容器：宽度与版心一致，量出来的断行与真实渲染一致 -->
     <div ref="measureRef" class="real-book-measure" :style="measureStyle" aria-hidden="true"></div>
     <!-- 批注卡量高：与真实卡片同一套宽度、字体与三行截断，只把结果交给分页器。 -->
@@ -1960,7 +1962,7 @@ defineExpose({
         :left-page="webglLeftPage"
         :right-page="webglRightPage"
         :flips="webglFlips"
-        :font-size="fontSize"
+        :font-size="layoutFontSize"
         :line-height="lineHeight"
         :font-family="fontFamily"
         :paragraph-gap="paragraphGap"
@@ -2463,6 +2465,13 @@ defineExpose({
   .rb-sheet { border-radius: 10px; }
 }
 
+/* 手机单页：舞台必须是纵向 flex，视口才能撑满剩余高度。
+   桌面沿用画布固有高度反撑的老构图（书更大、超出视口的一截由 overflow 裁掉），
+   只在单页时切换，避免改动桌面已校好的画面。 */
+.real-book-stage.is-phone {
+  display: flex;
+  flex-direction: column;
+}
 .real-book-viewport {
   flex: 1 1 auto;
   min-height: 0;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPopconfirm, NRadioButton, NRadioGroup, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, useMessage } from 'naive-ui'
+import { NButton, NConfigProvider, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPopconfirm, NRadioButton, NRadioGroup, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, darkTheme, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
 import { READER_THEME_COLORS } from '@shared/readerTheme'
 import type {
@@ -265,7 +265,34 @@ const chapterFadeIn = ref(false)
 const temporaryToolReveal = ref(false)
 const pointerInToolbar = ref(false)
 const activeToolPanel = ref<'tts' | 'ai' | 'shortcuts' | null>(null)
-const activeBottomPanel = ref<'catalog' | 'progress' | 'background' | 'font' | null>(null)
+const activeBottomPanel = ref<'catalog' | 'progress' | 'background' | 'font' | 'more' | null>(null)
+
+/** 真实书籍的目录 / 标记抽屉与参考站左侧面板一致：暗底奶油白字，而不是应用浅色抽屉。 */
+const realBookDrawerTheme = computed(() => (isRealBook.value ? darkTheme : undefined))
+const realBookDrawerThemeOverrides = {
+  common: {
+    bodyColor: 'rgba(24, 28, 25, 0.96)',
+    cardColor: 'rgba(24, 28, 25, 0.96)',
+    modalColor: 'rgba(24, 28, 25, 0.96)',
+    popoverColor: 'rgba(24, 28, 25, 0.96)',
+    inputColor: 'rgba(244, 235, 211, 0.06)',
+    actionColor: 'rgba(244, 235, 211, 0.06)',
+    hoverColor: 'rgba(244, 235, 211, 0.08)',
+    textColorBase: '#f4ebd3',
+    textColor1: 'rgba(244, 235, 211, 0.92)',
+    textColor2: 'rgba(244, 235, 211, 0.78)',
+    textColor3: 'rgba(244, 235, 211, 0.56)',
+    borderColor: 'rgba(244, 235, 211, 0.16)',
+    dividerColor: 'rgba(244, 235, 211, 0.12)',
+    primaryColor: '#f2d887',
+    primaryColorHover: '#f6e3a8',
+    primaryColorPressed: '#e6c96f',
+    primaryColorSuppl: '#f2d887',
+    closeIconColor: 'rgba(244, 235, 211, 0.6)',
+    closeIconColorHover: 'rgba(244, 235, 211, 0.9)',
+    closeIconColorPressed: 'rgba(244, 235, 211, 0.9)',
+  },
+}
 /**
  * 真实书籍底栏收起后只剩底边那根小横条（iPhone 的 Home 指示条读法）：
  * 不交互时把整条图标带收走，书桌照完整露出来；点横条或点书页中区再展开。
@@ -1446,7 +1473,7 @@ function toggleToolPanel(panel: 'tts' | 'ai' | 'shortcuts') {
   revealTools(immersiveMode.value === 'locked')
 }
 
-function toggleBottomPanel(panel: 'catalog' | 'progress' | 'background' | 'font') {
+function toggleBottomPanel(panel: 'catalog' | 'progress' | 'background' | 'font' | 'more') {
   const next = activeBottomPanel.value === panel ? null : panel
   if (next) {
     activeBottomPanel.value = next
@@ -3343,14 +3370,17 @@ onUnmounted(() => {
     <template v-else>
       <div
         class="reader-toolbar"
-        :class="{ 'reader-tools-hidden': !toolsVisible }"
+        :class="{ 'reader-tools-hidden': !toolsVisible, 'reader-toolbar-realbook': isRealBook }"
         :aria-hidden="!toolsVisible"
         :inert="!toolsVisible"
         @mouseenter="onToolbarEnter"
         @mouseleave="onToolbarLeave"
       >
-        <div class="reader-book-title" :title="book.title">{{ book.title }}</div>
+        <!-- 真实书籍走参考站的沉浸式 chrome：不摆应用顶栏，工具都收进底栏与书页。
+             页码只留一条隐藏文本：视觉上不占位，E2E 与测试仍能读到当前位置。 -->
         <span v-if="isRealBook" class="real-book-page-label" aria-hidden="true">第 {{ realBookPage + 1 }} / {{ Math.max(1, realBookPageCount) }} 页</span>
+        <template v-if="!isRealBook">
+        <div class="reader-book-title" :title="book.title">{{ book.title }}</div>
         <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('back')">书架</button>
         <button class="tool-button tool-icon-text" title="搜索" aria-label="搜索" @click="openSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><span>搜索</span></button>
         <button class="tool-button tool-icon-text" title="标记" aria-label="标记" @click="showMarks = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg><span>标记</span></button>
@@ -3377,6 +3407,7 @@ onUnmounted(() => {
         <button class="tool-button tool-button-offstage" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M7 10h1M10 10h1M13 10h1M16 10h1M7 14h7M16 14h1"/></svg></button>
         <button class="tool-button" :title="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" :aria-label="immersiveMode === 'locked' ? '退出沉浸模式' : '沉浸模式'" @click="toggleImmersiveLock"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
 
+        </template>
         <div v-if="activeToolPanel" class="tool-panel" @click.stop>
           <template v-if="activeToolPanel === 'tts'">
             <strong>听书</strong>
@@ -3617,6 +3648,7 @@ onUnmounted(() => {
           <button class="rb-btn" type="button" aria-label="适应屏幕" title="适应屏幕（0）" @click="realBookStageRef?.fitBook?.()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
           <button class="rb-btn" type="button" :aria-label="isFullscreen ? '退出全屏' : '全屏'" :title="isFullscreen ? '退出全屏' : '全屏'" @click="toggleReaderFullscreen"><svg viewBox="0 0 24 24" aria-hidden="true"><path v-if="!isFullscreen" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/><path v-else d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
           <button class="rb-btn rb-pen real-book-note-toggle" type="button" :aria-label="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :title="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :aria-pressed="showInlineNotes" :class="{ active: showInlineNotes }" @click="showInlineNotes = !showInlineNotes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.2-4.2L15.5 5.5l3 3L8.2 18.8 4 20z"/><path d="m13.5 7.5 3 3"/></svg></button>
+          <button class="rb-btn bottom-button" type="button" aria-label="更多" title="更多" :class="{ active: activeBottomPanel === 'more' }" @click="toggleBottomPanel('more')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01M12 12h.01M18 12h.01"/></svg></button>
         </template>
         <div v-if="activeBottomPanel && activeBottomPanel !== 'catalog'" class="bottom-panel" @click.stop>
             <template v-if="activeBottomPanel === 'progress'">
@@ -3667,6 +3699,24 @@ onUnmounted(() => {
                   <div class="control-label">右键拖动书桌，或按住 Alt 拖动，可连续调整视角。</div>
                 </template>
               </template>
+            </template>
+            <template v-else-if="activeBottomPanel === 'more'">
+              <strong>更多</strong>
+              <div class="control-label">{{ book.title }}</div>
+              <div class="option-grid">
+                <button type="button" @click="closeBottomPanel(); openSearch()">搜索</button>
+                <button type="button" @click="closeBottomPanel(); showMarks = true">标记</button>
+                <button type="button" @click="closeBottomPanel(); showMap = true">书中地图</button>
+                <button type="button" @click="toggleToolPanel('tts')">朗读</button>
+                <button type="button" @click="toggleToolPanel('ai')">AI</button>
+                <button type="button" @click="toggleBottomPanel('font')">字体 / 排版</button>
+                <button type="button" @click="realBookStageRef?.resetPitch?.()">平放</button>
+                <button type="button" @click="toggleToolPanel('shortcuts')">快捷键</button>
+                <button type="button" @click="toggleImmersiveLock(); closeBottomPanel()">沉浸模式</button>
+                <button type="button" @click="emit('go-settings')">设置</button>
+                <button type="button" @click="emit('go-browse')">浏览</button>
+                <button type="button" @click="emit('back')">书架</button>
+              </div>
             </template>
             <template v-else>
               <strong>字体</strong>
@@ -3792,8 +3842,15 @@ onUnmounted(() => {
       </div>
 
       <!-- Chapter drawer -->
-      <n-drawer v-model:show="showDrawer" placement="left" :width="drawerTab === 'mindmap' ? 560 : 320">
-        <n-drawer-content :title="drawerTab === 'mindmap' ? '章节导图' : '目录'">
+      <n-drawer
+        v-model:show="showDrawer"
+        placement="left"
+        :width="drawerTab === 'mindmap' ? 560 : 320"
+        :theme="realBookDrawerTheme"
+        :theme-overrides="realBookDrawerThemeOverrides"
+      >
+        <n-config-provider abstract :theme="realBookDrawerTheme" :theme-overrides="realBookDrawerThemeOverrides">
+        <n-drawer-content :class="{ 'reader-drawer-realbook': isRealBook }" :title="drawerTab === 'mindmap' ? '章节导图' : '目录'">
           <div class="drawer-tabs" role="tablist" aria-label="章节抽屉视图">
             <button
               type="button"
@@ -3836,6 +3893,7 @@ onUnmounted(() => {
           </template>
           <ReaderMindmap v-else :root="chapterMindmap" @select="jumpToTextAnchor" />
         </n-drawer-content>
+        </n-config-provider>
       </n-drawer>
 
       <ai-budget-confirm
@@ -4309,8 +4367,15 @@ onUnmounted(() => {
       </div>
 
       <!-- Marks drawer -->
-      <n-drawer v-model:show="showMarks" placement="left" :width="340">
-        <n-drawer-content title="标记" closable>
+      <n-drawer
+        v-model:show="showMarks"
+        placement="left"
+        :width="340"
+        :theme="realBookDrawerTheme"
+        :theme-overrides="realBookDrawerThemeOverrides"
+      >
+        <n-config-provider abstract :theme="realBookDrawerTheme" :theme-overrides="realBookDrawerThemeOverrides">
+        <n-drawer-content :class="{ 'reader-drawer-realbook': isRealBook }" title="标记" closable>
           <n-button block secondary style="margin-bottom:12px" @click="showMap = true">书中地图</n-button>
           <n-popconfirm v-if="chapterBookmark" positive-text="删除" negative-text="取消" @positive-click="toggleBookmark">
             删除这条书签？删除后无法恢复。
@@ -4370,6 +4435,7 @@ onUnmounted(() => {
             </section>
           </div>
         </n-drawer-content>
+        </n-config-provider>
       </n-drawer>
 
       <!-- Book map drawer -->
@@ -4872,6 +4938,16 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 
+/* 真实书籍的暗色目录 / 标记抽屉：两个手写控件原来吃的是应用浅色变量
+   （.drawer-tab.active 刷 --r-bar-bg、次级文字用 --r-muted），暗底上会变成
+   白药丸配浅字、或深灰字看不清。这里显式换回奶油白低亮度。 */
+.reader-drawer-realbook .drawer-tabs { background: rgba(244, 235, 211, 0.08); }
+.reader-drawer-realbook .drawer-tab.active { background: rgba(244, 235, 211, 0.16); color: #f2d887; }
+.reader-drawer-realbook .ch-item.active { color: #f2d887; }
+.reader-drawer-realbook .mark-excerpt,
+.reader-drawer-realbook .mark-group-title,
+.reader-drawer-realbook .control-label { color: rgba(244, 235, 211, 0.58); }
+
 .ai-budget-status {
   margin-bottom: 12px;
   padding: 10px 12px;
@@ -5220,6 +5296,38 @@ onUnmounted(() => {
   border: 0;
   overflow: hidden;
 }
+
+/* 真实书籍的沉浸式 chrome：页面上不摆应用顶栏，工具入口全在底栏与书页里。
+   容器留成零高度只为了给朗读 / AI / 快捷键浮层一个锚点，浮层自己挪到右上角；
+   页码缩成读屏文本，辅助技术与测试仍能读当前位置。 */
+.reader-toolbar.reader-toolbar-realbook {
+  height: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+}
+.reader-toolbar.reader-toolbar-realbook .real-book-page-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.reader-toolbar.reader-toolbar-realbook .tool-panel {
+  top: 16px;
+  right: 24px;
+  border-color: rgba(233, 220, 188, 0.16);
+  background: rgba(24, 28, 25, 0.96);
+  color: rgba(244, 235, 211, 0.86);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 245, 216, 0.06);
+}
+.reader-toolbar.reader-toolbar-realbook .tool-panel strong { color: #f2d887; }
+.reader-toolbar.reader-toolbar-realbook .tool-panel .control-label { color: rgba(244, 235, 211, 0.58); }
 
 .reader-bottombar.reader-tools-hidden {
   opacity: 0;
