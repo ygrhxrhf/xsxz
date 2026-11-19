@@ -7,9 +7,9 @@
  */
 
 import * as THREE from 'three'
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import {
   buildPageTexturePlan,
-  drawPageTexture,
   PAGE_TEXTURE_HEIGHT,
   PAGE_TEXTURE_SCALE,
   PAGE_TEXTURE_WIDTH,
@@ -17,10 +17,12 @@ import {
   type RealBookTexturePage,
   type RealBookTextureStyle,
 } from './realBookTexture'
+import { RealBookTextureRasterizer } from './realBookTextureRasterizer'
 import {
   BOOK_HEIGHT,
   BOOK_WIDTH,
   BOARD_THICKNESS,
+  COVER_OVERHANG,
   CAMERA_FOV,
   DEFAULT_TILT_RAD,
   DEFAULT_ZOOM,
@@ -38,8 +40,14 @@ import {
 import type { PageScreenQuad } from './realBookTextLayer'
 import { ClothSheet, flipClothField } from './realBookCloth'
 import { flyerFacePages } from './realBookFlyerText'
-import { buildFlipShadow, rasterizeFlipShadow, sampleFlipShadowGrid, type FlipShadowGrid } from './realBookFlipShadow'
 import { idleFlutterAmount, pageCornerPeel } from './realBookPeel'
+// 纸张渲染层来自 Infinite Reader（Apache-2.0）。LeafSim 在这里作为 LeafMesh 的网格载体：
+// 运动仍由已经校过的 ClothSheet（解析弧面 + 弹簧阻尼）给出，逐帧抄进 sim.x / sim.z；
+// 它的 PBD 解算器保留给后续的拖页跟手与悬停预掀。
+import { GRID_V, LeafMesh } from './realBookLeafMesh'
+import { LeafSim } from './realBookLeafSim'
+import { BLANK_TEXTURE, createPaperMaterial, shadowRig, SH_COLS, SH_ROWS, SH_SLOTS, type PaperUniforms } from './realBookPaperMaterial'
+import { CaseBinding } from './realBookCaseBinding'
 
 export interface RealBookScenePages {
   left: RealBookTexturePage | null
@@ -67,14 +75,13 @@ export interface RealBookSceneFlip {
   follow: boolean
 }
 
-/** 飞页网格：40 列 × 26 行（段数），顶点数为 41×27；影子沿用同一份布料顶点。 */
-const FLIP_SEGMENTS_X = 40
-const FLIP_SEGMENTS_Y = 26
-const FLIP_GRID_COLUMNS = FLIP_SEGMENTS_X + 1
-const FLIP_GRID_ROWS = FLIP_SEGMENTS_Y + 1
-/** 静态书页的平面高度与影子所在高度（书体局部坐标）。 */
-const PAGE_PLANE_Z = 0.1
-const FLIP_SHADOW_Z = 0.13
+/**
+ * 飞页网格由 LeafMesh 固定为 40 列 × 26 行（GRID_U × GRID_V）。
+ * 页间软影不再用单独的网格，改由纸质 shader 的 `shadowRig` 沿灯光射线解析求交。
+ */
+
+/** 桌面高度：书壳、书垛和书页都从这个基准往上叠（略高于桌面，避免与桌/影平面共面）。 */
+const BOOK_BASE_Z = -0.215
 
 /** 同时在飞的纸上限（含正在落定的那张）。 */
 export const MAX_FLIP_SHEETS = 6
@@ -82,17 +89,11 @@ export const MAX_FLIP_SHEETS = 6
 /** 一个飞页槽位的全部渲染状态。 */
 interface FlipSheetRuntime {
   group: THREE.Group
-  geometry: THREE.PlaneGeometry
-  /** 纸背几何：共用位置/法线，只把 U 取反。 */
-  backGeometry: THREE.BufferGeometry
-  restPositions: Float32Array
-  front: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>
-  back: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>
+  /** 双面纸质网格：正面/背面由 gl_FrontFacing 选纹理，透字与透光也在这层材质里。 */
+  leaf: LeafMesh
+  /** 网格载体：每帧从布料抄入 x/z，供 LeafMesh 输出顶点与曲率。 */
+  sim: LeafSim
   cloth: ClothSheet
-  /** 按布料形状投在下面纸面上的软影（顶点透明度由布料高度/轮廓算出）。 */
-  shadow: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>
-  /** 多张纸同飞时，上层纸投在这张纸上的阴影（叠加在这张纸的表面）。 */
-  shade: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>
   /** 当前占用的翻页 id；0 表示空槽。 */
   id: number
   direction: 1 | -1
@@ -233,41 +234,6 @@ function makeCoverTexture(title: string, author: string): THREE.CanvasTexture {
   return texture
 }
 
-/**
- * 书脊：与封面同色布面，横向两道起凸的竹节和烫金细线。
- * 合上的书从正面看，左侧那一条是书脊，它不能和封面一样是一块平色。
- */
-function makeSpineTexture(): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas')
-  canvas.width = 128
-  canvas.height = 1024
-  const ctx = canvas.getContext('2d')!
-  const gradient = ctx.createLinearGradient(0, 0, canvas.width, 0)
-  gradient.addColorStop(0, '#0a1420')
-  gradient.addColorStop(0.45, '#1b2f45')
-  gradient.addColorStop(0.72, '#223a52')
-  gradient.addColorStop(1, '#0c1826')
-  ctx.fillStyle = gradient
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-  for (let y = 0; y < canvas.height; y += 4) {
-    ctx.fillStyle = y % 8 === 0 ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.035)'
-    ctx.fillRect(0, y, canvas.width, 1)
-  }
-  // 竹节：两条横向凸起，上缘受光、下缘压暗。
-  for (const ratio of [0.16, 0.84]) {
-    const y = canvas.height * ratio
-    ctx.fillStyle = 'rgba(0,0,0,0.38)'
-    ctx.fillRect(0, y - 10, canvas.width, 4)
-    ctx.fillStyle = 'rgba(255,255,255,0.16)'
-    ctx.fillRect(0, y - 6, canvas.width, 3)
-    ctx.fillStyle = 'rgba(231,203,139,0.55)'
-    ctx.fillRect(0, y + 6, canvas.width, 2)
-    ctx.fillRect(0, y + 12, canvas.width, 2)
-  }
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.colorSpace = THREE.SRGBColorSpace
-  return texture
-}
 
 /**
  * 桌面贴图在 440×440 的桌面上平铺的次数。
@@ -353,8 +319,45 @@ function makeShadowTexture(): THREE.CanvasTexture {
   return new THREE.CanvasTexture(canvas)
 }
 
+const PAGE_SEGMENTS_X = 40
+const PAGE_SEGMENTS_Y = 26
+
+/**
+ * 静态页沿页宽方向的曲率，供纸质 shader 的曲率暗化读取。
+ *
+ * 与 `LeafMesh` 用同一套符号约定：取相邻三点的切线，`atan2(cross, dot)` 得到
+ * 单位长度的转角。只在预掀/还原改写顶点后调用，静止页不会每帧重算。
+ */
+function writePageCurvature(geometry: THREE.PlaneGeometry): void {
+  const position = geometry.attributes.position as THREE.BufferAttribute
+  const curvature = geometry.attributes.aCurv as THREE.BufferAttribute | undefined
+  if (!curvature) return
+  const stride = PAGE_SEGMENTS_X + 1
+  for (let row = 0; row <= PAGE_SEGMENTS_Y; row += 1) {
+    const base = row * stride
+    for (let column = 0; column <= PAGE_SEGMENTS_X; column += 1) {
+      const index = base + column
+      if (column === 0 || column === PAGE_SEGMENTS_X) {
+        curvature.setX(index, 0)
+        continue
+      }
+      const previous = index - 1
+      const next = index + 1
+      const t1x = position.getX(index) - position.getX(previous)
+      const t1z = position.getZ(index) - position.getZ(previous)
+      const t2x = position.getX(next) - position.getX(index)
+      const t2z = position.getZ(next) - position.getZ(index)
+      const cross = t1x * t2z - t1z * t2x
+      const dot = t1x * t2x + t1z * t2z
+      const length = Math.hypot(t1x, t1z) || 1
+      curvature.setX(index, Math.atan2(cross, dot) / length)
+    }
+  }
+  curvature.needsUpdate = true
+}
+
 function makePageGeometry(): THREE.PlaneGeometry {
-  const geometry = new THREE.PlaneGeometry(BOOK_WIDTH, BOOK_HEIGHT, 40, 26)
+  const geometry = new THREE.PlaneGeometry(BOOK_WIDTH, BOOK_HEIGHT, PAGE_SEGMENTS_X, PAGE_SEGMENTS_Y)
   const positions = geometry.attributes.position
   for (let index = 0; index < positions.count; index += 1) {
     const x = positions.getX(index)
@@ -363,38 +366,17 @@ function makePageGeometry(): THREE.PlaneGeometry {
     const z = 0.008 * Math.sin(u * Math.PI) + 0.018 * Math.exp(-(1 - u) * 9)
     positions.setZ(index, z)
   }
+  geometry.setAttribute('aCurv', new THREE.BufferAttribute(new Float32Array(positions.count), 1))
   geometry.computeVertexNormals()
+  writePageCurvature(geometry)
   return geometry
 }
 
 /**
- * 纸背几何：共用正面的位置/法线属性，只把 U 取反。
- *
- * 纸转过 90° 之后，几何的 u 轴在屏幕上是反的；照原样贴正文，纸背上的字就是左右颠倒的。
- * CSS 3D 回退里对应的是 `scaleX(-1)`（见 `RealBookStage.backContentStyle`）。
- *
- * 位置属性是**同一个对象**：飞页每帧只写一份顶点，两个网格自动一起更新；
- * 法线也共用，`computeVertexNormals()` 写进去的那一份同样被两面共享。
+ * 飞页纸背由 LeafMesh 的 `uBack`（按 1-u 采样）负责，不再需要单独建一份翻转 U 的几何。
+ * 静态页仍是单面 PlaneGeometry，纸背不可见。
  */
-function makeFlippedUvGeometry(front: THREE.PlaneGeometry): THREE.BufferGeometry {
-  const geometry = new THREE.BufferGeometry()
-  geometry.setIndex(front.index)
-  geometry.setAttribute('position', front.attributes.position!)
-  geometry.setAttribute('normal', front.attributes.normal!)
-  const uv = front.attributes.uv!
-  const flipped = new THREE.Float32BufferAttribute(new Float32Array(uv.count * 2), 2)
-  for (let index = 0; index < uv.count; index += 1) {
-    flipped.setXY(index, 1 - uv.getX(index), uv.getY(index))
-  }
-  geometry.setAttribute('uv', flipped)
-  return geometry
-}
 
-function setTextureOnMaterial(material: THREE.MeshStandardMaterial, texture: THREE.Texture | null): void {
-  if (material.map === texture) return
-  material.map = texture
-  material.needsUpdate = true
-}
 
 export class RealBookWebGLScene {
   private readonly host: HTMLElement
@@ -404,6 +386,9 @@ export class RealBookWebGLScene {
   private readonly bookGroup = new THREE.Group()
   private readonly pageLeft: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>
   private readonly pageRight: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>
+  /** 静态页与飞页共用纸质 shader：落页前后材质一致，不会在落定瞬间换一种亮度。 */
+  private readonly pageUniformsLeft: PaperUniforms
+  private readonly pageUniformsRight: PaperUniforms
   private readonly pageGeometryLeft: THREE.PlaneGeometry
   private readonly pageGeometryRight: THREE.PlaneGeometry
   private readonly pageRestLeft: Float32Array
@@ -427,9 +412,14 @@ export class RealBookWebGLScene {
   private readonly blockRight: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial[]>
   private readonly blockGeometry = new THREE.BoxGeometry(BOOK_WIDTH, BOOK_HEIGHT + 0.04, 1)
   private readonly coverPivot = new THREE.Group()
-  private readonly cover: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial[]>
-  private readonly backBoard: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial[]>
-  private readonly spine: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial | THREE.MeshStandardMaterial[]>
+  private readonly cover: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>
+  private readonly backBoard: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>
+  /** 布面书壳：柔性接缝、凹槽衬里和头/尾布条，绕书脊包住书垛。 */
+  private readonly binding: CaseBinding
+  /** 书垛厚度（不含两块书板），在场景创建时固定；书页/书垛/书脊都按它对齐。 */
+  private readonly blockTotal: number
+  /** 书页所在高度：桌面 + 书板 + 书垛。 */
+  private readonly pagePlaneZ: number
   /** 同时在飞的纸：固定 3 个槽位，按上层给的顺序占用。 */
   private readonly flipSheets: FlipSheetRuntime[] = []
   private flipEntries: RealBookSceneFlip[] = []
@@ -441,7 +431,14 @@ export class RealBookWebGLScene {
   private readonly innerMaterial: THREE.MeshStandardMaterial
   private readonly pageEdgeMaterial: THREE.MeshStandardMaterial
   private readonly desks = new Map<RealBookDesk, THREE.Texture>()
-  private readonly pageTextures = new Map<string, THREE.CanvasTexture>()
+  /** 页面纹理的光栅化器：Worker 画布 + LRU，主线程只拿 ImageBitmap 上传。 */
+  private readonly rasterizer: RealBookTextureRasterizer
+  /** 空白飞页面的纯纸色贴图：上游用 shader 纸色，我们的纹理已带纸色，这里按色缓存。 */
+  private readonly solidPapers = new Map<string, THREE.CanvasTexture>()
+  /** 主光的世界方向与它在相机空间的投影，供纸质 shader 的背光/包裹漫反射用。 */
+  private readonly lampPosition = new THREE.Vector3(-11, 13, 36)
+  private readonly lightDir = new THREE.Vector3(-11, 13, 36).normalize()
+  private readonly viewLightDir = new THREE.Vector3()
   private style: RealBookTextureStyle
   private pages: RealBookScenePages
   private deskId: RealBookDesk
@@ -520,39 +517,65 @@ export class RealBookWebGLScene {
     this.innerMaterial = new THREE.MeshStandardMaterial({ color: ENDPAPER_PALETTES[this.endpaperId].swatch, roughness: 0.96, metalness: 0 })
     this.pageEdgeMaterial = new THREE.MeshStandardMaterial({ map: makePageEdgeTexture(), roughness: 1, metalness: 0 })
 
+    // 垂直堆叠：桌面 → 后书板 → 书垛 → 书页；合上时前封面落在书垛顶上。
+    const initialThickness = bookThickness(this.pageCount, this.totalChars, this.progress)
+    const blockTotal = initialThickness.total
+    this.blockTotal = blockTotal
+    this.pagePlaneZ = BOOK_BASE_Z + BOARD_THICKNESS + blockTotal
+    const zh = BOARD_THICKNESS + blockTotal / 2
+
+    this.binding = new CaseBinding(
+      BOOK_HEIGHT,
+      COVER_OVERHANG,
+      BOARD_THICKNESS,
+      blockTotal,
+      this.coverMaterial.color.clone(),
+      this.innerMaterial,
+    )
+    this.binding.group.position.z = BOOK_BASE_Z
+    // 书板向内收 joint，给柔性接缝留出位置；书壳的两肩就能落在书板上。
+    const joint = this.binding.joint
+    const boardWidth = BOOK_WIDTH + COVER_OVERHANG - joint
     const coverTexture = makeCoverTexture(options.bookTitle, options.bookAuthor)
     const outerMaterial = new THREE.MeshStandardMaterial({ map: coverTexture, roughness: 0.62, metalness: 0 })
-    const spineMaterial = new THREE.MeshStandardMaterial({ map: makeSpineTexture(), roughness: 0.7, metalness: 0 })
-    const coverGeo = new THREE.BoxGeometry(BOOK_WIDTH + 0.15, BOOK_HEIGHT + 0.3, BOARD_THICKNESS)
-    this.cover = new THREE.Mesh(coverGeo, [this.coverMaterial, this.coverMaterial, this.coverMaterial, this.coverMaterial, outerMaterial, this.innerMaterial])
-    this.cover.position.set((BOOK_WIDTH + 0.15) / 2, 0, BOARD_THICKNESS / 2)
+
+    this.coverPivot.position.set(0, 0, BOOK_BASE_Z + zh)
+    this.cover = new THREE.Mesh(
+      new RoundedBoxGeometry(boardWidth, BOOK_HEIGHT + COVER_OVERHANG * 2, BOARD_THICKNESS, 2, 0.018),
+      [this.coverMaterial, this.coverMaterial, this.coverMaterial, this.coverMaterial, outerMaterial, this.innerMaterial],
+    )
+    // 局部 z = zh - tb/2：打开时绕书脊转到桌面，合上时落到书垛顶。
+    this.cover.position.set((BOOK_WIDTH + COVER_OVERHANG + joint) / 2, 0, zh - BOARD_THICKNESS / 2)
     this.cover.castShadow = true
     this.cover.receiveShadow = true
     this.coverPivot.add(this.cover)
     this.backBoard = new THREE.Mesh(
-      new THREE.BoxGeometry(BOOK_WIDTH + 0.15, BOOK_HEIGHT + 0.3, BOARD_THICKNESS),
+      new RoundedBoxGeometry(boardWidth, BOOK_HEIGHT + COVER_OVERHANG * 2, BOARD_THICKNESS, 2, 0.018),
       [this.coverMaterial, this.coverMaterial, this.coverMaterial, this.coverMaterial, this.innerMaterial, this.coverMaterial],
     )
-    this.backBoard.position.set((BOOK_WIDTH + 0.15) / 2, 0, -BOARD_THICKNESS / 2)
+    this.backBoard.position.set((BOOK_WIDTH + COVER_OVERHANG + joint) / 2, 0, BOOK_BASE_Z + BOARD_THICKNESS / 2)
     this.backBoard.castShadow = true
     this.backBoard.receiveShadow = true
-
-    this.spine = new THREE.Mesh(
-      new THREE.BoxGeometry(0.075, BOOK_HEIGHT + 0.26, 1),
-      spineMaterial,
-    )
-    this.spine.position.set(0, 0, 0.035)
 
     // 左右页各一份几何：悬停预掀只弯被指到的那一页，共用一份几何会两页一起翘。
     this.pageGeometryLeft = makePageGeometry()
     this.pageGeometryRight = makePageGeometry()
     this.pageRestLeft = new Float32Array(this.pageGeometryLeft.attributes.position.array)
     this.pageRestRight = new Float32Array(this.pageGeometryRight.attributes.position.array)
-    this.pageLeft = new THREE.Mesh(this.pageGeometryLeft, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0 }))
-    this.pageRight = new THREE.Mesh(this.pageGeometryRight, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0 }))
+    const leftPaper = createPaperMaterial()
+    const rightPaper = createPaperMaterial()
+    this.pageUniformsLeft = leftPaper.uniforms
+    this.pageUniformsRight = rightPaper.uniforms
+    // 静态页的纸色/中缝已经画在纹理里：不再叠 shader 的中缝压暗，也不透出纸背。
+    for (const uniforms of [this.pageUniformsLeft, this.pageUniformsRight]) {
+      uniforms.uShowThrough.value = 0
+      uniforms.uGutter.value = 0
+    }
+    this.pageLeft = new THREE.Mesh(this.pageGeometryLeft, leftPaper.material)
+    this.pageRight = new THREE.Mesh(this.pageGeometryRight, rightPaper.material)
     const pageScaleY = this.pageHeightWorld / BOOK_HEIGHT
-    this.pageLeft.position.set(-BOOK_WIDTH / 2, 0, 0.1)
-    this.pageRight.position.set(this.singlePage ? 0 : BOOK_WIDTH / 2, 0, 0.1)
+    this.pageLeft.position.set(-BOOK_WIDTH / 2, 0, this.pagePlaneZ)
+    this.pageRight.position.set(this.singlePage ? 0 : BOOK_WIDTH / 2, 0, this.pagePlaneZ)
     this.pageLeft.scale.y = pageScaleY
     this.pageRight.scale.y = pageScaleY
     this.pageLeft.visible = !this.singlePage
@@ -568,7 +591,15 @@ export class RealBookWebGLScene {
     this.blockLeft.receiveShadow = true
     this.blockRight.receiveShadow = true
 
-    this.bookGroup.add(this.pageLeft, this.pageRight, this.blockLeft, this.blockRight, this.coverPivot, this.backBoard, this.spine)
+    this.bookGroup.add(
+      this.pageLeft,
+      this.pageRight,
+      this.blockLeft,
+      this.blockRight,
+      this.coverPivot,
+      this.backBoard,
+      this.binding.group,
+    )
     for (let slot = 0; slot < MAX_FLIP_SHEETS; slot += 1) this.flipSheets.push(this.createFlipSheet(slot))
     this.scene.add(this.bookGroup)
 
@@ -585,14 +616,14 @@ export class RealBookWebGLScene {
       new THREE.PlaneGeometry(1, 1),
       new THREE.MeshBasicMaterial({ map: makeShadowTexture(), transparent: true, opacity: 0.8, depthWrite: false }),
     )
-    this.shadow.position.z = -0.21
+    this.shadow.position.z = -0.218
     this.shadow.scale.set(BOOK_WIDTH * 2 + 1.4, BOOK_HEIGHT + 1.2, 1)
     this.scene.add(this.shadow)
 
     // 参考站的灯是暖白而不是琥珀色：早先 #ffe9cf 会把纸和桌面一起染橙，
     // 纸面蓝通道被压掉两成，怎么调纸色都回不到参考图的米白。
     const spot = new THREE.SpotLight('#fff6ec', 3.5, 0, 0.62, 1, 0)
-    spot.position.set(-11, 13, 36)
+    spot.position.copy(this.lampPosition)
     spot.target.position.set(0, 0, 0)
     spot.castShadow = true
     spot.shadow.mapSize.set(2048, 2048)
@@ -601,6 +632,8 @@ export class RealBookWebGLScene {
     spot.shadow.camera.near = 12
     spot.shadow.camera.far = 80
     this.scene.add(spot, spot.target)
+    // 解析软影用同一盏灯的位置：页面上被飞页挡住的灯射线由 shader 求交。
+    shadowRig.uLampW.value.copy(this.lampPosition)
     // 环境光取中性：暖环境光叠在暖色灯的上面，会把纸和桌面一起推回橙色。
     this.scene.add(new THREE.HemisphereLight('#f6f3ee', '#241a12', 0.6))
     // 右前方补光：主光偏左上，右侧外口原本比左侧暗一截，纸面读起来半边脏。
@@ -610,6 +643,11 @@ export class RealBookWebGLScene {
 
     this.resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => this.resize())
     this.resizeObserver?.observe(host)
+    // 纹理光栅化在 Worker 里做；占位图先上，画完再贴一次。
+    this.rasterizer = new RealBookTextureRasterizer({
+      onReady: () => this.applyPages(),
+      maxAnisotropy: this.renderer.capabilities.getMaxAnisotropy(),
+    })
     this.resize()
     this.applyPages()
     this.applyProgress()
@@ -617,102 +655,24 @@ export class RealBookWebGLScene {
     this.loop(performance.now())
   }
 
-  /** 造一张飞页：几何 + 两个朝向的材质 + 自己的布料 + 影子。 */
-  private createFlipSheet(slot: number): FlipSheetRuntime {
-    const geometry = new THREE.PlaneGeometry(BOOK_WIDTH, BOOK_HEIGHT, FLIP_SEGMENTS_X, FLIP_SEGMENTS_Y)
-    const group = new THREE.Group()
-    const front = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0, side: THREE.FrontSide }))
-    const back = new THREE.Mesh(makeFlippedUvGeometry(geometry), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0, side: THREE.BackSide }))
+  /** 造一张飞页：双面纸质网格 + 布料。软影由 shadowRig 统一发布，不再单独建影子网格。 */
+  private createFlipSheet(_slot: number): FlipSheetRuntime {
+    // LeafMesh 自带 40×26 顶点、双面材质、曲率属性；正/背面在 shader 里由 gl_FrontFacing 选纹理。
+    const leaf = new LeafMesh(BOOK_WIDTH, BOOK_HEIGHT)
+    // 飞页的纸色与中缝同样来自页面纹理。
+    leaf.uniforms.uGutter.value = 0
     // 顶点每帧被布料改写，包围球一算就是旧的；关掉视锥剔除，免得纸飞到半边突然被裁掉。
-    front.frustumCulled = false
-    back.frustumCulled = false
-    front.receiveShadow = true
-    back.receiveShadow = true
-    front.castShadow = true
-    back.castShadow = true
-    group.add(front, back)
+    leaf.mesh.frustumCulled = false
+    const group = new THREE.Group()
+    group.add(leaf.mesh)
     group.visible = false
     group.scale.y = this.pageHeightWorld / BOOK_HEIGHT
-    // 影子：与飞页同一套顶点数，每帧把布料的投影与透明度写进去，纸的形状决定影子的形状。
-    const vertexCount = geometry.attributes.position.count
-    const shadowGeometry = new THREE.BufferGeometry()
-    shadowGeometry.setIndex(new THREE.BufferAttribute((geometry.index!.array as Uint16Array).slice(), 1))
-    shadowGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3))
-    shadowGeometry.setAttribute('aAlpha', new THREE.BufferAttribute(new Float32Array(vertexCount), 1))
-    const shadowMaterial = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      depthTest: true,
-      side: THREE.DoubleSide,
-      uniforms: { uInk: { value: new THREE.Color('#1b120b') } },
-      vertexShader: `
-        attribute float aAlpha;
-        varying float vAlpha;
-        void main() {
-          vAlpha = aAlpha;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform vec3 uInk;
-        varying float vAlpha;
-        void main() {
-          gl_FragColor = vec4(uInk, vAlpha);
-        }
-      `,
-    })
-    const shadow = new THREE.Mesh(shadowGeometry, shadowMaterial)
-    shadow.frustumCulled = false
-    shadow.renderOrder = 2
-    shadow.visible = false
-    // 纸间遮挡：同一份顶点再叠一层，只写「被上面的纸盖住多少」，贴在纸张表面。
-    const shadeGeometry = new THREE.BufferGeometry()
-    shadeGeometry.setIndex(new THREE.BufferAttribute((geometry.index!.array as Uint16Array).slice(), 1))
-    // 独立的位置属性：每帧复制纸张顶点并往镜头方向抬 0.005，避免与纸张共面时被深度测试剔掉。
-    shadeGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3))
-    shadeGeometry.setAttribute('normal', geometry.attributes.normal!)
-    shadeGeometry.setAttribute('aAlpha', new THREE.BufferAttribute(new Float32Array(vertexCount), 1))
-    const shadeMaterial = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      depthTest: true,
-      side: THREE.DoubleSide,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-      uniforms: { uInk: { value: new THREE.Color('#24170e') } },
-      vertexShader: `
-        attribute float aAlpha;
-        varying float vAlpha;
-        void main() {
-          vAlpha = aAlpha;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform vec3 uInk;
-        varying float vAlpha;
-        void main() {
-          gl_FragColor = vec4(uInk, vAlpha);
-        }
-      `,
-    })
-    const shade = new THREE.Mesh(shadeGeometry, shadeMaterial)
-    shade.frustumCulled = false
-    shade.renderOrder = 1
-    shade.visible = false
-    group.add(shade)
-    this.bookGroup.add(group, shadow)
+    this.bookGroup.add(group)
     return {
       group,
-      geometry,
-      backGeometry: back.geometry,
-      restPositions: new Float32Array(geometry.attributes.position.array),
-      front,
-      back,
+      leaf,
+      sim: new LeafSim(BOOK_WIDTH, BOOK_HEIGHT),
       cloth: new ClothSheet(),
-      shadow,
-      shade,
       id: 0,
       direction: 1,
       progress: 0,
@@ -804,23 +764,13 @@ export class RealBookWebGLScene {
     page: RealBookTexturePage | null,
     side: 'left' | 'right',
     omitBodyText: boolean,
-  ): THREE.CanvasTexture | null {
+  ): THREE.Texture | null {
     if (!page) return null
     const style = { ...this.style, side, omitBodyText }
     const key = `${side}:${omitBodyText ? 'dom' : 'paper'}:${textureStyleSignature(page, style)}`
-    const cached = this.pageTextures.get(key)
-    if (cached) return cached
     const plan = buildPageTexturePlan(page, style)
-    const canvas = drawPageTexture(plan, style, PAGE_TEXTURE_SCALE)
-    if (!canvas) return null
-    const texture = new THREE.CanvasTexture(canvas)
-    texture.colorSpace = THREE.SRGBColorSpace
-    texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy())
-    texture.minFilter = THREE.LinearMipmapLinearFilter
-    texture.magFilter = THREE.LinearFilter
-    texture.generateMipmaps = true
-    this.pageTextures.set(key, texture)
-    return texture
+    // 等待期间先给同色纸，纹理就绪后 onReady 会重新贴一次。
+    return this.rasterizer.get(key, plan, style, PAGE_TEXTURE_SCALE, this.solidPaperTexture(this.style.paper))
   }
 
   setPages(pages: RealBookScenePages, style = this.style): void {
@@ -830,15 +780,9 @@ export class RealBookWebGLScene {
   }
 
   private applyPages(): void {
-    const apply = (mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>, page: RealBookTexturePage | null, side: 'left' | 'right'): void => {
-      // 静态页正文交给 DOM 文本层：纹理只画纸、批注、图片、页眉页脚。
-      const texture = this.textureFor(page, side, true)
-      setTextureOnMaterial(mesh.material, texture)
-      // 空白页没有纹理，材质不能保持纯白；否则标题页左侧会亮成一块白纸。
-      mesh.material.color.set(texture ? '#ffffff' : this.style.paper)
-    }
-    apply(this.pageLeft, this.pages.left, 'left')
-    apply(this.pageRight, this.pages.right, 'right')
+    // 静态页正文交给 DOM 文本层：纹理只画纸、批注、图片、页眉页脚。
+    this.applyPageTexture(this.pageUniformsLeft, this.pages.left, 'left')
+    this.applyPageTexture(this.pageUniformsRight, this.pages.right, 'right')
     // 页面样式（字号/纸张色）或批注变了，飞页上的纹理也要跟着重画。
     // 这里拿到的页对象还是上一次的，所以只打标记，等下一次 setFlips 拿到新对象再画。
     this.sheetsNeedRefresh = true
@@ -847,19 +791,44 @@ export class RealBookWebGLScene {
     }
   }
 
-  /** 把槽位上的两页画成纹理贴到纸的正反面。 */
+  /** 静态页只有正面：uFront 换成这一页的纹理；没有页时铺纯纸色，避免亮成一块白纸。 */
+  private applyPageTexture(
+    uniforms: PaperUniforms,
+    page: RealBookTexturePage | null,
+    side: 'left' | 'right',
+  ): void {
+    uniforms.uFront.value = this.textureFor(page, side, true) ?? this.solidPaperTexture(this.style.paper)
+  }
+
+  /** 纯纸色贴图：飞页某一面没有页（书首/书尾的空白面）时用它，避免 shader 的白色默认值亮出一块白纸。 */
+  private solidPaperTexture(color: string | undefined): THREE.Texture {
+    const key = color || '#f4ecd8'
+    const cached = this.solidPapers.get(key)
+    if (cached) return cached
+    if (typeof document === 'undefined') return BLANK_TEXTURE
+    const canvas = document.createElement('canvas')
+    canvas.width = 8
+    canvas.height = 8
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return BLANK_TEXTURE
+    ctx.fillStyle = key
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    this.solidPapers.set(key, texture)
+    return texture
+  }
+
+  /** 把槽位上的两页画成纹理交给 LeafMesh：正面印右页、纸背印左页，与 DOM 贴面层同一套分配。 */
   private applySheetPages(sheet: FlipSheetRuntime): void {
-    const apply = (mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>, page: RealBookTexturePage | null, side: 'left' | 'right'): void => {
-      // 最上面那张纸的正文由 DOM 贴面（omitBodyText），其余飞页仍把正文画进纹理。
-      const texture = this.textureFor(page, side, sheet.domText)
-      setTextureOnMaterial(mesh.material, texture)
-      mesh.material.color.set(texture ? '#ffffff' : this.style.paper)
-    }
     // 正反面该印哪一页由 `flyerFacePages` 统一决定（往回翻时两页互换），
     // DOM 贴面层用的是同一个函数，两层不会各印一页。
     const faces = flyerFacePages<RealBookTexturePage>(sheet.direction, sheet.frontPage, sheet.backPage)
-    apply(sheet.front, faces[0].page, faces[0].side)
-    apply(sheet.back, faces[1].page, faces[1].side)
+    const paper = this.solidPaperTexture(this.style.paper)
+    const front = this.textureFor(faces[0].page, faces[0].side, sheet.domText) ?? paper
+    const back = this.textureFor(faces[1].page, faces[1].side, sheet.domText) ?? paper
+    // LeafMesh 的 uFront 是 gl_FrontFacing 那一面（右页），uBack 用 1-u 采样（左页）。
+    sheet.leaf.setTextures(front, back)
   }
 
   setSinglePage(singlePage: boolean, pageWidth: number, pageHeight: number): void {
@@ -872,6 +841,7 @@ export class RealBookWebGLScene {
     this.pageRight.position.x = singlePage ? 0 : BOOK_WIDTH / 2
     this.pageLeft.scale.y = scaleY
     this.pageRight.scale.y = scaleY
+    this.binding.group.visible = !singlePage
     for (const sheet of this.flipSheets) sheet.group.scale.y = scaleY
     this.updateCamera()
   }
@@ -939,12 +909,12 @@ export class RealBookWebGLScene {
       if (!entry) {
         sheet.id = 0
         sheet.group.visible = false
-        sheet.shadow.visible = false
         continue
       }
       const target = Math.max(0, Math.min(1.05, Number.isFinite(entry.progress) ? entry.progress : 0))
       // 只有最上面那张纸的正文走 DOM：它在 canvas 之上不会挡住别的纸。
-      const domText = index === 0
+      // 窄屏卷页的纸会卷成筒，DOM 小段在卷曲处会叠成一团，改由纹理带字。
+      const domText = index === 0 && !this.singlePage
       if (sheet.id !== entry.id) {
         // 新纸：从它自己的起始进度开始，而不是从上一个 id 停下的地方飞过来。
         sheet.id = entry.id
@@ -1011,30 +981,36 @@ export class RealBookWebGLScene {
   }
 
   private applyProgress(): void {
-    const thickness = bookThickness(this.pageCount, this.totalChars, this.progress)
-    this.spine.scale.z = Math.max(0.05, thickness.total)
-    this.spine.position.z = 0.035 - thickness.total / 2
-    this.blockLeft.scale.z = Math.max(0.012, thickness.left)
-    this.blockRight.scale.z = Math.max(0.012, thickness.right)
-    this.blockLeft.position.z = 0.085 - Math.max(0.012, thickness.left) / 2
-    this.blockRight.position.z = 0.085 - Math.max(0.012, thickness.right) / 2
-    this.blockLeft.visible = thickness.left > 0.01
-    this.blockRight.visible = thickness.right > 0.01
-    this.bookGroup.position.x = bookOffsetX(this.open01, thickness.hingeZ, this.singlePage)
+    // 书垛总厚度在场景创建时固定；进度只把纸从右垛连续转移到左垛。
+    const total = this.blockTotal
+    const left = total * Math.max(0, Math.min(1, this.progress))
+    const right = total - left
+    this.blockLeft.scale.z = Math.max(0.012, left)
+    this.blockRight.scale.z = Math.max(0.012, right)
+    // 书垛顶面比书页低 2mm：两者共面会在中缝闪出一条锯齿状的白边。
+    const top = this.pagePlaneZ - 0.002
+    this.blockLeft.position.z = top - left / 2
+    this.blockRight.position.z = top - right / 2
+    this.blockLeft.visible = left > 0.01
+    this.blockRight.visible = right > 0.01
+    this.bookGroup.position.x = bookOffsetX(this.open01, BOARD_THICKNESS + total / 2, this.singlePage)
+    this.binding.update(Math.PI * (1 - this.open01), BOARD_THICKNESS + total, BOARD_THICKNESS + total)
   }
 
   private applyOpen(immediate = false): void {
     const open = this.open01
     this.coverPivot.rotation.y = -Math.PI * open
-    this.coverPivot.position.z = 0.115 - 0.03 * open
     this.pageLeft.visible = !this.singlePage && open > 0.02
     this.pageRight.visible = open > 0.02
     this.blockLeft.visible = open > 0.02 && this.blockLeft.scale.z > 0.012
     this.blockRight.visible = this.blockRight.scale.z > 0.012
-    const thickness = bookThickness(this.pageCount, this.totalChars, this.progress)
-    this.bookGroup.position.x = bookOffsetX(open, thickness.hingeZ, this.singlePage)
+    this.binding.group.visible = !this.singlePage
+    this.binding.update(Math.PI * (1 - open), BOARD_THICKNESS + this.blockTotal, BOARD_THICKNESS + this.blockTotal)
+    this.bookGroup.position.x = bookOffsetX(open, BOARD_THICKNESS + this.blockTotal / 2, this.singlePage)
     this.shadow.material.opacity = 0.46 + 0.34 * open
-    if (!immediate) this.bookGroup.position.z = Math.sin(open * Math.PI) * 0.015
+    // 书壳现在只在原位旋转，整本书始终贴着桌面；不再给 bookGroup 加抬升。
+    this.bookGroup.position.z = 0
+    void immediate
   }
 
   resize(): void {
@@ -1057,6 +1033,16 @@ export class RealBookWebGLScene {
     this.camera.updateMatrixWorld()
   }
 
+  /** 主光在相机空间的方向：纸质 shader 的包裹漫反射/背光透射读它。 */
+  private updatePaperLighting(): void {
+    this.viewLightDir.copy(this.lightDir).transformDirection(this.camera.matrixWorldInverse)
+    this.pageUniformsLeft.uLightDirV.value.copy(this.viewLightDir)
+    this.pageUniformsRight.uLightDirV.value.copy(this.viewLightDir)
+    for (const sheet of this.flipSheets) {
+      sheet.leaf.uniforms.uLightDirV.value.copy(this.viewLightDir)
+    }
+  }
+
   /**
    * 用 40×8 质点布料驱动飞页网格。
    *
@@ -1066,6 +1052,13 @@ export class RealBookWebGLScene {
    * 用双线性采样取场，指望法线把 8 段的高度方向抹匀。
    */
   private writeFlipGeometry(sheet: FlipSheetRuntime, t: number): void {
+    if (this.singlePage) {
+      // 窄屏单页：纸绕一条会走的折线卷起，没被卷到的字保持平坦；卷过 90° 后换面由 shader 处理。
+      const clamped = Math.max(0, Math.min(1, t))
+      const curlT = sheet.direction === 1 ? clamped : 1 - clamped
+      sheet.leaf.writePhoneCurl(curlT, 0.5, 0.5, 0)
+      return
+    }
     const field = flipClothField({
       width: BOOK_WIDTH,
       // 飞页组的 y 已经按窄屏页高缩放过，这里的局部高度仍是整页高。
@@ -1080,133 +1073,103 @@ export class RealBookWebGLScene {
     } else {
       sheet.cloth.step(field, this.frameDelta)
     }
-    const positions = sheet.geometry.attributes.position
-    const rest = sheet.restPositions
+    // 布料（40×8）→ LeafSim 载体：LeafMesh 只读 x/z，y 由行号给出，与布料的 y 一致。
+    // 运动仍来自 ClothSheet；LeafSim 的解算器保留给后续的拖页/预掀，不在这里步进。
+    const sim = sheet.sim
     const sample = this.clothSample
-    for (let index = 0; index < positions.count; index += 1) {
-      const rx = rest[index * 3]!
-      const ry = rest[index * 3 + 1]!
-      const u = (rx + BOOK_WIDTH / 2) / BOOK_WIDTH
-      const v = (ry + BOOK_HEIGHT / 2) / BOOK_HEIGHT
-      sheet.cloth.sampleInto(u, v, sample, 0)
-      positions.setXYZ(index, sample[0]!, sample[1]!, sample[2]!)
+    for (let row = 0; row < sim.R; row += 1) {
+      const v = sim.R > 1 ? row / (sim.R - 1) : 0
+      for (let column = 0; column < sim.N; column += 1) {
+        const u = sim.N > 1 ? column / (sim.N - 1) : 0
+        sheet.cloth.sampleInto(u, v, sample, 0)
+        const index = row * sim.N + column
+        sim.x[index] = sample[0]!
+        sim.z[index] = sample[2]!
+      }
     }
-    positions.needsUpdate = true
-    sheet.geometry.computeVertexNormals()
+    sim.side = sheet.direction === 1 ? 1 : -1
+    // LeafMesh 一次写出顶点、法线与曲率；纸面的暗部、透光与中缝都读这份数据。
+    sheet.leaf.write(sim)
   }
 
   /**
-   * 把这一帧的飞页形状投影成影子网格。
+   * 把这一帧飞行纸的截面发布给纸质 shader 的解析软影。
    *
-   * 影子用与飞页同一份布料顶点（41×27），按高度沿光向偏移、按轮廓外扩成半影；
-   * 透明度由进度、离纸高度与轮廓边缘共同决定（`buildFlipShadow`）。影子画在
-   * 纸面上方、飞页最低点下方的平面上，靠深度测试被飞页本身遮住，只在露出的
-   * 纸面上显形——这就是「页间自阴影」看得见的那一圈。
+   * 每张纸按页高的下/中/上取三条截面（20 个采样点），写进共享的浮点纹理；
+   * 接收纸面在 shader 里沿灯光射线与这些截面求交，得到跟着纸形走的软影与半影。
+   * 只发布最上面的两张（`SH_SLOTS`），透明度随落定包络衰减。
    */
-  private writeFlipShadow(sheet: FlipSheetRuntime, t: number): void {
-    const mesh = buildFlipShadow({
-      columns: FLIP_GRID_COLUMNS,
-      rows: FLIP_GRID_ROWS,
-      cloth: sheet.geometry.attributes.position.array as Float32Array,
-      scaleY: sheet.group.scale.y,
-      zOffset: sheet.group.position.z,
-      pageZ: PAGE_PLANE_Z,
-      shadowZ: FLIP_SHADOW_Z,
-      progress: t,
-      bounds: {
-        minX: this.singlePage ? -BOOK_WIDTH / 2 : -BOOK_WIDTH,
-        maxX: this.singlePage ? BOOK_WIDTH / 2 : BOOK_WIDTH,
-        minY: -this.pageHeightWorld / 2,
-        maxY: this.pageHeightWorld / 2,
-      },
+  private syncShadowRig(): void {
+    const count = Math.min(this.flipEntries.length, this.flipSheets.length)
+    const active: FlipSheetRuntime[] = []
+    for (let index = 0; index < count; index += 1) active.push(this.flipSheets[index]!)
+    const casters = active
+      .map((sheet) => ({
+        sheet,
+        opacity: Math.pow(Math.max(0, Math.sin(Math.PI * Math.max(0, Math.min(1, sheet.progress)))), 0.8),
+      }))
+      .filter((item) => item.opacity > 0.01)
+      .slice(0, SH_SLOTS)
+    const texture = shadowRig.uShTex.value
+    if (!casters.length || !texture) {
+      shadowRig.uShN.value = 0
+      shadowRig.uShOpacity.value.fill(0)
+      this.pageUniformsLeft.uShRecv.value = 0
+      this.pageUniformsRight.uShRecv.value = 0
+      for (const sheet of this.flipSheets) {
+        sheet.leaf.uniforms.uShRecv.value = 0
+        sheet.leaf.uniforms.uShSelf.value = -1
+      }
+      return
+    }
+    const data = texture.image.data as Float32Array
+    // 与 LeafMesh 的行对齐：页脚、页心、页眉三条截面。
+    const rows = [0, GRID_V >> 1, GRID_V - 1]
+    shadowRig.uShOpacity.value.fill(0)
+    casters.forEach(({ sheet, opacity }, slot) => {
+      shadowRig.uShOpacity.value[slot] = opacity
+      sheet.leaf.mesh.updateWorldMatrix(true, false)
+      const matrix = sheet.leaf.mesh.matrixWorld
+      rows.forEach((row, index) => {
+        sheet.leaf.exportRow(data, (slot * SH_ROWS + index) * SH_COLS, SH_COLS, row, matrix)
+      })
     })
-    const positions = sheet.shadow.geometry.attributes.position as THREE.BufferAttribute
-    const alpha = sheet.shadow.geometry.attributes.aAlpha as THREE.BufferAttribute
-    ;(positions.array as Float32Array).set(mesh.positions)
-    ;(alpha.array as Float32Array).set(mesh.alpha)
-    positions.needsUpdate = true
-    alpha.needsUpdate = true
+    texture.needsUpdate = true
+    shadowRig.uShN.value = casters.length
+    // 静态页永远是接收面；飞行纸既可能被上面那张遮住，也可能自己当投射源。
+    this.pageUniformsLeft.uShRecv.value = 1
+    this.pageUniformsRight.uShRecv.value = 1
+    const slots = new Map<FlipSheetRuntime, number>()
+    casters.forEach(({ sheet }, slot) => slots.set(sheet, slot))
+    for (const sheet of this.flipSheets) {
+      const slot = slots.get(sheet)
+      sheet.leaf.uniforms.uShSelf.value = slot ?? -1
+      sheet.leaf.uniforms.uShRecv.value = active.includes(sheet) ? 1 : 0
+    }
   }
 
   /**
    * 逐帧推进所有在飞的纸。
    *
-   * 多张纸同时飞的时候，每张纸各有自己的弹簧、布料和影子；层次上先起的纸在**上面**——
+   * 多张纸同时飞的时候，每张纸各有自己的弹簧与布料；层次上先起的纸在**上面**——
    * 后来那张是从它底下抽出来的，两人的落点还叠在一起时，谁压谁必须固定，否则会闪。
+   * 页间软影由 `syncShadowRig` 统一发布，不再有单独的影子网格。
    */
   private updateFlip(): void {
     const count = this.flipEntries.length
-    let topProgress = 0
-    // 每张纸这一帧的影子覆盖范围；下面的纸要从上面各张的栅格里取自己被盖住多少。
-    const grids: Array<FlipShadowGrid | null> = []
     for (let index = 0; index < this.flipSheets.length; index += 1) {
       const sheet = this.flipSheets[index]!
       const active = index < count
       sheet.group.visible = active
-      sheet.shadow.visible = active
-      sheet.shade.visible = false
-      if (!active) {
-        grids.push(null)
-        continue
-      }
+      if (!active) continue
       this.advanceFlip(sheet, this.frameDelta)
-      const t = sheet.progress
-      if (index === 0) topProgress = t
-      // 纸页 pose 已包含绕脊旋转，组本身不再重复旋转。
-      sheet.group.position.set(0, 0, 0.105 + (count - index) * 0.004)
-      this.writeFlipGeometry(sheet, t)
-      // 布料写完再投影子：影子读的就是这一帧的纸面形状。
-      this.writeFlipShadow(sheet, t)
-      grids.push(rasterizeFlipShadow(
-        sheet.shadow.geometry.attributes.position.array as Float32Array,
-        sheet.shadow.geometry.attributes.aAlpha.array as Float32Array,
-        {
-          columns: 28,
-          rows: 36,
-          minX: this.singlePage ? -BOOK_WIDTH / 2 : -BOOK_WIDTH,
-          maxX: this.singlePage ? BOOK_WIDTH / 2 : BOOK_WIDTH,
-          minY: -this.pageHeightWorld / 2,
-          maxY: this.pageHeightWorld / 2,
-        },
-      ))
+      // 纸页 pose 已包含绕脊旋转，组本身不再重复旋转；页心高度就是书页所在平面。
+      // 单页卷页的网格局部 x 是 0..W，需要整体左移半页，才能与居中的书页对齐。
+      sheet.group.position.set(this.singlePage ? -BOOK_WIDTH / 2 : 0, 0, this.pagePlaneZ + (count - index) * 0.004)
+      this.writeFlipGeometry(sheet, sheet.progress)
     }
-    // 第二遍：上面几张纸的影子投到下面这张纸上。
-    // DOM 永远画在最上面，这里靠一张贴着纸面的叠加网格把纸压暗，
-    // 上层纸本身仍靠深度测试挡住它——看到的就是上层纸边缘外的一圈暗影。
-    for (let index = 1; index < this.flipSheets.length && index < count; index += 1) {
-      const sheet = this.flipSheets[index]!
-      const alphaAttr = sheet.shade.geometry.attributes.aAlpha as THREE.BufferAttribute
-      const shadePositions = sheet.shade.geometry.attributes.position as THREE.BufferAttribute
-      const values = alphaAttr.array as Float32Array
-      const shadeArray = shadePositions.array as Float32Array
-      const positions = sheet.geometry.attributes.position.array as Float32Array
-      let any = false
-      for (let vertex = 0; vertex < values.length; vertex += 1) {
-        const x = positions[vertex * 3]!
-        const y = positions[vertex * 3 + 1]!
-        const z = positions[vertex * 3 + 2]!
-        // 与纸张同一形状，往镜头方向抬一点：共面会被深度测试整片剔掉。
-        shadeArray[vertex * 3] = x
-        shadeArray[vertex * 3 + 1] = y
-        shadeArray[vertex * 3 + 2] = z + 0.005
-        let shadow = 0
-        const worldY = y * sheet.group.scale.y
-        for (let above = 0; above < index; above += 1) {
-          const grid = grids[above]
-          if (grid) shadow = Math.max(shadow, sampleFlipShadowGrid(grid, x, worldY))
-        }
-        // 纸与纸比纸与桌面近：略加深一成；上限压住，几张纸叠在一起也不会糊成一片黑。
-        const value = Math.min(0.5, shadow * 1.2)
-        values[vertex] = value
-        if (value > 0.002) any = true
-      }
-      alphaAttr.needsUpdate = true
-      shadePositions.needsUpdate = true
-      sheet.shade.visible = any
-    }
-    this.bookGroup.position.z = count
-      ? Math.sin(Math.PI * Math.max(0, Math.min(1, topProgress))) * 0.02
-      : 0
+    // 布料写完再发布截面：软影读的就是这一帧的纸面形状。
+    this.syncShadowRig()
   }
 
   getBookScreenRect(): BookScreenRect {
@@ -1217,10 +1180,10 @@ export class RealBookWebGLScene {
     const edgeMaxX = this.singlePage ? BOOK_WIDTH / 2 : BOOK_WIDTH
     const halfY = this.pageHeightWorld / 2
     const points = [
-      [edgeMinX, -halfY, 0.1],
-      [edgeMaxX, -halfY, 0.1],
-      [edgeMinX, halfY, 0.1],
-      [edgeMaxX, halfY, 0.1],
+      [edgeMinX, -halfY, this.pagePlaneZ],
+      [edgeMaxX, -halfY, this.pagePlaneZ],
+      [edgeMinX, halfY, this.pagePlaneZ],
+      [edgeMaxX, halfY, this.pagePlaneZ],
     ] as const
     let minX = Number.POSITIVE_INFINITY
     let minY = Number.POSITIVE_INFINITY
@@ -1238,10 +1201,9 @@ export class RealBookWebGLScene {
     return { left: minX, top: minY, width: maxX - minX, height: maxY - minY }
   }
 
-  /** 飞页纸面上的一点：取布料当前的形状，再换到世界坐标。 */
+  /** 飞页纸面上的一点：取 LeafMesh 实际渲染的三角面，再换到世界坐标。 */
   private sheetSurface(sheet: FlipSheetRuntime, u: number, v: number, out: THREE.Vector3): void {
-    sheet.cloth.sampleInto(u, v, this.clothSample, 0)
-    out.set(this.clothSample[0]!, this.clothSample[1]!, this.clothSample[2]!)
+    sheet.leaf.pointAt(u, v, out)
     sheet.group.localToWorld(out)
   }
 
@@ -1330,6 +1292,7 @@ export class RealBookWebGLScene {
       this.applyOpen(true)
     }
     this.updateCamera()
+    this.updatePaperLighting()
     this.updateFlip()
     this.updatePeel(delta, now)
     this.shadow.scale.x = BOOK_WIDTH * 2 + 1.4 + Math.sin(this.open01 * Math.PI) * 0.25
@@ -1392,6 +1355,7 @@ export class RealBookWebGLScene {
     }
     attribute.needsUpdate = true
     geometry.computeVertexNormals()
+    writePageCurvature(geometry)
     this.peeledSide = side
     this.peelCorner = corner
     this.peelApplied = true
@@ -1412,6 +1376,7 @@ export class RealBookWebGLScene {
     ;(attribute.array as Float32Array).set(rest)
     attribute.needsUpdate = true
     geometry.computeVertexNormals()
+    writePageCurvature(geometry)
   }
 
   dispose(): void {
@@ -1420,10 +1385,15 @@ export class RealBookWebGLScene {
     cancelAnimationFrame(this.frame)
     this.resizeObserver?.disconnect()
     this.resizeObserver = null
-    this.pageTextures.forEach((texture) => texture.dispose())
-    this.pageTextures.clear()
+    this.rasterizer.dispose()
+    this.solidPapers.forEach((texture) => texture.dispose())
+    this.solidPapers.clear()
     this.desks.forEach((texture) => texture.dispose())
     this.desks.clear()
+    // 书壳的布纹 DataTexture 不在材质 map 上，交给 CaseBinding 自己释放；
+    // 先从场景摘掉，避免下面的 traverse 再释放一次几何/材质。
+    this.bookGroup.remove(this.binding.group)
+    this.binding.dispose()
     this.scene.traverse((object: THREE.Object3D) => {
       const mesh = object as THREE.Mesh
       if (mesh.geometry) mesh.geometry.dispose?.()

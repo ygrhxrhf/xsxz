@@ -132,6 +132,7 @@ import type { Annotation, BookSearchHit } from '@shared/types'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import ReaderMindmap from '../components/ReaderMindmap.vue'
 import BookMapPage from './BookMapPage.vue'
+import AtlasDock from './atlas/AtlasDock.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
@@ -4437,6 +4438,14 @@ onUnmounted(() => {
         </n-drawer-content>
         </n-config-provider>
       </n-drawer>
+
+      <!-- 阅读器左下角的地图胶囊：有已识别图片地图或已定位文字地点时出现 -->
+      <AtlasDock
+        v-if="book?.id && !showMap"
+        :key="book.id"
+        :book-id="book.id"
+        @open-map-page="showMap = true"
+      />
 
       <!-- Book map drawer -->
       <n-drawer v-model:show="showMap" placement="right" :width="760">

@@ -200,16 +200,20 @@ function ensureImages(): void {
 
 watch(() => `${props.bookId}|${imageFiles.value.join('|')}`, ensureImages, { immediate: true })
 
-const textPageQuad: PageScreenQuad = [
+/*
+ * 正文的 DOM 图层使用与分页器同一套逻辑页尺寸：桌面固定 640×920，窄屏单页用视口
+ * 重排后的 pageWidth/pageHeight。若这里写死 640×920，手机会把超出 640 的行画到纸外。
+ */
+const textPageQuad = computed<PageScreenQuad>(() => [
   { x: 0, y: 0 },
-  { x: PAGE_TEXTURE_WIDTH, y: 0 },
-  { x: PAGE_TEXTURE_WIDTH, y: PAGE_TEXTURE_HEIGHT },
-  { x: 0, y: PAGE_TEXTURE_HEIGHT },
-]
+  { x: Math.max(1, props.pageWidth), y: 0 },
+  { x: Math.max(1, props.pageWidth), y: Math.max(1, props.pageHeight) },
+  { x: 0, y: Math.max(1, props.pageHeight) },
+])
 const textLineHeight = computed(() => Math.max(1, props.fontSize * props.lineHeight))
 const textPageStyle = computed(() => ({
-  width: `${PAGE_TEXTURE_WIDTH}px`,
-  height: `${PAGE_TEXTURE_HEIGHT}px`,
+  width: `${Math.max(1, props.pageWidth)}px`,
+  height: `${Math.max(1, props.pageHeight)}px`,
   fontFamily: props.fontFamily,
   fontSize: `${props.fontSize}px`,
   lineHeight: `${textLineHeight.value}px`,
@@ -967,6 +971,15 @@ function rebuildFlyerText(signature: string, layer: HTMLElement): void {
 function updateFlipText(): void {
   const layer = flipTextRef.value
   if (!layer) return
+  // 窄屏卷页的正文由纹理携带：卷曲处 DOM 小段会叠在一起。
+  if (props.singlePage) {
+    if (flyerTextNodes.length) {
+      layer.textContent = ''
+      flyerTextNodes = []
+    }
+    flyerTextSignatureValue = ''
+    return
+  }
   const signature = flyerTextSignature()
   if (!scene || !signature) {
     if (flyerTextNodes.length) {
@@ -1034,9 +1047,9 @@ function updateTextLayer(): void {
   const right = adjust(scene.getPageScreenQuad('right'))
   if (!props.singlePage) {
     const left = adjust(scene.getPageScreenQuad('left'))
-    if (leftTextRef.value) leftTextRef.value.style.transform = quadToMatrix3d(textPageQuad, left)
+    if (leftTextRef.value) leftTextRef.value.style.transform = quadToMatrix3d(textPageQuad.value, left)
   }
-  if (rightTextRef.value) rightTextRef.value.style.transform = quadToMatrix3d(textPageQuad, right)
+  if (rightTextRef.value) rightTextRef.value.style.transform = quadToMatrix3d(textPageQuad.value, right)
 }
 
 function onTextMouseup(event: MouseEvent): void {

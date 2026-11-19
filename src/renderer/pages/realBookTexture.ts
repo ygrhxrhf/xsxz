@@ -356,7 +356,11 @@ function lineMarksWithText(
  * 按当前 canvas 字体断行。导出给 DOM 层：批注卡的换行必须和纹理里一模一样，
  * 否则同一张卡在两种渲染路径里会排成不同的行数。
  */
-export function wrapTextureText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+export function wrapTextureText(
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): string[] {
   const source = text.replace(/\s+/g, ' ').trim()
   if (!source) return []
   if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
@@ -390,6 +394,21 @@ export function wrapTextureText(ctx: CanvasRenderingContext2D, text: string, max
 }
 
 /**
+ * 主线程用 document 建 canvas，Worker 里没有 document，用 OffscreenCanvas。
+ * 两者都拿不到时返回 null（Node/jsdom 测试只验计划，不画）。
+ */
+function createTextureCanvas(width: number, height: number): HTMLCanvasElement | OffscreenCanvas | null {
+  if (typeof document !== 'undefined') {
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    return canvas
+  }
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(width, height)
+  return null
+}
+
+/**
  * 将计划绘制成 2× 页面纹理。没有 Canvas（Node/jsdom 测试）时返回 null，
  * 调用方仍可单独测试 `buildPageTexturePlan`。
  */
@@ -397,11 +416,9 @@ export function drawPageTexture(
   plan: PageTexturePlan,
   style: RealBookTextureStyle,
   scale = PAGE_TEXTURE_SCALE,
-): HTMLCanvasElement | null {
-  if (typeof document === 'undefined') return null
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.round(plan.width * scale)
-  canvas.height = Math.round(plan.height * scale)
+): HTMLCanvasElement | OffscreenCanvas | null {
+  const canvas = createTextureCanvas(Math.round(plan.width * scale), Math.round(plan.height * scale))
+  if (!canvas) return null
   const ctx = canvas.getContext('2d')
   if (!ctx) return null
   ctx.scale(scale, scale)

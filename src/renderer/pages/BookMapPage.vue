@@ -6,8 +6,11 @@
  * 地名/事件标注与左侧「书中原图」都依赖用户提供的地图素材（方案 §9），
  * 未提供时给空态，不臆造坐标或图片。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { AiPlace, AiPlaceCandidate, AiPlaceGeo, AiPlaceKind, MapManualPlaceInput } from '@shared/types'
+import { BOOK_MAPS, identifyBookMap } from './atlas/catalog'
+import { textBookMap } from './atlas/mapPins'
+import type { BookMap } from './atlas/types'
 import {
   loadTencentMap,
   type TencentInfoWindow,
@@ -30,6 +33,31 @@ const emit = defineEmits<{
 }>()
 
 type MapStage = 'loading' | 'no-key' | 'ready' | 'error'
+
+/** 地图视图：腾讯 2D 底图 / 3D 全球地形（MapLibre，按需加载）。 */
+const AtlasMap = defineAsyncComponent(() => import('./atlas/AtlasMap.vue'))
+const mapMode = ref<'2d' | '3d'>('2d')
+const atlasId = ref(BOOK_MAPS[0]!.id)
+const atlasSelected = ref<string | null>(null)
+/** 书里已定位的地名汇总成一张「文字地点」地图；没有已定位地名时为 null。 */
+const textMap = computed(() => textBookMap(places.value))
+const atlasOptions = computed(() => {
+  const options = [...BOOK_MAPS]
+  if (textMap.value) options.push(textMap.value)
+  return options
+})
+const atlasMap = computed(() => atlasOptions.value.find((item) => item.id === atlasId.value)
+  ?? textMap.value
+  ?? BOOK_MAPS[0]!)
+const atlasMatch = ref<{ status: 'none' | 'checking' | 'matched' | 'unmatched' | 'unavailable'; map: BookMap | null }>({
+  status: 'none',
+  map: null,
+})
+const atlasFocus = computed(() => {
+  const place = atlasMap.value.places.find((item) => item.id === atlasSelected.value)
+  return place ? { id: place.id, coordinates: place.coordinates } : null
+})
+let recognizeToken = 0
 
 const stage = ref<MapStage>('loading')
 const errorText = ref('')
@@ -464,7 +492,60 @@ async function loadMapImage(): Promise<void> {
   try {
     const res = await window.api.map.getImage(props.bookId)
     if (res.ok) mapImageUrl.value = res.url ?? ''
+    void recognizeOriginalMap()
   } catch { /* 原图缺失不挡住其它内容 */ }
+}
+
+/**
+ * 原图识别：读原图字节的 SHA-256，与精选地图的指纹精确比对。
+ *
+ * 生产构建是 file://，`fetch(file://)` 会被拦；主进程的 `spbf-map://m/<bookId>`
+ * 从书目录读原图。图片只在字节完全一致时才算识别，不做文件名/页号猜测。
+ */
+async function recognizeOriginalMap(): Promise<void> {
+  const token = ++recognizeToken
+  if (!props.bookId || !mapImageUrl.value) {
+    atlasMatch.value = { status: 'none', map: null }
+    return
+  }
+  atlasMatch.value = { status: 'checking', map: null }
+  try {
+    const response = await fetch(`spbf-map://m/${encodeURIComponent(props.bookId)}`)
+    if (!response.ok) {
+      if (token === recognizeToken) atlasMatch.value = { status: 'unavailable', map: null }
+      return
+    }
+    const matched = await identifyBookMap(await response.blob())
+    if (token !== recognizeToken) return
+    atlasMatch.value = matched ? { status: 'matched', map: matched } : { status: 'unmatched', map: null }
+    if (matched) atlasId.value = matched.id
+  } catch {
+    if (token === recognizeToken) atlasMatch.value = { status: 'unavailable', map: null }
+  }
+}
+
+function openAtlasPlace(id: string): void {
+  const matched = atlasMatch.value.map
+  if (!matched) return
+  atlasId.value = matched.id
+  atlasSelected.value = id
+  mapMode.value = '3d'
+}
+
+function openAtlas(): void {
+  const matched = atlasMatch.value.map
+  if (!matched) return
+  atlasId.value = matched.id
+  atlasSelected.value = null
+  mapMode.value = '3d'
+}
+
+/** 左侧「书中地名」里已定位的地点：切到文字地点地图并选中。 */
+function openTextPlace(placeId: string): void {
+  if (!textMap.value) return
+  atlasId.value = textMap.value.id
+  atlasSelected.value = placeId
+  mapMode.value = '3d'
 }
 
 async function chooseMapImage(): Promise<void> {
@@ -478,6 +559,7 @@ async function chooseMapImage(): Promise<void> {
     const res = await window.api.map.setImage({ bookId: props.bookId, sourcePath })
     if (!res.ok) { imageMessage.value = res.message; return }
     mapImageUrl.value = res.url
+    void recognizeOriginalMap()
   } catch (error) {
     imageMessage.value = error instanceof Error ? error.message : '地图图片保存失败'
   } finally {
@@ -545,9 +627,44 @@ onBeforeUnmount(() => {
           @click="chooseMapImage"
         >{{ imageBusy ? '保存中…' : mapImageUrl ? '更换图片' : '选择图片' }}</button>
       </div>
-      <img v-if="mapImageUrl" :src="mapImageUrl" class="book-map-original-image" alt="书中原图">
+      <div v-if="mapImageUrl" class="book-map-original-frame">
+        <img :src="mapImageUrl" class="book-map-original-image" alt="书中原图">
+        <button
+          v-for="place in atlasMatch.map?.places ?? []"
+          :key="place.id"
+          type="button"
+          class="book-map-atlas-pin"
+          :class="{ selected: atlasSelected === place.id }"
+          :style="{ left: `${(place.imagePoint?.[0] ?? 0) * 100}%`, top: `${(place.imagePoint?.[1] ?? 0) * 100}%` }"
+          :title="place.name"
+          :aria-label="`在 3D 地图查看${place.name}`"
+          @click="openAtlasPlace(place.id)"
+        />
+      </div>
       <p v-else class="book-map-empty">尚未选择书中地图图片。支持 jpg、png、webp，最大 8MB。</p>
       <p v-if="imageMessage" class="book-map-budget" role="status">{{ imageMessage }}</p>
+      <p v-if="atlasMatch.status === 'checking'" class="book-map-budget" role="status">正在识别书中地图…</p>
+      <p v-else-if="atlasMatch.status === 'matched' && atlasMatch.map" class="book-map-recognized" role="status">
+        已识别：{{ atlasMatch.map.title }}{{ atlasMatch.map.period ? ` · ${atlasMatch.map.period}` : '' }}
+        <button type="button" class="book-map-button" @click="openAtlas">在 3D 地图查看</button>
+      </p>
+      <p v-else-if="atlasMatch.status === 'unmatched'" class="book-map-empty" role="status">
+        这张地图未收录：按图片字节精确匹配，不做猜测。
+      </p>
+      <div
+        v-if="atlasMatch.status === 'matched' && atlasMatch.map?.places.length"
+        class="book-map-atlas-places"
+        aria-label="已识别地点"
+      >
+        <button
+          v-for="place in atlasMatch.map.places"
+          :key="`atlas-${place.id}`"
+          type="button"
+          class="book-map-atlas-place"
+          :class="{ selected: atlasSelected === place.id }"
+          @click="openAtlasPlace(place.id)"
+        >{{ place.name }}</button>
+      </div>
 
       <div class="book-map-places-head">
         <h3>书中地名</h3>
@@ -582,6 +699,22 @@ onBeforeUnmount(() => {
       <p v-if="budgetHint" class="book-map-budget" role="status">{{ budgetHint }} 再点一次按钮继续。</p>
       <p v-if="extractionMessage" class="book-map-empty" role="status">{{ extractionMessage }}</p>
       <p v-if="geoMessage" class="book-map-budget" role="status">{{ geoMessage }}</p>
+      <p v-if="textMap" class="book-map-recognized" role="status">
+        已定位 {{ textMap.places.length }} 个书内地名
+        <button type="button" class="book-map-button" @click="atlasId = textMap.id; atlasSelected = null; mapMode = '3d'">
+          查看文字地点地图
+        </button>
+      </p>
+      <div v-if="textMap" class="book-map-atlas-places" aria-label="书内已定位地名">
+        <button
+          v-for="place in textMap.places"
+          :key="`text-${place.id}`"
+          type="button"
+          class="book-map-atlas-place"
+          :class="{ selected: atlasSelected === place.id }"
+          @click="openTextPlace(place.id)"
+        >{{ place.name }}</button>
+      </div>
 
       <form
         v-if="manualFormOpen"
@@ -689,7 +822,7 @@ onBeforeUnmount(() => {
       </ol>
     </aside>
 
-    <div class="book-map-panel">
+    <div v-show="mapMode === '2d'" class="book-map-panel">
       <div class="book-map-toolbar">
         <strong>{{ props.bookTitle || '书中地图' }}</strong>
         <span class="book-map-hint">地名与事件标注待地图数据提供后显示</span>
@@ -697,6 +830,7 @@ onBeforeUnmount(() => {
           <button type="button" class="book-map-button" data-map-view="all" @click="fitAll">全局</button>
           <button type="button" class="book-map-button" data-map-view="region" @click="focusRegion">区域</button>
         </div>
+        <button type="button" class="book-map-button" @click="mapMode = '3d'">3D 全球地形</button>
         <button v-if="stage === 'error'" type="button" class="book-map-button" @click="init">重试</button>
       </div>
 
@@ -712,10 +846,39 @@ onBeforeUnmount(() => {
         <p class="book-map-offline">地图依赖联网，离线或网络受限时会加载失败。</p>
       </div>
     </div>
+
+    <div v-if="mapMode === '3d'" class="book-map-panel book-map-atlas-panel">
+      <div class="book-map-toolbar">
+        <strong>3D 全球地形</strong>
+        <label class="book-map-atlas-select">
+          <span>区域</span>
+          <select v-model="atlasId">
+            <option v-for="item in atlasOptions" :key="item.id" :value="item.id">
+              {{ item.title }}{{ item.period ? ` · ${item.period}` : '' }}
+            </option>
+          </select>
+        </label>
+        <button type="button" class="book-map-button" @click="mapMode = '2d'">返回腾讯地图</button>
+      </div>
+      <AtlasMap :atlas="atlasMap" :selected="atlasSelected" :focus-place="atlasFocus" @select="atlasSelected = $event" />
+    </div>
   </section>
 </template>
 
 <style scoped>
+.book-map-atlas-panel {
+  min-height: 460px;
+}
+.book-map-atlas-panel :deep(.atlas-viewport) {
+  min-height: 420px;
+}
+.book-map-atlas-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
 .book-map-page {
   display: grid;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
@@ -748,14 +911,63 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.book-map-original-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  align-self: center;
+}
 .book-map-original-image {
   display: block;
-  width: 100%;
+  max-width: 100%;
   max-height: 240px;
   object-fit: contain;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+}
+.book-map-atlas-pin {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 2px solid #fcf5dc;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: #a3633f;
+  box-shadow: 0 1px 4px #23392555;
+  cursor: pointer;
+}
+.book-map-atlas-pin:hover,
+.book-map-atlas-pin.selected {
+  box-shadow: 0 0 0 4px #8e613d55;
+}
+.book-map-recognized {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+.book-map-atlas-places {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.book-map-atlas-place {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.book-map-atlas-place:hover,
+.book-map-atlas-place.selected {
+  border-color: #a3633f;
+  color: #a3633f;
 }
 
 .book-map-empty {

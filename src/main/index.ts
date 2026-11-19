@@ -5,8 +5,11 @@ import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobSta
 import { DEFAULT_AI_PREFS } from '../shared/types'
 import { resolveAiTaskInstruction } from '../shared/aiPrompts'
 import { canonicalizeUrl } from '../shared/urlHash'
+import { installAtlasProtocol, registerAtlasScheme } from './atlasProtocol'
 import { installCoverProtocol, registerCoverScheme } from './coverProtocol'
+import { installFontProtocol, registerFontScheme } from './fontProtocol'
 import { installImageProtocol, registerImageScheme } from './imageProtocol'
+import { installMapProtocol, registerMapScheme } from './mapProtocol'
 import {
   listBooks,
   getBook,
@@ -2754,9 +2757,12 @@ function registerIpc(): void {
 }
 
 app.setName('spbf')
-// 封面与章内图片协议的 scheme 注册必须早于 app ready（见 coverProtocol.ts / imageProtocol.ts）
+// 封面、章内图片与 Worker 字体的 scheme 注册必须早于 app ready（见各 *Protocol.ts）
 registerCoverScheme()
 registerImageScheme()
+registerFontScheme()
+registerAtlasScheme()
+registerMapScheme()
 
 // 单实例锁：双开时两个进程都写书库，而书库的写锁只在进程内有效
 // （docs/agent-integration-design.md §6）。第二个实例直接退出；
@@ -2851,6 +2857,9 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null)
   installCoverProtocol()
   installImageProtocol()
+  installFontProtocol()
+  installAtlasProtocol()
+  installMapProtocol()
   // 订阅自动更新：建运行时再注册频道，因为 registerIpc 要用到它。
   proxyAutoUpdate = createProxyAutoUpdate({
     dir: join(app.getPath('userData'), 'proxy-auto-update'),
