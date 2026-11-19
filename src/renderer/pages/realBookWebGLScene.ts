@@ -73,6 +73,10 @@ export interface RealBookSceneFlip {
   progress: number
   /** 拖页中：进度严格跟手，不走惯性 */
   follow: boolean
+  /** 起拖手指在纸上的纵向位置（0–1，页顶为 0）：窄屏卷页的折线按它倾斜。 */
+  grabV?: number
+  /** 当前手指纵向位置（0–1）：手指沿页高移动时折线跟着转。 */
+  pointerV?: number
 }
 
 /**
@@ -104,6 +108,9 @@ interface FlipSheetRuntime {
   smooth: number
   velocity: number
   follow: boolean
+  /** 窄屏卷页的手指纵向位置（0–1）：折线随手指倾斜，而不是永远横过页心。 */
+  grabV: number
+  pointerV: number
   clothNeedsReset: boolean
   /**
    * 只给最上面那张纸用的开关：正文由 DOM 文本层贴上去（跟着卷曲走、字更清楚），
@@ -680,6 +687,8 @@ export class RealBookWebGLScene {
       smooth: 0,
       velocity: 0,
       follow: false,
+      grabV: 0.5,
+      pointerV: 0.5,
       clothNeedsReset: true,
       domText: false,
       frontPage: null,
@@ -912,6 +921,9 @@ export class RealBookWebGLScene {
         continue
       }
       const target = Math.max(0, Math.min(1.05, Number.isFinite(entry.progress) ? entry.progress : 0))
+      // 卷页折线按手指在纸上的纵向位置倾斜；自动翻页没有手指，固定过页心。
+      const grabV = Math.max(0, Math.min(1, entry.grabV ?? 0.5))
+      const pointerV = Math.max(0, Math.min(1, entry.pointerV ?? grabV))
       // 只有最上面那张纸的正文走 DOM：它在 canvas 之上不会挡住别的纸。
       // 窄屏卷页的纸会卷成筒，DOM 小段在卷曲处会叠成一团，改由纹理带字。
       const domText = index === 0 && !this.singlePage
@@ -923,6 +935,8 @@ export class RealBookWebGLScene {
         sheet.smooth = target
         sheet.target = target
         sheet.velocity = 0
+        sheet.grabV = grabV
+        sheet.pointerV = pointerV
         sheet.clothNeedsReset = true
         sheet.domText = domText
         sheet.frontPage = entry.front
@@ -946,6 +960,8 @@ export class RealBookWebGLScene {
       }
       sheet.follow = entry.follow
       sheet.target = target
+      sheet.grabV = grabV
+      sheet.pointerV = pointerV
       if (entry.follow) {
         // 拖页：纸捏在手指上，必须严格跟手；惯性只在松手之后接管。
         sheet.progress = target
@@ -1056,7 +1072,7 @@ export class RealBookWebGLScene {
       // 窄屏单页：纸绕一条会走的折线卷起，没被卷到的字保持平坦；卷过 90° 后换面由 shader 处理。
       const clamped = Math.max(0, Math.min(1, t))
       const curlT = sheet.direction === 1 ? clamped : 1 - clamped
-      sheet.leaf.writePhoneCurl(curlT, 0.5, 0.5, 0)
+      sheet.leaf.writePhoneCurl(curlT, sheet.grabV, sheet.pointerV, 0)
       return
     }
     const field = flipClothField({
@@ -1095,7 +1111,7 @@ export class RealBookWebGLScene {
   /**
    * 把这一帧飞行纸的截面发布给纸质 shader 的解析软影。
    *
-   * 每张纸按页高的下/中/上取三条截面（20 个采样点），写进共享的浮点纹理；
+   * 每张纸沿页高取五条截面（20 个采样点），写进共享的浮点纹理；
    * 接收纸面在 shader 里沿灯光射线与这些截面求交，得到跟着纸形走的软影与半影。
    * 只发布最上面的两张（`SH_SLOTS`），透明度随落定包络衰减。
    */
@@ -1123,8 +1139,8 @@ export class RealBookWebGLScene {
       return
     }
     const data = texture.image.data as Float32Array
-    // 与 LeafMesh 的行对齐：页脚、页心、页眉三条截面。
-    const rows = [0, GRID_V >> 1, GRID_V - 1]
+    // 与 LeafMesh 的行对齐：页脚、下四分之一、页心、上四分之一、页眉五条截面。
+    const rows = Array.from({ length: SH_ROWS }, (_, index) => Math.round((index / (SH_ROWS - 1)) * (GRID_V - 1)))
     shadowRig.uShOpacity.value.fill(0)
     casters.forEach(({ sheet, opacity }, slot) => {
       shadowRig.uShOpacity.value[slot] = opacity

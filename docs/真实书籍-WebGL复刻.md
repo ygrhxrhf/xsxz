@@ -35,7 +35,7 @@
 - 拖页：从书页左右外缘按住**跟手拖动**，纸严格跟着手指走（拖页中关掉弹簧惯性，见 `flipFollow`）；松手时按走过的比例与甩动速度决定落定还是取消。取消时纸用 0.32× 时长弹回原位、页面内容不变；落定则从手指停下的进度接着走完剩下的行程（时长短一半）。拖不到起拖阈值（10px）按点按处理，不会让一次点击把纸掀一下再弹回去。正文区拖拽仍用于选字。
 - 快速连按/连点：翻页动画中最多排队 12 条方向，落定后依次消费。
 - 窄屏单页：窗口宽度小于 768 时只显示当前页，逻辑页按视口重排，字号固定参考站的 20px 档（不沿用桌面字号偏好），舞台切纵向 flex 让单页铺满视口；也可用 `localStorage["spore:reader-realbook-phone:v1"]="1"` 强制进入。
-- 窄屏卷页：单页模式不再走双页的弧面布料，改用 `phoneCurl` 的滚动折——纸绕一条会走的折线卷起，没被卷到的字保持平坦，卷过 90° 后正反面由 shader 换面；正文改由纹理携带（卷曲处 DOM 小段会叠在一起）。
+- 窄屏卷页：单页模式不再走双页的弧面布料，改用 `phoneCurl` 的滚动折——纸绕一条会走的折线卷起，没被卷到的字保持平坦，卷过 90° 后正反面由 shader 换面；正文改由纹理携带（卷曲处 DOM 小段会叠在一起）。折线的倾斜跟随手指：起拖位置与拖动中的纵向位置按命中层归一化后写进 `grabV` / `pointerV`，手指在页上部起拖时折线向下斜、下部起拖时向上斜，沿页高移动时折线继续转；自动翻页没有手指，仍横过页心。
 - 页面纹理光栅化在 Worker（OffscreenCanvas）：主线程只建计划、管缓存，Worker 画完回传 ImageBitmap；按页面用到的字挑字体子集，LRU 64 张。Worker 不可用（或字体/图片准备失败）时回退主线程 `drawPageTexture`。
 - 批注与划线：划线/搜索高亮的底色块和段内「注」点按与纹理同一套几何由 DOM 画（`highlightRects` / `noteDots`），底色在字下面、「注」点在字上面；注卡的底纹、标签、正文与 `#tag` 也由 DOM 按同一套坐标排出来，点整张注卡即可打开该条批注；红/紫划线不再回落成黄色。
 - 页内图片：EPUB 导入时把章内 `<img>` 抽到书目录 `images/`；下载章节时从页面 HTML 里筛出正文图（过滤站标/头像/广告/占位图，按文件头验证），在隐藏页上下文里带会话取图后存进 `images/`。正文写成 `[图]<文件>|<宽>|<高>|<图注>` 段落；分页器按版心宽度把图片换算成占多少行。静态页与顶层飞页用 DOM 渲染（`img` + `object-fit: contain` + 图注），飞页上整块跟着纸面卷曲；仍用纹理带字的飞页才把图 contain 画进纹理。图片由主进程的 `spbf-image://i/<bookId>/<文件>` 协议读取（开了 CORS，画进 canvas 不会污染成黑块）。CSS 3D 回退用同一协议在页内放 `<figure><img>` + 图注，高度与分页预留一致。
@@ -44,15 +44,14 @@
 
 ## 未实现 / 已知限制
 
-- 飞页已是 40×8 质点布料 + 惯性；软影用三条截面、每条 20 个采样点近似整张纸，跨页高的细节（比如上下角同时翘起）会被折中；多张纸叠得很近时影子边界仍可能有误差。
+- 飞页已是 40×8 质点布料 + 惯性；软影每张纸沿页高发布五条截面（页脚、下四分之一、页心、上四分之一、页眉），每条 20 个采样点，shader 按纸的页高分档插值，越接近页边越能读出上下角同时翘起的纸形；多张纸叠得很近时影子边界仍可能有误差。
 - 下载章节的配图按原位落版：抽取前把合格 `<img>` 换成文本标记，正文抽出来天然带着图片位置，下载器再按标记原位换成 `[图]` 段落；续页里的标记也会一起合并。没有标记的路径（章节接口解锁、OCR）退回把图追加到章末。跨域图片被 CORS 拦下时跳过。
 - EPUB 导出会把 `[图]` 段落写成 `<figure><img/><figcaption/>`，图片按需塞进 `OEBPS/images/` 并登记 manifest；同一张图跨章只放一份，缺图时退化成「［图片缺失：…］」。TXT 导出没有承载位置，图片退化成「［图片：图注］」一行。
 - 多张飞页并发时，只有最上面那张走 DOM 正文；其余各张仍用带字纹理（放大看略软）。DOM 永远画在 canvas 之上，下层的字会盖到上层的纸面上，只能这样取舍。
 - 飞页的注卡、图片、划线底色与「注」点也走 DOM（文字逐行、图片/注卡整块贴面），只有多飞页时非顶层那张仍整体画在纹理里。
 - 拖页期间不起新纸（同时只有一根手指）；连翻超过 6 张的部分仍走队列。
 - 反方向的连翻（往后翻一张又立刻往回翻）不并发，按队列串行。
-- 手机单页已可用，但字号沿用用户偏好（参考站固定 20px），未做手机专属字号档。
-- 卷页的 `grabV/pointerV` 目前固定 0.5：折线水平横过页心，没有按手指的竖直位置倾斜；单页背面/软影按同一套几何走。
+- 手机单页已可用：固定参考站的 20px 字号档（不沿用桌面字号偏好），卷页折线跟随手指起拖与移动位置。
 - 桌面贴图来自采集的 webp；衬纸仍是程序化色板。封面是程序化布面（参考站同样程序化），同一本书的封面只随书名/作者变化。
 
 ## 技术边界
@@ -76,4 +75,4 @@ npm run e2e:download-images  # 本地站点：同源 + 跨域（CORS）配图 �
 
 WebGL 模式的真实 Electron 检查使用临时脚本 `.multi-agent/tmp/realbook-webgl-check.mjs`：确认 canvas 挂载、书体命中区、翻页页码推进、合上/打开按钮和外观/视角面板。
 
-飞页正文的贴面用 `.multi-agent/tmp/capture-flyer-text.mjs` 复核：正向/反向各拖住半程，读 `.real-book-flip-line` 的数量、朝向（正/背面）与首段文字，并在 2× 裁图里核对正文与页眉页脚是否贴着卷曲的纸面；同时确认落定后飞页 DOM 清空、没有残字。页内注卡与图片用 `.multi-agent/tmp/capture-blocks.mjs` 复核：静态页出现注卡（点开批注浮层）、图片/图注以及划线底色与「注」点（读 `.real-book-mark` / `.real-book-note-dot` 的颜色与矩形），拖住飞页时它们跟着纸面走。页间自阴影用 `.multi-agent/tmp/capture-drag-hold.mjs` 复核：拖住飞页半程时，接收页出现随纸形走的暗带；临时把 `uShCfg.x` 从 0.28 调到 2.0 可把投影范围放大确认（已还原）。书壳/书脊用 `.multi-agent/tmp/capture-close.mjs` 复核合上动画落定（`close-3900.png`）：封面落在书垛顶，圆背书脊在左侧。窄屏卷页用 `.multi-agent/tmp/capture-phone-drag.mjs` 复核：拖住半程时纸从右缘起卷，未卷到的字保持平坦。页面纹理 Worker 用 `.multi-agent/tmp/realbook-webgl-check.mjs` 复核：打开/翻页/反向/合上/单页的截图里正文都在（Worker 不可用时自动回退主线程）。双纸同时在飞只有 0.4s 窗口，截图工具抓不稳，没有留下正式对照图。底栏暗色浮层与「适应屏幕」用 `.multi-agent/tmp/capture-panel-fit.mjs` 复核（13 项）：读浮层的背景/字色/选项按钮配色，放大两次到 141% 后按 0 与点按钮都回到 100%。沉浸式 chrome、底栏「更多」、暗色目录抽屉与手机 20px 用 `.multi-agent/tmp/capture-immersive.mjs` 复核（27 项）：顶栏容器零高度且没有应用入口、更多菜单 10 个入口、朗读浮层贴右上角、抽屉与列表/过滤器取色、手机视口只显示一页且 `--rb-font-size: 20px`。单测：`Reader.realBook.ui.test.ts`（适应屏幕按钮与 0 键）、`Reader.visual.contract.test.ts`（暗色浮层规则）、`realBookFlyerText.test.ts`（切段连续性/宽度上限/单字兜底、矩阵三角映射、正反面分配）、`realBookTexture.test.ts`（页眉页脚的字号/基线）、`realBookBlocks.test.ts`（注卡三行上限/字号/基线、图注居中）、`realBookTextLayer.test.ts`（划线底色几何、「注」点位置/直径）、`realBookFlipShadow.test.ts`（投影/半影/透明度与起落帧归零、覆盖率栅格与采样）、`RealBookWebGLStage.test.ts`（静态页页眉页脚、注卡点击、图片协议、划线/注点的上下层次）。
+飞页正文的贴面用 `.multi-agent/tmp/capture-flyer-text.mjs` 复核：正向/反向各拖住半程，读 `.real-book-flip-line` 的数量、朝向（正/背面）与首段文字，并在 2× 裁图里核对正文与页眉页脚是否贴着卷曲的纸面；同时确认落定后飞页 DOM 清空、没有残字。页内注卡与图片用 `.multi-agent/tmp/capture-blocks.mjs` 复核：静态页出现注卡（点开批注浮层）、图片/图注以及划线底色与「注」点（读 `.real-book-mark` / `.real-book-note-dot` 的颜色与矩形），拖住飞页时它们跟着纸面走。页间自阴影用 `.multi-agent/tmp/capture-drag-hold.mjs` 复核：拖住飞页半程时，接收页出现随纸形走的暗带；临时把 `uShCfg.x` 从 0.28 调到 2.0 可把投影范围放大确认（已还原）。书壳/书脊用 `.multi-agent/tmp/capture-close.mjs` 复核合上动画落定（`close-3900.png`）：封面落在书垛顶，圆背书脊在左侧。窄屏卷页用 `.multi-agent/tmp/capture-phone-drag.mjs` 复核：拖住半程时纸从右缘起卷，未卷到的字保持平坦。页面纹理 Worker 用 `.multi-agent/tmp/realbook-webgl-check.mjs` 复核：打开/翻页/反向/合上/单页的截图里正文都在（Worker 不可用时自动回退主线程）。双纸同时在飞只有 0.4s 窗口，截图工具抓不稳，没有留下正式对照图。底栏暗色浮层与「适应屏幕」用 `.multi-agent/tmp/capture-panel-fit.mjs` 复核（13 项）：读浮层的背景/字色/选项按钮配色，放大两次到 141% 后按 0 与点按钮都回到 100%。沉浸式 chrome、底栏「更多」、暗色目录抽屉与手机 20px 用 `.multi-agent/tmp/capture-immersive.mjs` 复核（27 项）：顶栏容器零高度且没有应用入口、更多菜单 10 个入口、朗读浮层贴右上角、抽屉与列表/过滤器取色、手机视口只显示一页且 `--rb-font-size: 20px`。单测：`Reader.realBook.ui.test.ts`（适应屏幕按钮与 0 键）、`Reader.visual.contract.test.ts`（暗色浮层规则）、`realBookPhoneCurl.test.ts`（页心折线水平、上下部起拖倾斜、拖动中折线跟手、倾斜幅度上限、卷到/未卷到的纸面）、`realBookPaperMaterial.test.ts`（软影浮点纹理的槽位 × 截面行数与数据长度）、`realBookFlyerText.test.ts`（切段连续性/宽度上限/单字兜底、矩阵三角映射、正反面分配）、`realBookTexture.test.ts`（页眉页脚的字号/基线）、`realBookBlocks.test.ts`（注卡三行上限/字号/基线、图注居中）、`realBookTextLayer.test.ts`（划线底色几何、「注」点位置/直径）、`realBookFlipShadow.test.ts`（投影/半影/透明度与起落帧归零、覆盖率栅格与采样）、`RealBookWebGLStage.test.ts`（静态页页眉页脚、注卡点击、图片协议、划线/注点的上下层次）。

@@ -25,7 +25,8 @@ export interface PaperUniforms {
 
 export const SH_COLS = 20
 export const SH_SLOTS = 2
-export const SH_ROWS = 3
+/** 每张纸发布几条截面：5 条才能读出「上下角同时翘起」这类跨页高的纸形。 */
+export const SH_ROWS = 5
 
 /**
  * Soft analytic shadow of lifted leaves on the pages beneath them. Pages cannot receive from the shadow map
@@ -158,21 +159,27 @@ float leafShadow(vec3 P, vec3 N){
   for (int s = 0; s < ${SH_SLOTS}; s++) {
     if (s >= count || float(s) == uShSelf || uShOpacity[s] <= 0.0) continue;
     int r0 = s * ${SH_ROWS};
-    float y0 = texelFetch(uShTex, ivec2(0, r0), 0).z;
-    float y1 = texelFetch(uShTex, ivec2(0, r0 + 1), 0).z;
-    float y2 = texelFetch(uShTex, ivec2(0, r0 + 2), 0).z;
-    vec2 m = shRow(P.xz, d, n, r0 + 1);
+    float yLow = texelFetch(uShTex, ivec2(0, r0), 0).z;
+    float yTop = texelFetch(uShTex, ivec2(0, r0 + ${SH_ROWS} - 1), 0).z;
+    vec2 m = shRow(P.xz, d, n, r0 + ${SH_ROWS} / 2);
     if (m.x <= 0.002) continue;
     float yh = P.y + dy * m.y;
-    float ex = max(max(y0 - yh, yh - y2), 0.0);
+    float ex = max(max(yLow - yh, yh - yTop), 0.0);
     float fade = 1.0 - smoothstep(0.0, uShCfg.z * 6.0 + uShCfg.w * m.y * 1.4, ex);
-    float sh;
-    if (yh < y1) {
-      float f = clamp((yh - y0) / (y1 - y0), 0.0, 1.0);
-      sh = mix(shRow(P.xz, d, n, r0).x, m.x, f);
-    } else {
-      float f = clamp((yh - y1) / (y2 - y1), 0.0, 1.0);
-      sh = mix(m.x, shRow(P.xz, d, n, r0 + 2).x, f);
+    float sh = 0.0;
+    // 按纸的页高把截面分档插值：五条截面比三条更能读出上下角同时翘起的纸形。
+    for (int r = 1; r < ${SH_ROWS}; r++) {
+      float ya = texelFetch(uShTex, ivec2(0, r0 + r - 1), 0).z;
+      float yb = texelFetch(uShTex, ivec2(0, r0 + r), 0).z;
+      if (yh <= yb || r == ${SH_ROWS} - 1) {
+        float f = clamp((yh - ya) / max(yb - ya, 1e-4), 0.0, 1.0);
+        float sa;
+        if (r - 1 == ${SH_ROWS} / 2) sa = m.x; else sa = shRow(P.xz, d, n, r0 + r - 1).x;
+        float sb;
+        if (r == ${SH_ROWS} / 2) sb = m.x; else sb = shRow(P.xz, d, n, r0 + r).x;
+        sh = mix(sa, sb, f);
+        break;
+      }
     }
     res = max(res, sh * fade * uShOpacity[s]);
   }

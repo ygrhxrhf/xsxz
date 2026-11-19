@@ -303,6 +303,9 @@ interface FlipRun {
   duration: number
   /** 拖页中：进度由手指写，rAF 不推进它。 */
   follow: boolean
+  /** 拖页时手指在纸上的纵向位置（0–1，页顶为 0）：窄屏卷页的折线按它倾斜。 */
+  grabV?: number
+  pointerV?: number
 }
 const flips = ref<FlipRun[]>([])
 /** 同时在飞的纸上限：WebGL 场景有 6 个飞页槽位，CSS 3D 回退只有一张纸。 */
@@ -475,7 +478,7 @@ function updateLayout(): void {
   phone.value = props.variant === 'book' && (width < 768 || forcePhone)
   if (props.variant === 'book' && props.renderer === 'webgl' && !webglFailed.value) {
     if (phone.value) {
-      // 窄屏单页：逻辑页就是视口，版心四边留 24/44，字号沿用用户偏好。
+      // 窄屏单页：逻辑页就是视口，版心四边留 24/44，字号固定参考站的 20px 档。
       const marginX = 24
       const marginTop = 44
       const marginBottom = 44
@@ -1044,10 +1047,10 @@ function onPeelStart(direction: 1 | -1): void {
   peel.value = { direction, accepted: Boolean(run), runId: run?.id ?? 0 }
 }
 
-function onPeelProgress(progress: number): void {
+function onPeelProgress(progress: number, grabV = 0.5, pointerV = grabV): void {
   const active = peel.value
   if (!active?.accepted) return
-  updateRun(active.runId, { progress: Math.max(0, Math.min(1, progress)) })
+  updateRun(active.runId, { progress: Math.max(0, Math.min(1, progress)), grabV, pointerV })
 }
 
 function onPeelEnd(complete: boolean): void {
@@ -1351,6 +1354,8 @@ const webglFlips = computed<RealBookSceneFlip[]>(() => flips.value.map((run) => 
   direction: run.direction,
   progress: run.progress,
   follow: run.follow,
+  grabV: run.grabV,
+  pointerV: run.pointerV,
   front: texturePageOf(
     phone.value ? run.from : (run.direction === -1 ? run.from - 1 : run.from),
     phone.value ? rightHeader.value : (run.direction === -1 ? leftHeader.value : rightHeader.value),

@@ -92,8 +92,8 @@ const emit = defineEmits<{
   (event: 'page-turn', direction: 1 | -1): void
   /** 拖页开始：父组件据此把飞页挂出来（它才知道正反面是哪两页）。 */
   (event: 'peel-start', direction: 1 | -1): void
-  /** 拖页进度 0–1：纸跟着手走。 */
-  (event: 'peel-progress', progress: number): void
+  /** 拖页进度 0–1：纸跟着手走；grabV/pointerV 是起拖与当前手指在纸上的纵向位置（0–1）。 */
+  (event: 'peel-progress', progress: number, grabV: number, pointerV: number): void
   /** 松手：complete 为真则落定翻页，否则纸回弹、页面不变。 */
   (event: 'peel-end', complete: boolean): void
   /** 点书口注释标签：交给父组件打开对应的批注。 */
@@ -119,7 +119,7 @@ let draggingTilt = false
 let dragStartY = 0
 let dragStartPitch = 0
 let dragMoved = false
-let pageDragStart: { x: number; side: 1 | -1 } | null = null
+let pageDragStart: { x: number; side: 1 | -1; grabV: number } | null = null
 let pageDragDx = 0
 let suppressMouseUp = false
 /** 拖页状态：纸跟着手指走，松手时按走过的比例 + 甩动速度决定落定还是回弹。 */
@@ -1116,6 +1116,17 @@ function directionalDx(side: 1 | -1): number {
   return side === 1 ? -pageDragDx : pageDragDx
 }
 
+/**
+ * 手指在纸上的纵向位置（0–1）：窄屏卷页把折线按它倾斜。
+ *
+ * 用舞台的命中层做归一化，手机单页正好铺满命中层；取不到矩形时退回页心。
+ */
+function pageVAt(clientY: number): number {
+  const rect = hitRef.value?.getBoundingClientRect()
+  if (!rect || rect.height <= 0) return 0.5
+  return Math.max(0, Math.min(1, (clientY - rect.top) / rect.height))
+}
+
 /** 起拖阈值（px）：小于它按点按处理，不让一次点击把纸掀一下再弹回去。 */
 const PEEL_START_PX = 10
 /** 松手时的落定阈值：走过的比例，或者「走得不多但甩得快」。 */
@@ -1129,7 +1140,7 @@ function onPointerDown(event: PointerEvent): void {
   if (event.button === 0 && !event.altKey) {
     const side = pageDragZone(event)
     if (!side) return
-    pageDragStart = { x: event.clientX, side }
+    pageDragStart = { x: event.clientX, side, grabV: pageVAt(event.clientY) }
     pageDragDx = 0
     peelState = null
     dragMoved = false
@@ -1170,7 +1181,7 @@ function onPointerMove(event: PointerEvent): void {
     peelState.lastAt = now
     peelState.progress = Math.max(0, Math.min(1, directional / peelSpan()))
     if (Math.abs(pageDragDx) > 4) dragMoved = true
-    emit('peel-progress', peelState.progress)
+    emit('peel-progress', peelState.progress, pageDragStart.grabV, pageVAt(event.clientY))
     return
   }
   if (!draggingTilt) {
