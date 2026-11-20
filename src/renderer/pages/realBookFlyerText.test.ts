@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FLYER_PIECE_MAX_CHARS, flyerFacePages, flyerPieceMatrix, splitFlyerLine } from './realBookFlyerText'
+import { FLYER_PIECE_MAX_CHARS, flyerFacePages, flyerPageIndexes, flyerPieceMatrix, splitFlyerLine } from './realBookFlyerText'
 
 /** 固定字宽：每个字 20px，方便断言切段位置。 */
 const measure = (text: string): number => text.length * 20
@@ -100,5 +100,31 @@ describe('flyerPieceMatrix', () => {
     // 三个点共线：投影面积为零。
     expect(flyerPieceMatrix(origin, { x: 90, y: 10 }, { x: 50, y: 10 }, 80, 32)).toBeNull()
     expect(flyerPieceMatrix(origin, { x: Number.NaN, y: 10 }, { x: 10, y: 42 }, 80, 32)).toBeNull()
+  })
+})
+
+describe('flyerPageIndexes', () => {
+  it('双页正向：正面是掀起的右页，背面是落定后的左页', () => {
+    expect(flyerPageIndexes(1, 0, 2, false)).toEqual({ front: 0, back: 1 })
+    expect(flyerPageIndexes(1, 4, 6, false)).toEqual({ front: 4, back: 5 })
+  })
+
+  it('双页反向：正面是左页，背面是落定后的右页', () => {
+    expect(flyerPageIndexes(-1, 2, 0, false)).toEqual({ front: 1, back: 0 })
+    expect(flyerPageIndexes(-1, 6, 4, false)).toEqual({ front: 5, back: 4 })
+  })
+
+  it('单页模式没有对面：正面是当前页，背面是落点页', () => {
+    expect(flyerPageIndexes(1, 0, 1, true)).toEqual({ front: 0, back: 1 })
+    expect(flyerPageIndexes(-1, 1, 0, true)).toEqual({ front: 1, back: 0 })
+  })
+
+  it('下标只由 from/to 决定，逆向翻页也不会出现负数以外的新页', () => {
+    // 反向翻页的背面就是当前页的上一页（from - 2），不会去取 from + 1 那种「跨过两张纸」的页。
+    for (let from = 2; from <= 20; from += 2) {
+      const idx = flyerPageIndexes(-1, from, from - 2, false)
+      expect(idx.back).toBe(from - 2)
+      expect(idx.front).toBe(from - 1)
+    }
   })
 })

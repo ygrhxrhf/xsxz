@@ -1379,6 +1379,10 @@ watch(
   () => {
     scene?.setFlips(props.flips)
     if (props.flips.length) scene?.setHoverPeel(null, 0, 1)
+    // 飞页正文跟着这张纸的上下场立刻建/清，不等下一帧 rAF。
+    // 窗口被切到后台时 Chromium 会停 rAF：只靠帧循环的话，纸已经掀起来、
+    // 正文层却还是空的，回到前台前一直是一张白纸。
+    updateFlipText()
   },
   { deep: true },
 )

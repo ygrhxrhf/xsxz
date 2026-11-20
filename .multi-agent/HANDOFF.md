@@ -1,5 +1,22 @@
 # HANDOFF
 
+## 拖页白纸结案：夹具假象 + 两道保险（2026-11-20 晚，本轮完成）
+
+- 做到哪：上一轮记为「拖页时飞页正文会丢（竞态，未修）」的问题已定位为**自动化夹具假象**：
+  CDP 脚本只 `Page.bringToFront`，没有 `Emulation.setFocusEmulationEnabled`，后台窗口 rAF 停掉，
+  `hitLoop` 里建飞页正文的 `updateFlipText` 永远不跑。加了焦点模拟后，同样的拖页每一步都有
+  184~193 段 `.real-book-flip-line`、`matrix3d` 贴面、正反面齐全；`front/back` 从头到尾都不是 null。
+- 顺手加的两道保险：① 起纸那一刻把正反面页快照冻结进 `FlipRun`（`flyerPageIndexes` 取页），
+  翻页途中页表重排/越界也不会让飞页变白纸；② `props.flips` 一变就同步飞页正文层，不等下一帧 rAF。
+- 验证：`npm test` 197 文件 / **1995 用例全绿**；`npm run typecheck` 0；`npm run build` 0；
+  `npm run e2e:realbook-webgl` **31 项通过 0 失败**（新增拖页 7 项：半程贴面、正面露字、
+  正反面都建、弹回不翻页、落定翻页、往回拖贴面、往回拖落定）；flip 7/7、notes 18/18、selection 18/18。
+  日志：`.multi-agent/tmp/logs-2026-11-20/`。计划：`.multi-agent/plan/realbook-drag-flyer-text.md`。
+- 文档：`docs/真实书籍-WebGL复刻.md` 的「未实现 / 已知限制」已把该条改成结案说明。
+- 未验证/边界：后台窗口里 DOM 飞页正文建好但 `display:none`（可见性由帧循环按纸面投影给），
+  回前台第一帧才贴面；页快照冻结意味着翻页途中改划线/批注不会出现在空中那张纸上。
+- 下一步第一条命令：`git push origin master`（需用户点头）。
+
 ## 真实书籍 WebGL 分支收口：合并 + 固化 e2e + 修环境（2026-11-20，本轮完成）
 
 - 做到哪：`feat/realbook-webgl-fidelity` 5 个提交 ff-only 合进 `master`（`296f390..e2ba190`，
@@ -26,7 +43,7 @@
     （初始文档上写 localStorage 会抛；WebGL 已是默认渲染层，这几条验的是 CSS 3D 回退几何）。
   - annotations / selection-pitch 的「平放」改为**向上拖**：真实书籍现在没有平放按钮
     （`:show-toolbar="bookView !== 'realbook'"`，顶栏那颗又在 `v-if="!isRealBook"` 里）。
-- **新发现的产品缺口（未修）**：拖页时飞页正文 DOM 会整段不建（纸是白纸）。
+- ~~**新发现的产品缺口（未修）**：拖页时飞页正文 DOM 会整段不建（纸是白纸）。~~ 已于当晚结案：夹具缺焦点模拟，见本文件顶部。
   刚打开后的第一次拖页、往回翻过一次后的拖页都必现；正向翻过后约一半概率；
   连拖 4 次总页数从 5 涨到 11/13。逐帧 DOM 证据见计划「已知边界」与
   `.multi-agent/tmp/debug-drag.mjs`。`e2e:realbook-webgl` 因此没有把「拖页贴面」列为断言。

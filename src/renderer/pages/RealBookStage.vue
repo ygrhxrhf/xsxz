@@ -36,6 +36,7 @@ import {
 import { spineLayers, spineStack, spineTotalLayers } from './realBookSpine'
 import { measureLines } from './realBookMeasure'
 import { clampPitch, MAX_PITCH_DEG, MAX_TILT_DEG, pitchFromDrag, pitchResetTarget, TILT_SENSITIVITY } from './realBookPitch'
+import { flyerPageIndexes } from './realBookFlyerText'
 import { FLIP_DURATION_MS, flipAngles, flipBackContentOpacity, flipContentOpacity, flipFaceVisible, flipLight, flipPhases, flipPoses, flipSheetLift, flipSway } from './realBookFlip'
 import RealBookWebGLStage from './RealBookWebGLStage.vue'
 import type { RealBookSceneFlip } from './realBookWebGLScene'
@@ -306,6 +307,13 @@ interface FlipRun {
   /** 拖页时手指在纸上的纵向位置（0–1，页顶为 0）：窄屏卷页的折线按它倾斜。 */
   grabV?: number
   pointerV?: number
+  /**
+   * 起纸那一刻的页快照（正反面）。翻页途中若页表重排（字体分片晚到、窗口缩放、
+   * 划线/批注变化），页下标会整体挪位，甚至越界返回 null——那样飞页就成了白纸。
+   * 纸既然已经从书上掀起来，就该一直印着掀起来时的内容，所以这里冻结快照。
+   */
+  front: RealBookTexturePage | null
+  back: RealBookTexturePage | null
 }
 const flips = ref<FlipRun[]>([])
 /** 同时在飞的纸上限：WebGL 场景有 6 个飞页槽位，CSS 3D 回退只有一张纸。 */
@@ -747,6 +755,9 @@ function startFlipRun(direction: 1 | -1, explicitTarget?: number, follow = false
   // 后起的纸不跟前面那张同时起步：等前面那张走了这么远再动，几张纸才是「追着翻」的，
   // 而不是三张纸并排一起飞、一起落。
   const delay = tail && !follow ? FLIP_START_GAP * duration : 0
+  // 页快照必须在这里取：`alignPageIndex` 已经把落点页排出来了。
+  const single = phone.value
+  const { front: frontIndex, back: backIndex } = flyerPageIndexes(direction, from, to, single)
   const run: FlipRun = {
     id: ++flipKey,
     direction,
@@ -756,6 +767,8 @@ function startFlipRun(direction: 1 | -1, explicitTarget?: number, follow = false
     elapsed: -delay,
     duration,
     follow,
+    front: texturePageOf(frontIndex, single ? rightHeader.value : (direction === -1 ? leftHeader.value : rightHeader.value)),
+    back: texturePageOf(backIndex, single ? rightHeader.value : (direction === 1 ? leftHeader.value : rightHeader.value)),
   }
   flips.value = [...flips.value, run]
   if (!follow) {
@@ -1356,14 +1369,9 @@ const webglFlips = computed<RealBookSceneFlip[]>(() => flips.value.map((run) => 
   follow: run.follow,
   grabV: run.grabV,
   pointerV: run.pointerV,
-  front: texturePageOf(
-    phone.value ? run.from : (run.direction === -1 ? run.from - 1 : run.from),
-    phone.value ? rightHeader.value : (run.direction === -1 ? leftHeader.value : rightHeader.value),
-  ),
-  back: texturePageOf(
-    phone.value ? run.to : (run.direction === 1 ? run.from + 1 : run.from - 2),
-    phone.value ? rightHeader.value : (run.direction === 1 ? leftHeader.value : rightHeader.value),
-  ),
+  // 用起纸时的快照，不每帧回查页表：页表在翻页途中重排不会让飞页变白纸。
+  front: run.front,
+  back: run.back,
 })))
 /**
  * 卷页竖带：角度与位置由 `flipPoses` 算（折线积分），这里只铺成 style。

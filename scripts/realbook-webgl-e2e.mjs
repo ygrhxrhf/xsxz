@@ -126,6 +126,10 @@ try {
   await cdp('Runtime.enable')
   await cdp('Page.enable')
   await cdp('Page.bringToFront')
+  // 窗口在后台时 Chromium 会停 rAF：命中区和飞页正文都靠帧循环贴着纸面。
+  // 不把页面当作前台聚焦的话，拖页的飞页正文永远不建，看起来就像产品在翻白纸——
+  // 上一轮「拖页丢正文」就是这么误判出来的，所以这条必须开。
+  await cdp('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {})
   // 固定 DPR 为 1 并给出确定的视口：这台机器默认 125% 缩放，拖页的合成输入在
   // 非 1 DPR 下偶尔会被当成点按（与 capture-flyer-text.mjs 的可用条件一致）。
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
@@ -170,6 +174,8 @@ try {
       visible: visible.length,
       transformed: visible.filter((el) => /matrix3d/.test(el.style.transform)).length,
       faces: visible.reduce((acc, el) => { const k = el.dataset.face || '?'; acc[k] = (acc[k] || 0) + 1; return acc; }, {}),
+      // 正反面各自建了多少段：纸转到 90° 之前只露正面，背面片段也在 DOM 里等着。
+      allFaces: els.reduce((acc, el) => { const k = el.dataset.face || '?'; acc[k] = (acc[k] || 0) + 1; return acc; }, {}),
       firstText: visible.find((el) => el.textContent.length > 3)?.textContent || '',
     };
   `)
@@ -245,6 +251,63 @@ try {
   // 双页摊开：正向翻一张 +2（1 → 3），反向翻一张 -2（3 → 1），所以回到 beforeLabel。
   // 总页数会在字体分片加载后重排（例如 3 → 5），只比当前页号，不比整串。
   check('反向翻页落定回到原页', pageNumberOf(backLabel) === pageNumberOf(beforeLabel), JSON.stringify({ beforeLabel, beforeBackLabel, backLabel }))
+
+  // 拖页：手指按住外缘拉纸。飞页正文必须贴着纸面一起弯（matrix3d），
+  // 正反面都要印着字；半程松手弹回、越过阈值落定。
+  const hitRect = () => ev(`const r = document.querySelector('.real-book-webgl-hit')?.getBoundingClientRect(); return r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null;`)
+  const labelNow = () => ev(`return document.querySelector('.real-book-page-label')?.textContent || '';`)
+  const beginPeel = async (direction) => {
+    const r = await hitRect()
+    const y = Math.round(r.top + r.height / 2)
+    const x = direction === 1 ? Math.round(r.left + r.width - 12) : Math.round(r.left + 12)
+    await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' })
+    await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 })
+    return { x, y, step: direction === 1 ? -1 : 1 }
+  }
+  const peelTo = async (drag, distance) => {
+    // 分几步走：一步到位拿不到中间态，起拖阈值也会被跳过。
+    const steps = 4
+    for (let i = 1; i <= steps; i += 1) {
+      await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: drag.x + drag.step * Math.round(distance * i / steps), y: drag.y, button: 'left', buttons: 1 })
+      await sleep(45)
+    }
+    return drag.x + drag.step * distance
+  }
+  const releasePeel = async (x, y) => {
+    await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 })
+  }
+
+  const peelBaseline = await labelNow()
+  let peel = await beginPeel(1)
+  let endX = await peelTo(peel, 70)
+  await sleep(250)
+  const held = await flipTextInfo()
+  check('拖页半程时飞页正文可见并贴面', held.visible > 0 && held.transformed > 0, JSON.stringify(held))
+  check('正向拖页露出的是纸的正面', (held.faces.front || 0) > 0, JSON.stringify(held.faces))
+  check('拖页时纸的正反面都建有正文', (held.allFaces.front || 0) > 0 && (held.allFaces.back || 0) > 0, JSON.stringify(held.allFaces))
+  await shot('webgl-drag-hold.png')
+  await releasePeel(endX, peel.y)
+  await sleep(900)
+  const afterCancel = await labelNow()
+  check('拖页不到阈值松手：纸弹回、页码不动', pageNumberOf(afterCancel) === pageNumberOf(peelBaseline), JSON.stringify({ peelBaseline, afterCancel }))
+
+  peel = await beginPeel(1)
+  endX = await peelTo(peel, 300)
+  await releasePeel(endX, peel.y)
+  await sleep(1200)
+  const afterForward = await labelNow()
+  check('拖页越过阈值落定：正向翻一页', pageNumberOf(afterForward) === pageNumberOf(peelBaseline) + 2, JSON.stringify({ peelBaseline, afterForward }))
+
+  peel = await beginPeel(-1)
+  endX = await peelTo(peel, 80)
+  await sleep(200)
+  const backHeld = await flipTextInfo()
+  check('往回拖页时飞页正文跟着纸走', backHeld.visible > 0 && backHeld.transformed > 0, JSON.stringify(backHeld))
+  endX = await peelTo(peel, 300)
+  await releasePeel(endX, peel.y)
+  await sleep(1200)
+  const afterBack = await labelNow()
+  check('往回拖页落定：回到原页', pageNumberOf(afterBack) === pageNumberOf(peelBaseline), JSON.stringify({ peelBaseline, afterBack }))
 
   // 合上 / 打开：按钮态与画布都应跟着切换。
   await click(`document.querySelector('.reader-bottombar [aria-label="合上书籍"]')`)

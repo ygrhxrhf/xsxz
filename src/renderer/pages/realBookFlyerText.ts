@@ -55,6 +55,28 @@ export function flyerFacePages<T>(
     : [{ face: 1, page: back, side: 'right' }, { face: -1, page: front, side: 'left' }]
 }
 
+/**
+ * 一张纸的两面各印哪一页（0-based 页下标）。
+ *
+ * 双页摊开：正面是掀起来的那张右页（`from`），背面是落定后的左页（`from + 1`）；
+ * 往回翻时纸从左边掀起，正面是左页（`from - 1`），背面是落定后的右页（`from - 2`）。
+ * 单页模式没有「对面」：正面就是当前页、背面就是落点页。
+ *
+ * 起纸时按这个结果取页快照（`FlipRun.front/back`），翻页途中页表重排也不会让飞页
+ * 拿到越界下标、变成一张白纸。
+ */
+export function flyerPageIndexes(
+  direction: 1 | -1,
+  from: number,
+  to: number,
+  single: boolean,
+): { front: number; back: number } {
+  if (single) return { front: from, back: to }
+  return direction === 1
+    ? { front: from, back: from + 1 }
+    : { front: from - 1, back: from - 2 }
+}
+
 export interface FlyerSplitOptions {
   /** 每段最宽多少逻辑像素。越窄越贴合弧面，代价是 DOM 片段更多。 */
   maxWidth?: number
