@@ -1,5 +1,25 @@
 # HANDOFF
 
+## Windows 安装包落地（2026-11-21，本轮完成）
+
+- 做到哪：`npm run dist:local` 从「从没跑通过」变成可交付——产出
+  `release/小说浏览器 Setup 0.1.0.exe`（NSIS，oneClick:false，可选目录 + 桌面/开始菜单快捷方式），
+  175 MB，未签名（Windows 会提示未知发布者，个人自用可接受）。
+- 图标：新增 `build/icon.ico`（PIL 生成 16–256 多尺寸：深蓝布面 + 摊开的书页 + 烫金书脊/书签），
+  打包日志的 `default Electron icon is used` 已消失；从 exe 抽出 32×32 图标校验为纸色像素。
+  `package.json` 补 `author: zmz`，`author is missed` 警告消失。
+- 打包版冒烟（`release/win-unpacked/小说浏览器.exe` + 临时书库 + `--remote-debugging-port`）：
+  外壳四项导航出现、书卡可点、WebGL 真实书籍打开（`label 第 1 / 3 页`、canvas 在、无回退提示）。
+- 依赖：`@modelcontextprotocol/sdk` 1.30.0 → 1.32.2（high 告警，运行时）、`vite` 7.3.6 → 7.3.8
+  （high 告警，构建）；`npm audit fix` 顺带清 fast-uri。审计从 9 条（2 high）降到 6 条 moderate，
+  剩下全是 electron-builder 的 minimatch 链（只在本机构建时跑，审计建议的「修复」是回退两个大版本，不做）。
+- 验证：`npm run typecheck` 0；`npm test` 197 文件 / **1995 用例全绿**；
+  `npm run dist:local` EXIT 0 两次（带图标前后各一次）。日志：`.multi-agent/tmp/logs-2026-11-20/`。
+  计划：`.multi-agent/plan/windows-packaging.md`。README 增加「打包」一节。
+- 未验证/边界：没有在本机静默安装（会写注册表 + 建快捷方式，留给用户点）；未在干净机器装过；
+  未做签名与自动更新（明确出范围）。
+- 下一步第一条命令：`git push origin master`（需用户点头）。
+
 ## 拖页白纸结案：夹具假象 + 两道保险（2026-11-20 晚，本轮完成）
 
 - 做到哪：上一轮记为「拖页时飞页正文会丢（竞态，未修）」的问题已定位为**自动化夹具假象**：

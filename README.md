@@ -23,11 +23,20 @@ npm run build
 - `npm run typecheck`：检查主进程、预加载和渲染进程的 TypeScript 类型
 - `npm test`：跑 vitest（不 watch）
 - `npm run build`：编译主进程 / 预加载 / 渲染进程
+- `npm run dist:local`：打 Windows 安装包（走 npmmirror 取 builder 二进制），产物在 `release/小说浏览器 Setup 0.1.0.exe`
+- `npm run pack:local`：只生成免安装目录 `release/win-unpacked/`
 
 端到端（两条都会真开一次应用窗口，需先 `npm run build`）：
 
 - `npm run e2e:startup`：书库目录不可用时的启动兜底（弹窗说明 → 换目录 → 继续启动）
 - `npm run e2e:ocr`：图片化正文走 OCR 入库（起本地夹具站点，真认字，核对 `unlockedBy=ocr`）
+
+## 打包
+
+- 安装包图标取 `build/icon.ico`（深蓝布面 + 摊开的书页 + 烫金书脊，多尺寸 16–256）。
+- 没有配代码签名证书，Windows 首次运行会提示「未知发布者」，属预期；个人自用不必签名。
+- 安装包只装程序，不含书库；书库仍在你设置的路径（默认 `%USERPROFILE%\spbf\library`），卸载不会删书。
+- 安装器是 NSIS（`oneClick: false`，可选安装目录、桌面/开始菜单快捷方式）。
 
 ## 书库路径
 
