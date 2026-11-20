@@ -153,6 +153,11 @@ try {
   }
   const click = (expr) => ev(`const el = ${expr}; if (!el) return 'none'; el.scrollIntoView(); el.click(); return 'ok';`)
 
+  // 本脚本量的是 CSS 3D 回退的翻页帧率；WebGL 现在是默认渲染层，必须显式选回 CSS 3D。
+  await ev(`localStorage.setItem('spore:reader-realbook-renderer:v1', 'css'); return true;`)
+  await cdp('Page.reload')
+  await sleep(1800)
+
   // 1) 书库 → 打开夹具书，等真实书籍书台出现
   await waitFor(`[...document.querySelectorAll('.nav-label')].some((x) => x.textContent === '书库')`, 25000)
   await click(`[...document.querySelectorAll('.nav-btn')].find((b) => b.querySelector('.nav-label')?.textContent === '书库')`)

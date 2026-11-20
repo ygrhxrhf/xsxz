@@ -70,9 +70,10 @@ npm run typecheck
 npm test
 npm run build
 npm run e2e:realbook-notes   # CSS 3D 回退的批注/持久化 E2E
+npm run e2e:realbook-webgl   # WebGL 渲染层真机回归（画布/命中区/翻页/拖页/单页）
 npm run e2e:download-images  # 本地站点：同源 + 跨域（CORS）配图 → images/ → 正文原位 [图]
 ```
 
-WebGL 模式的真实 Electron 检查使用临时脚本 `.multi-agent/tmp/realbook-webgl-check.mjs`：确认 canvas 挂载、书体命中区、翻页页码推进、合上/打开按钮和外观/视角面板。
+WebGL 模式的真机回归已收进仓库：`npm run e2e:realbook-webgl`（先 `npm run build`）——画布挂载、命中区投影、DOM 文本层、选字工具条、正/反向翻页、合上/打开、背景外观面板、拖页保持时飞页正文贴面、沉浸式顶栏与「更多」菜单、窄屏单页，逐项 PASS/FAIL 并要求全程无渲染进程异常。更早的探索性截图脚本仍在 `.multi-agent/tmp/`（未入库），用于看帧与比对观感：`realbook-webgl-check.mjs` 确认 canvas 挂载、书体命中区、翻页页码推进、合上/打开按钮和外观/视角面板。
 
 飞页正文的贴面用 `.multi-agent/tmp/capture-flyer-text.mjs` 复核：正向/反向各拖住半程，读 `.real-book-flip-line` 的数量、朝向（正/背面）与首段文字，并在 2× 裁图里核对正文与页眉页脚是否贴着卷曲的纸面；同时确认落定后飞页 DOM 清空、没有残字。页内注卡与图片用 `.multi-agent/tmp/capture-blocks.mjs` 复核：静态页出现注卡（点开批注浮层）、图片/图注以及划线底色与「注」点（读 `.real-book-mark` / `.real-book-note-dot` 的颜色与矩形），拖住飞页时它们跟着纸面走。页间自阴影用 `.multi-agent/tmp/capture-drag-hold.mjs` 复核：拖住飞页半程时，接收页出现随纸形走的暗带；临时把 `uShCfg.x` 从 0.28 调到 2.0 可把投影范围放大确认（已还原）。书壳/书脊用 `.multi-agent/tmp/capture-close.mjs` 复核合上动画落定（`close-3900.png`）：封面落在书垛顶，圆背书脊在左侧。窄屏卷页用 `.multi-agent/tmp/capture-phone-drag.mjs` 复核：拖住半程时纸从右缘起卷，未卷到的字保持平坦。页面纹理 Worker 用 `.multi-agent/tmp/realbook-webgl-check.mjs` 复核：打开/翻页/反向/合上/单页的截图里正文都在（Worker 不可用时自动回退主线程）。双纸同时在飞只有 0.4s 窗口，截图工具抓不稳，没有留下正式对照图。底栏暗色浮层与「适应屏幕」用 `.multi-agent/tmp/capture-panel-fit.mjs` 复核（13 项）：读浮层的背景/字色/选项按钮配色，放大两次到 141% 后按 0 与点按钮都回到 100%。沉浸式 chrome、底栏「更多」、暗色目录抽屉与手机 20px 用 `.multi-agent/tmp/capture-immersive.mjs` 复核（27 项）：顶栏容器零高度且没有应用入口、更多菜单 10 个入口、朗读浮层贴右上角、抽屉与列表/过滤器取色、手机视口只显示一页且 `--rb-font-size: 20px`。单测：`Reader.realBook.ui.test.ts`（适应屏幕按钮与 0 键）、`Reader.visual.contract.test.ts`（暗色浮层规则）、`realBookPhoneCurl.test.ts`（页心折线水平、上下部起拖倾斜、拖动中折线跟手、倾斜幅度上限、卷到/未卷到的纸面）、`realBookPaperMaterial.test.ts`（软影浮点纹理的槽位 × 截面行数与数据长度）、`realBookFlyerText.test.ts`（切段连续性/宽度上限/单字兜底、矩阵三角映射、正反面分配）、`realBookTexture.test.ts`（页眉页脚的字号/基线）、`realBookBlocks.test.ts`（注卡三行上限/字号/基线、图注居中）、`realBookTextLayer.test.ts`（划线底色几何、「注」点位置/直径）、`realBookFlipShadow.test.ts`（投影/半影/透明度与起落帧归零、覆盖率栅格与采样）、`RealBookWebGLStage.test.ts`（静态页页眉页脚、注卡点击、图片协议、划线/注点的上下层次）。

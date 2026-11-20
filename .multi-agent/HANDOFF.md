@@ -1,5 +1,38 @@
 # HANDOFF
 
+## 真实书籍 WebGL 分支收口：合并 + 固化 e2e（2026-11-20，本轮完成）
+
+- 做到哪：`feat/realbook-webgl-fidelity` 5 个提交 ff-only 合进 `master`（`296f390..e2ba190`，
+  175 文件 / +11485 −397）；把 WebGL 真机检查从 `.multi-agent/tmp/` 收进
+  `scripts/realbook-webgl-e2e.mjs`（`npm run e2e:realbook-webgl`）；修好三条既有真实书籍 e2e；
+  更新 `docs/真实书籍-WebGL复刻.md` 验证段与本文件。计划见 `.multi-agent/plan/realbook-webgl-e2e.md`。
+- 结果：
+  - `npm test` → 1991 用例全绿，EXIT 0（`.multi-agent/tmp/fulltest-postmerge.log`）。
+  - `npm run typecheck` → EXIT 0；`npm run build` → EXIT 0（渲染层 target 改 `esnext`，见下）。
+  - `npm run e2e:realbook-webgl` → 26 项通过 / 0 失败，EXIT 0（画布、命中区、DOM 文本层、选字、
+    正/反向翻页、合上/打开、外观面板、拖页贴面、沉浸式 chrome、窄屏单页、无渲染进程异常）。
+  - `e2e:realbook-flip` 7/7、`e2e:realbook-notes` 18/18、`e2e:realbook-selection` 18/18，EXIT 0。
+- 三条既有 e2e 的改动（当前行为已变，不改就跑不过）：
+  - 都补 `localStorage['spore:reader-realbook-renderer:v1']='css'`——WebGL 已是默认渲染层，
+    而这几条验的是 CSS 3D 回退几何。
+  - annotations / selection-pitch 的「平放」改为**向上拖**：真实书籍现在没有平放按钮
+    （`:show-toolbar="bookView !== 'realbook'"`，顶栏那颗又在 `v-if="!isRealBook"` 里），
+    这是产品侧缺口，见计划「已知边界」。
+- **环境阻塞（未解决）**：本机 `node_modules` 带 `Mandatory Label\Low Mandatory Level`，
+  `electron.exe` 以低完整性启动后写不了 userData / `%TEMP%` / 桌面，应用起不来，
+  **所有真机 e2e 都会失败**（不是脚本问题）。上面四条 e2e 的证据是用「复制到无 Low 标签目录的
+  Electron」跑同一份脚本得到的；把 `electron/dist` 放回中完整性目录后 app 能正常起窗口、写文件。
+  修法需用户执行（涉及安全描述符，工具侧被拦）：
+  `icacls C:\codes\xsxz\node_modules /setintegritylevel M /T /C`
+- 同一条根因也挡构建：esbuild 0.28 对 >~1MB 的 chunk 用临时文件回传，低完整性进程删不掉它，
+  报 `Access is denied`。本轮把 `electron.vite.config.ts` 渲染层 target 从 `chrome156` 改 `esnext`
+  绕过（Chromium 156 不需要降级）。修好完整性后可改回。
+- 未验证/边界：用仓库内 `node_modules` 的 Electron 直接跑 e2e（被低完整性挡住）；
+  真机窗口尺寸 1440×900 与 1266×763 各跑过；未做多点触控/触控板。
+- 下一步第一条命令：`icacls C:\codes\xsxz\node_modules /setintegritylevel M /T /C`（用户执行），
+  然后 `npm run e2e:realbook-webgl` 与三条既有 e2e 用仓库 Electron 复跑一次。
+- 未提交改动：无（本计划文件、HANDOFF、e2e 脚本、构建配置已提交）。
+
 ## 弧面删除后真机回归：三条 e2e 全通过（2026-11-11，本轮完成）
 
 - 做到哪：补齐 `60b1c2e` 删除弧面实验时留下的真机验证缺口，在真实 Electron 窗口（1266×763）上复跑三条 e2e。

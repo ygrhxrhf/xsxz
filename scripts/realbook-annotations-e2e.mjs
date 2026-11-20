@@ -149,12 +149,7 @@ async function openFixtureBook({ waitFor, click }) {
   return waitFor(`document.querySelector('.real-book-stage .real-book-para')`, 15000)
 }
 
-async function resetPitch(ev) {
-  await ev(`document.querySelector('.real-book-btn[aria-label="平放"]')?.click(); await new Promise((r) => setTimeout(r, 350)); return true;`)
-}
-
-async function dragPitch(ev, cdp, px) {
-  await resetPitch(ev)
+async function dragPitchBy(ev, px) {
   return ev(`
     const book = document.querySelector('.real-book-book');
     if (!book) return '';
@@ -173,6 +168,20 @@ async function dragPitch(ev, cdp, px) {
   `)
 }
 
+// 真实书籍现在没有「平放」按钮：底栏收起时整条 inert，舞台自己的 .real-book-toolbar
+// 又只在非真实书籍下渲染（Reader.vue 的 :show-toolbar）。回 0° 只能向上拖。
+async function resetPitch(ev) {
+  const raw = await ev(`return document.querySelector('.real-book-stage')?.style.getPropertyValue('--rb-pitch');`)
+  const deg = Number.parseFloat(String(raw))
+  if (!Number.isFinite(deg) || deg <= 0) return
+  await dragPitchBy(ev, -Math.ceil(deg / 0.1))
+}
+
+async function dragPitch(ev, cdp, px) {
+  await resetPitch(ev)
+  return dragPitchBy(ev, px)
+}
+
 let first
 let second
 let ws
@@ -181,6 +190,11 @@ try {
   const app = await connect()
   ws = app.ws
   const { ev, waitFor, click, screenshot, cdp } = app
+
+  // 本脚本验的是 CSS 3D 回退几何；WebGL 现在是默认渲染层，必须显式选回 CSS 3D。
+  await ev(`localStorage.setItem('spore:reader-realbook-renderer:v1', 'css'); return true;`)
+  await cdp('Page.reload')
+  await sleep(1800)
 
   check('真实书籍书台出现', await openFixtureBook(app))
   const initial = await ev(`return {

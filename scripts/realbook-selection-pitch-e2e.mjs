@@ -235,6 +235,11 @@ try {
   }
   const click = (expr) => ev(`const el = ${expr}; if (!el) return 'none'; el.scrollIntoView(); el.click(); return 'ok';`)
 
+  // 本脚本验的是 CSS 3D 回退下的选区俯仰；WebGL 现在是默认渲染层，必须显式选回 CSS 3D。
+  await ev(`localStorage.setItem('spore:reader-realbook-renderer:v1', 'css'); return true;`)
+  await cdp('Page.reload')
+  await sleep(1800)
+
   // 1) 书库 → 打开夹具书，等真实书籍书台出现
   await waitFor(`[...document.querySelectorAll('.nav-label')].some((x) => x.textContent === '书库')`, 25000)
   await click(`[...document.querySelectorAll('.nav-btn')].find((b) => b.querySelector('.nav-label')?.textContent === '书库')`)
@@ -295,10 +300,6 @@ try {
 
   // 3) 俯仰扫描：平放 → 20° → 35°（上限），每个角度各测单行与多行选区
   const readPitch = () => ev(`return document.querySelector('.real-book-stage').style.getPropertyValue('--rb-pitch');`)
-  const resetFlat = async () => {
-    await click(`document.querySelector('.real-book-btn[aria-label="平放"]')`)
-    await sleep(400)
-  }
   // 俯仰拖拽：0.1°/px。起点不能写死成「书体左上角 +8px」——选过多行字之后顶部阅读
   // 工具栏常显，正好盖住那个角（elementFromPoint 命中「书架」按钮），拖拽根本到不了书体；
   // 起点若落在文字上还会触发原生拖拽把 pointer 取消。所以在书体内部扫描一个
@@ -316,8 +317,7 @@ try {
     }
     return null;
   `)
-  const dragToPitch = async (px) => {
-    await resetFlat()
+  const dragBy = async (px) => {
     const start = await findDragPoint()
     if (!start) {
       check(`拖拽 ${px}px 前能找到纸面起点`, false, '书体上没有可拖拽的空白点')
@@ -334,11 +334,23 @@ try {
     await sleep(400)
     return readPitch()
   }
+  // 现在真实书籍没有「平放」按钮：底栏收起时是 inert 横条，舞台自己的
+  // .real-book-toolbar 又只在非真实书籍下渲染（Reader.vue 的 :show-toolbar）。
+  // 回到 0° 只能向上拖——读当前角度，按 0.1°/px 反算位移。
+  const resetFlat = async () => {
+    const deg = Number.parseFloat(String(await readPitch()))
+    if (!Number.isFinite(deg) || deg <= 0) return
+    await dragBy(-Math.ceil(deg / 0.1))
+  }
+  const dragToPitch = async (px) => {
+    await resetFlat()
+    return dragBy(px)
+  }
 
   const measured = []
   await resetFlat()
   const flatPitch = await readPitch()
-  check('「平放」把俯仰角复位到 0', Number.parseFloat(flatPitch) === 0, `--rb-pitch=${flatPitch || '(空)'}`)
+  check('向上拖拽回到平放（0°）', Number.parseFloat(flatPitch) === 0, `--rb-pitch=${flatPitch || '(空)'}`)
   measured.push(await measureAt(`平放 ${flatPitch} 单行`, 24))
   measured.push(await measureAt(`平放 ${flatPitch} 多行`, 90))
 
