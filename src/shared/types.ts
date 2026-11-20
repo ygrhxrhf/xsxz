@@ -877,6 +877,17 @@ export interface AiPrefs {
   tierSense: TierSensePrefs
 }
 
+/** 到期自动检查追更：启动后若距上次检查超过间隔，就串行检查书库里每本下载书。 */
+export interface AutoUpdateCheckPrefs {
+  enabled: boolean
+  /** 两次自动检查的最小间隔（小时），1–720。 */
+  intervalHours: number
+  /** 上次自动检查完成时间（ISO）；空串表示从未检查过。 */
+  lastCheckedAt: string
+  /** 上次自动检查的中文结果摘要，供书库页展示。 */
+  lastSummary: string
+}
+
 export interface Settings {
   libraryPath: string
   baseUrl: string
@@ -909,6 +920,8 @@ export interface Settings {
   downloadPace: DownloadPace
   /** 主进程总补齐；可选仅用于兼容旧调用方和测试数据。 */
   autoBackup?: { destDir: string; lastSuccessAt: string; lastError: string }
+  /** 到期自动检查追更；主进程始终补齐，缺省按开启、每 24 小时一次。 */
+  autoUpdateCheck?: AutoUpdateCheckPrefs
   /** 浏览 / 下载代理；主进程始终补齐，缺省直连。 */
   proxy?: ProxyPrefs
 }
@@ -938,6 +951,8 @@ export interface SettingsUpdate {
   /** 省略则不改已保存档位。 */
   downloadPace?: DownloadPace
   autoBackup?: { destDir?: string; lastSuccessAt?: string; lastError?: string }
+  /** 只合并提交的字段；`lastCheckedAt` / `lastSummary` 由主进程写。 */
+  autoUpdateCheck?: Partial<AutoUpdateCheckPrefs>
   /** 代理配置；`password` 单独走明文提交，落盘前加密。 */
   proxy?: Partial<Omit<ProxyPrefs, 'passwordConfigured'>>
   /** 空字符串清除已保存的代理密码。 */

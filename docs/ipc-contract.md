@@ -347,6 +347,8 @@
 
 在线语音由主进程读取已保存接口和密钥发起请求；渲染进程不能覆盖请求地址或获取密钥。缓存位于 `userData/tts-cache`，限额 500 MB。
 
+`Settings.autoUpdateCheck`（`{ enabled: boolean; intervalHours: number; lastCheckedAt: string; lastSummary: string }`）保存自动追更偏好，仍走现有 `settings.get` / `settings.set`，**不新增频道**。主进程始终补齐：默认 `enabled: true`、`intervalHours: 24`、两个时间/摘要字段为空串；`intervalHours` 收 1–720 的整数（越界夹紧、非数值回退 24）。`SettingsUpdate.autoUpdateCheck` 只合并提交的字段；`lastCheckedAt` / `lastSummary` 由主进程在自动检查完成后写入，界面不提交。启动约 60 秒后，若距上次检查超过间隔且没有下载 / 书库恢复 / 批量检查在进行，主进程调用现有 `download.checkAll` 的逻辑逐本检查（新章直接补下），把摘要写回设置；书库页据此展示一次「自动追更」提示，有新章时另发系统通知。e2e 以 `--remote-debugging-port` 启动时不执行自动检查。
+
 `Settings.downloadPace`（`'slow' | 'standard' | 'fast'`）是必填字段，`settings.get` 始终返回。默认 `'standard'`。旧 `settings.json` 缺该字段、空串或非法值都回退 `'standard'`。`SettingsUpdate.downloadPace` 可选；`settings.set` 写入合法档位，非法值回退 `'standard'` 后落盘并返回。它只影响下载时章与章之间的固定间隔：`slow` 2000ms、`standard` 600ms、`fast` 200ms。不新增 IPC 频道，仍走现有 `settings.get` / `settings.set`。
 
 `SettingsUpdate.appearance.skin`（`'light' | 'dark'`）用于应用界面明暗切换：渲染层切换时提交，主进程校验并写入 `settings.json`；默认 `'light'`。旧 `'paper'`、`'white'`、`'sakura'`、`'minimal'` 读入为 `'light'`，旧 `'night'` 读入为 `'dark'`，非法值回退 `'light'`。阅读正文的 `ReaderPrefs.theme` 独立保存。

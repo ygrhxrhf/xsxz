@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { atomicWriteText } from './atomicFile'
 import type {
   AiPrefs,
+  AutoUpdateCheckPrefs,
   ProxyPrefs,
   AiPromptKind,
   AiProvider,
@@ -192,6 +193,26 @@ function mergeAiPrefs(current: unknown, patch: unknown): AiPrefs {
     customPrompts: { ...readRecord(previous.customPrompts), ...readRecord(update.customPrompts) },
     tierSense: { ...readRecord(previous.tierSense), ...readRecord(update.tierSense) },
   })
+}
+
+export const DEFAULT_AUTO_UPDATE_CHECK: AutoUpdateCheckPrefs = {
+  enabled: true,
+  intervalHours: 24,
+  lastCheckedAt: '',
+  lastSummary: '',
+}
+
+/** 自动追更偏好：缺字段逐项补默认，间隔夹在 1–720 小时。 */
+export function normalizeAutoUpdateCheckPrefs(value: unknown): AutoUpdateCheckPrefs {
+  const prefs = readRecord(value)
+  return {
+    enabled: typeof prefs.enabled === 'boolean' ? prefs.enabled : DEFAULT_AUTO_UPDATE_CHECK.enabled,
+    intervalHours: Math.round(
+      readFiniteClamped(prefs.intervalHours, 1, 720, DEFAULT_AUTO_UPDATE_CHECK.intervalHours),
+    ),
+    lastCheckedAt: typeof prefs.lastCheckedAt === 'string' ? prefs.lastCheckedAt : '',
+    lastSummary: typeof prefs.lastSummary === 'string' ? prefs.lastSummary : '',
+  }
 }
 
 export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
@@ -454,6 +475,7 @@ export async function getSettings(): Promise<Settings> {
       lastSuccessAt: typeof backup.lastSuccessAt === 'string' ? backup.lastSuccessAt : '',
       lastError: typeof backup.lastError === 'string' ? backup.lastError : '',
     },
+    autoUpdateCheck: normalizeAutoUpdateCheckPrefs(raw.autoUpdateCheck),
   }
 }
 
@@ -583,6 +605,19 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
       lastSuccessAt: typeof backupPatch.lastSuccessAt === 'string' ? backupPatch.lastSuccessAt
         : typeof backupPatch.destDir === 'string' && backupPatch.destDir.trim() !== previous.destDir ? '' : previous.lastSuccessAt,
       lastError: typeof backupPatch.lastError === 'string' ? backupPatch.lastError : previous.lastError,
+    }
+  }
+  if (patch.autoUpdateCheck) {
+    const previous = normalizeAutoUpdateCheckPrefs(raw.autoUpdateCheck)
+    const incoming = readRecord(patch.autoUpdateCheck)
+    raw.autoUpdateCheck = {
+      enabled: typeof incoming.enabled === 'boolean' ? incoming.enabled : previous.enabled,
+      intervalHours:
+        'intervalHours' in incoming
+          ? Math.round(readFiniteClamped(incoming.intervalHours, 1, 720, previous.intervalHours))
+          : previous.intervalHours,
+      lastCheckedAt: typeof incoming.lastCheckedAt === 'string' ? incoming.lastCheckedAt : previous.lastCheckedAt,
+      lastSummary: typeof incoming.lastSummary === 'string' ? incoming.lastSummary : previous.lastSummary,
     }
   }
   await saveRaw(raw)

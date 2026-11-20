@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, NForm, NFormItem, NDynamicTags, useMessage } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NInput, NSelect, NSpace, NSpin, NTag, NPopconfirm, NModal, NDropdown, NDrawer, NDrawerContent, NForm, NFormItem, NDynamicTags, useMessage } from 'naive-ui'
 import type { DropdownOption, InputInst } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { BookListItem, ChapterMeta, DownloadBlocked, DownloadProgress, FailCode, QualityIssue, QualityReport, ReadingStatsView, TrashItem, WebShelfBook } from '@shared/types'
@@ -53,6 +53,27 @@ const activeDownloadIds = ref<string[]>([])
 const deleteConfirmId = ref<string | null>(null)
 const checkMsg = ref<Record<string, string>>({})
 const checkErr = ref<Record<string, boolean>>({})
+/** 启动时自动追更的结果：摘要来自 settings.autoUpdateCheck，书库页负责展示一次。 */
+const autoUpdateSummary = ref('')
+const autoUpdateAt = ref('')
+const AUTO_UPDATE_DISMISS_KEY = 'spbf:auto-update-summary-dismissed'
+const dismissedAutoUpdateAt = ref(localStorage.getItem(AUTO_UPDATE_DISMISS_KEY) || '')
+const autoUpdateBanner = computed(
+  () => Boolean(autoUpdateSummary.value && autoUpdateAt.value && autoUpdateAt.value !== dismissedAutoUpdateAt.value),
+)
+const autoUpdateAtText = computed(() => {
+  const date = new Date(autoUpdateAt.value)
+  if (!autoUpdateAt.value || !Number.isFinite(date.getTime())) return ''
+  return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+})
+function dismissAutoUpdateBanner(): void {
+  dismissedAutoUpdateAt.value = autoUpdateAt.value
+  try {
+    localStorage.setItem(AUTO_UPDATE_DISMISS_KEY, autoUpdateAt.value)
+  } catch {
+    /* 隐私模式或配额满：只在本次会话里收起 */
+  }
+}
 const query = ref('')
 /** 防抖后的查询词：输入框每敲一下都全量 filter+sort（含 localeCompare('zh')）太贵，慢 150ms 再筛。 */
 const debouncedQuery = ref('')
@@ -274,6 +295,8 @@ async function refresh() {
     try {
       const settings = await window.api.settings.get()
       nextLibraryPath = settings.libraryPath
+      autoUpdateSummary.value = settings.autoUpdateCheck?.lastSummary || ''
+      autoUpdateAt.value = settings.autoUpdateCheck?.lastCheckedAt || ''
     } catch {
       /* keep previous libraryPath */
     }
@@ -1108,6 +1131,18 @@ onUnmounted(() => {
         </n-button>
       </div>
     </header>
+    <n-alert
+      v-if="autoUpdateBanner"
+      class="auto-update-banner"
+      type="info"
+      :show-icon="false"
+      closable
+      @close="dismissAutoUpdateBanner"
+    >
+      <strong>自动追更</strong>
+      <span v-if="autoUpdateAtText"> · {{ autoUpdateAtText }}</span>
+      <div>{{ autoUpdateSummary }}</div>
+    </n-alert>
     <div v-if="books.length" class="lib-toolbar">
       <div class="lib-toolbar-row">
         <n-input
@@ -1633,6 +1668,10 @@ onUnmounted(() => {
   color: var(--text-secondary);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.auto-update-banner {
+  margin: 0 0 var(--space-6);
 }
 
 .lib-toolbar {

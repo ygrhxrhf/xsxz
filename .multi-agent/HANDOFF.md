@@ -1,5 +1,29 @@
 # HANDOFF
 
+## 工作区收口 + 启动自动追更（2026-11-21，本轮完成）
+
+- 做到哪：清掉约 930MB 未跟踪产物（`.multi-agent/tmp/` 483M、`.multi-agent/visual/` 451M 的截图与探针 exe），
+  文档点名的 10 个探针脚本归档到 `.multi-agent/archive/probes/`，打包日志归档到
+  `.multi-agent/archive/logs-2026-11-20/`，`.gitignore` 补 `.multi-agent/tmp|visual`、`spbf-run/`、
+  `codesxsxz.multi-agenttmp*/`。atlas 截图证据保留在 `.multi-agent/visual/atlas/`。
+- 新功能：启动约 60 秒后，若距上次自动检查超过间隔（默认 24 小时）且没有下载 / 书库恢复 / 批量检查在跑，
+  就复用现有 `download.checkAll` 逐本检查并直接补下新章；结果写回 `settings.autoUpdateCheck`
+  （`enabled` / `intervalHours` / `lastCheckedAt` / `lastSummary`），有新章时发系统通知，书库页展示一次提示。
+  不新增 IPC 频道，仍走 `settings.get/set`；设置页「书库」区有开关与 12h/24h/3d/7d 间隔。
+  e2e 以 `--remote-debugging-port` 启动时不触发，另支持 `--no-auto-update-check`。
+- 关键取舍：空书库只写检查时间、不写摘要，避免每次启动都弹「还没有可追更的书」；忙或批量检查被拒绝时
+  不写时间戳，留到下次启动重试，不做常驻定时器。
+- 验证：`npm run typecheck` 0；`npm test` 199 文件 / **2014 用例全绿**；`npm run build` 0；
+  `npm run e2e:auto-update` **11 项通过 0 失败**（本地站真下载 5 章 → 加第 6 章 → 等满 60 秒 →
+  第 6 章 ready、设置写回摘要、书架提示可见）；`npm run dist:local` 0。
+- 安装向导：用 Win32 枚举 + `BM_CLICK` 点默认按钮走完欢迎 → 自选目录（出现 `Edit#1019`）→ 安装进度 → 完成，
+  共 6 次点击、安装器退出码 0；已安装目录、卸载程序、桌面/开始菜单快捷方式、HKCU 卸载项都在（0.1.0）。
+  已安装版冒烟 4/4：设置页有自动检查开关、默认开启 24 小时、启动无异常。
+- 未验证/边界：未在干净机器装过；未实际改到非默认安装目录再装一遍；自动检查只等启动后一次，错过就下次启动再试。
+- 权限备注：`spbf-run/` 与三个 `codesxsxz.multi-agenttmp*` Electron profile 目录因删除被权限分类器拦下，
+  已加入 `.gitignore`，磁盘上仍保留（约 37MB）；要删需用户明确点名授权。
+- 下一步第一条命令：`git push origin master`（需用户点头）。
+
 ## Windows 安装包落地（2026-11-21，本轮完成）
 
 - 做到哪：`npm run dist:local` 从「从没跑通过」变成可交付——产出

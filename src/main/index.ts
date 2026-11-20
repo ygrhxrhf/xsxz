@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, session, WebContentsView } from 'electron'
 import { join } from 'node:path'
 import { appendFile, readFile, writeFile } from 'node:fs/promises'
 import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseReadingChapter, BrowseReadingPage, BrowseState, BrowseChapterLink, MirrorProgress, Settings, SiteRule } from '../shared/types'
@@ -101,6 +101,7 @@ import { exportBook } from './exportBook'
 import { searchInBook } from './search'
 import { auditBook } from './quality'
 import { createBackup, restoreBackup, runAutoBackupIfDue, recoverInterruptedRestore } from './backup'
+import { runAutoUpdateCheckIfDue } from './autoUpdateCheck'
 import { cleanupInterruptedMigration, migrateLibrary } from './libraryMigration'
 import { ensureLibraryPathAtStartup, scriptedStartupDialogs } from './startupGuard'
 import { sessionUserAgent } from './userAgent'
@@ -2903,6 +2904,25 @@ app.whenReady().then(async () => {
       } finally { release?.() }
     })()
   }, 2_000)
+  // 到期自动检查追更：等启动备份和窗口都稳定后再跑，免得和下载/备份抢书库。
+  // e2e 用 --remote-debugging-port 起应用，不参与自动检查，避免测试中途起下载。
+  if (!app.commandLine.hasSwitch('remote-debugging-port') && !process.argv.includes('--no-auto-update-check')) {
+    setTimeout(() => {
+      void runAutoUpdateCheckIfDue()
+        .then((outcome) => {
+          if (outcome.status !== 'ran' || outcome.result.booksWithUpdates === 0) return
+          const notification = new Notification({ title: '追更完成', body: outcome.summary })
+          notification.on('click', () => {
+            if (!mainWindow || mainWindow.isDestroyed()) return
+            if (mainWindow.isMinimized()) mainWindow.restore()
+            mainWindow.show()
+            mainWindow.focus()
+          })
+          notification.show()
+        })
+        .catch((error: unknown) => console.warn('自动检查更新失败：', error))
+    }, 60_000)
+  }
   void browserAdRequestFilter.start()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

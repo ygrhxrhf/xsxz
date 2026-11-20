@@ -491,6 +491,12 @@
     "lastSuccessAt": "2026-09-30T00:00:00.000Z",
     "lastError": ""
   },
+  "autoUpdateCheck": {
+    "enabled": true,
+    "intervalHours": 24,
+    "lastCheckedAt": "2026-11-21T00:00:00.000Z",
+    "lastSummary": "已检查 5 本，《某书》有新章，共补 3 章"
+  },
   "ai": {
     "provider": "deepseek",
     "thinkingEnabled": true,
@@ -520,6 +526,7 @@
 - 同级 `mirror-state.json` 保存最近一次整站镜像任务（`MirrorProgress`：种子地址、状态、已下/跳过/失败/总数、已扫描页数、发现阶段的书目计划 `plan` 与逐本结果），不属于书库备份。`plan` 让取消或进程中断后能从同一列表页继续；书是否已入库以书库为准，文件里不存「已下过」快照。缺失或损坏时按无历史任务读取，不影响镜像功能；读到遗留的 `running` 时启动阶段降级为 `cancelled` 并标 `interrupted`（界面据 `plan` 与逐本 `results` 决定是否给「继续上次」，该字段只作展示）。写入走原子写：这个文件的唯一用途就是崩溃后续跑，截断的 JSON 等于丢掉整份 `plan`。
 - `settings.json` 的 `webReading` 保存网页阅读模式偏好：`autoSpeed` 为 1–5 的整数（默认 3，越界夹紧、非数值回退默认），`autoPage` 为布尔值（默认 `true`）。缺失或损坏时补默认，不丢弃其他设置。
 - `autoBackup.destDir` 为空表示关闭；主进程启动时距上次成功满七天则创建 `spbf-auto-*.zip`，仅保留最近五份自动备份。旧设置缺失时按关闭读取。备份包不含设置与 API Key。
+- `autoUpdateCheck` 保存自动追更偏好：`enabled` 默认 `true`，`intervalHours` 为 1–720 的整数小时（默认 24，越界夹紧、非数值回退）。`lastCheckedAt` 为空或时间戳损坏都视为到期，不会永久不再检查；`lastSummary` 是上次检查的中文摘要，供书库页展示。下载任务在跑、书库正在恢复或已有批量检查时不写时间戳，留给下次启动重试。只检查 `importType === 'download'` 且带 `sourceUrl` 的书；检查会把新章直接补下来。
 - `appearance.skin` 取值 `light`（浅色，默认）/ `dark`（深色）。旧 `paper`、`white`、`sakura`、`minimal` 读入为 `light`，旧 `night` 读入为 `dark`；非法值回退 `light`。读取迁移不改动其他设置，下一次保存外观时写入正式值。
 - `reader.fontSize` 为 12–36 的有限数值，默认 18；`reader.lineHeight` 为 1.2–3.0 的有限数值，默认 1.8。越界值夹紧，NaN/Infinity 或非数值回退默认。
 - `reader.theme` 取值 `paper`（默认）/ `sepia` / `gray` / `night`；`reader.fontFamily` 取值 `serif`（默认）/ `system` / `mono`；`reader.contentWidth` 取值 `narrow` / `medium`（默认）/ `wide`；`reader.paragraphSpacing` 取值 `compact` / `normal`（默认）/ `relaxed`；`reader.paragraphIndent` 为布尔值，默认 `true`；`reader.focusMode` 取值 `off`（默认）/ `one` / `three` / `five`；`reader.readingMode` 取值 `scroll`（默认）/ `screen`；`reader.bookView` 取值 `classic`（默认）/ `sheet` / `realbook`；`reader.sheetColumns` 取值 `single` / `double`（默认 `double`，只影响 `bookView === 'sheet'`）。非法字段逐项回退，不影响其他合法设置。缺失或非法的 `focusMode` 回退 `off`。缺失或非法的 `readingMode` 回退 `scroll`。缺失或非法的 `bookView` 回退 `classic`（旧设置文件无此字段即经典模式）。缺失或非法的 `sheetColumns` 回退 `double`（旧设置文件无此字段即双栏）。

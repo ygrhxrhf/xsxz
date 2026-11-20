@@ -310,6 +310,22 @@ const customPrompts = ref<Partial<Record<AiPromptKind, string>>>({})
 const promptUndo = ref<Partial<Record<AiPromptKind, { mode: AiPromptMode; text?: string }>>>({})
 const libraryPath = ref('')
 const downloadPace = ref<DownloadPace>('standard')
+const autoUpdateCheckEnabled = ref(true)
+const autoUpdateCheckHours = ref(24)
+const autoUpdateCheckSaving = ref(false)
+const autoUpdateHoursOptions = [
+  { label: '每 12 小时', value: 12 },
+  { label: '每天', value: 24 },
+  { label: '每 3 天', value: 72 },
+  { label: '每周', value: 168 },
+]
+const autoUpdateLastText = computed(() => {
+  const iso = settings.value?.autoUpdateCheck?.lastCheckedAt || ''
+  if (!iso) return '还没有自动检查过'
+  const date = new Date(iso)
+  if (!Number.isFinite(date.getTime())) return '上次检查时间未知'
+  return `上次自动检查：${date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+})
 const saving = ref(false)
 const libraryMoving = ref(false)
 /** 本机 OCR 兜底引擎是否可用：null = 还在检查。 */
@@ -437,6 +453,8 @@ async function load() {
     customPrompts.value = { ...ai.customPrompts }
     libraryPath.value = settings.value.libraryPath
     downloadPace.value = settings.value.downloadPace ?? 'standard'
+    autoUpdateCheckEnabled.value = settings.value.autoUpdateCheck?.enabled ?? true
+    autoUpdateCheckHours.value = settings.value.autoUpdateCheck?.intervalHours ?? 24
     await loadRules()
   } catch {
     // 读设置失败时页面会渲染成空壳：给一句人话，别让用户对着空白页猜。
@@ -568,6 +586,37 @@ async function setDownloadPace(next: DownloadPace) {
     downloadPace.value = previous
     const text = e instanceof Error ? e.message : String(e)
     message.error(text || '下载速度保存失败')
+  }
+}
+
+async function setAutoUpdateCheck(enabled: boolean) {
+  if (autoUpdateCheckSaving.value) return
+  const previous = autoUpdateCheckEnabled.value
+  autoUpdateCheckEnabled.value = enabled
+  autoUpdateCheckSaving.value = true
+  try {
+    settings.value = await window.api.settings.set({ autoUpdateCheck: { enabled } })
+    autoUpdateCheckEnabled.value = settings.value.autoUpdateCheck?.enabled ?? enabled
+  } catch (e: unknown) {
+    autoUpdateCheckEnabled.value = previous
+    const text = e instanceof Error ? e.message : String(e)
+    message.error(text || '自动检查更新保存失败')
+  } finally {
+    autoUpdateCheckSaving.value = false
+  }
+}
+
+async function setAutoUpdateCheckHours(hours: number) {
+  const previous = autoUpdateCheckHours.value
+  if (hours === previous) return
+  autoUpdateCheckHours.value = hours
+  try {
+    settings.value = await window.api.settings.set({ autoUpdateCheck: { intervalHours: hours } })
+    autoUpdateCheckHours.value = settings.value.autoUpdateCheck?.intervalHours ?? hours
+  } catch (e: unknown) {
+    autoUpdateCheckHours.value = previous
+    const text = e instanceof Error ? e.message : String(e)
+    message.error(text || '检查间隔保存失败')
   }
 }
 
@@ -1119,6 +1168,36 @@ onMounted(async () => {
             <n-radio-button value="standard">标准</n-radio-button>
             <n-radio-button value="fast">快</n-radio-button>
           </n-radio-group>
+        </div>
+        <div class="pace-row">
+          <div>
+            <div class="field-label">自动检查更新</div>
+            <div class="field-help">
+              启动时距上次检查超过设定间隔，就逐本检查下载书并把新章补下来；只在没有下载任务时运行。
+            </div>
+            <div v-if="autoUpdateCheckEnabled" class="field-help">{{ autoUpdateLastText }}</div>
+            <div v-if="autoUpdateCheckEnabled && settings?.autoUpdateCheck?.lastSummary" class="field-help">
+              {{ settings.autoUpdateCheck.lastSummary }}
+            </div>
+          </div>
+          <n-switch
+            :value="autoUpdateCheckEnabled"
+            :loading="autoUpdateCheckSaving"
+            aria-label="自动检查更新"
+            @update:value="setAutoUpdateCheck"
+          />
+        </div>
+        <div v-if="autoUpdateCheckEnabled" class="pace-row">
+          <div>
+            <div class="field-label">检查间隔</div>
+            <div class="field-help">两次自动检查之间至少隔这么久。</div>
+          </div>
+          <n-select
+            :value="autoUpdateCheckHours"
+            :options="autoUpdateHoursOptions"
+            style="width:130px"
+            @update:value="setAutoUpdateCheckHours"
+          />
         </div>
       </n-space>
     </n-card>
