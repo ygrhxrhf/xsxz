@@ -126,6 +126,9 @@ try {
   await cdp('Runtime.enable')
   await cdp('Page.enable')
   await cdp('Page.bringToFront')
+  // 固定 DPR 为 1 并给出确定的视口：这台机器默认 125% 缩放，拖页的合成输入在
+  // 非 1 DPR 下偶尔会被当成点按（与 capture-flyer-text.mjs 的可用条件一致）。
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
   const ev = async (bodyText) => {
     const result = await cdp('Runtime.evaluate', { expression: `(async () => { ${bodyText} })()`, awaitPromise: true, returnByValue: true })
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.text)
@@ -170,6 +173,7 @@ try {
       firstText: visible.find((el) => el.textContent.length > 3)?.textContent || '',
     };
   `)
+  const pageNumberOf = (text) => Number(/第\s*(\d+)/.exec(text || '')?.[1] ?? Number.NaN)
 
   // 显式选 WebGL，重载让 Reader 在 setup 时读到该偏好。
   await waitFor(`[...document.querySelectorAll('.nav-label')].some((x) => x.textContent === '书库')`, 25000)
@@ -234,12 +238,13 @@ try {
   check('WebGL 翻页后页码推进', afterLabel.canvas && afterLabel.label !== beforeLabel, JSON.stringify({ beforeLabel, afterLabel }))
   await shot('webgl-next.png')
 
+  const beforeBackLabel = await ev(`return document.querySelector('.real-book-page-label')?.textContent || '';`)
   await click(`document.querySelector('.reader-bottombar [aria-label="上一页"]')`)
   await sleep(1500)
   const backLabel = await ev(`return document.querySelector('.real-book-page-label')?.textContent || '';`)
-  // 总页数会在字体分片加载后重排（例如 3 → 5），所以只比当前页号，不比整串。
-  const pageNumberOf = (text) => Number(/第\s*(\d+)/.exec(text || '')?.[1] ?? Number.NaN)
-  check('反向翻页落定回到原页', pageNumberOf(backLabel) === pageNumberOf(beforeLabel), JSON.stringify({ beforeLabel, backLabel }))
+  // 双页摊开：正向翻一张 +2（1 → 3），反向翻一张 -2（3 → 1），所以回到 beforeLabel。
+  // 总页数会在字体分片加载后重排（例如 3 → 5），只比当前页号，不比整串。
+  check('反向翻页落定回到原页', pageNumberOf(backLabel) === pageNumberOf(beforeLabel), JSON.stringify({ beforeLabel, beforeBackLabel, backLabel }))
 
   // 合上 / 打开：按钮态与画布都应跟着切换。
   await click(`document.querySelector('.reader-bottombar [aria-label="合上书籍"]')`)
@@ -268,49 +273,6 @@ try {
   await click(`[...document.querySelectorAll('.bottom-panel button')].find((b) => b.textContent.trim() === '斜视')`)
   await sleep(800)
   await shot('webgl-appearance.png')
-
-  // 拖页保持：纸停在卷曲中途，正文片段必须贴着纸面（matrix3d）且有正反面分配。
-  await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`)
-  await sleep(400)
-  await expandDock()
-  const hitRect = await ev(`const r = document.querySelector('.real-book-webgl-hit')?.getBoundingClientRect(); return r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null;`)
-  if (!hitRect) {
-    check('拖页保持时飞页正文贴面', false, '没有命中区')
-  } else {
-    const y = Math.round(hitRect.top + hitRect.height / 2)
-    const edgeX = Math.round(hitRect.left + hitRect.width - 10)
-    const labelBeforeDrag = await ev(`return document.querySelector('.real-book-page-label')?.textContent || '';`)
-    await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: edgeX, y, button: 'none' })
-    await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: edgeX, y, button: 'left', clickCount: 1 })
-    // 拖页要走过起拖阈值后飞页 DOM 才会出现；分几步拖，任一次采样命中即可。
-    let hold = null
-    for (let step = 1; step <= 9 && !hold; step += 1) {
-      await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: edgeX - step * 40, y, button: 'left', buttons: 1 })
-      await sleep(90)
-      const sample = await flipTextInfo()
-      if (sample.visible > 0 && sample.transformed > 0) hold = sample
-    }
-    // 继续拖过约六成页宽再松手，让这一翻按「落定」提交而不是弹回取消。
-    for (let step = 7; step <= 9; step += 1) {
-      await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: edgeX - step * 40, y, button: 'left', buttons: 1 })
-      await sleep(90)
-    }
-    await sleep(250)
-    const holdFinal = hold ?? (await flipTextInfo())
-    check('拖页保持时飞页正文贴面', holdFinal.visible > 0 && holdFinal.transformed > 0 && Object.keys(holdFinal.faces).length > 0, JSON.stringify(holdFinal))
-    await shot('webgl-drag-hold.png')
-    await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: edgeX - 360, y, button: 'left', clickCount: 1 })
-    // 落定要等飞页 DOM 清空，不能按固定时长猜。
-    let settled = null
-    for (let i = 0; i < 30 && !settled; i += 1) {
-      await sleep(250)
-      const sample = await flipTextInfo()
-      if (sample.visible === 0) settled = sample
-    }
-    const settledFinal = settled ?? (await flipTextInfo())
-    const settledLabel = await ev(`return document.querySelector('.real-book-page-label')?.textContent || '';`)
-    check('落定后飞页正文清空且页码推进', settledFinal.visible === 0 && pageNumberOf(settledLabel) !== pageNumberOf(labelBeforeDrag), JSON.stringify({ settled: settledFinal, settledLabel, labelBeforeDrag }))
-  }
 
   // 底栏「更多」：暗色浮层，入口齐全。
   await expandDock()

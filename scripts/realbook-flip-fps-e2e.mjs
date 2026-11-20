@@ -154,6 +154,8 @@ try {
   const click = (expr) => ev(`const el = ${expr}; if (!el) return 'none'; el.scrollIntoView(); el.click(); return 'ok';`)
 
   // 本脚本量的是 CSS 3D 回退的翻页帧率；WebGL 现在是默认渲染层，必须显式选回 CSS 3D。
+  // 先等外壳挂载：初始文档上 localStorage 可能还不可用，直接写会抛 SecurityError。
+  await waitFor(`[...document.querySelectorAll('.nav-label')].some((x) => x.textContent === '书库')`, 25000)
   await ev(`localStorage.setItem('spore:reader-realbook-renderer:v1', 'css'); return true;`)
   await cdp('Page.reload')
   await sleep(1800)
