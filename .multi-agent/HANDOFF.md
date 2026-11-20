@@ -16,8 +16,12 @@
 - 验证：`npm run typecheck` 0；`npm test` 197 文件 / **1995 用例全绿**；
   `npm run dist:local` EXIT 0 两次（带图标前后各一次）。日志：`.multi-agent/tmp/logs-2026-11-20/`。
   计划：`.multi-agent/plan/windows-packaging.md`。README 增加「打包」一节。
-- 未验证/边界：没有在本机静默安装（会写注册表 + 建快捷方式，留给用户点）；未在干净机器装过；
-  未做签名与自动更新（明确出范围）。
+- 已按用户口令「装一遍」真实安装：`%LOCALAPPDATA%\Programs\spbf\小说浏览器.exe`，桌面与开始菜单
+  都有快捷方式，HKCU 卸载项 `小说浏览器 0.1.0`；已安装版冒烟 `SHELL true` / `READER true`
+  （WebGL 真实书籍 canvas 在、无回退）。卸载走 `Uninstall 小说浏览器.exe`（不删书库）。
+  注意：Git Bash 会把 `/S` 改写成 `S:/`（MSYS 路径转换），静默安装要用
+  `MSYS2_ARG_CONV_EXCL='*'` 或 PowerShell `Start-Process -ArgumentList '/S'`。
+- 未验证/边界：交互式向导（双击、自选目录）未点过；未在干净机器装过；未做签名与自动更新（明确出范围）。
 - 下一步第一条命令：`git push origin master`（需用户点头）。
 
 ## 拖页白纸结案：夹具假象 + 两道保险（2026-11-20 晚，本轮完成）

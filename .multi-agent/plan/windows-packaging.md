@@ -26,16 +26,22 @@ WebGL 真实书籍；顺带把两条非破坏性的依赖告警清掉。
 - [x] 5. 依赖告警：`@modelcontextprotocol/sdk` 1.30.0 → 1.32.2（high，运行时）、`vite` 7.3.6 → 7.3.8（high，构建）
       - 验：`npm audit` → high 0，total 7 → 6；`npm run typecheck` 0；`npm test` 197 文件 / 1995 用例全绿
       - 证据：`.multi-agent/tmp/logs-2026-11-20/fulltest-deps.log`
-- [x] 6. 最终安装包 + 冒烟
+- [x] 6. 真实安装（用户批准「装一遍」）：`/S` 静默装到默认目录
+      - 验：`%LOCALAPPDATA%\Programs\spbf\小说浏览器.exe` 存在；桌面 + 开始菜单有 `小说浏览器.lnk`；
+            HKCU 卸载项 `小说浏览器 0.1.0`；已安装版冒烟 `SHELL true` / `READER true`（canvas 在、无回退）
+      - 证据：安装目录清单、快捷方式清单、注册表 DisplayVersion=0.1.0、`pkg-smoke-installed.mjs` 输出
+      - 注：Git Bash 会把 `/S` 改写成 `S:/`（MSYS 路径转换）；下次静默安装用
+            `MSYS2_ARG_CONV_EXCL='*'` 或 PowerShell `Start-Process -ArgumentList '/S'`。
+- [x] 7. 最终安装包 + 冒烟
       - 验：`npm run dist:local` EXIT 0；冒烟 SHELL/READER 均 true
       - 证据：`dist-final.log`；`release/小说浏览器 Setup 0.1.0.exe`（175,318,002 字节，2026-11-21 00:00）
-- [x] 7. 交付物：README「打包」节；本计划；HANDOFF
+- [x] 8. 交付物：README「打包」节；本计划；HANDOFF
       - 验：`grep -n "## 打包" README.md`
 
 ## 不做（显式出范围）
 
 - 不做代码签名与自动更新（个人自用；签证书要付费主体信息，自动更新还要发布通道）。
-- 不在本轮替用户静默安装到本机（会写注册表、建桌面/开始菜单快捷方式）；安装这一步留给用户点一次。
+- 不在没有用户点头时替用户安装到本机（会写注册表、建桌面/开始菜单快捷方式）；本轮已获准执行一次。
 - 不给 electron-builder 的 `minimatch` 链条做 `overrides` 强升：审计建议的「修复」是把
   electron-builder 降到 24.13.3（跨两个大版本回退），且这些包只在本机构建时跑，不进安装包。
 
@@ -49,4 +55,4 @@ WebGL 真实书籍；顺带把两条非破坏性的依赖告警清掉。
 
 - 状态：待推送
 - 下一步第一条命令：`git push origin master`（需用户点头）
-- 未验证项：真实双击安装（NSIS 交互流程）未在本轮跑；未在另一台干净机器上装。
+- 未验证项：交互式向导（双击、选目录）未点过；未在另一台干净机器上装。
