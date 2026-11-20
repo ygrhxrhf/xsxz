@@ -1,0 +1,44 @@
+
+> spbf@0.1.0 e2e:realbook-flip
+> node scripts/realbook-flip-fps-e2e.mjs
+
+夹具：书库=C:\Users\zhanh\AppData\Local\Temp\spbf-rbfps-lib-056GlL
+      userData=C:\Users\zhanh\AppData\Local\Temp\spbf-rbfps-user-ZKm3rC
+PASS  书库渲染出夹具书卡
+PASS  真实书籍书台出现
+PASS  书缝元素存在且位于两页之间  — 中缝 x=682.8 宽=0.0 页心 x=682.8
+      书缝静态截图：C:\Users\zhanh\AppData\Local\Temp\spbf-rbfps-shots-qaLJrh\realbook-seam-static.png
+      [预热 #1] {"flipDuration":901.3999999985099,"flipFrames":18,"flipMedian":41.70000000000073,"flipMax":138.79999999999927,"flipLong":10,"flipSevere":3,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":171,"hidden":false,"visibility":"visible"}
+      [预热 #2] {"flipDuration":810.1000000014901,"flipFrames":45,"flipMedian":20.700000000000728,"flipMax":34.69999999999709,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":197,"hidden":false,"visibility":"visible"}
+      [预热 #3] {"flipDuration":820.8999999985099,"flipFrames":42,"flipMedian":20.80000000000291,"flipMax":27.900000000001455,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":208,"hidden":false,"visibility":"visible"}
+      [预热 #4] {"flipDuration":814.6000000014901,"flipFrames":56,"flipMedian":13.900000000001455,"flipMax":27.80000000000291,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":204,"hidden":false,"visibility":"visible"}
+      [基线 #1] {"flipDuration":823.3000000044703,"flipFrames":41,"flipMedian":20.80000000000291,"flipMax":34.80000000000291,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":204,"hidden":false,"visibility":"visible"}
+      [基线 #2] {"flipDuration":814.3000000044703,"flipFrames":54,"flipMedian":13.900000000001455,"flipMax":27.900000000001455,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":201,"hidden":false,"visibility":"visible"}
+      [基线 #3] {"flipDuration":807.3999999985099,"flipFrames":48,"flipMedian":14,"flipMax":27.700000000004366,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":195,"hidden":false,"visibility":"visible"}
+      [基线 汇总] {"flipDuration":814.3000000044703,"flipFrames":48,"flipMedian":14,"flipMax":27.900000000001455,"flipLong":0,"flipSevere":0,"runs":[41,54,48]}
+      [去 blur #1] {"flipDuration":813.5,"flipFrames":53,"flipMedian":13.900000000001455,"flipMax":21,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":202,"hidden":false,"visibility":"visible"}
+      [去 blur #2] {"flipDuration":820.3999999985099,"flipFrames":45,"flipMedian":20.700000000004366,"flipMax":27.900000000001455,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":212,"hidden":false,"visibility":"visible"}
+      [去 blur #3] {"flipDuration":804.3999999985099,"flipFrames":55,"flipMedian":13.900000000001455,"flipMax":48.599999999998545,"flipLong":1,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":208,"hidden":false,"visibility":"visible"}
+      [去 blur 汇总] {"flipDuration":813.5,"flipFrames":53,"flipMedian":13.900000000001455,"flipMax":27.900000000001455,"flipLong":0,"flipSevere":0,"runs":[53,45,55]}
+      [去背面文字 #1] {"flipDuration":818.6999999955297,"flipFrames":47,"flipMedian":14.10000000000582,"flipMax":27.80000000000291,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":193,"hidden":false,"visibility":"visible"}
+      [去背面文字 #2] {"flipDuration":817.8000000044703,"flipFrames":55,"flipMedian":13.900000000001455,"flipMax":27.900000000001455,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":223,"hidden":false,"visibility":"visible"}
+      [去背面文字 #3] {"flipDuration":810,"flipFrames":42,"flipMedian":14,"flipMax":62.5,"flipLong":2,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":191,"hidden":false,"visibility":"visible"}
+      [去背面文字 汇总] {"flipDuration":817.8000000044703,"flipFrames":47,"flipMedian":14,"flipMax":27.900000000001455,"flipLong":0,"flipSevere":0,"runs":[47,55,42]}
+      [去 blur + 去背面文字 #1] {"flipDuration":816,"flipFrames":60,"flipMedian":13.900000000001455,"flipMax":21,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":229,"hidden":false,"visibility":"visible"}
+      [去 blur + 去背面文字 #2] {"flipDuration":809.7000000029802,"flipFrames":50,"flipMedian":14,"flipMax":34.799999999995634,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":199,"hidden":false,"visibility":"visible"}
+      [去 blur + 去背面文字 #3] {"flipDuration":816.2999999970198,"flipFrames":64,"flipMedian":13.89999999999418,"flipMax":20.900000000001455,"flipLong":0,"flipSevere":0,"longTaskCount":0,"longTaskTotal":0,"longTaskMax":0,"allMedian":7,"totalFrames":231,"hidden":false,"visibility":"visible"}
+      [去 blur + 去背面文字 汇总] {"flipDuration":816,"flipFrames":60,"flipMedian":13.900000000001455,"flipMax":21,"flipLong":0,"flipSevere":0,"runs":[60,50,64]}
+--    书心中缝宽 0.0px（零宽，两页直落中心线）：跳过中缝暗带判定
+PASS  翻页时长接近设计值（820ms ± 40%）  — 翻页时长 814ms，翻页帧 48，中位间隔 14.0ms，最大 27.9ms，长帧 0，长任务 undefined 次共 NaNms
+PASS  翻页期间每帧都能渲染出来（主线程没被堵死）  — 翻页时长 814ms，翻页帧 48，中位间隔 14.0ms，最大 27.9ms，长帧 0，长任务 undefined 次共 NaNms
+PASS  翻页期间没有严重长帧  — 翻页时长 814ms，翻页帧 48，中位间隔 14.0ms，最大 27.9ms，长帧 0，长任务 undefined 次共 NaNms
+PASS  翻页期间长帧比例不超过 10%  — 翻页时长 814ms，翻页帧 48，中位间隔 14.0ms，最大 27.9ms，长帧 0，长任务 undefined 次共 NaNms
+      —— A/B 对照 ——
+      翻页中截图：C:\Users\zhanh\AppData\Local\Temp\spbf-rbfps-shots-qaLJrh\realbook-static.png, C:\Users\zhanh\AppData\Local\Temp\spbf-rbfps-shots-qaLJrh\realbook-seam-static.png, C:\Users\zhanh\AppData\Local\Temp\spbf-rbfps-shots-qaLJrh\realbook-flip-1.png, C:\Users\zhanh\AppData\Local\Temp\spbf-rbfps-shots-qaLJrh\realbook-flip-2.png, C:\Users\zhanh\AppData\Local\Temp\spbf-rbfps-shots-qaLJrh\realbook-flip-3.png
+      基线          翻页时长 814ms，翻页帧 48，中位间隔 14.0ms，最大 27.9ms，长帧 0，长任务 undefined 次共 NaNms
+      去 blur       翻页时长 814ms，翻页帧 53，中位间隔 13.9ms，最大 27.9ms，长帧 0，长任务 undefined 次共 NaNms
+      去背面文字     翻页时长 818ms，翻页帧 47，中位间隔 14.0ms，最大 27.9ms，长帧 0，长任务 undefined 次共 NaNms
+      两者都去       翻页时长 816ms，翻页帧 60，中位间隔 13.9ms，最大 21.0ms，长帧 0，长任务 undefined 次共 NaNms
+
+结果：7 项通过，0 项失败
+真实书籍翻页流畅度检查通过

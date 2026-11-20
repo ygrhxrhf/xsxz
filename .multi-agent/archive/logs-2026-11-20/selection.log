@@ -1,0 +1,37 @@
+
+> spbf@0.1.0 e2e:realbook-selection
+> node scripts/realbook-selection-pitch-e2e.mjs
+
+夹具：书库=C:\Users\zhanh\AppData\Local\Temp\spbf-rbsel-lib-ag3ZfI
+      userData=C:\Users\zhanh\AppData\Local\Temp\spbf-rbsel-user-iMXZVw
+PASS  书库渲染出夹具书卡
+PASS  真实书籍书台出现
+PASS  向上拖拽回到平放（0°）  — --rb-pitch=0deg
+      平放 0deg 单行 详情：{"pitch":"0deg","rectCount":2,"hitCount":2,"hitInfo":[{"at":[933,121],"tag":"P","cls":"real-book-para","ownerP":"0","targetP":"0","inPara":true},{"at":[732,155],"tag":"P","cls":"real-book-para","ownerP":"0","targetP":"0","inPara":true}],"caretProbe":{"single0":{"rect":[721,107,23,29],"roundTrip":0,"expect":0},"single5":{"rect":[826,107,23,29],"roundTrip":5,"expect":5},"singleEnd":{"rect":[766,140,22,29],"roundTrip":23,"expect":23}},"trueBand":{"top":140,"bottom":169,"found":true},"viewport":[1266,763],"selRect":{"left":677,"top":106,"width":468,"height":64},"popupRect":{"left":731,"top":177,"width":360,"height":64},"gapAbove":-135,"gapBelow":8,"adjacentVertically":true,"horizontallyAligned":true,"inViewport":true}
+PASS  平放 0deg 单行：工具条贴在真实选区下沿  — 真实下沿 169，工具条 top 177，间距 8 / 容差 12
+PASS  平放 0deg 单行：工具条与选区相邻且水平对齐  — gapAbove=-135 gapBelow=8
+PASS  平放 0deg 单行：工具条在视口内
+      平放 0deg 多行 详情：{"pitch":"0deg","rectCount":5,"hitCount":5,"hitInfo":[{"at":[933,121],"tag":"P","cls":"real-book-para","ownerP":"0","targetP":"0","inPara":true},{"at":[911,154],"tag":"P","cls":"real-book-para","ownerP":"0","targetP":"0","inPara":true},{"at":[911,187],"tag":"P","cls":"real-book-para","ownerP":"0","targetP":"0","inPara":true},{"at":[911,221],"tag":"P","cls":"real-book-para","ownerP":"0","targetP":"0","inPara":true},{"at":[777,254],"tag":"P","cls":"real-book-para","ownerP":"0","targetP":"0","inPara":true}],"caretProbe":{"single0":{"rect":[721,107,23,29],"roundTrip":0,"expect":0},"single5":{"rect":[826,107,23,29],"roundTrip":5,"expect":5},"singleEnd":{"rect":[854,239,22,29],"roundTrip":89,"expect":89}},"trueBand":{"top":239,"bottom":268,"found":true},"viewport":[1266,763],"selRect":{"left":677,"top":106,"width":468,"height":163},"popupRect":{"left":731,"top":276,"width":360,"height":64},"gapAbove":-234,"gapBelow":8,"adjacentVertically":true,"horizontallyAligned":true,"inViewport":true}
+PASS  平放 0deg 多行：工具条贴在真实选区下沿  — 真实下沿 268，工具条 top 276，间距 8 / 容差 12
+PASS  平放 0deg 多行：工具条与选区相邻且水平对齐  — gapAbove=-234 gapBelow=8
+PASS  平放 0deg 多行：工具条在视口内
+PASS  拖拽 200px 后俯仰角大于 0  — --rb-pitch=20deg
+      俯仰 20deg 单行 详情：{"pitch":"20deg","rectCount":2,"hitCount":0,"hitInfo":[{"at":[926,114],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[730,150],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false}],"caretProbe":{"single0":{"rect":[719,106,22,27],"roundTrip":0,"expect":0},"single5":{"rect":[820,104,23,27],"roundTrip":5,"expect":5},"singleEnd":{"rect":[763,135,22,27],"roundTrip":23,"expect":23}},"trueBand":{"top":135,"bottom":162,"found":true},"viewport":[1266,763],"selRect":{"left":676,"top":96,"width":457,"height":68},"popupRect":{"left":453,"top":579,"width":360,"height":64},"gapAbove":-547,"gapBelow":415,"adjacentVertically":false,"horizontallyAligned":true,"inViewport":true}
+PASS  俯仰 20deg 单行：工具条固定在视口底部居中  — 中心 633 / 633，距底 120
+      俯仰 20deg 多行 详情：{"pitch":"20deg","rectCount":5,"hitCount":0,"hitInfo":[{"at":[926,114],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[906,145],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[907,175],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[908,205],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[776,239],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false}],"caretProbe":{"single0":{"rect":[719,106,22,27],"roundTrip":0,"expect":0},"single5":{"rect":[820,104,23,27],"roundTrip":5,"expect":5},"singleEnd":{"rect":[852,224,23,27],"roundTrip":68,"expect":89}},"trueBand":{"top":224,"bottom":251,"found":true},"viewport":[1266,763],"selRect":{"left":676,"top":96,"width":463,"height":160},"popupRect":{"left":453,"top":579,"width":360,"height":64},"gapAbove":-547,"gapBelow":324,"adjacentVertically":false,"horizontallyAligned":true,"inViewport":true}
+PASS  俯仰 20deg 多行：工具条固定在视口底部居中  — 中心 633 / 633，距底 120
+PASS  拖拽 350px 后俯仰角大于 0  — --rb-pitch=35deg
+      俯仰 35deg 单行 详情：{"pitch":"35deg","rectCount":2,"hitCount":0,"hitInfo":[{"at":[920,128],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[729,162],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false}],"caretProbe":{"single0":{"rect":[717,125,22,23],"roundTrip":0,"expect":0},"single5":{"rect":[817,121,23,23],"roundTrip":5,"expect":5},"singleEnd":{"rect":[760,148,22,23],"roundTrip":23,"expect":23}},"trueBand":{"top":148,"bottom":171,"found":true},"viewport":[1266,763],"selRect":{"left":675,"top":109,"width":448,"height":66},"popupRect":{"left":453,"top":579,"width":360,"height":64},"gapAbove":-534,"gapBelow":404,"adjacentVertically":false,"horizontallyAligned":true,"inViewport":true}
+PASS  俯仰 35deg 单行：工具条固定在视口底部居中  — 中心 633 / 633，距底 120
+      俯仰 35deg 多行 详情：{"pitch":"35deg","rectCount":5,"hitCount":0,"hitInfo":[{"at":[920,128],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[901,154],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[903,180],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[905,206],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false},{"at":[775,238],"tag":"DIV","cls":"real-book-book","ownerP":null,"targetP":"0","inPara":false}],"caretProbe":{"single0":{"rect":[717,125,22,23],"roundTrip":0,"expect":0},"single5":{"rect":[817,121,23,23],"roundTrip":5,"expect":5},"singleEnd":{"rect":[850,222,23,24],"roundTrip":68,"expect":89}},"trueBand":{"top":222,"bottom":246,"found":true},"viewport":[1266,763],"selRect":{"left":675,"top":109,"width":458,"height":145},"popupRect":{"left":453,"top":579,"width":360,"height":64},"gapAbove":-534,"gapBelow":326,"adjacentVertically":false,"horizontallyAligned":true,"inViewport":true}
+PASS  俯仰 35deg 多行：工具条固定在视口底部居中  — 中心 633 / 633，距底 120
+      俯仰截图：C:\Users\zhanh\AppData\Local\Temp\rbsel-pitch.png
+      拖拽端点与 caret 偏移：{"from":[728.2591552734375,136.33118438720703],"to":[771.3426208496094,159.79158782958984],"probe":{"fromCaret":{"offset":0,"hitPara":null},"toCaret":{"offset":23,"hitPara":null}}}
+      拖拽事件序列：[{"t":"pointerdown","tag":"DIV","cls":"real-book-book"},{"t":"selectionchange","len":0},{"t":"selectionchange","len":22},{"t":"selectionchange","len":23},{"t":"mouseup","tag":"DIV","cls":"real-book-book","len":23}]
+      俯仰下真实鼠标划词：{"selected":"第1段：这是一段用来检查真实书籍俯仰选区的测试","expected":"第1段：这是一段用来检查真实书籍俯仰选区的测试文","popup":true}
+PASS  俯仰下真实鼠标划词选中该段落文字  — 选中 23 字
+PASS  俯仰下真实鼠标划词弹出选区工具条
+PASS  俯仰 35° 下选区矩形仍有可测宽高  — 平放 468×64，35deg 458×145
+
+结果：18 项通过，0 项失败
+真实书籍俯仰选区检查通过：平放、20°、35° 下标单行与多行选区的工具条都贴在真实选区下沿

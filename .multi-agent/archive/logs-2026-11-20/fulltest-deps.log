@@ -1,0 +1,21 @@
+
+> spbf@0.1.0 test
+> vitest run
+
+
+ RUN  v4.1.12 C:/codes/xsxz
+
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+
+ Test Files  197 passed (197)
+      Tests  1995 passed (1995)
+   Start at  23:54:21
+   Duration  114.17s (transform 72.80s, setup 0ms, import 927.63s, tests 303.61s, environment 256.37s)
+

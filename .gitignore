@@ -11,6 +11,9 @@ release-*/
 .mission-planning/
 .multi-agent/**/*.png
 .multi-agent/**/*.tmp
+# 多智能体临时产物：探针脚本已归档到 .multi-agent/archive/probes/，其余只留本地
+.multi-agent/tmp/
+.multi-agent/visual/
 .dsh/
 .zcode/
 bundles/
@@ -36,6 +39,10 @@ arc*.log
 scripts/tmp-arc-*
 .multi-agent/e2e-artifacts/
 docs/img/*.log.bak-*
+
+# 真机运行的临时 profile / 书库（Electron userData 与 spbf-run 启动脚本）
+spbf-run/
+/codesxsxz.multi-agenttmp*/
 
 # 工具自己的工作区
 .breezell/

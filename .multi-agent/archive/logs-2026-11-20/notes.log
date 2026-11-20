@@ -1,0 +1,35 @@
+
+> spbf@0.1.0 e2e:realbook-notes
+> node scripts/realbook-annotations-e2e.mjs
+
+夹具：书库=C:\Users\zhanh\AppData\Local\Temp\spbf-rbnotes-lib-5r9mHM
+      userData=C:\Users\zhanh\AppData\Local\Temp\spbf-rbnotes-user-3Mwsb4
+      截图=C:\Users\zhanh\AppData\Local\Temp\spbf-realbook-annotations-shots
+PASS  真实书籍书台出现
+PASS  预置批注显示在书页上  — 笔记预置批注：这里该多留意。#quote
+PASS  划线底色仍在  — 第1段：
+PASS  批注默认开启且带手写体  — real-book-note handwriting-kai
+PASS  批注有行内「注」标记与 #tag  — {"anchor":true,"tag":"#quote"}
+PASS  点击书页卡片打开编辑浮层并保存  — {"editorClosed":true,"card":"笔记编辑后的页内批注：已落盘。#quote"}
+PASS  编辑结果写入 annotations.json  — 编辑后的页内批注：已落盘。
+      截图：C:\Users\zhanh\AppData\Local\Temp\spbf-realbook-annotations-shots\pitch-0.png
+PASS  拖到约 20° 且批注仍可见  — --rb-pitch=20deg
+      截图：C:\Users\zhanh\AppData\Local\Temp\spbf-realbook-annotations-shots\pitch-20.png
+PASS  拖到约 35° 且批注仍可见  — --rb-pitch=35deg
+      截图：C:\Users\zhanh\AppData\Local\Temp\spbf-realbook-annotations-shots\pitch-35.png
+PASS  主题「纸白」切换成功  — {"active":true}
+      截图：C:\Users\zhanh\AppData\Local\Temp\spbf-realbook-annotations-shots\theme-paper.png
+PASS  主题「暖黄」切换成功  — {"active":true}
+      截图：C:\Users\zhanh\AppData\Local\Temp\spbf-realbook-annotations-shots\theme-sepia.png
+PASS  主题「柔灰」切换成功  — {"active":true}
+      截图：C:\Users\zhanh\AppData\Local\Temp\spbf-realbook-annotations-shots\theme-gray.png
+PASS  主题「夜间」切换成功  — {"active":true}
+      截图：C:\Users\zhanh\AppData\Local\Temp\spbf-realbook-annotations-shots\theme-night.png
+PASS  关闭批注后卡片隐藏、划线保留  — {"pressed":"false","card":false,"highlight":true}
+PASS  关闭状态写入 settings.json  — false
+PASS  重启后真实书籍书台仍可打开
+PASS  重启后批注开关保持关闭  — {"pressed":"false","card":false,"highlight":true}
+PASS  重启后卡片仍隐藏、划线仍在  — {"pressed":"false","card":false,"highlight":true}
+
+结果：18 项通过，0 项失败
+真实书籍页内批注检查通过：显示、编辑落盘、开关持久、俯仰与主题截图均已产出

@@ -1,0 +1,40 @@
+
+> spbf@0.1.0 e2e:realbook-webgl
+> node scripts/realbook-webgl-e2e.mjs
+
+夹具：书库=C:\Users\zhanh\AppData\Local\Temp\spbf-rbwebgl-e2e-lib-mzyjBO
+      userData=C:\Users\zhanh\AppData\Local\Temp\spbf-rbwebgl-e2e-user-dlRqPx
+      截图=C:\Users\zhanh\AppData\Local\Temp\spbf-rbwebgl-e2e-shots
+PASS  环境具备 WebGL 且未走 CSS 3D 回退  — {"capability":{"webgl2":true,"webgl":false},"fallback":""}
+PASS  WebGL 画布挂载  — {"stage":true,"canvas":true,"canvasSize":[1412,706],"hit":[381,198,677,417],"label":"第 1 / 3 页","paras":4,"lines":20,"textPages":2}
+PASS  书体命中区域已投影  — [381,198,677,417]
+PASS  透明文本层挂 data-p 且有正文行  — {"stage":true,"canvas":true,"canvasSize":[1412,706],"hit":[381,198,677,417],"label":"第 1 / 3 页","paras":4,"lines":20,"textPages":2}
+PASS  WebGL 选字工具条  — {"popup":true,"text":"复制划线批注翻译问 AI · 解释这段这个人物是谁这件事之前发生了什么"}
+PASS  真实书籍顶栏容器是零高度的隐藏锚点  — {"realbook":true,"height":"0px","title":false,"searchEntry":false,"pageLabel":"第 1 / 3 页"}
+PASS  顶栏里没有应用标题与搜索入口  — {"realbook":true,"height":"0px","title":false,"searchEntry":false,"pageLabel":"第 1 / 3 页"}
+PASS  WebGL 翻页后页码推进  — {"beforeLabel":"第 1 / 3 页","afterLabel":{"label":"第 3 / 5 页","canvas":true}}
+PASS  反向翻页落定回到原页  — {"beforeLabel":"第 1 / 3 页","beforeBackLabel":"第 3 / 5 页","backLabel":"第 1 / 5 页"}
+PASS  拖页半程时飞页正文可见并贴面  — {"total":205,"visible":102,"transformed":102,"faces":{"front":102},"allFaces":{"front":102,"back":103},"firstText":"第1段："}
+PASS  正向拖页露出的是纸的正面  — {"front":102}
+PASS  拖页时纸的正反面都建有正文  — {"front":102,"back":103}
+PASS  拖页不到阈值松手：纸弹回、页码不动  — {"peelBaseline":"第 1 / 5 页","afterCancel":"第 1 / 5 页"}
+PASS  拖页越过阈值落定：正向翻一页  — {"peelBaseline":"第 1 / 5 页","afterForward":"第 3 / 5 页"}
+PASS  往回拖页时飞页正文跟着纸走  — {"total":205,"visible":103,"transformed":103,"faces":{"back":103},"allFaces":{"front":102,"back":103},"firstText":"第5段："}
+PASS  往回拖页落定：回到原页  — {"peelBaseline":"第 1 / 5 页","afterBack":"第 1 / 5 页"}
+PASS  WebGL 合上书籍  — {"canvas":true,"openButton":true}
+PASS  背景面板显示 WebGL/桌面/衬纸/视角选项  — {"webglActive":true,"desk":6,"endpaper":4,"pitch":3}
+PASS  更多菜单是暗色浮层  — rgba(24, 28, 25, 0.96)
+PASS  更多菜单有「搜索」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  更多菜单有「标记」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  更多菜单有「书中地图」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  更多菜单有「朗读」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  更多菜单有「AI」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  更多菜单有「字体 / 排版」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  更多菜单有「快捷键」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  更多菜单有「设置」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  更多菜单有「浏览」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  更多菜单有「书架」  — ["搜索","标记","书中地图","朗读","AI","字体 / 排版","平放","快捷键","沉浸模式","设置","浏览","书架"]
+PASS  窄屏单页模式  — {"canvas":true,"hit":[666,360],"visibleTextPages":1,"paras":11,"label":"第 1 / 3 页"}
+PASS  全程无渲染进程异常
+
+31 项通过，0 项失败
