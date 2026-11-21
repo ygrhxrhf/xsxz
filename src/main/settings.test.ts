@@ -29,6 +29,7 @@ import {
   DEFAULT_AI_PREFS,
   DEFAULT_PROXY_PREFS,
   DEFAULT_READER_PREFS,
+  DEFAULT_COVER_GEN_PREFS,
 } from '../shared/types'
 import {
   AI_CUSTOM_SERVICE_NOTICE,
@@ -687,5 +688,41 @@ describe('代理设置持久化', () => {
     await updateSettings({ proxy: { mode: 'manual', host: '1.2.3.4', port: 1 } })
     resetSettingsCacheForTests()
     expect((await getSettings()).proxy?.passwordConfigured).toBe(false)
+  })
+})
+
+describe('cover generation prefs', () => {
+  it('fills defaults and keeps the current value when a field is illegal', async () => {
+    expect((await getSettings()).coverGen).toEqual(DEFAULT_COVER_GEN_PREFS)
+
+    await updateSettings({ coverGen: { model: '  flux-1.1-pro  ', size: '999x999', style: '' } })
+    let settings = await getSettings()
+    expect(settings.coverGen?.model).toBe('flux-1.1-pro')
+    // 非法尺寸不回退默认值，而是保留当前有效值：改模型时不该把已选的尺寸打回默认
+    expect(settings.coverGen?.size).toBe(DEFAULT_COVER_GEN_PREFS.size)
+    expect(settings.coverGen?.style).toBe(DEFAULT_COVER_GEN_PREFS.style)
+
+    await updateSettings({ coverGen: { enabled: false, size: '1024x1024', style: '  冷色调  ' } })
+    settings = await getSettings()
+    expect(settings.coverGen).toMatchObject({
+      enabled: false,
+      autoOnImport: DEFAULT_COVER_GEN_PREFS.autoOnImport,
+      model: 'flux-1.1-pro',
+      size: '1024x1024',
+      style: '冷色调',
+    })
+  })
+
+  it('accepts only whitelisted sizes and clamps overlong text', async () => {
+    await updateSettings({
+      coverGen: { size: '768x1024', model: 'm'.repeat(300), style: 's'.repeat(500) },
+    })
+    const prefs = (await getSettings()).coverGen!
+    expect(prefs.size).toBe('768x1024')
+    expect(prefs.model).toHaveLength(100)
+    expect(prefs.style).toHaveLength(200)
+
+    await updateSettings({ coverGen: { size: 'huge' } })
+    expect((await getSettings()).coverGen?.size).toBe('768x1024')
   })
 })

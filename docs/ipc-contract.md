@@ -112,6 +112,7 @@
 | `library.confirmLegacyReadRange` | invoke | `{ bookId: string }` | `{ ok: true; frontier: ReadFrontier } \| { ok: false; message: string }` |
 | `library.updateMeta` | invoke | `{ bookId: string; title: string; author: string; tags: string[] }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.setCover` | invoke | `{ bookId: string; sourcePath: string }` | `{ ok: true; coverPath: string } \| { ok: false; message: string }` |
+| `library.generateCover` | invoke | `{ bookId: string; force?: boolean }` | `{ ok: true; bookId: string; coverPath: string } \| { ok: false; code: string; message: string }` |
 | `library.pickCoverFile` | invoke | 无 | `string \| null` |
 | `library.updateChapterBody` | invoke | `{ bookId: string; chapterId: string; body: string; restoreRaw?: boolean }` | `{ ok: true } \| { ok: false; message: string }` |
 | `library.export` | invoke | `{ bookId: string; format: 'txt' \| 'epub'; destDir: string }` | `{ ok: true; path: string } \| { ok: false; message: string }` |
@@ -602,7 +603,7 @@ window.api = {
   tts: { getPosition, setPosition, synthesize, cancel },
   browse: { load, back, forward, reload, stop, setBounds, setVisible, resume, zoom, readingPage, setReadingMode, chapter, prefetchChapter, chapterCatalog, saveReadingPos, getReadingPos, find, stopFind, hide, onFindResult, onShortcut, onUrl, onState, onReadingChapter },
   shelf: { list, add, remove, refresh, refreshAll, setProgress, chapters, onChanged },
-  library: { list, get, readBookStats, readChapter, delete, import, setProgress, getReadFrontier, markReadFrontier, confirmLegacyReadRange, updateMeta, setCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, getReadingStats, listTrash, restoreTrash, purgeTrash },
+  library: { list, get, readBookStats, readChapter, delete, import, setProgress, getReadFrontier, markReadFrontier, confirmLegacyReadRange, updateMeta, setCover, generateCover, pickCoverFile, updateChapterBody, repairChapterBody, audit, migrate, export, searchInBook, getReadingStats, listTrash, restoreTrash, purgeTrash },
   bookOverview: { retry, onChanged },
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   mirror: { start, cancel, state, onProgress },

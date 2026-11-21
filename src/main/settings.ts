@@ -5,6 +5,7 @@ import { atomicWriteText } from './atomicFile'
 import type {
   AiPrefs,
   AutoUpdateCheckPrefs,
+  CoverGenPrefs,
   ProxyPrefs,
   AiPromptKind,
   AiProvider,
@@ -38,6 +39,8 @@ import {
   DEFAULT_AI_PLACEHOLDER,
   DEFAULT_TIER_SENSE_PREFS,
   DEFAULT_PROXY_PREFS,
+  COVER_GEN_SIZES,
+  DEFAULT_COVER_GEN_PREFS,
 } from '../shared/types'
 import { defaultLibraryPath } from './libraryPath'
 import { normalizeProxyPrefs } from './proxy'
@@ -212,6 +215,27 @@ export function normalizeAutoUpdateCheckPrefs(value: unknown): AutoUpdateCheckPr
     ),
     lastCheckedAt: typeof prefs.lastCheckedAt === 'string' ? prefs.lastCheckedAt : '',
     lastSummary: typeof prefs.lastSummary === 'string' ? prefs.lastSummary : '',
+  }
+}
+
+/** 封面生成偏好：缺字段逐项补默认；模型名与风格长度夹住，尺寸只认白名单。 */
+export function normalizeCoverGenPrefs(value: unknown): CoverGenPrefs {
+  const prefs = readRecord(value)
+  return {
+    enabled: typeof prefs.enabled === 'boolean' ? prefs.enabled : DEFAULT_COVER_GEN_PREFS.enabled,
+    autoOnImport:
+      typeof prefs.autoOnImport === 'boolean' ? prefs.autoOnImport : DEFAULT_COVER_GEN_PREFS.autoOnImport,
+    model:
+      typeof prefs.model === 'string' && prefs.model.trim()
+        ? prefs.model.trim().slice(0, 100)
+        : DEFAULT_COVER_GEN_PREFS.model,
+    size: COVER_GEN_SIZES.includes(prefs.size as (typeof COVER_GEN_SIZES)[number])
+      ? String(prefs.size)
+      : DEFAULT_COVER_GEN_PREFS.size,
+    style:
+      typeof prefs.style === 'string' && prefs.style.trim()
+        ? prefs.style.trim().slice(0, 200)
+        : DEFAULT_COVER_GEN_PREFS.style,
   }
 }
 
@@ -476,6 +500,7 @@ export async function getSettings(): Promise<Settings> {
       lastError: typeof backup.lastError === 'string' ? backup.lastError : '',
     },
     autoUpdateCheck: normalizeAutoUpdateCheckPrefs(raw.autoUpdateCheck),
+    coverGen: normalizeCoverGenPrefs(raw.coverGen),
   }
 }
 
@@ -618,6 +643,27 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
           : previous.intervalHours,
       lastCheckedAt: typeof incoming.lastCheckedAt === 'string' ? incoming.lastCheckedAt : previous.lastCheckedAt,
       lastSummary: typeof incoming.lastSummary === 'string' ? incoming.lastSummary : previous.lastSummary,
+    }
+  }
+  if (patch.coverGen) {
+    // 逐字段合并：只套用本次真正提交的字段，其余保留原值，非法值回退到当前有效值。
+    const previous = normalizeCoverGenPrefs(raw.coverGen)
+    const incoming = readRecord(patch.coverGen)
+    raw.coverGen = {
+      enabled: typeof incoming.enabled === 'boolean' ? incoming.enabled : previous.enabled,
+      autoOnImport:
+        typeof incoming.autoOnImport === 'boolean' ? incoming.autoOnImport : previous.autoOnImport,
+      model:
+        typeof incoming.model === 'string' && incoming.model.trim()
+          ? incoming.model.trim().slice(0, 100)
+          : previous.model,
+      size: COVER_GEN_SIZES.includes(incoming.size as (typeof COVER_GEN_SIZES)[number])
+        ? String(incoming.size)
+        : previous.size,
+      style:
+        typeof incoming.style === 'string' && incoming.style.trim()
+          ? incoming.style.trim().slice(0, 200)
+          : previous.style,
     }
   }
   await saveRaw(raw)

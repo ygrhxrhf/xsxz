@@ -4,6 +4,7 @@ export type LibraryStatusFilter = 'all' | 'downloading' | 'ready' | 'partial'
 export type LibrarySortKey = 'updated' | 'title' | 'author'
 export type LibraryMenuKey =
   | 'edit'
+  | 'gen-cover'
   | 'recap'
   | 'quality'
   | 'check-update'
@@ -83,9 +84,11 @@ export function hasFailedChapters(b: Pick<BookListItem, 'status' | 'readyCount' 
 }
 
 export function libraryMenuEntries(
-  book: Pick<BookListItem, 'importType' | 'status' | 'readyCount' | 'chapterCount'>,
+  book: Pick<BookListItem, 'importType' | 'status' | 'readyCount' | 'chapterCount' | 'coverPath'>,
 ): LibraryMenuEntry[] {
   const entries: LibraryMenuEntry[] = ['edit', 'recap']
+  // 没有封面才给「生成 AI 封面」：已有封面的书，需要换封面走「编辑信息」里的选图。
+  if (!book.coverPath) entries.push('gen-cover')
   if (isDownloadBook(book)) entries.push('quality', 'check-update')
   if (hasFailedChapters(book)) entries.push('retry-failed', 'view-failed')
   entries.push('divider-export', 'export-txt', 'export-epub', 'divider-trash', 'trash')

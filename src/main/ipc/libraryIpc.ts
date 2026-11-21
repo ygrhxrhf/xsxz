@@ -19,6 +19,7 @@ import {
 import { confirmLegacyReadRange, getReadFrontier, markReadFrontier } from '../readFrontier'
 import { searchInBook } from '../search'
 import { importTxt } from '../importTxt'
+import { generateBookCover } from '../coverImage'
 import { importEpub } from '../importEpub'
 import { auditBook } from '../quality'
 import { exportBook } from '../exportBook'
@@ -149,6 +150,17 @@ export function registerLibraryIpc(register: IpcRegistrar, deps: LibraryIpcDeps)
       const result = ext === 'epub' ? await importEpub(filePath) : await importTxt(filePath)
       // 导入即入架：登记这本书的概览生成，不靠全库扫描。
       bookOverview.request(result.bookId)
+      // 导入即自动补封面：没封面才真的会发请求（generateBookCover 自己短路），
+      // 不阻塞导入返回；失败静默——“没生成封面”不值得把一次成功导入报成错误。
+      void (async () => {
+        try {
+          const prefs = (await getSettings()).coverGen
+          if (!prefs?.enabled || !prefs.autoOnImport) return
+          await generateBookCover(result.bookId)
+        } catch {
+          /* 自动生成失败不影响导入结果 */
+        }
+      })()
       return { ok: true, bookId: result.bookId }
     } catch (e: unknown) {
       return { ok: false, message: String(e) }
@@ -201,6 +213,13 @@ export function registerLibraryIpc(register: IpcRegistrar, deps: LibraryIpcDeps)
       return await setCover(payload)
     } catch (e: unknown) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  register('library.generateCover', async (_e, payload: { bookId: string; force?: boolean }) => {
+    try {
+      return await generateBookCover(payload.bookId, { force: payload?.force === true })
+    } catch (e: unknown) {
+      return { ok: false, code: 'failed', message: e instanceof Error ? e.message : String(e) }
     }
   })
   register('library.pickCoverFile', async () => {

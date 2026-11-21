@@ -303,6 +303,7 @@ export interface AgentCapability {
 | `library.getReadingStats` | `library_get_reading_stats` | 读 | — | disk | `limitDays` 缺省 30 |
 | `library.updateMeta` | `library_update_meta` | 写 | dry | disk | 只改书名/作者/标签 |
 | `library.setCover` | `library_set_cover` | 写 | dry | disk | 覆盖封面，返回 `coverPath` |
+| `library.generateCover` | `library_generate_cover` | 写 | dry | disk | 按书名/梗概调 AI 画封面，真实消耗图片额度；有封面需 `force` |
 | `library.pickCoverFile` | — | 界 | — | 无 | **不暴露**：模态选图。替代：`library_set_cover({ sourcePath })` |
 | `library.updateChapterBody` | `library_update_chapter_body` | 破 | dry | disk | 改写正文，首次编辑前的原文留在 `bodyRaw` |
 | `library.repairChapterBody` | `library_repair_chapter_body` | 破 | dry | disk | 同上，并把该章设为 `ready` |

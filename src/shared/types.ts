@@ -877,7 +877,20 @@ export interface AiPrefs {
   tierSense: TierSensePrefs
 }
 
-/** 到期自动检查追更：启动后若距上次检查超过间隔，就串行检查书库里每本下载书。 */
+/** AI 生成书籍封面：没有封面的书按梗概画一张竖版封面。走 AI 已有的服务地址与 Key。 */
+export interface CoverGenPrefs {
+  /** 总开关；关掉后不自动生成，界面上也不给单本/批量入口。 */
+  enabled: boolean
+  /** 导入入架时如果还没有封面，自动生成一张。 */
+  autoOnImport: boolean
+  /** 图片模型名，走 OpenAI 兼容的 `/images/generations`。 */
+  model: string
+  /** 出图尺寸，只接受 COVER_GEN_SIZES 里的值。 */
+  size: string
+  /** 追加到提示词的风格说明（不含书名等变量）。 */
+  style: string
+}
+
 export interface AutoUpdateCheckPrefs {
   enabled: boolean
   /** 两次自动检查的最小间隔（小时），1–720。 */
@@ -924,6 +937,8 @@ export interface Settings {
   autoUpdateCheck?: AutoUpdateCheckPrefs
   /** 浏览 / 下载代理；主进程始终补齐，缺省直连。 */
   proxy?: ProxyPrefs
+  /** 封面生成偏好；主进程始终补齐，缺省按默认值读取。 */
+  coverGen?: CoverGenPrefs
 }
 
 export interface SettingsUpdate {
@@ -957,6 +972,8 @@ export interface SettingsUpdate {
   proxy?: Partial<Omit<ProxyPrefs, 'passwordConfigured'>>
   /** 空字符串清除已保存的代理密码。 */
   proxyPassword?: string
+  /** 只合并提交的字段，非法值逐项回退默认。 */
+  coverGen?: Partial<CoverGenPrefs>
 }
 
 /** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */
@@ -1517,4 +1534,15 @@ export const DEFAULT_AI_PREFS: AiPrefs = {
 export const DEFAULT_AI_PLACEHOLDER = {
   baseUrl: 'https://api.deepseek.com/v1',
   model: 'deepseek-v4-flash',
+}
+
+/** 封面出图尺寸白名单：竖版优先，兼容只支持方图的服务。 */
+export const COVER_GEN_SIZES = ['1024x1536', '1024x1024', '768x1024'] as const
+
+export const DEFAULT_COVER_GEN_PREFS: CoverGenPrefs = {
+  enabled: true,
+  autoOnImport: true,
+  model: 'gpt-image-1',
+  size: '1024x1536',
+  style: '中式网文封面，竖版构图，主体居中，光影饱满，画面里不要出现任何文字',
 }

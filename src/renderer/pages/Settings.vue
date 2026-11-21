@@ -23,7 +23,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, ProxyKernelState, ProxyMode, ProxyPrefs, ProxyProtocol, ProxySubscriptionState, Settings, SiteRule, SiteRulePreview, Skin } from '@shared/types'
-import { AI_PROMPT_KINDS, DEFAULT_AI_PREFS } from '@shared/types'
+import { AI_PROMPT_KINDS, COVER_GEN_SIZES, DEFAULT_AI_PREFS, DEFAULT_COVER_GEN_PREFS } from '@shared/types'
 import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
 import ProxySubscriptionPanel from '../components/ProxySubscriptionPanel.vue'
 import RuleMarketPanel from '../components/RuleMarketPanel.vue'
@@ -47,7 +47,7 @@ const emit = defineEmits<{
 const message = useMessage()
 const rulePreview = ref<SiteRulePreview | null>(null)
 const rulePreviewing = ref(false)
-type SettingsSection = 'appearance' | 'library' | 'network' | 'tts' | 'map' | 'ai' | 'siteRules' | 'backup' | 'agentAudit' | 'about'
+type SettingsSection = 'appearance' | 'library' | 'network' | 'tts' | 'map' | 'ai' | 'cover' | 'siteRules' | 'backup' | 'agentAudit' | 'about'
 const activeSection = ref<SettingsSection>('appearance')
 
 /** 代理表单：单独一份可编辑副本，只有点「保存」才写回设置。 */
@@ -269,6 +269,7 @@ const sectionOptions: { id: SettingsSection; label: string }[] = [
   { id: 'tts', label: '听书' },
   { id: 'map', label: '书中地图' },
   { id: 'ai', label: 'AI' },
+  { id: 'cover', label: '封面' },
   { id: 'siteRules', label: '站点规则' },
   { id: 'backup', label: '备份与恢复' },
   { id: 'agentAudit', label: 'Agent 调用记录' },
@@ -313,6 +314,14 @@ const downloadPace = ref<DownloadPace>('standard')
 const autoUpdateCheckEnabled = ref(true)
 const autoUpdateCheckHours = ref(24)
 const autoUpdateCheckSaving = ref(false)
+/** AI 封面生成：表单单独一份副本，点保存才写回。 */
+const coverGenEnabled = ref(DEFAULT_COVER_GEN_PREFS.enabled)
+const coverGenAutoOnImport = ref(DEFAULT_COVER_GEN_PREFS.autoOnImport)
+const coverGenModel = ref(DEFAULT_COVER_GEN_PREFS.model)
+const coverGenSize = ref(DEFAULT_COVER_GEN_PREFS.size)
+const coverGenStyle = ref(DEFAULT_COVER_GEN_PREFS.style)
+const coverGenSaving = ref(false)
+const coverSizeOptions = COVER_GEN_SIZES.map((size) => ({ label: size, value: size }))
 const autoUpdateHoursOptions = [
   { label: '每 12 小时', value: 12 },
   { label: '每天', value: 24 },
@@ -455,6 +464,12 @@ async function load() {
     downloadPace.value = settings.value.downloadPace ?? 'standard'
     autoUpdateCheckEnabled.value = settings.value.autoUpdateCheck?.enabled ?? true
     autoUpdateCheckHours.value = settings.value.autoUpdateCheck?.intervalHours ?? 24
+    const coverGen = settings.value.coverGen ?? DEFAULT_COVER_GEN_PREFS
+    coverGenEnabled.value = coverGen.enabled
+    coverGenAutoOnImport.value = coverGen.autoOnImport
+    coverGenModel.value = coverGen.model
+    coverGenSize.value = coverGen.size
+    coverGenStyle.value = coverGen.style
     await loadRules()
   } catch {
     // 读设置失败时页面会渲染成空壳：给一句人话，别让用户对着空白页猜。
@@ -665,6 +680,34 @@ async function migrateLibrary() {
   } finally {
     saving.value = false
     libraryMoving.value = false
+  }
+}
+
+async function saveCoverGen(): Promise<void> {
+  if (coverGenSaving.value) return
+  coverGenSaving.value = true
+  msg.value = ''
+  try {
+    settings.value = await window.api.settings.set({
+      coverGen: {
+        enabled: coverGenEnabled.value,
+        autoOnImport: coverGenAutoOnImport.value,
+        model: coverGenModel.value.trim(),
+        size: coverGenSize.value,
+        style: coverGenStyle.value.trim(),
+      },
+    })
+    const saved = settings.value.coverGen ?? DEFAULT_COVER_GEN_PREFS
+    coverGenModel.value = saved.model
+    coverGenSize.value = saved.size
+    coverGenStyle.value = saved.style
+    msg.value = '封面设置已保存。'
+    msgType.value = 'success'
+  } catch (e: unknown) {
+    msg.value = e instanceof Error ? e.message : String(e)
+    msgType.value = 'error'
+  } finally {
+    coverGenSaving.value = false
   }
 }
 
@@ -1549,6 +1592,48 @@ onMounted(async () => {
         </n-space>
       </section>
 
+      <div v-if="msg" class="form-msg" :class="msgType">{{ msg }}</div>
+    </n-card>
+
+    <n-card v-show="activeSection === 'cover'" title="AI 封面生成" class="settings-card">
+      <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">
+        没有封面的书，可以用 AI 按书名、题材和梗概画一张竖版封面。<br>
+        走上面 AI 配置里的服务地址与 API Key，调用 OpenAI 兼容的 <code>/images/generations</code>，按张计费；模型需支持图片生成。
+      </p>
+      <n-space vertical :size="16">
+        <div class="field">
+          <div class="field-label">启用 AI 封面</div>
+          <n-switch v-model:value="coverGenEnabled" />
+          <div class="field-help">关掉后书库里不再出现单本生成与批量补齐入口，导入也不再自动生成。</div>
+        </div>
+        <div class="field">
+          <div class="field-label">导入时自动生成</div>
+          <n-switch v-model:value="coverGenAutoOnImport" :disabled="!coverGenEnabled" />
+          <div class="field-help">导入 txt / epub 后如果没有封面，就在后台画一张，不阻塞导入。每次导入都会真实消耗一次图片额度。</div>
+        </div>
+        <div class="field">
+          <div class="field-label">图片模型名</div>
+          <n-input v-model:value="coverGenModel" placeholder="例如 gpt-image-1、doubao-seedream-4-0" :disabled="!coverGenEnabled" />
+          <div class="field-help">填图片生成模型，不是聊天模型。中转站不支持这个模型时会返回 404 / 400，换一个即可。</div>
+        </div>
+        <div class="field">
+          <div class="field-label">出图尺寸</div>
+          <n-select v-model:value="coverGenSize" :options="coverSizeOptions" style="width:180px" :disabled="!coverGenEnabled" />
+          <div class="field-help">竖版最适合书架。部分模型只支持方图，报错时换成 1024x1024。</div>
+        </div>
+        <div class="field">
+          <div class="field-label">风格补充</div>
+          <n-input
+            v-model:value="coverGenStyle"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 4 }"
+            :disabled="!coverGenEnabled"
+            placeholder="追加到提示词的画面要求，例如画风、构图、色调"
+          />
+          <div class="field-help">会拼在固定提示词后面。封面一律要求不出现文字，避免模型画出乱码书名。</div>
+        </div>
+        <n-button type="primary" :loading="coverGenSaving" @click="saveCoverGen">保存</n-button>
+      </n-space>
       <div v-if="msg" class="form-msg" :class="msgType">{{ msg }}</div>
     </n-card>
 

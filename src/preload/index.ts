@@ -166,6 +166,10 @@ const api = {
         { ok: true; coverPath: string } | { ok: false; message: string }
       >,
     pickCoverFile: () => ipcRenderer.invoke('library.pickCoverFile') as Promise<string | null>,
+    generateCover: (bookId: string, opts?: { force?: boolean }) =>
+      ipcRenderer.invoke('library.generateCover', { bookId, force: opts?.force === true }) as Promise<
+        { ok: true; bookId: string; coverPath: string } | { ok: false; code: string; message: string }
+      >,
     updateChapterBody: (bookId: string, chapterId: string, body: string, restoreRaw?: boolean) =>
       ipcRenderer.invoke('library.updateChapterBody', { bookId, chapterId, body, restoreRaw }),
     repairChapterBody: (bookId: string, chapterId: string, body: string) =>

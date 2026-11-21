@@ -51,6 +51,16 @@ const checkingIds = ref<string[]>([])
 const exportingIds = ref<string[]>([])
 const activeDownloadIds = ref<string[]>([])
 const deleteConfirmId = ref<string | null>(null)
+/** AI 生成封面：设置里开启才给入口。 */
+const coverGenEnabled = ref(false)
+const coverGenIds = ref<string[]>([])
+const coverBatchRunning = ref(false)
+const coverBatchTotal = ref(0)
+const coverBatchDone = ref(0)
+const coverBatchFailed = ref(0)
+let coverBatchCancelled = false
+/** 一次批量最多跑多少本：1048 本书全跑一遍是几百块钱，先给个谨慎的上限。 */
+const COVER_BATCH_LIMIT = 200
 const checkMsg = ref<Record<string, string>>({})
 const checkErr = ref<Record<string, boolean>>({})
 /** 启动时自动追更的结果：摘要来自 settings.autoUpdateCheck，书库页负责展示一次。 */
@@ -297,6 +307,7 @@ async function refresh() {
       nextLibraryPath = settings.libraryPath
       autoUpdateSummary.value = settings.autoUpdateCheck?.lastSummary || ''
       autoUpdateAt.value = settings.autoUpdateCheck?.lastCheckedAt || ''
+      coverGenEnabled.value = Boolean(settings.coverGen?.enabled)
     } catch {
       /* keep previous libraryPath */
     }
@@ -896,6 +907,66 @@ function onLibraryKeydown(e: KeyboardEvent) {
   focusLibrarySearch()
 }
 
+/** 没有封面的书：批量补齐只跑这些，已有的书不重复花额度。 */
+const missingCoverBooks = computed(() => books.value.filter((book) => !book.coverPath))
+
+async function generateCoverFor(book: BookListItem, opts: { silent?: boolean } = {}): Promise<boolean> {
+  if (hasTask(coverGenIds.value, book.id)) return false
+  coverGenIds.value = [...coverGenIds.value, book.id]
+  try {
+    const res = await window.api.library.generateCover(book.id)
+    if ('ok' in res && res.ok) {
+      const target = books.value.find((item) => item.id === book.id)
+      if (target) target.coverPath = res.coverPath
+      return true
+    }
+    if (!opts.silent) message.error(('message' in res && res.message) || '生成封面失败')
+    return false
+  } catch {
+    if (!opts.silent) message.error('生成封面失败')
+    return false
+  } finally {
+    coverGenIds.value = coverGenIds.value.filter((id) => id !== book.id)
+  }
+}
+
+/** 批量补齐：渲染层自己排队（并发 2），随时可停；不加主进程任务队列，关页即结束。 */
+async function startCoverBatch(): Promise<void> {
+  if (coverBatchRunning.value) {
+    coverBatchCancelled = true
+    return
+  }
+  const targets = missingCoverBooks.value
+    .filter((book) => book.status !== 'downloading')
+    .slice(0, COVER_BATCH_LIMIT)
+  if (!targets.length) return
+  coverBatchRunning.value = true
+  coverBatchCancelled = false
+  coverBatchTotal.value = targets.length
+  coverBatchDone.value = 0
+  coverBatchFailed.value = 0
+  let cursor = 0
+  const worker = async () => {
+    while (!coverBatchCancelled && cursor < targets.length) {
+      const book = targets[cursor]
+      cursor += 1
+      const ok = await generateCoverFor(book, { silent: true })
+      if (ok) coverBatchDone.value += 1
+      else coverBatchFailed.value += 1
+    }
+  }
+  try {
+    await Promise.all([worker(), worker()])
+  } finally {
+    const cancelled = coverBatchCancelled
+    coverBatchRunning.value = false
+    const done = coverBatchDone.value
+    const failed = coverBatchFailed.value
+    if (cancelled) message.info(`已停止：生成 ${done} 张，失败 ${failed} 张`)
+    else if (failed) message.warning(`已生成 ${done} 张封面，${failed} 张失败（多为模型不支持或额度问题）`)
+    else message.success(`已生成 ${done} 张封面`)
+  }
+}
 function cardTaskLabel(book: BookListItem): string {
   if (hasTask(checkingIds.value, book.id)) return '正在检查更新…'
   if (hasTask(retryingIds.value, book.id)) return '正在重试失败章…'
@@ -905,8 +976,14 @@ function cardTaskLabel(book: BookListItem): string {
 }
 
 function cardMenuOptions(book: BookListItem): DropdownOption[] {
-  return libraryMenuEntries(book).map((entry) => {
+  return libraryMenuEntries(book)
+    .filter((entry) => entry !== 'gen-cover' || coverGenEnabled.value)
+    .map((entry) => {
     if (entry.startsWith('divider-')) return { type: 'divider', key: entry }
+    if (entry === 'gen-cover') {
+      const running = hasTask(coverGenIds.value, book.id)
+      return { label: running ? '正在生成封面…' : '生成 AI 封面', key: entry, disabled: running }
+    }
     if (entry === 'edit') return { label: '编辑信息', key: entry }
     if (entry === 'recap') return { label: '前情提要', key: entry }
     if (entry === 'quality') return {
@@ -935,6 +1012,7 @@ function cardMenuOptions(book: BookListItem): DropdownOption[] {
 function handleCardMenu(book: BookListItem, key: string | number) {
   const action = String(key) as LibraryMenuKey
   if (action === 'edit') openEdit(book)
+  else if (action === 'gen-cover') void generateCoverFor(book)
   else if (action === 'recap') void openRecap(book)
   else if (action === 'quality') void checkQuality(book.id)
   else if (action === 'check-update') void handleCheckUpdate(book.id)
@@ -1123,6 +1201,26 @@ onUnmounted(() => {
         <n-button class="shelf-action" @click="emit('go-browse')">浏览下载</n-button>
         <n-button v-if="checkAllLoading" class="shelf-action" size="small" @click="handleCancelCheckAll">停止</n-button>
         <n-button v-else class="shelf-action" :disabled="!books.length" @click="handleCheckAll">全部检查更新</n-button>
+        <n-button
+          v-if="coverBatchRunning"
+          class="shelf-action"
+          size="small"
+          @click="startCoverBatch"
+        >
+          停止生成封面（{{ coverBatchDone }}/{{ coverBatchTotal }}）
+        </n-button>
+        <n-popconfirm
+          v-else-if="coverGenEnabled && missingCoverBooks.length"
+          @positive-click="startCoverBatch"
+        >
+          <template #trigger>
+            <n-button class="shelf-action" size="small">
+              补齐 AI 封面（{{ Math.min(missingCoverBooks.length, COVER_BATCH_LIMIT) }}）
+            </n-button>
+          </template>
+          将依次为 {{ Math.min(missingCoverBooks.length, COVER_BATCH_LIMIT) }} 本没有封面的书生成封面，
+          会按张消耗 AI 额度，可随时停止。继续？
+        </n-popconfirm>
         <n-button v-if="duplicateGroups.length" class="shelf-action" @click="duplicateOpen = true">可能重复 {{ duplicateGroups.length }} 组</n-button>
         <n-button class="shelf-action" @click="openStats">阅读统计</n-button>
         <n-button class="shelf-action" @click="openTrash">回收站</n-button>

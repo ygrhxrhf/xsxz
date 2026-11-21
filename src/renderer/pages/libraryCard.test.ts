@@ -118,6 +118,7 @@ describe('library check-update card helpers', () => {
     })).toEqual([
       'edit',
       'recap',
+      'gen-cover',
       'quality',
       'check-update',
       'retry-failed',
@@ -133,6 +134,23 @@ describe('library check-update card helpers', () => {
       status: 'ready',
       readyCount: 2,
       chapterCount: 2,
+    })).toEqual([
+      'edit',
+      'recap',
+      'gen-cover',
+      'divider-export',
+      'export-txt',
+      'export-epub',
+      'divider-trash',
+      'trash',
+    ])
+    // 已经有封面就不给「生成 AI 封面」：换封面走「编辑信息」里的选图。
+    expect(libraryMenuEntries({
+      importType: 'txt',
+      status: 'ready',
+      readyCount: 2,
+      chapterCount: 2,
+      coverPath: 'cover.jpg',
     })).toEqual([
       'edit',
       'recap',

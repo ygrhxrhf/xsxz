@@ -675,6 +675,18 @@ const SPECS: readonly CapabilitySpec[] = [
     coreToolset: false,
   },
   {
+    channel: 'library.generateCover',
+    title: 'AI 生成封面',
+    tier: 'write',
+    confirm: 'dry-run',
+    deps: ['disk'],
+    params: obj({ bookId: str('书籍 ID'), force: boolOpt('已有封面时是否覆盖') }),
+    result: '{ ok: true; coverPath: string } 或 { ok: false; code; message }',
+    description:
+      '按书名与梗概调用 AI 画一张封面并写入书库；会真实消耗图片额度。没有封面时才默认生成，已有封面需 force。',
+    coreToolset: false,
+  },
+  {
     channel: 'library.pickCoverFile',
     title: '选择封面图片',
     tier: 'read',

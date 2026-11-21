@@ -371,7 +371,7 @@ describe('Settings section content visibility', () => {
     await flushUi()
 
     const navLabels = [...document.querySelectorAll('.settings-nav-item')].map((item) => item.textContent?.trim())
-    expect(navLabels).toEqual(['外观', '书库', '网络代理', '听书', '书中地图', 'AI', '站点规则', '备份与恢复', 'Agent 调用记录', '关于'])
+    expect(navLabels).toEqual(['外观', '书库', '网络代理', '听书', '书中地图', 'AI', '封面', '站点规则', '备份与恢复', 'Agent 调用记录', '关于'])
     const visibleCard = (text: string) => {
       const card = [...document.querySelectorAll('.settings-card')]
         .find((item) => item.textContent?.includes(text)) as HTMLElement | undefined

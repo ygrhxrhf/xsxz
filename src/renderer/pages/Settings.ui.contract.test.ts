@@ -2,9 +2,9 @@ import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
 describe('Settings section framework contract', () => {
-  it('keeps ten session-only keyboard-native sections in the fixed order', async () => {
+  it('keeps the session-only keyboard-native sections in the fixed order', async () => {
     const source = (await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')).replace(/\r\n/g, '\n')
-    expect(source).toContain("type SettingsSection = 'appearance' | 'library' | 'network' | 'tts' | 'map' | 'ai' | 'siteRules' | 'backup' | 'agentAudit' | 'about'")
+    expect(source).toContain("type SettingsSection = 'appearance' | 'library' | 'network' | 'tts' | 'map' | 'ai' | 'cover' | 'siteRules' | 'backup' | 'agentAudit' | 'about'")
     expect(source).toContain("const activeSection = ref<SettingsSection>('appearance')")
     expect(source).toContain("{ id: 'appearance', label: '外观' }")
     expect(source).toContain("{ id: 'library', label: '书库' }")
@@ -12,6 +12,7 @@ describe('Settings section framework contract', () => {
     expect(source).toContain("{ id: 'tts', label: '听书' }")
     expect(source).toContain("{ id: 'map', label: '书中地图' }")
     expect(source).toContain("{ id: 'ai', label: 'AI' }")
+    expect(source).toContain("{ id: 'cover', label: '封面' }")
     expect(source).toContain("{ id: 'siteRules', label: '站点规则' }")
     expect(source).toContain("{ id: 'backup', label: '备份与恢复' }")
     expect(source).toContain("{ id: 'agentAudit', label: 'Agent 调用记录' }")
@@ -23,7 +24,7 @@ describe('Settings section framework contract', () => {
 
   it('keeps each panel mounted and source prefill locates site rules', async () => {
     const source = (await readFile(new URL('./Settings.vue', import.meta.url), 'utf-8')).replace(/\r\n/g, '\n')
-    for (const id of ['appearance', 'library', 'network', 'tts', 'map', 'ai', 'siteRules', 'backup', 'agentAudit', 'about']) {
+    for (const id of ['appearance', 'library', 'network', 'tts', 'map', 'ai', 'cover', 'siteRules', 'backup', 'agentAudit', 'about']) {
       expect(source).toContain(`v-show="activeSection === '${id}'"`)
     }
     expect(source).toContain("ruleHost.value = props.prefillHost ?? ''")
