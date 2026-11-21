@@ -137,9 +137,16 @@ try {
   await ev(`window.__flipTrace = []; window.__flipTraceTimer = setInterval(() => { const st = window.__rbSceneProbe?.(); if (st) window.__flipTrace.push({ t: performance.now(), ...st }); }, 16); return true;`)
   // 书页区域的点按由 Reader 的三分区接管；走「下一页」按钮，再抓后续的拖页。
   await ev(`document.querySelector('.real-book-dock')?.click(); await new Promise((r) => setTimeout(r, 350)); return true;`)
+  console.log('ref pages：', JSON.stringify(await ev(`return window.__rbRefPages ?? null;`)))
+  console.log('翻页前 book：', JSON.stringify(await ev(`return window.__rbBookProbe?.() ?? null;`)))
+  await ev(`window.__bookTrace = []; window.__bookTraceTimer = setInterval(() => { const s = window.__rbBookProbe?.(); if (s) window.__bookTrace.push({ t: Math.round(performance.now()), ...s }); }, 16); return true;`)
   await click(`document.querySelector('.reader-bottombar [aria-label="下一页"]')`)
   // 截图会阻塞渲染线程：先纯采样 1.2s 看 quick 的整个行程，再单独抓终帧。
   await sleep(1200)
+  console.log('翻页后 book：', JSON.stringify(await ev(`return window.__rbBookProbe?.() ?? null;`)))
+  const bookTrace = await ev(`clearInterval(window.__bookTraceTimer); return window.__bookTrace || [];`)
+  const first = bookTrace[0]?.t ?? 0
+  for (const row of bookTrace.filter((_, i) => i % 5 === 0)) console.log(`book t=${row.t - first}ms busy=${row.busy} settled=${row.settled} turned=${row.turned} leaf=${row.leafCount} pages=${row.pageCount}`)
   await ev(`clearInterval(window.__flipTraceTimer); return true;`)
   await shot('flip-auto-settled.png')
   // 往回翻一页再回到同一摊开，供后续拖页复核。

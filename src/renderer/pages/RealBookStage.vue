@@ -16,6 +16,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import type { ReaderHandwritingFont, ReaderTheme } from '@shared/types'
 import { chapterImageHeight, parseChapterImage } from '@shared/chapterImages'
+import { paginateReferenceChapter } from './referencePagination'
 import {
   createRealBookPaginator,
   findPageForInput,
@@ -39,7 +40,6 @@ import { clampPitch, MAX_PITCH_DEG, MAX_TILT_DEG, pitchFromDrag, pitchResetTarge
 import { flyerPageIndexes } from './realBookFlyerText'
 import { FLIP_DURATION_MS, flipAngles, flipBackContentOpacity, flipContentOpacity, flipFaceVisible, flipLight, flipPhases, flipPoses, flipSheetLift, flipSway } from './realBookFlip'
 import RealBookWebGLStage from './RealBookWebGLStage.vue'
-import type { RealBookSceneFlip } from './realBookWebGLScene'
 import type { CrossSelectionRange } from './realBookCrossSelection'
 import {
   PAGE_TEXTURE_HEIGHT,
@@ -183,6 +183,8 @@ const emit = defineEmits<{
   /** WebGL 跨页选择完成：两端是段落原始下标 + 段内偏移。 */
   (event: 'select-range', range: CrossSelectionRange): void
   (event: 'next-chapter'): void
+  (event: 'prev-chapter'): void
+  (event: 'clear-selection'): void
   /** 左上角圆形返回键：回到书库 */
   (event: 'back'): void
 }>()
@@ -256,6 +258,8 @@ const webglRef = ref<{
   setOpen: (open: boolean) => void
   toggleOpen: () => void
   setPitch: (value: number) => void
+  nextPage: () => void
+  prevPage: () => void
 } | null>(null)
 const webglFailed = ref(false)
 const webglOpen = ref(true)
@@ -629,9 +633,74 @@ function measuredNoteBlocks(): RealBookNoteBlock[] {
   return out
 }
 
+/** 参考站分页是异步的：字体分片、图片尺寸和笔记排版都可能等待。 */
+let referencePageToken = 0
+
+async function rebuildReferencePages(): Promise<void> {
+  if (!fontsPrimed.value) {
+    rebuildPending = true
+    return
+  }
+  const token = ++referencePageToken
+  const previousAnchor = pendingRestore ? null : anchorOf(pages.value[currentPage.value])
+  try {
+    const { pages: nextPages } = await paginateReferenceChapter({
+      chapterTitle: props.chapterTitle,
+      paragraphs: props.paragraphs,
+      paragraphIndexes: props.paragraphIndexes,
+      notes: props.showNotes ? props.notes : [],
+      showNotes: props.showNotes,
+      layout: {
+        pageWidth: layout.value.pageWidth,
+        pageHeight: layout.value.pageHeight,
+        marginTop: phone.value ? 44 : 78,
+        marginBottom: phone.value ? 44 : 100,
+        marginInner: phone.value ? 24 : 80,
+        marginOuter: phone.value ? 24 : 58,
+        fontSize: layoutFontSize.value,
+        lineHeight: props.lineHeight,
+        family: props.fontFamily,
+        singlePage: phone.value,
+      },
+    })
+    if (token !== referencePageToken) return
+    paginator.value = null
+    pages.value = nextPages
+    ;(window as unknown as Record<string, unknown>).__rbRefPages = nextPages.map((page) => ({
+      special: page.special ?? '',
+      label: page.label ?? '',
+      items: page.items.length,
+      textItems: page.items.filter((item) => item.kind === 'text').map((item) => item.lines?.length ?? 0),
+      images: page.items.filter((item) => item.kind === 'image').length,
+      notes: page.items.filter((item) => item.kind === 'note').length,
+    }))
+    if (pendingRestore) {
+      applyRestore()
+    } else if (previousAnchor) {
+      const input = inputIndexOf(previousAnchor.paragraph)
+      const target = input >= 0
+        ? findPageForInput(pages.value, input, previousAnchor.offset)
+        : currentPage.value
+      currentPage.value = Math.max(0, Math.min(target, pages.value.length - 1))
+    } else if (currentPage.value >= pages.value.length) {
+      currentPage.value = Math.max(0, pages.value.length - 1)
+    }
+    applyReveal()
+    emit('update:page-count', pages.value.length)
+    emit('update:page', currentPage.value)
+  } catch (error) {
+    console.error('[realbook] reference pagination failed', error)
+  }
+}
+
 function rebuildPages(): void {
   const measure = measureRef.value
   if (!measure) return
+  // WebGL 真实书籍：分页交给参考站的 layout.paginate；CSS 回退仍用原来的惰性分页器。
+  if (effectiveRenderer.value && props.variant === 'book') {
+    void rebuildReferencePages()
+    return
+  }
   // 首屏量断行必须等正文分片就位：字体没落下来时量出的是回退字体的页表，
   // 页数和断行都会在分片载入后跳一次——翻页翻到一半页数变了就是这么来的。
   if (!fontsPrimed.value) {
@@ -700,7 +769,13 @@ function syncAnchor(): void {
  */
 function alignPageIndex(index: number): number {
   const created = paginator.value
-  if (!created) return currentPage.value
+  if (!created) {
+    const step = pageStep.value
+    let aligned = step > 1 ? Math.floor(Math.max(0, index) / step) * step : Math.max(0, index)
+    // 双页摊开以右页（偶数下标）为 currentPage；参考站页表也是偶数页在右。
+    if (!phone.value && aligned % 2 === 1) aligned = Math.min(aligned + 1, Math.max(0, pages.value.length - 1))
+    return Math.max(0, Math.min(aligned, Math.max(0, pages.value.length - 1)))
+  }
   const step = pageStep.value
   const aligned = step > 1 ? Math.floor(Math.max(0, index) / step) * step : Math.max(0, index)
   const count = created.ensure(aligned + step)
@@ -710,7 +785,7 @@ function alignPageIndex(index: number): number {
 
 function goToPage(index: number, animate: boolean): void {
   const created = paginator.value
-  if (!created) return
+  if (!created && !pages.value.length) return
   const target = alignPageIndex(index)
   if (target === currentPage.value) {
     syncAnchor()
@@ -718,9 +793,9 @@ function goToPage(index: number, animate: boolean): void {
     emit('update:page', target)
     return
   }
-  if (!animate || reducedMotion() || props.variant === 'sheet') {
+  if (effectiveRenderer.value || !animate || reducedMotion() || props.variant === 'sheet') {
     currentPage.value = target
-    pages.value = created.pages
+    if (created) pages.value = created.pages
     syncAnchor()
     emit('update:page-count', pages.value.length)
     emit('update:page', target)
@@ -732,8 +807,6 @@ function goToPage(index: number, animate: boolean): void {
 
 /** 这一侧还能不能再起一张纸：链尾之后还有页可翻。 */
 function flipTargetFor(direction: 1 | -1): number | null {
-  const created = paginator.value
-  if (!created) return null
   const tail = flips.value[flips.value.length - 1]
   const from = tail ? tail.to : currentPage.value
   const to = alignPageIndex(from + direction * advance.value)
@@ -889,6 +962,13 @@ function stopFlipAnimation(): void {
 }
 
 function nextPage(): void {
+  // WebGL：书体与飞页由参考站 BookModel 自己推进，父层只接收落定后的页。
+  // 不在翻页前赶着排下一页：排页会改 pageCount、重建书体，把正在起的飞页吞掉。
+  // 当前摊开与下一页所需的两页在载入/上一次落定时已经排好。
+  if (effectiveRenderer.value) {
+    webglRef.value?.nextPage()
+    return
+  }
   // WebGL 合上的书：第一次“下一页”只负责把封面打开。
   if (effectiveRenderer.value && !webglOpen.value) {
     webglRef.value?.setOpen(true)
@@ -918,6 +998,10 @@ function nextPage(): void {
 }
 
 function prevPage(): void {
+  if (effectiveRenderer.value) {
+    webglRef.value?.prevPage()
+    return
+  }
   if (!instantFlip() && flips.value.length < maxFlipRuns()) {
     const target = flipTargetFor(-1)
     // 已经在第一页：没有可往回翻的页，什么也不做（不要留在队列里反复触发）。
@@ -938,14 +1022,16 @@ function instantFlip(): boolean {
 
 /** 按锚点跳页：真实书籍与经典模式互转位置的唯一接口。 */
 function goToAnchor(anchor: RealBookAnchor | null): void {
-  const created = paginator.value
-  if (!created || !anchor) return
+  if (!anchor) return
   const inputIndex = inputIndexOf(anchor.paragraph)
   if (inputIndex < 0) return
-  // 先排到目标段所在位置，再查页——页表是惰性排的，没排到的段还不在页表里。
-  created.ensureThroughParagraph(inputIndex)
-  pages.value = created.pages
-  const target = findPageForInput(created.pages, inputIndex, anchor.offset)
+  const created = paginator.value
+  if (created) {
+    // 先排到目标段所在位置，再查页——页表是惰性排的，没排到的段还不在页表里。
+    created.ensureThroughParagraph(inputIndex)
+    pages.value = created.pages
+  }
+  const target = findPageForInput(pages.value, inputIndex, anchor.offset)
   goToPage(target, false)
 }
 
@@ -964,9 +1050,10 @@ function applyReveal(): void {
   const inputIndex = inputIndexOf(note.paragraph)
   if (inputIndex < 0) return
   const created = paginator.value
-  if (!created) return
-  created.ensureThroughParagraph(inputIndex)
-  pages.value = created.pages
+  if (created) {
+    created.ensureThroughParagraph(inputIndex)
+    pages.value = created.pages
+  }
   const notePage = pages.value.findIndex((page) =>
     page.items.some((item) => item.kind === 'note' && item.noteId === note.id),
   )
@@ -1036,6 +1123,11 @@ function onWebglPageTurn(direction: 1 | -1): void {
  * 就突然跳章，选区也跟着没了。这里拿不到下一页就什么也不做，书台那边 720ms 后自己收尾。
  */
 function onWebglCrossTurn(direction: 1 | -1): void {
+  if (effectiveRenderer.value) {
+    if (direction === 1) webglRef.value?.nextPage()
+    else webglRef.value?.prevPage()
+    return
+  }
   if (flips.value.length >= maxFlipRuns()) return
   const target = flipTargetFor(direction)
   if (target === null) return
@@ -1177,9 +1269,9 @@ function onWebglOpen(value: boolean): void {
 
 function toggleOpen(): void {
   if (!effectiveRenderer.value) return
-  webglOpen.value = !webglOpen.value
-  webglRef.value?.setOpen(webglOpen.value)
-  emit('update:open', webglOpen.value)
+  // 开合动画由 BookModel 的 psi 弹簧跑完后再回报；父层不提前翻转 open，
+  // 否则 Watch 会把动画目标改成同一帧的 seek，开合看起来是瞬移。
+  webglRef.value?.toggleOpen()
 }
 
 /** 一页里要渲染的文字片段。 */
@@ -1229,6 +1321,17 @@ function piecesOf(page: RealBookPage | undefined): PagePiece[] {
   if (!page) return []
   const out: PagePiece[] = []
   for (const item of page.items) {
+    if (item.kind === 'image') {
+      items.push({
+        kind: 'image',
+        file: item.file,
+        width: item.width,
+        height: item.height,
+        caption: item.caption,
+        displayHeight: item.displayHeight,
+      })
+      continue
+    }
     if (item.kind === 'note') {
       const block = blockOfNote(item.noteId, `note-${item.noteId}-${item.paragraph}`)
       if (block) out.push(block)
@@ -1350,9 +1453,24 @@ const flipBackHeader = computed(() => (flipBackIndex.value % 2 === 1 ? leftHeade
  */
 function texturePageOf(index: number, header = props.chapterTitle): RealBookTexturePage | null {
   const page = pages.value[index]
-  if (!page || !page.items.length) return null
+  if (!page) return null
+  if (page.special) {
+    return { pageNumber: index + 1, chapterTitle: '', header: '', special: page.special, label: '', items: [] }
+  }
+  if (!page.items.length) return null
   const items: Array<RealBookTexturePage['items'][number]> = []
   for (const item of page.items) {
+    if (item.kind === 'image') {
+      items.push({
+        kind: 'image',
+        file: item.file,
+        width: item.width,
+        height: item.height,
+        caption: item.caption,
+        displayHeight: item.displayHeight,
+      })
+      continue
+    }
     if (item.kind === 'note') {
       const note = props.notes.find((candidate) => candidate.id === item.noteId)
       if (note) items.push({ kind: 'note', note, height: item.height })
@@ -1393,6 +1511,7 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
     pageNumber: index + 1,
     chapterTitle: props.chapterTitle,
     header,
+    label: page.label,
     items,
   }
 }
@@ -1410,20 +1529,34 @@ const webglRightPage = computed(() => (phone.value
  * 每张纸自带正反面该印哪一页：正面是起手朝上的那一页，背面是落定后朝上的那一页。
  * 单页模式下没有"对面"，正面就是当前页、背面就是落点页。
  */
-const webglFlips = computed<RealBookSceneFlip[]>(() => flips.value.map((run) => ({
-  id: run.id,
-  direction: run.direction,
-  progress: run.progress,
-  follow: run.follow,
-  cancel: run.cancel,
-  u: run.u,
-  v: run.v,
-  grabV: run.grabV,
-  pointerV: run.pointerV,
-  // 用起纸时的快照，不每帧回查页表：页表在翻页途中重排不会让飞页变白纸。
-  front: run.front,
-  back: run.back,
-})))
+/** WebGL 的整本页纹理源：BookModel 按页号取，不再只喂当前左右两页。 */
+const webglPageAt = computed(() => (index: number) => texturePageOf(
+  index,
+  phone.value || index % 2 === 0 ? rightHeader.value : leftHeader.value,
+))
+/** 当前摊开的叶序号：双页模式 currentPage 是右页，除以 2 就是左侧页数。 */
+const webglTurned = computed(() => (phone.value ? currentPage.value : Math.floor(currentPage.value / 2)))
+
+/** BookModel 落定：父层才换页、换标签与锚点。 */
+function onWebglSpreadChanged(turned: number): void {
+  const target = phone.value ? turned : turned * 2
+  const count = pages.value.length
+  const next = Math.max(0, Math.min(target, count))
+  if (next === currentPage.value) return
+  currentPage.value = next
+  syncAnchor()
+  // 落定后再把下一页排出来；此时书体已经停稳，重建不会吞掉动画。
+  const created = paginator.value
+  if (created) {
+    const ensured = created.ensure(next + advance.value)
+    pages.value = created.pages
+    emit('update:page-count', ensured)
+  } else {
+    emit('update:page-count', count)
+  }
+  emit('update:page', next)
+}
+
 /**
  * 卷页竖带：角度与位置由 `flipPoses` 算（折线积分），这里只铺成 style。
  * 每条带各渲染一份整页内容、按 −i×带宽 错开，相当于把同一页切成一条条窗格。
@@ -1565,7 +1698,13 @@ const flipCast = computed(() => {
     : { right: land, left: lift, rightWidth: landWidth, leftWidth: liftWidth }
 })
 const pageCount = computed(() => pages.value.length)
-const currentLabel = computed(() => `第 ${Math.min(currentPage.value + 1, pageCount.value || 1)} / ${Math.max(1, pageCount.value)} 页`)
+/** 参考站 layout 的正文页数（标题/空白页不计入页码）。 */
+const contentPageCount = computed(() => pages.value.filter((page) => !page.special).length)
+const currentLabel = computed(() => {
+  const page = pages.value[currentPage.value]
+  if (page?.label && contentPageCount.value > 0) return `第 ${page.label} / ${contentPageCount.value} 页`
+  return `第 ${Math.min(currentPage.value + 1, pageCount.value || 1)} / ${Math.max(1, pageCount.value)} 页`
+})
 /** 页码跟着「这一侧此刻显示哪一页」走：抬起的那一侧已经换成新页，号也得跟着换。 */
 const leftPageNumber = computed(() => (leftViewPieces.value.length ? leftViewIndex.value + 1 : 0))
 const rightPageNumber = computed(() => (rightViewPieces.value.length ? rightViewIndex.value + 1 : 0))
@@ -1581,11 +1720,11 @@ const sheetPieces = computed<PagePiece[][]>(() => {
  * 排出来的页会被紧接着的翻页直接复用，不额外排版。
  */
 const hasNextPage = computed(() => {
-  const created = paginator.value
-  if (!created) return false
   // 空中有纸时，「下一页」是从最后那张纸的落点往后数。
   const tail = flips.value[flips.value.length - 1]
   const target = (tail ? tail.to : currentPage.value) + advance.value
+  const created = paginator.value
+  if (!created) return target < pages.value.length
   return created.ensure(target) > target
 })
 const sheetPageCount = computed(() => Math.max(1, Math.ceil(pages.value.length / pageStep.value)))
@@ -2025,7 +2164,6 @@ defineExpose({
         ref="webglRef"
         :left-page="webglLeftPage"
         :right-page="webglRightPage"
-        :flips="webglFlips"
         :font-size="layoutFontSize"
         :line-height="lineHeight"
         :font-family="fontFamily"
@@ -2048,12 +2186,18 @@ defineExpose({
         :open="webglOpen"
         :total-chars="totalChars"
         :page-count="pageCount"
+        :page-at="webglPageAt"
+        :turned="webglTurned"
         :progress="stackProgress"
         :book-title="bookTitle || chapterTitle"
         :book-author="bookAuthor"
         :book-id="bookId"
         @update:pitch="setPitch"
         @update:open="onWebglOpen"
+        @spread-changed="onWebglSpreadChanged"
+        @clear-selection="emit('clear-selection')"
+        @next-chapter="emit('next-chapter')"
+        @prev-chapter="emit('prev-chapter')"
         @page-turn="onWebglPageTurn"
         @peel-start="onPeelStart"
         @peel-progress="onPeelProgress"

@@ -11,6 +11,7 @@
 
 import type { RealBookLine } from './realBookPager'
 import type { RealBookNote } from './realBookNotes'
+import { drawPlanInk } from './referenceBook/drawPlanInk'
 
 /** 目标参考书页的逻辑尺寸；Three.js 书页几何按 6.4×9.2 等比映射。 */
 export const PAGE_TEXTURE_WIDTH = 640
@@ -76,6 +77,10 @@ export interface RealBookTexturePage {
   chapterTitle: string
   /** 页眉文字；缺省用章节名。参考站左页印书名、右页印章节名。 */
   header?: string
+  /** 参考站 layout 的标题页/空白页。 */
+  special?: 'title' | 'blank'
+  /** 参考站页码标签；缺省用 pageNumber。 */
+  label?: string
   items: readonly RealBookTextureItem[]
 }
 
@@ -104,6 +109,9 @@ export interface RealBookTextureStyle {
   footHeight?: number
   /** 已解码的章内图片：按文件名取；缺图时画占位框。 */
   images?: ReadonlyMap<string, CanvasImageSource>
+  /** 标题页需要的书名与作者。 */
+  bookTitle?: string
+  bookAuthor?: string
   /** 图片加载轮次：新图落下来后加一，纹理缓存据此重画。 */
   imageEpoch?: number
   /**
@@ -111,6 +119,11 @@ export interface RealBookTextureStyle {
    * 飞页仍需要纹理里的字，所以这个开关只给静态页用。
    */
   omitBodyText?: boolean
+  /**
+   * 墨迹与标记交给参考站的 `pageRender` 画（默认开）；关掉时用本文件里旧版
+   * 的矩形色块/描边字。分页/断行仍由 spbf 的分页器给出。
+   */
+  referencePageRender?: boolean
 }
 
 export interface PageTextureLine {
@@ -143,6 +156,7 @@ export interface PageTexturePlan {
   width: number
   height: number
   marginX: number
+  special?: 'title' | 'blank'
   marginTop: number
   marginBottom: number
   headHeight: number
@@ -234,7 +248,8 @@ export function buildPageTexturePlan(
   const lineHeight = Math.max(1, style.lineHeight)
   const paragraphGap = Math.max(0, style.paragraphGap)
   const contentWidth = Math.max(80, width - marginInner - marginOuter)
-  const contentBottom = height - marginBottom - footHeight
+  // 参考站把页码画在下边距里，正文一直排到 pageH - marginBottom；旧绘制器仍给页脚留高。
+  const contentBottom = height - marginBottom - (style.referencePageRender === false ? footHeight : 0)
   const lines: PageTextureLine[] = []
   const notes: PageTextureNoteBox[] = []
   const images: PageTextureImageBox[] = []
@@ -306,6 +321,7 @@ export function buildPageTexturePlan(
     width,
     height,
     marginX,
+    special: page.special,
     marginTop,
     marginBottom,
     headHeight,
@@ -315,7 +331,7 @@ export function buildPageTexturePlan(
     header: page.header ?? page.chapterTitle,
     headerFontSize,
     headerBaseline: marginTop - 10,
-    footer: page.pageNumber > 0 ? String(page.pageNumber) : '',
+    footer: page.special ? '' : (page.label ?? (page.pageNumber > 0 ? String(page.pageNumber) : '')),
     footerFontSize,
     footerBaseline: height - marginBottom + chromeFontSize * 0.8,
     lines,
@@ -427,6 +443,7 @@ export function drawPageTexture(
   const family = style.fontFamily || 'serif'
   const ink = style.ink || '#241c15'
   const muted = style.muted || 'rgba(36,28,21,0.52)'
+  const useReference = style.referencePageRender !== false
 
   ctx.fillStyle = style.paper || '#f4ecd8'
   ctx.fillRect(0, 0, plan.width, plan.height)
@@ -449,7 +466,7 @@ export function drawPageTexture(
 
   // 页眉页脚：参考站是正体小字，不用斜体；两侧由页面自己决定印书名还是章节名。
   // 走 DOM 的页面（静态页、顶层飞页）不再画进纹理，否则纹理里会留下一层糊字。
-  if (!style.omitBodyText) {
+  if (!useReference && !style.omitBodyText) {
     ctx.fillStyle = muted
     ctx.textAlign = 'center'
     ctx.textBaseline = 'alphabetic'
@@ -467,7 +484,7 @@ export function drawPageTexture(
   for (const line of plan.lines) {
     ctx.font = `440 ${fontSize}px ${family}`
     const baseline = line.y + line.height * 0.76
-    if (!style.omitBodyText) {
+    if (!useReference && !style.omitBodyText) {
       for (const mark of line.marks) {
         const before = ctx.measureText(line.text.slice(0, mark.start)).width
         const width = ctx.measureText(line.text.slice(mark.start, mark.end)).width
@@ -499,6 +516,30 @@ export function drawPageTexture(
     }
   }
 
+  // 参考站 pageRender：白底墨迹整体 multiply 到纸色上；图片也由它画。
+  if (useReference && !style.omitBodyText) {
+    const inkLayer = drawPlanInk(plan, style, scale)
+    if (inkLayer) {
+      ctx.save()
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.globalCompositeOperation = 'multiply'
+      ctx.drawImage(inkLayer as CanvasImageSource, 0, 0)
+      ctx.restore()
+    }
+    // 「注」点跟着行的位置，参考站不带这个标记，仍由这里补。
+    for (const line of plan.lines) {
+      ctx.font = `440 ${fontSize}px ${family}`
+      const baseline = line.y + line.height * 0.76
+      for (const offset of line.noteMarks) {
+        const before = ctx.measureText(line.text.slice(0, offset)).width
+        ctx.fillStyle = 'rgba(186,112,57,0.9)'
+        ctx.beginPath()
+        ctx.arc(line.x + before + Math.max(2, fontSize * 0.34), baseline - fontSize * 0.28, Math.max(3, fontSize * 0.18), 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+  }
+
   // 页内图片与批注卡：走 DOM 的页面（静态页、顶层飞页）交给文本层，
   // 纹理里只留纸面；仍用纹理带字的飞页照旧画在这里。
   if (!style.omitBodyText) {
@@ -514,16 +555,18 @@ export function drawPageTexture(
         || Number((source as { height?: number }).height ?? 0)
     }
     if (source && sourceWidth > 0 && sourceHeight > 0) {
-      const scale = Math.min(box.width / sourceWidth, box.height / sourceHeight)
-      const drawWidth = sourceWidth * scale
-      const drawHeight = sourceHeight * scale
-      ctx.drawImage(
-        source,
-        box.x + (box.width - drawWidth) / 2,
-        box.y + (box.height - drawHeight) / 2,
-        drawWidth,
-        drawHeight,
-      )
+      if (!useReference) {
+        const imageScale = Math.min(box.width / sourceWidth, box.height / sourceHeight)
+        const drawWidth = sourceWidth * imageScale
+        const drawHeight = sourceHeight * imageScale
+        ctx.drawImage(
+          source,
+          box.x + (box.width - drawWidth) / 2,
+          box.y + (box.height - drawHeight) / 2,
+          drawWidth,
+          drawHeight,
+        )
+      }
     } else {
       ctx.fillStyle = 'rgba(83, 67, 42, 0.06)'
       ctx.fillRect(box.x, box.y, box.width, box.height)
@@ -607,7 +650,10 @@ export function textureStyleSignature(page: RealBookTexturePage, style: RealBook
       return ['note', item.note.id, item.note.text, item.note.tags ?? [], item.height]
     }),
     imageEpoch: style.imageEpoch ?? 0,
+    bookTitle: style.bookTitle,
+    bookAuthor: style.bookAuthor,
     omitBodyText: style.omitBodyText === true,
+    referencePageRender: style.referencePageRender !== false,
     fontSize: style.fontSize,
     lineHeight: style.lineHeight,
     fontFamily: style.fontFamily,

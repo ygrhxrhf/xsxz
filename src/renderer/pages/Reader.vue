@@ -3577,7 +3577,9 @@ onUnmounted(() => {
             @edit-note="openInlineNoteEditor"
             @select-range="onRealBookSelectRange"
             @select="onRealBookMouseup"
+            @clear-selection="closeSelectionTools"
             @next-chapter="nextChapter"
+            @prev-chapter="prevChapter"
             @back="emit('back')"
           />
         </div>

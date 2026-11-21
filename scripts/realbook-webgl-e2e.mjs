@@ -1,8 +1,8 @@
 // 真实书籍 WebGL 渲染层的真机回归。
 //
-// 为什么必须有这条：真实书籍默认走 WebGL（Three.js 书体、布料飞页、纸质 shader），
-// CSS 3D 回退只覆盖 DOM 文本那套几何。WebGL 这条路径的画布、命中区、飞页正文、
-// 合上/打开、窄屏卷页都只能在真实 Electron 窗口里验，单测和 jsdom 都碰不到。
+// 为什么必须有这条：真实书籍默认走 WebGL（参考站 BookModel 的整本书、LeafSim 飞页、
+// 页面纹理正文），CSS 3D 回退只覆盖 DOM 文本那套几何。WebGL 这条路径的画布、命中区、
+// 书体状态、合上/打开、窄屏单页都只能在真实 Electron 窗口里验，单测和 jsdom 都碰不到。
 //
 // 用法：先 `npm run build`，再 `node scripts/realbook-webgl-e2e.mjs`。
 // 会在桌面上开一个应用窗口（约一分钟），结束后自动关闭。脚本不读写任何密钥。
@@ -160,6 +160,18 @@ try {
     await click(`document.querySelector('.book-open-area')`)
     await waitFor(`document.querySelector('.real-book-webgl-stage')`, 25000)
     await sleep(1600)
+    // 参考站的第一屏是标题页（没有正文/选字）。先确认它确实出现了，再翻到正文第一页，
+    // 后面的选字、翻页、拖页都在正文上做。
+    const first = await ev(`return {
+      label: document.querySelector('.real-book-page-label')?.textContent || '',
+      paras: document.querySelectorAll('.real-book-text-para[data-p]').length,
+    };`)
+    if (first.paras === 0) {
+      check('首屏是参考站的标题页', /第\s*1\s*\//.test(first.label), JSON.stringify(first))
+      await click(`document.querySelector('.reader-bottombar [aria-label="下一页"]')`)
+      await waitFor(`document.querySelectorAll('.real-book-text-para[data-p]').length > 0`, 12000)
+      await sleep(400)
+    }
   }
   // 底栏默认收在底边横条后面，先展开再点里面的按钮。
   const expandDock = async () => {
@@ -281,10 +293,11 @@ try {
   let peel = await beginPeel(1)
   let endX = await peelTo(peel, 70)
   await sleep(250)
-  const held = await flipTextInfo()
-  check('拖页半程时飞页正文可见并贴面', held.visible > 0 && held.transformed > 0, JSON.stringify(held))
-  check('正向拖页露出的是纸的正面', (held.faces.front || 0) > 0, JSON.stringify(held.faces))
-  check('拖页时纸的正反面都建有正文', (held.allFaces.front || 0) > 0 && (held.allFaces.back || 0) > 0, JSON.stringify(held.allFaces))
+  // 参考站的飞行页正文在页面纹理里（BookModel 用 LeafMesh 双面贴图），
+  // DOM 只做透明选字层；所以这里查书体状态与页码，不再查 .real-book-flip-line。
+  const heldBook = await ev(`return window.__rbBookProbe?.() ?? null;`)
+  check('拖页半程时书体处于翻页状态', heldBook?.busy === true, JSON.stringify(heldBook))
+  check('拖页半程页码不提前提交', pageNumberOf(await labelNow()) === pageNumberOf(peelBaseline), JSON.stringify({ peelBaseline, now: await labelNow() }))
   await shot('webgl-drag-hold.png')
   await releasePeel(endX, peel.y)
   await sleep(900)
@@ -301,8 +314,8 @@ try {
   peel = await beginPeel(-1)
   endX = await peelTo(peel, 80)
   await sleep(200)
-  const backHeld = await flipTextInfo()
-  check('往回拖页时飞页正文跟着纸走', backHeld.visible > 0 && backHeld.transformed > 0, JSON.stringify(backHeld))
+  const backHeld = await ev(`return window.__rbBookProbe?.() ?? null;`)
+  check('往回拖页时书体处于翻页状态', backHeld?.busy === true, JSON.stringify(backHeld))
   endX = await peelTo(peel, 300)
   await releasePeel(endX, peel.y)
   await sleep(1200)

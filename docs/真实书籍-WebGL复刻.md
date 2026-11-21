@@ -9,13 +9,39 @@
 
 选择存本机 `localStorage`，不写入 `ReaderPrefs`，不跨设备同步（默认走 WebGL 时不会主动写这个键，只有用户显式选过才写）。支持 WebGL 的机器默认进入 WebGL 3D；用户显式选过 CSS 3D 或环境不支持 WebGL 时才回退。
 
+## 参考站整本复刻（2026-11-21）
+
+书体、静态页、书垛、封面、布面书壳、开合弹簧、飞页、落定与页间软影全部改为参考站
+Infinite Reader 的 `BookModel`（`realBookBookModel.ts`，源自 `web/src/engine/book.ts`）
+与 `StackBlock` / `makeCover` / `createDesk` 的逐段移植；相机取景、桌面 shader、灯光、
+指针到书页坐标的换算取自参考站的 `scene.ts`。
+
+页面正文、页眉页脚、批注卡、图片与划线都画进页面纹理；其中正文墨迹、页眉页脚、
+图片、划线与搜索标记由参考站的 `referenceBook/pageRender.ts` 直接绘制（把
+`PageTexturePlan` 映射成参考站的 `Page`/`Line`/`Word` 再调用 `renderPage`），
+纸面、批注卡、图注和「注」点仍由 spbf 补画。DOM 文本层现在只保留**透明**的原生
+选字与批注命中，样式是 `color: transparent`。翻页时由 `BookModel` 自己收掉文字层。
+
+> WebGL 真实书籍的分页已交给参考站 `referenceBook/layout.paginate`：断行、页数、
+> 标题页/空白页、段首缩进、CJK 行高（`fs × lineHeight × 1.16`）、图片占位与笔记
+> 在文中的排位都按参考站；分页结果再映射回 spbf 的 `RealBookPage`（段落下标 + 段内
+> 偏移），锚点、批注、AI 证据继续用原坐标。CSS 3D 回退仍用原来的惰性分页器。
+> 衔接层见 `referencePagination.ts`。
+
+翻页、拖页、松手、取消与多飞页并发都交给 `BookModel` 的 `turn` / `beginDrag` /
+`moveDrag` / `endDrag` / `update`；spbf 只负责把分页结果做成任意页的纹理，并在落定时
+把新的叶序号回报给 Reader。旧的 `realBookCloth`、`realBookLeafMotion`、平面页 +
+方块书垛实现已删除。
+
+> 下面「已实现」里保留的是上一版（平面页 + DOM 正文）的历史说明；与本节冲突的以本节为准。
+
 ## 已实现
 
-- 书页渲染层换成 **LeafMesh + 纸质 shader**（源自 Infinite Reader，Apache-2.0）：双面网格按 `gl_FrontFacing` 选正/背页纹理，纸背按 U 反采样；加入透字（飞页 16%，静态页关闭）、背光透射（翻到侧对镜头时发暖）、曲率暗化、纸纤维、边缘压暗。飞页与静态页共用同一材质（静态页的中缝已画进纹理，`uGutter` 置 0），落页前后不会换一种亮度；静态页的曲率写进 `aCurv`，预掀/落回时重算。飞页的运动直接由参考站的 `LeafSim` PBD 网格驱动（`realBookLeafMotion.ts`），没有另做一层解析弧面或布料滤波器。
+- 书页渲染层换成 **LeafMesh + 纸质 shader**（源自 Infinite Reader，Apache-2.0）：双面网格按 `gl_FrontFacing` 选正/背页纹理，纸背按 U 反采样；加入透字（飞页 16%，静态页关闭）、背光透射（翻到侧对镜头时发暖）、曲率暗化、纸纤维、边缘压暗。飞页与静态页共用同一材质（静态页的中缝已画进纹理，`uGutter` 置 0），落页前后不会换一种亮度；静态页的曲率写进 `aCurv`，预掀/落回时重算。书体、书垛、封面、静态页与飞页全部由参考站的 `BookModel`（`realBookBookModel.ts`）驱动；`LeafSim` 的 PBD 网格直接解算纸的卷曲，没有另做一层解析弧面或布料滤波器。
 - 固定 `640×920` 逻辑页、2× 分辨率页面纹理；分页器现在把每页的真实断行一起交给纹理层。
 - 双页摊开、布面书壳（圆背 + 柔性接缝 + 头/尾布条）、硬壳封面、封内衬纸、左右纸垛厚度、桌面材质和基础灯光/阴影。
 - 垂直堆叠：桌面 → 后书板 → 书垛 → 书页。书垛从后书板顶面往上长，书页随书厚升高；合上时前封面绕书脊落到书垛顶，打开时前封面落回桌面一侧。
-- 自动翻页：飞行页正反面纹理，WebGL 0.4s 行程（`WEBGL_FLIP_DURATION_MS`，对齐参考站的 quick 翻页）。**运动就是参考站的 `LeafSim` 解算器**（`realBookLeafMotion.ts`，移植自 `BookModel.stepFlyers`）：40 节点（书脊 → 纸角）× 8 行（沿书脊）的 PBD 网格，每行是一根不可伸长、有挺度的杆；纸被 `curlAngles` 的对称弧面塑形（纸角先走、书脊侧晚一拍、行与行之间按 `ROW_LAG` 滞后、纸被捏住的行优先），空气阻力作用在纸面法向，纸面的 `flex` 是一个独立弹簧（甩得越快弓得越多，停手回振一次）。quick 翻页走参考站的三次曲线；拖页时弦角由 `curlReach` 反解手指位置再与线性映射各取一半；松手后是参考站的 k=22 自然弹簧（越近落点阻尼越大）；最后 60%–90% 行程把纸混到目标页堆（`blendQuickLanding`）。物理按 1/240 固定子步积分，单帧最多 12 步。**页间自阴影**：飞页沿页高发布五条截面（各 20 个采样点）到共享浮点纹理（`shadowRig`），接收纸面在纸质 shader 里沿灯光射线与截面求交，得到跟着纸形走的软影与半影；最立起来的两张纸同时发布，透明度随落定混合衰减。静态页永远是接收面，飞行纸也能接收上面那张的投影。
+- 自动翻页：飞行页正反面纹理，WebGL 0.4s 行程（`WEBGL_FLIP_DURATION_MS`，对齐参考站的 quick 翻页）。**运动就是参考站 `BookModel` 里的 `LeafSim` 解算器**：40 节点（书脊 → 纸角）× 8 行（沿书脊）的 PBD 网格，每行是一根不可伸长、有挺度的杆；纸被 `curlAngles` 的对称弧面塑形（纸角先走、书脊侧晚一拍、行与行之间按 `ROW_LAG` 滞后、纸被捏住的行优先），空气阻力作用在纸面法向，纸面的 `flex` 是一个独立弹簧（甩得越快弓得越多，停手回振一次）。quick 翻页走参考站的三次曲线；拖页时弦角由 `curlReach` 反解手指位置再与线性映射各取一半；松手后是参考站的 k=22 自然弹簧（越近落点阻尼越大）；最后 60%–90% 行程把纸混到目标页堆（`blendQuickLanding`）。物理按 1/240 固定子步积分，单帧最多 12 步。**页间自阴影**：飞页沿页高发布五条截面（各 20 个采样点）到共享浮点纹理（`shadowRig`），接收纸面在纸质 shader 里沿灯光射线与截面求交，得到跟着纸形走的软影与半影；最立起来的两张纸同时发布，透明度随落定混合衰减。静态页永远是接收面，飞行纸也能接收上面那张的投影。
 - 纸背贴图按 U 取反（对应 CSS 3D 回退里的 `scaleX(-1)`）：纸转过 90° 后几何的 u 轴在屏幕上是反的，不预翻一次纸上的字就是左右颠倒的。
 - 往回翻是同一段弧面的**倒放**而不是把 x 取反：倒放让纸起手贴在左页、落回右页，贴图不会被镜像；取反 x 会让落定那一帧的字是反的。弧面永远从「右页平躺、正面朝上」量到「左页平躺、纸背朝上」，所以正面网格一定印右页、纸背网格一定印左页；往回翻时两页互换（`flyerFacePages`），否则起手会在左页闪出上一张右页的内容、落定后右页又跳回它。
 - 合上/打开书籍；底栏按钮状态通过 `update:open` 回传 Reader。合上时相机俯仰自动收到 28%，封面接近正对；打开过程里俯仰连续回到用户设定的视角，不会切一刀。
@@ -46,7 +72,7 @@
 
 - **「拖页是白纸」已结案：是自动化夹具的假象，不是产品缺陷（2026-11-20 复核）**。上一轮用 CDP 脚本逐帧读 DOM 时，`.real-book-flip-line` 一个都不建、飞页看起来是白纸；根因是脚本只调了 `Page.bringToFront`，没有 `Emulation.setFocusEmulationEnabled`——真实窗口在后台时 Chromium 会停 rAF，`hitLoop` 里建飞页正文的那一步永远不跑。开了焦点模拟后，同样的拖页每一步都有 100+ 段正文、`matrix3d` 贴面、正反面齐全。`e2e:realbook-webgl` 现在固定开焦点模拟，并把「拖页贴面 / 正面露字 / 正反面都建 / 弹回不翻页 / 落定翻页 / 往回拖」列为断言（31 项）。
 - 顺手加的两道保险（同轮）：① 起纸那一刻把正反面页快照冻结进 `FlipRun`（`flyerPageIndexes` 决定取哪两页），翻页途中页表重排（字体分片晚到、窗口缩放、划线批注变化）即使让下标越界，飞页也不会拿到 `null` 变成白纸；② `props.flips` 一变就立刻同步飞页正文层，不等下一帧 rAF——渲染暂停时 DOM 至少已经建好，恢复帧后第一帧就能贴面。
-- 飞页已是参考站的 40×8 PBD 网格 + 惯性（`realBookLeafMotion.ts`）；软影每张纸沿页高发布五条截面（页脚、下四分之一、页心、上四分之一、页眉），每条 20 个采样点，shader 按纸的页高分档插值，越接近页边越能读出上下角同时翘起的纸形；多张纸叠得很近时影子边界仍可能有误差。
+- 飞页已是参考站 `BookModel` 的 40×8 PBD 网格 + 惯性；软影每张纸沿页高发布五条截面（页脚、下四分之一、页心、上四分之一、页眉），每条 20 个采样点，shader 按纸的页高分档插值，越接近页边越能读出上下角同时翘起的纸形；多张纸叠得很近时影子边界仍可能有误差。
 - 下载章节的配图按原位落版：抽取前把合格 `<img>` 换成文本标记，正文抽出来天然带着图片位置，下载器再按标记原位换成 `[图]` 段落；续页里的标记也会一起合并。没有标记的路径（章节接口解锁、OCR）退回把图追加到章末。跨域图片被 CORS 拦下时跳过。
 - EPUB 导出会把 `[图]` 段落写成 `<figure><img/><figcaption/>`，图片按需塞进 `OEBPS/images/` 并登记 manifest；同一张图跨章只放一份，缺图时退化成「［图片缺失：…］」。TXT 导出没有承载位置，图片退化成「［图片：图注］」一行。
 - 多张飞页并发时，只有最上面那张走 DOM 正文；其余各张仍用带字纹理（放大看略软）。DOM 永远画在 canvas 之上，下层的字会盖到上层的纸面上，只能这样取舍。
@@ -59,7 +85,7 @@
 ## 技术边界
 
 - 新增 `RealBookWebGLStage.vue` 作为 `RealBookStage.vue` 的渲染子层，分页、锚点、进度和批注数据仍由父组件提供。
-- 新增 `realBookTexture.ts` 负责页面纹理计划与 Canvas 绘制（计划里同时给出页眉页脚的字号与 alphabetic 基线，DOM 文本层按同一组数值贴字）；`realBookWebGLModel.ts` 负责可测试的相机/厚度/色板数值；`realBookWebGLScene.ts` 是 Three.js 场景；`realBookLeafMotion.ts` 是飞页参考站运动（quick 三次曲线、拖动弦角、自然弹簧、flex、落定混合；纯函数 + 固定子步，可单测）；`realBookFlyerText.ts` 负责飞页正文的切段、正反面页心分配与贴面矩阵（纯函数，可单测）；`realBookBlocks.ts` 负责页内注卡/图片的 DOM 排版（与纹理同一套字号、缩进、行距、断行；纯函数，可单测）；`realBookTextLayer.ts` 负责页角单应、划线底色与「注」点的几何（纯函数，可单测）；`realBookFlipShadow.ts` 保留为未接入的网格阴影实现（纯函数 + 单测），当前软影改由 `realBookPaperMaterial.ts` 的 `shadowRig` 生成。
+- 新增 `realBookTexture.ts` 负责页面纹理计划与 Canvas 绘制（计划里同时给出页眉页脚的字号与 alphabetic 基线，DOM 文本层按同一组数值贴字）；`realBookWebGLModel.ts` 负责可测试的相机/厚度/色板数值；`realBookWebGLScene.ts` 是参考站 scene.ts 的阅读层（相机/桌面/灯光/指针换算）加 spbf 的页面纹理源；`realBookBookModel.ts` 是参考站 book.ts 的书体/书垛/开合/飞页，`realBookStack.ts`、`realBookCover.ts`、`realBookDesk.ts` 分别是书垛、封面与桌面 shader；`realBookFlyerText.ts` 负责飞页正文的切段、正反面页心分配与贴面矩阵（纯函数，可单测）；`realBookBlocks.ts` 负责页内注卡/图片的 DOM 排版（与纹理同一套字号、缩进、行距、断行；纯函数，可单测）；`realBookTextLayer.ts` 负责页角单应、划线底色与「注」点的几何（纯函数，可单测）；`realBookFlipShadow.ts` 保留为未接入的网格阴影实现（纯函数 + 单测），当前软影改由 `realBookPaperMaterial.ts` 的 `shadowRig` 生成。
 - 正文 DOM 图层的逻辑页尺寸跟随分页器：桌面 640×920，窄屏单页用视口重排后的 `pageWidth/pageHeight`。此前固定 640×920，手机会把超出 640 的行画到纸外。
 - 新增 JS 依赖 `three@0.187.0`，无 native 模块。
 - 新增 `realBookLeafSim.ts` / `realBookLeafMesh.ts` / `realBookPaperMaterial.ts` / `realBookGutterFold.ts` / `realBookPhoneCurl.ts` / `realBookCaseBinding.ts`，源自 Infinite Reader 的 `web/src/engine/`（Apache-2.0）；许可与署名见 `third_party/infinite-reader/` 与 `THIRD-PARTY-NOTICES.md`。纸质 shader 的解析软影（`shadowRig`）已接入：飞页发布截面，静态页与飞行纸接收。书板改用 `RoundedBoxGeometry`（three addons，无 native 模块）；窄屏单页的卷页几何已接入 `phoneCurl`。
@@ -78,4 +104,4 @@ npm run e2e:download-images  # 本地站点：同源 + 跨域（CORS）配图 �
 
 WebGL 模式的真机回归已收进仓库：`npm run e2e:realbook-webgl`（先 `npm run build`）——画布挂载、命中区投影、DOM 文本层、选字工具条、正/反向翻页、拖页半程贴面与弹回/落定、合上/打开、背景外观面板、沉浸式顶栏与「更多」菜单、窄屏单页，共 31 项，逐项 PASS/FAIL 并要求全程无渲染进程异常（脚本已开 `Emulation.setFocusEmulationEnabled`，后台窗口不会再让飞页正文层停建）。更早的探索性截图脚本仍在 `.multi-agent/archive/probes/`（未入库），用于看帧与比对观感：`realbook-webgl-check.mjs` 确认 canvas 挂载、书体命中区、翻页页码推进、合上/打开按钮和外观/视角面板。
 
-飞页正文的贴面用 `.multi-agent/archive/probes/capture-flyer-text.mjs` 复核：正向/反向各拖住半程，读 `.real-book-flip-line` 的数量、朝向（正/背面）与首段文字，并在 2× 裁图里核对正文与页眉页脚是否贴着卷曲的纸面；同时确认落定后飞页 DOM 清空、没有残字。页内注卡与图片用 `.multi-agent/archive/probes/capture-blocks.mjs` 复核：静态页出现注卡（点开批注浮层）、图片/图注以及划线底色与「注」点（读 `.real-book-mark` / `.real-book-note-dot` 的颜色与矩形），拖住飞页时它们跟着纸面走。页间自阴影用 `.multi-agent/archive/probes/capture-drag-hold.mjs` 复核：拖住飞页半程时，接收页出现随纸形走的暗带；临时把 `uShCfg.x` 从 0.28 调到 2.0 可把投影范围放大确认（已还原）。书壳/书脊用 `.multi-agent/archive/probes/capture-close.mjs` 复核合上动画落定（`close-3900.png`）：封面落在书垛顶，圆背书脊在左侧。窄屏卷页用 `.multi-agent/archive/probes/capture-phone-drag.mjs` 复核：拖住半程时纸从右缘起卷，未卷到的字保持平坦。页面纹理 Worker 用 `.multi-agent/archive/probes/realbook-webgl-check.mjs` 复核：打开/翻页/反向/合上/单页的截图里正文都在（Worker 不可用时自动回退主线程）。双纸同时在飞只有 0.4s 窗口，截图工具抓不稳，没有留下正式对照图。底栏暗色浮层与「适应屏幕」用 `.multi-agent/archive/probes/capture-panel-fit.mjs` 复核（13 项）：读浮层的背景/字色/选项按钮配色，放大两次到 141% 后按 0 与点按钮都回到 100%。沉浸式 chrome、底栏「更多」、暗色目录抽屉与手机 20px 用 `.multi-agent/archive/probes/capture-immersive.mjs` 复核（27 项）：顶栏容器零高度且没有应用入口、更多菜单 10 个入口、朗读浮层贴右上角、抽屉与列表/过滤器取色、手机视口只显示一页且 `--rb-font-size: 20px`。单测：`Reader.realBook.ui.test.ts`（适应屏幕按钮与 0 键）、`Reader.visual.contract.test.ts`（暗色浮层规则）、`realBookLeafMotion.test.ts`（quick 三次曲线、起落位置、反翻、行滞后、拖页跟手与回弹、flex 收敛、确定性）、`realBookPhoneCurl.test.ts`（页心折线水平、上下部起拖倾斜、拖动中折线跟手、倾斜幅度上限、卷到/未卷到的纸面）、`realBookPaperMaterial.test.ts`（软影浮点纹理的槽位 × 截面行数与数据长度）、`realBookFlyerText.test.ts`（切段连续性/宽度上限/单字兜底、矩阵三角映射、正反面分配）、`realBookTexture.test.ts`（页眉页脚的字号/基线）、`realBookBlocks.test.ts`（注卡三行上限/字号/基线、图注居中）、`realBookTextLayer.test.ts`（划线底色几何、「注」点位置/直径）、`realBookFlipShadow.test.ts`（投影/半影/透明度与起落帧归零、覆盖率栅格与采样）、`RealBookWebGLStage.test.ts`（静态页页眉页脚、注卡点击、图片协议、划线/注点的上下层次）。
+飞页正文的贴面用 `.multi-agent/archive/probes/capture-flyer-text.mjs` 复核：正向/反向各拖住半程，读 `.real-book-flip-line` 的数量、朝向（正/背面）与首段文字，并在 2× 裁图里核对正文与页眉页脚是否贴着卷曲的纸面；同时确认落定后飞页 DOM 清空、没有残字。页内注卡与图片用 `.multi-agent/archive/probes/capture-blocks.mjs` 复核：静态页出现注卡（点开批注浮层）、图片/图注以及划线底色与「注」点（读 `.real-book-mark` / `.real-book-note-dot` 的颜色与矩形），拖住飞页时它们跟着纸面走。页间自阴影用 `.multi-agent/archive/probes/capture-drag-hold.mjs` 复核：拖住飞页半程时，接收页出现随纸形走的暗带；临时把 `uShCfg.x` 从 0.28 调到 2.0 可把投影范围放大确认（已还原）。书壳/书脊用 `.multi-agent/archive/probes/capture-close.mjs` 复核合上动画落定（`close-3900.png`）：封面落在书垛顶，圆背书脊在左侧。窄屏卷页用 `.multi-agent/archive/probes/capture-phone-drag.mjs` 复核：拖住半程时纸从右缘起卷，未卷到的字保持平坦。页面纹理 Worker 用 `.multi-agent/archive/probes/realbook-webgl-check.mjs` 复核：打开/翻页/反向/合上/单页的截图里正文都在（Worker 不可用时自动回退主线程）。双纸同时在飞只有 0.4s 窗口，截图工具抓不稳，没有留下正式对照图。底栏暗色浮层与「适应屏幕」用 `.multi-agent/archive/probes/capture-panel-fit.mjs` 复核（13 项）：读浮层的背景/字色/选项按钮配色，放大两次到 141% 后按 0 与点按钮都回到 100%。沉浸式 chrome、底栏「更多」、暗色目录抽屉与手机 20px 用 `.multi-agent/archive/probes/capture-immersive.mjs` 复核（27 项）：顶栏容器零高度且没有应用入口、更多菜单 10 个入口、朗读浮层贴右上角、抽屉与列表/过滤器取色、手机视口只显示一页且 `--rb-font-size: 20px`。单测：`Reader.realBook.ui.test.ts`（适应屏幕按钮与 0 键）、`Reader.visual.contract.test.ts`（暗色浮层规则）、`realBookPhoneCurl.test.ts`（页心折线水平、上下部起拖倾斜、拖动中折线跟手、倾斜幅度上限、卷到/未卷到的纸面）、`realBookPaperMaterial.test.ts`（软影浮点纹理的槽位 × 截面行数与数据长度）、`realBookFlyerText.test.ts`（切段连续性/宽度上限/单字兜底、矩阵三角映射、正反面分配）、`realBookTexture.test.ts`（页眉页脚的字号/基线）、`realBookBlocks.test.ts`（注卡三行上限/字号/基线、图注居中）、`realBookTextLayer.test.ts`（划线底色几何、「注」点位置/直径）、`realBookFlipShadow.test.ts`（投影/半影/透明度与起落帧归零、覆盖率栅格与采样）、`RealBookWebGLStage.test.ts`（静态页页眉页脚、注卡点击、图片协议、划线/注点的上下层次）。

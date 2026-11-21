@@ -272,78 +272,29 @@ describe('RealBookWebGLStage', () => {
     app.unmount()
   })
 
-  it('从外缘拖页：起拖、跟手进度、松手落定三段分别上报', async () => {
-    // jsdom 没有 PointerEvent，但 Vue 的 @pointerdown 只认事件类型名；
-    // 用 MouseEvent 带上类型就能走到真实的手势分支。
-    const dispatch = (el: Element, type: string, clientX: number): void => {
-      const event = new MouseEvent(type, { bubbles: true, clientX, clientY: 100, button: 0 })
-      el.dispatchEvent(event)
-    }
+  it('向父层暴露 nextPage/prevPage（WebGL 翻页由 BookModel 接管）', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
-    const started: number[] = []
-    const progress: number[] = []
-    const ended: boolean[] = []
+    let stageRef: unknown = null
     const app = createApp({
       render: () => h(RealBookWebGLStage, {
+        ref: (value: unknown) => { stageRef = value },
         leftPage: null,
         rightPage: null,
-        flipFrontPage: null,
-        flipBackPage: null,
-        onPeelStart: (direction: number) => started.push(direction),
-        onPeelProgress: (value: number) => progress.push(value),
-        onPeelEnd: (complete: boolean) => ended.push(complete),
+        pageAt: () => null,
+        turned: 0,
       }),
     })
     app.mount(host)
     await nextTick()
-    const root = document.querySelector('.real-book-webgl-stage') as HTMLElement
-    // 起拖阈值内不动：点一下不该把纸掀起来。
-    dispatch(root, 'pointerdown', 500)
-    dispatch(root, 'pointermove', 496)
-    expect(started).toEqual([])
-    // 往左拖过阈值：正向翻页。100px 只是把纸掀起来一点（参考站的手进度是
-    // 弦角相位：满行程约 1.9 个页宽，不是整页宽的四成），还没到落定线。
-    dispatch(root, 'pointermove', 400)
-    expect(started).toEqual([1])
-    expect(progress.at(-1)).toBeGreaterThan(0)
-    expect(progress.at(-1)).toBeLessThan(0.46)
-    // 再拖到半页以外：弦角过 46%，松手落定。
-    dispatch(root, 'pointermove', 150)
-    expect(progress.at(-1)).toBeGreaterThan(0.46)
-    dispatch(root, 'pointerup', 150)
-    expect(ended).toEqual([true])
+    const stage = stageRef as { nextPage?: unknown; prevPage?: unknown; paperEl?: unknown } | null
+    expect(typeof stage?.nextPage).toBe('function')
+    expect(typeof stage?.prevPage).toBe('function')
+    expect(stage?.paperEl).toBeInstanceOf(HTMLElement)
     app.unmount()
   })
 
-  it('拖一点点就松手算取消，不会翻页', async () => {
-    const dispatch = (el: Element, type: string, clientX: number): void => {
-      el.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX, clientY: 100, button: 0 }))
-    }
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const ended: boolean[] = []
-    const app = createApp({
-      render: () => h(RealBookWebGLStage, {
-        leftPage: null,
-        rightPage: null,
-        flipFrontPage: null,
-        flipBackPage: null,
-        onPeelEnd: (complete: boolean) => ended.push(complete),
-      }),
-    })
-    app.mount(host)
-    await nextTick()
-    const root = document.querySelector('.real-book-webgl-stage') as HTMLElement
-    dispatch(root, 'pointerdown', 500)
-    // 只挪过起拖阈值一点点：起拖了，但进度远不到落定线。
-    dispatch(root, 'pointermove', 488)
-    dispatch(root, 'pointerup', 488)
-    expect(ended).toEqual([false])
-    app.unmount()
-  })
-
-  it('开合与俯仰操作分别向上报告，父组件底栏才能切换图标', async () => {
+  it('开合交给 BookModel 落定回报；俯仰立即上报', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const opens: boolean[] = []
@@ -363,10 +314,13 @@ describe('RealBookWebGLStage', () => {
     app.mount(host)
     await nextTick()
     const stage = stageRef as { setOpen: (open: boolean) => void; setPitch: (value: number) => void }
+    // jsdom 没有 WebGL 场景：setOpen 只把目标交给 BookModel，不提前回报；
+    // 真正的 update:open 由 BookModel 的 onSettle 在开合弹簧落定后发出。
+    expect(typeof stage.setOpen).toBe('function')
     stage.setOpen(false)
     stage.setOpen(true)
+    expect(opens).toEqual([])
     stage.setPitch(-10)
-    expect(opens).toEqual([false, true])
     expect(pitches).toEqual([0])
     app.unmount()
   })

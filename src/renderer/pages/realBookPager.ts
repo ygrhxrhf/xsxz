@@ -69,7 +69,24 @@ export interface RealBookNoteItem {
   height: number
 }
 
-export type RealBookPageItem = RealBookTextItem | RealBookNoteItem
+/** 参考站 layout 产出的图片块：沿用同样的页内顺序。 */
+export interface RealBookImageItem {
+  kind: 'image'
+  /** 书目录 images/ 下的文件名 */
+  file: string
+  /** 原图像素尺寸 */
+  width: number
+  height: number
+  caption: string
+  /** 版心里的显示高度（px） */
+  displayHeight: number
+  /** 锚定段落（参考站 layout 的图片块落在哪个输入段落）。 */
+  paragraph: number
+  /** 锚定段落内的偏移。 */
+  anchorOffset: number
+}
+
+export type RealBookPageItem = RealBookTextItem | RealBookNoteItem | RealBookImageItem
 
 /** 渲染层量好高度后交给分页器的批注块。 */
 export interface RealBookNoteBlock {
@@ -87,6 +104,10 @@ export interface RealBookPage {
   /** 页首锚点：页内第一段的起始位置 */
   paragraph: number
   offset: number
+  /** 参考站 layout 的标题页/空白页。 */
+  special?: 'title' | 'blank'
+  /** 参考站的页码标签（正文页从 1 开始，标题/空白页为空）。 */
+  label?: string
 }
 
 /** 位置锚点：段落下标 + 段内字符偏移。 */

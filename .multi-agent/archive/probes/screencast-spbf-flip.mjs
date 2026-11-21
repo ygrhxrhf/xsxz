@@ -99,8 +99,11 @@ try {
   await waitFor(`document.querySelector('.book-open-area')`)
   await click(`document.querySelector('.book-open-area')`)
   await waitFor(`document.querySelector('.real-book-webgl-stage')`)
-  await sleep(2500)
+  await sleep(6000)
   await ev(`document.querySelector('.real-book-dock')?.click(); await new Promise((r) => setTimeout(r, 300)); return true;`)
+  // 先翻一次让字体分片/页表重排落定；第二次翻页才是稳定的动画。
+  await click(`document.querySelector('.reader-bottombar [aria-label="下一页"]')`)
+  await sleep(1800)
   // 慢动作：rAF 时间戳与 setTimeout 一起放慢 8 倍，screencast 才抓得到 0.4s 的各个相位。
   await ev(`
     const realRaf = window.requestAnimationFrame.bind(window);

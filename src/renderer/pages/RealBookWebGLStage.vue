@@ -3,7 +3,8 @@
  * 真实书籍的 WebGL 渲染层。
  *
  * 它是 `RealBookStage` 的视觉子层：分页、锚点、进度、批注仍由父组件算，
- * 这里只接收“左右页 + 翻页正反面”的纹理数据，用 Three.js 画书。
+ * 这里接收“任意页纹理 + 当前叶序号”，用参考站的 BookModel 画整本书；翻页、
+ * 拖页与开合都由 BookModel 自己推进，落定后再把新叶序号回报给父层。
  * 保留 CSS 3D 舞台作为回退，因此本组件不接管任何 Reader 级状态。
  */
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
@@ -26,8 +27,12 @@ import { clampPitch, DEFAULT_TILT_DEG, MAX_TILT_DEG, TILT_SENSITIVITY } from './
 const props = withDefaults(defineProps<{
   leftPage: RealBookTexturePage | null
   rightPage: RealBookTexturePage | null
-  /** 此刻在飞的纸，按从旧到新排列；快速连翻时会同时有好几张。 */
+  /** 此刻在飞的纸（CSS 回退用；WebGL 的飞页由 BookModel 自己管理）。 */
   flips?: RealBookSceneFlip[]
+  /** 任意页的纹理页对象（0-based；双页模式偶数页是右页）。 */
+  pageAt?: (index: number) => RealBookTexturePage | null
+  /** 当前摊开的叶序号（左页数）。 */
+  turned?: number
   fontSize?: number
   lineHeight?: number
   fontFamily?: string
@@ -59,6 +64,7 @@ const props = withDefaults(defineProps<{
   bookId?: string
 }>(), {
   flips: () => [],
+  turned: 0,
   fontSize: 18,
   lineHeight: 1.8,
   fontFamily: 'serif',
@@ -91,6 +97,12 @@ const emit = defineEmits<{
   (event: 'update:pitch', value: number): void
   (event: 'update:open', value: boolean): void
   (event: 'page-turn', direction: 1 | -1): void
+  /** BookModel 落定：父层据此换页（turned = 左侧页数）。 */
+  (event: 'spread-changed', turned: number): void
+  (event: 'next-chapter'): void
+  (event: 'prev-chapter'): void
+  /** 开始拖页：关闭 Reader 的选字工具条（参考站 beginDrag 会 clearSelection）。 */
+  (event: 'clear-selection'): void
   /** 拖页开始：父组件据此把飞页挂出来（它才知道正反面是哪两页）。 */
   (event: 'peel-start', direction: 1 | -1, u?: number, v?: number): void
   /**
@@ -123,8 +135,9 @@ let draggingTilt = false
 let dragStartY = 0
 let dragStartPitch = 0
 let dragMoved = false
-let pageDragStart: { x: number; side: 1 | -1; grabV: number } | null = null
-let pageDragDx = 0
+/** 参考站 BookModel 的拖页：按下即 beginDrag，移动 moveDrag，松开 endDrag。 */
+let pageDrag: { id: number; startX: number; startY: number; lastX: number; lastT: number; vx: number; moved: boolean } | null = null
+let turnQueue: (1 | -1)[] = []
 let suppressMouseUp = false
 /** 拖页状态：纸跟着手指走，松手时按走过的比例 + 甩动速度决定落定还是回弹。 */
 interface PeelState {
@@ -147,9 +160,12 @@ const imageFailed = new Set<string>()
 
 const textureStyle = computed<RealBookTextureStyle>(() => ({
   fontSize: props.fontSize,
-  lineHeight: Math.max(1, props.fontSize * props.lineHeight),
+  // 参考站 layout 的 CJK 行高是 fs × lineHeight × 1.16；页纹理按同一高度铺行，
+  // 参考站排出的行数才能原样落在一页里。
+  lineHeight: Math.max(1, props.fontSize * props.lineHeight * 1.16),
   fontFamily: props.fontFamily,
-  paragraphGap: Math.max(0, props.fontSize * props.paragraphGap),
+  // 参考站段与段之间没有额外间距，只靠 2em 首行缩进；页纹理不再加 paragraphGap。
+  paragraphGap: 0,
   paper: props.paper,
   ink: props.ink,
   muted: props.muted,
@@ -162,6 +178,8 @@ const textureStyle = computed<RealBookTextureStyle>(() => ({
   marginBottom: props.marginBottom,
   images: images.value,
   imageEpoch: imageEpoch.value,
+  bookTitle: props.bookTitle,
+  bookAuthor: props.bookAuthor,
 }))
 
 const pages = computed(() => ({
@@ -232,9 +250,11 @@ const textPageStyle = computed(() => ({
  * 另一页仍是静态纸，字要一直可见，不能整层一起消失。
  */
 const hasFlips = computed(() => props.flips.length > 0)
+/** BookModel 翻页/开合中：参考站此时隐藏文字层，避免 DOM 字压在飞行纸上。 */
+const sceneBusy = ref(false)
 const flipDirection = computed<1 | -1>(() => props.flips[0]?.direction ?? 1)
 const flipProgress = computed(() => props.flips[0]?.progress ?? 0)
-const showTextLayer = computed(() => props.open)
+const showTextLayer = computed(() => props.open && !sceneBusy.value)
 /**
  * 飞页落到对面时会压在那一页的 DOM 正文上（DOM 永远在 canvas 之上），
  * 所以后半程把这侧的正文收掉；前 60% 纸还没盖过来，另一页的字必须可见。
@@ -1065,11 +1085,11 @@ function onTextMouseup(event: MouseEvent): void {
 function syncScene(): void {
   if (!scene) return
   scene.setPages(pages.value, textureStyle.value)
+  scene.setPageSource(props.pageAt ?? null, Math.max(1, props.pageCount), props.singlePage, props.turned ?? 0)
   scene.setView(props.tilt, props.zoom)
   scene.setOpen(props.open, false)
   scene.setProgress(props.progress, props.totalChars, props.pageCount)
   scene.setAppearance(props.desk, props.endpaper)
-  scene.setFlips(props.flips)
 }
 
 function updateHitRect(): void {
@@ -1083,6 +1103,8 @@ function updateHitRect(): void {
 
 function hitLoop(): void {
   if (!mounted) return
+  const busy = scene?.busy ?? false
+  if (busy !== sceneBusy.value) sceneBusy.value = busy
   updateHitRect()
   updateTextLayer()
   updateFlipText()
@@ -1180,11 +1202,20 @@ function onPointerDown(event: PointerEvent): void {
   scene?.noteInteraction()
   // 左键拖外缘翻页；右键 / Alt 拖动调整视角；正文拖拽留给选字。
   if (event.button === 0 && !event.altKey) {
-    const side = pageDragZone(event)
-    if (!side) return
-    pageDragStart = { x: event.clientX, side, grabV: pageVAt(event.clientY) }
-    pageDragDx = 0
-    peelState = null
+    // 与参考站一致：命中纸张抓取区就直接交给 BookModel 的解算器，纸跟手走。
+    if (!scene?.beginDragAt(event.clientX, event.clientY)) return
+    // 参考站 beginDrag 会清掉选区；否则松手后 Reader 的三分区会把这次拖页当成选字。
+    window.getSelection()?.removeAllRanges()
+    emit('clear-selection')
+    pageDrag = {
+      id: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      lastT: performance.now(),
+      vx: 0,
+      moved: false,
+    }
     dragMoved = false
     suppressMouseUp = false
     ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
@@ -1201,31 +1232,14 @@ function onPointerDown(event: PointerEvent): void {
 
 function onPointerMove(event: PointerEvent): void {
   scene?.noteInteraction()
-  if (pageDragStart) {
-    pageDragDx = event.clientX - pageDragStart.x
-    const directional = directionalDx(pageDragStart.side)
-    if (!peelState) {
-      if (directional < PEEL_START_PX) return
-      peelState = {
-        side: pageDragStart.side,
-        progress: 0,
-        u: grabU(pageDragStart.side, event.clientX),
-        speed: 0,
-        lastDirectional: directional,
-        lastAt: performance.now(),
-      }
-      dragMoved = true
-      // v 用参考站的坐标（页底为 0）；窄屏卷页仍把顶为 0 的 grabV 交给场景去换算。
-      emit('peel-start', pageDragStart.side, peelState.u, 1 - pageDragStart.grabV)
-    }
+  if (pageDrag) {
     const now = performance.now()
-    const dt = Math.max(1, now - peelState.lastAt)
-    peelState.speed = (directional - peelState.lastDirectional) / dt
-    peelState.lastDirectional = directional
-    peelState.lastAt = now
-    peelState.progress = dragPhase(pageDragStart.side, peelState.u, directional)
-    if (Math.abs(pageDragDx) > 4) dragMoved = true
-    emit('peel-progress', peelState.progress, pageDragStart.grabV, pageVAt(event.clientY), peelState.u)
+    const dt = Math.max(1, now - pageDrag.lastT) / 1000
+    pageDrag.vx = pageDrag.vx * 0.6 + ((event.clientX - pageDrag.lastX) / dt) * 0.4
+    pageDrag.lastX = event.clientX
+    pageDrag.lastT = now
+    if (Math.hypot(event.clientX - pageDrag.startX, event.clientY - pageDrag.startY) > 9) pageDrag.moved = true
+    scene?.moveDragAt(event.clientX, event.clientY)
     return
   }
   if (!draggingTilt) {
@@ -1252,28 +1266,18 @@ function onPointerMove(event: PointerEvent): void {
  * 免得飞页已经压在角落里，下面还翘着一块纸。
  */
 function updateHoverPeel(event: PointerEvent): void {
-  const rect = hitRef.value?.getBoundingClientRect()
-  if (!scene || !rect || !props.open || props.flips.length) {
+  // 与参考站同一套：光标进入可抓取的外缘（非正文版心）就把那一页纸角掀起，
+  // 离开就落回；不是按 30px 距离给一个渐变量。
+  if (!scene || !props.open || scene.busy) {
     scene?.setHoverPeel(null, 0, 1)
     return
   }
-  const x = event.clientX - rect.left
-  const y = event.clientY - rect.top
-  if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+  const hover = scene.hoverZoneAt(event.clientX, event.clientY)
+  if (!hover) {
     scene.setHoverPeel(null, 0, 1)
     return
   }
-  const edgeAmount = Math.max(0, Math.min(1, (30 - Math.min(x, rect.width - x)) / 30))
-  const cornerSpan = rect.height * 0.26
-  const cornerAmount = Math.max(0, Math.min(1, (cornerSpan - Math.min(y, rect.height - y)) / cornerSpan))
-  const amount = edgeAmount * cornerAmount
-  if (amount < 0.03) {
-    scene.setHoverPeel(null, 0, 1)
-    return
-  }
-  const side = x < rect.width / 2 ? 'left' : 'right'
-  const corner: 1 | -1 = y < rect.height / 2 ? 1 : -1
-  scene.setHoverPeel(side, amount, corner)
+  scene.setHoverPeel(hover.side === 1 ? 'right' : 'left', 1, 1, hover.v)
 }
 
 function onPointerLeave(): void {
@@ -1289,29 +1293,16 @@ function onPointerUp(event: PointerEvent): void {
     return
   }
   cancelCrossHold()
-  if (pageDragStart) {
-    const start = pageDragStart
-    pageDragStart = null
+  if (pageDrag) {
+    const drag = pageDrag
+    pageDrag = null
     ;(event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId)
-    const active = peelState
-    peelState = null
-    if (active) {
-      // 与参考站 endDrag 同一条规则：走过 46% 就落定；反方向甩得够快就取消；
-      // 正方向轻甩（走过 12% 以上、速度够）也算落定。
-      const complete = active.progress > PEEL_COMMIT_PROGRESS
-        || (active.progress > PEEL_FLICK_PROGRESS && active.speed > PEEL_FLICK_SPEED)
-      suppressMouseUp = true
-      emit('peel-end', complete)
-      event.stopPropagation()
-      return
-    }
-    if (dragMoved) {
-      // 没起拖（比如这一侧没有下一页）：退回原来的整页翻页，末页拖一下仍然能换章。
-      suppressMouseUp = true
-      const forward = start.side === 1 ? pageDragDx < -18 : pageDragDx > 18
-      if (forward) emit('page-turn', start.side)
-      event.stopPropagation()
-    }
+    const height = hitRef.value?.getBoundingClientRect().height ?? 900
+    const fresh = performance.now() - drag.lastT < 90
+    const velocity = fresh ? (drag.vx / Math.max(1, height)) * 9 : 0
+    suppressMouseUp = true
+    scene?.endDrag(velocity, drag.moved, !drag.moved)
+    event.stopPropagation()
     return
   }
   if (!draggingTilt) return
@@ -1323,11 +1314,9 @@ function onPointerUp(event: PointerEvent): void {
 /** 指针被系统抢走（切窗口、手势中断）：按取消处理，纸回弹。 */
 function onPointerCancel(): void {
   cancelCrossSelection()
-  const active = peelState
-  peelState = null
-  pageDragStart = null
+  if (pageDrag) scene?.cancelDrag()
+  pageDrag = null
   draggingTilt = false
-  if (active) emit('peel-end', false)
 }
 
 function onMouseUp(event: MouseEvent): void {
@@ -1341,8 +1330,8 @@ function onContextMenu(event: MouseEvent): void {
 }
 
 function setOpen(open: boolean): void {
-  scene?.setOpen(open, false)
-  emit('update:open', open)
+  // 参考站 setOpen 是 psi 弹簧动画；落定后由 scene.onSettle 回报 update:open。
+  scene?.setOpen(open, true)
 }
 
 function toggleOpen(): void {
@@ -1353,12 +1342,63 @@ function setPitch(value: number): void {
   emit('update:pitch', clampPitch(value, MAX_TILT_DEG))
 }
 
+/**
+ * 翻页请求：与参考站 performTurn 同一套入口。
+ *
+ * BookModel 允许同方向多张纸同时在飞；如果此刻被一张反向纸/封面临时挡住，
+ * 就排进本层的小队列，落定后再放出来。到达本章最后一叶才交给父层换章。
+ */
+function requestTurn(direction: 1 | -1): void {
+  if (!scene) return
+  if (!props.open) {
+    setOpen(true)
+    return
+  }
+  if (scene.turn(direction, 1, true)) return
+  if (!scene.busy) {
+    if (!scene.canTurn(direction)) {
+      // 参考站：在第一叶继续往回翻是合上书，不是跳上一章。
+      if (direction === -1 && scene.settledTurned === 0) {
+        setOpen(false)
+        return
+      }
+      emit(direction === 1 ? 'next-chapter' : 'prev-chapter')
+      return
+    }
+  }
+  if (turnQueue.length < 12) turnQueue.push(direction)
+}
+
+function drainTurns(): void {
+  const next = turnQueue[0]
+  if (!next || !scene) return
+  if (scene.turn(next, 1, true)) {
+    turnQueue.shift()
+    return
+  }
+  if (!scene.busy && !scene.canTurn(next)) {
+    turnQueue.shift()
+    if (next === -1 && scene.settledTurned === 0) setOpen(false)
+    else emit(next === 1 ? 'next-chapter' : 'prev-chapter')
+  }
+}
+
+function nextPage(): void {
+  requestTurn(1)
+}
+
+function prevPage(): void {
+  requestTurn(-1)
+}
+
 defineExpose({
   /** 让 Reader 的三分区翻页按书体实际屏幕投影计算，而不是整块舞台。 */
   paperEl: hitRef,
   setOpen,
   toggleOpen,
   setPitch,
+  nextPage,
+  prevPage,
 })
 
 onMounted(async () => {
@@ -1386,6 +1426,8 @@ onMounted(async () => {
     scene = new module.RealBookWebGLScene(hostRef.value, {
       style: textureStyle.value,
       pages: pages.value,
+      pageAt: props.pageAt,
+      turned: props.turned ?? 0,
       desk: props.desk,
       endpaper: props.endpaper,
       singlePage: props.singlePage,
@@ -1398,6 +1440,12 @@ onMounted(async () => {
       bookTitle: props.bookTitle,
       bookAuthor: props.bookAuthor,
     })
+    scene.onSettle = (turned, open) => {
+      emit('spread-changed', turned)
+      emit('update:open', open)
+      updateHitRect()
+      drainTurns()
+    }
     // 观感复核与自动化脚本要看到「纸现在转到哪、卷成什么样」：只挂一个只读探针，
     // 不参与渲染，也不写任何页面状态。没有它脚本就只能靠截图猜帧。
     ;(window as unknown as Record<string, unknown>).__rbSceneProbe = () => {
@@ -1405,6 +1453,7 @@ onMounted(async () => {
       return first ?? null
     }
     ;(window as unknown as Record<string, unknown>).__rbSceneProbeAll = () => scene?.probeFlipState() ?? []
+    ;(window as unknown as Record<string, unknown>).__rbBookProbe = () => scene?.probeBook() ?? null
     resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
       scene?.resize()
       updateHitRect()
@@ -1425,7 +1474,14 @@ watch(() => [props.tilt, props.zoom], () => scene?.setView(props.tilt, props.zoo
 watch(() => [props.singlePage, props.pageWidth, props.pageHeight], () => scene?.setSinglePage(props.singlePage, props.pageWidth, props.pageHeight))
 watch(() => [props.open], () => scene?.setOpen(props.open, false))
 watch(() => [props.desk, props.endpaper], () => scene?.setAppearance(props.desk, props.endpaper))
-watch(() => [props.totalChars, props.pageCount, props.progress], () => scene?.setProgress(props.progress, props.totalChars, props.pageCount))
+watch(
+  () => [props.pageAt, props.pageCount, props.turned, props.singlePage],
+  () => {
+    scene?.setPageSource(props.pageAt ?? null, Math.max(1, props.pageCount), props.singlePage, props.turned ?? 0)
+    updateHitRect()
+  },
+)
+watch(() => [props.totalChars, props.progress], () => scene?.setProgress(props.progress, props.totalChars, props.pageCount))
 watch(
   () => props.flips,
   () => {
@@ -1672,6 +1728,25 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/*
+ * 参考站的正文、页眉页脚、批注卡、图片与划线都画在页面纹理里；DOM 层只负责
+ * 原生选字/选区。文字用 transparent 而不是 opacity，选区底色仍然可见。
+ */
+.real-book-webgl-text-layer :deep(.real-book-text-line),
+.real-book-webgl-text-layer :deep(.real-book-chrome-line),
+.real-book-webgl-text-layer :deep(.real-book-page-run) {
+  color: transparent !important;
+  text-shadow: none !important;
+}
+
+.real-book-webgl-text-layer :deep(.real-book-webgl-image),
+.real-book-webgl-text-layer :deep(.real-book-note-card),
+.real-book-webgl-text-layer :deep(.real-book-mark),
+.real-book-webgl-text-layer :deep(.real-book-note-dot),
+.real-book-webgl-text-layer :deep(.real-book-note-tab) {
+  opacity: 0;
+}
+
 .real-book-webgl-stage {
   position: relative;
   flex: 1 1 auto;

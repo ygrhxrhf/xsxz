@@ -5,17 +5,22 @@
 `src/renderer/pages/` 下的 `realBookLeafSim.ts`、`realBookLeafMesh.ts`、
 `realBookPaperMaterial.ts`、`realBookGutterFold.ts`、`realBookPhoneCurl.ts`、
 `realBookCaseBinding.ts` 源自 Infinite Reader（https://github.com/dracohu2025-cloud/infinite-reader）
-的 `web/src/engine/` 同名模块，`realBookLeafMotion.ts` 源自其
-`web/src/engine/book.ts` 的飞页运动段（`stepFlyers` / `blendQuickLanding` /
-`endDrag` / `moveDrag`），均按 Apache License 2.0 使用并修改：
+的 `web/src/engine/` 同名模块；`realBookBookModel.ts` 源自其
+`web/src/engine/book.ts`（书体、静态页、书垛、开合、飞页、落定），
+`realBookStack.ts` / `realBookCover.ts` / `realBookDesk.ts` 分别源自
+`stack.ts` / `cover.ts` / `desk.ts`；`referenceBook/` 下的 `layout.ts` /
+`pageRender.ts` / `types.ts` / `annotations.ts` / `typography.ts` /
+`imageFootnotes.ts` / `fontCatalog.ts` / `noteFontCatalog.ts` 源自
+`web/src/book/` 同名模块（`pageRender` 已接入页面纹理，`layout.paginate` 已接管 WebGL 真实书籍分页）。以上均按 Apache License 2.0 使用并修改：
 
 - 文件改名并接入 spbf 的真实书籍场景；
 - 书壳改由 `CaseBinding` 接在封面/后书板之间，书垛与书页改为从桌面向上堆叠；
   书板改用 `RoundedBoxGeometry`；
-- 飞页运动就是上游的 `LeafSim` PBD 解算（`realBookLeafMotion.ts`）；
+- 书体与飞页就是上游的 `BookModel` + `LeafSim` PBD 解算；
 - 纸底色改为 `uPaperTint` uniform（spbf 的页面纹理已带纸色），中缝压暗改为
   `uGutter`（spbf 的页面纹理已画中缝）；
-- 默认空白贴图从 Canvas 改为 DataTexture，模块在无 canvas 环境也能导入。
+- 默认空白贴图从 Canvas 改为 DataTexture，模块在无 canvas 环境也能导入；
+- `referenceBook/i18n.ts` 与 `noteMarkdown` 的最小替身只保留书页排版用到的中文串/类型。
 
 许可全文见 `third_party/infinite-reader/LICENSE`，上游署名见
 `third_party/infinite-reader/NOTICE`。
