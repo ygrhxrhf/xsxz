@@ -192,12 +192,25 @@ describe('generateBookCover', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('surfaces an HTTP failure without leaking the API key', async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 400, text: async () => 'model not found' })
+  it('falls back to narrower prompts when the service rejects the prompt, then reports policy', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 400, text: async () => '{"error":{"code":"content_policy_violation"}}' })
+    const result = await generateBookCover('d_test')
+    expect(result).toMatchObject({ ok: false, code: 'policy' })
+    // 三档提示词全试过：带梗概 → 去梗概 → 只剩氛围
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    const prompts = fetchMock.mock.calls.map((call) => JSON.parse(call[1].body).prompt)
+    expect(prompts[0]).not.toBe(prompts[1])
+    expect(prompts[2]).not.toContain('测试书')
+    if (!result.ok) expect(result.message).not.toContain('sk-test-secret')
+  })
+
+  it('does not burn extra calls on a non-prompt HTTP failure', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => 'boom' })
     const result = await generateBookCover('d_test')
     expect(result).toMatchObject({ ok: false, code: 'http' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     if (!result.ok) {
-      expect(result.message).toContain('400')
+      expect(result.message).toContain('500')
       expect(result.message).not.toContain('sk-test-secret')
     }
   })

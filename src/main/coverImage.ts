@@ -24,6 +24,8 @@ export type CoverGenFailCode =
   | 'no-api-key'
   | 'no-model'
   | 'http'
+  | 'rate-limited'
+  | 'policy'
   | 'timeout'
   | 'bad-image'
   | 'failed'
@@ -99,6 +101,30 @@ export function buildCoverPrompt(input: {
     `要求：${style || '构图完整，主体居中'}；画面里不要出现任何文字、书名、作者名、字母、数字、水印或边框；主体人物或场景要与题材相符，缩略图尺寸下也要能看清主体。`,
   ]
   return lines.filter(Boolean).join('\n')
+}
+
+/**
+ * 提示词由强到弱分三档。成人向书库的首选提示词（带梗概、带标签）经常被图片模型
+ * 按内容策略打回（400 content_policy），所以被拒时自动降级：先去梗概，再去书名，
+ * 最后只留氛围——一张风格对得上的图，比书架上永远空着一块强。
+ */
+export function coverPromptVariants(input: {
+  title: string
+  author?: string
+  tags?: string[]
+  synopsis?: string
+  style: string
+}): string[] {
+  const style = String(input.style || '').trim() || '构图完整，主体居中'
+  return [
+    buildCoverPrompt(input),
+    buildCoverPrompt({ ...input, synopsis: '' }),
+    [
+      '为一本中文网络小说画一张书籍封面插画，竖版构图。',
+      `氛围要求：${style}`,
+      '只画场景、光影与人物剪影，不要出现任何文字、书名、人名字母、数字、水印或边框；主体居中，缩略图尺寸下也要能看清。',
+    ].join('\n'),
+  ]
 }
 
 export function parseImageResponse(json: unknown): { b64?: string; url?: string } {
@@ -179,8 +205,63 @@ class CoverGenError extends Error {
   constructor(
     readonly code: CoverGenFailCode,
     message: string,
+    readonly status?: number,
   ) {
     super(message)
+  }
+}
+
+/** 429 退避：图片服务按账号限速，批量补齐时必然会撞上。 */
+const RATE_LIMIT_BACKOFF_MS = [10_000, 40_000, 120_000]
+
+async function requestImageBytes(input: {
+  endpoint: string
+  apiKey: string
+  model: string
+  size: string
+  prompt: string
+}): Promise<Uint8Array> {
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(input.endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${input.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: input.model,
+        prompt: input.prompt,
+        size: input.size,
+        n: 1,
+        response_format: 'b64_json',
+      }),
+      signal: AbortSignal.timeout(IMAGE_REQUEST_TIMEOUT_MS),
+    })
+    if (response.status === 429) {
+      const wait = RATE_LIMIT_BACKOFF_MS[attempt]
+      if (wait === undefined) {
+        throw new CoverGenError('rate-limited', '图片服务限流（HTTP 429），等一会儿再试', 429)
+      }
+      await new Promise((resolve) => setTimeout(resolve, wait))
+      continue
+    }
+    if (!response.ok) {
+      const body = await response.text().catch(() => '')
+      throw new CoverGenError('http', describeHttpFailure(response.status, body), response.status)
+    }
+    const parsed = parseImageResponse(await response.json())
+    if (!parsed.b64 && !parsed.url) {
+      throw new CoverGenError('bad-image', '图片服务没有返回可用图片')
+    }
+    const bytes = parsed.b64
+      ? new Uint8Array(Buffer.from(parsed.b64, 'base64'))
+      : await readImageBytesFromUrl(parsed.url!)
+    if (bytes.byteLength > MAX_IMAGE_BYTES) {
+      throw new CoverGenError('bad-image', '封面图超过 8MB，已放弃')
+    }
+    const ext = imageExtOf(bytes)
+    if (!ext) throw new CoverGenError('bad-image', '图片服务返回的不是图片')
+    return bytes
   }
 }
 
@@ -239,7 +320,7 @@ async function runGenerate(bookId: string, opts: { force?: boolean }): Promise<C
   }
 
   const synopsis = await collectSynopsis(bookId, book)
-  const prompt = buildCoverPrompt({
+  const variants = coverPromptVariants({
     title: book.title,
     author: book.author,
     tags: book.tags,
@@ -248,65 +329,46 @@ async function runGenerate(bookId: string, opts: { force?: boolean }): Promise<C
   })
   const endpoint = `${imageBase}/images/generations`
 
-  let payload: unknown
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
+  let bytes: Uint8Array | null = null
+  let lastError: CoverGenError | null = null
+  for (let index = 0; index < variants.length; index += 1) {
+    try {
+      bytes = await requestImageBytes({
+        endpoint,
+        apiKey,
         model: prefs.model.trim(),
-        prompt,
         size: prefs.size,
-        n: 1,
-        response_format: 'b64_json',
-      }),
-      signal: AbortSignal.timeout(IMAGE_REQUEST_TIMEOUT_MS),
-    })
-    if (!response.ok) {
-      const body = await response.text().catch(() => '')
-      throw new CoverGenError('http', describeHttpFailure(response.status, body))
+        prompt: variants[index]!,
+      })
+      break
+    } catch (error) {
+      if (!(error instanceof CoverGenError)) {
+        if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+          return { ok: false, code: 'timeout', message: '图片服务超时，请稍后再试' }
+        }
+        return {
+          ok: false,
+          code: 'failed',
+          message: `请求图片服务失败：${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
+      lastError = error
+      // 只有「提示词被拒」才值得换更保守的写法；限流/鉴权/超时换提示词没用。
+      const promptRejected = error.status === 400 || error.status === 422
+      if (!promptRejected || index === variants.length - 1) break
     }
-    payload = await response.json()
-  } catch (error) {
-    if (error instanceof CoverGenError) return { ok: false, code: error.code, message: error.message }
-    if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
-      return { ok: false, code: 'timeout', message: '图片服务超时，请稍后再试' }
+  }
+  if (!bytes) {
+    if (lastError && (lastError.status === 400 || lastError.status === 422)) {
+      return { ok: false, code: 'policy', message: '这本题材被图片服务按内容策略拒了，换个模型或改风格再试' }
     }
     return {
       ok: false,
-      code: 'failed',
-      message: `请求图片服务失败：${error instanceof Error ? error.message : String(error)}`,
+      code: lastError?.code ?? 'failed',
+      message: lastError?.message ?? '生成封面失败',
     }
   }
 
-  const parsed = parseImageResponse(payload)
-  if (!parsed.b64 && !parsed.url) {
-    return { ok: false, code: 'bad-image', message: '图片服务没有返回可用图片' }
-  }
-
-  let bytes: Uint8Array
-  try {
-    bytes = parsed.b64
-      ? new Uint8Array(Buffer.from(parsed.b64, 'base64'))
-      : await readImageBytesFromUrl(parsed.url!)
-  } catch (error) {
-    if (error instanceof CoverGenError) return { ok: false, code: error.code, message: error.message }
-    if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
-      return { ok: false, code: 'timeout', message: '下载封面图超时，请稍后再试' }
-    }
-    return {
-      ok: false,
-      code: 'failed',
-      message: `下载封面图失败：${error instanceof Error ? error.message : String(error)}`,
-    }
-  }
-
-  if (bytes.byteLength > MAX_IMAGE_BYTES) {
-    return { ok: false, code: 'bad-image', message: '封面图超过 8MB，已放弃' }
-  }
   const ext = imageExtOf(bytes)
   if (!ext) return { ok: false, code: 'bad-image', message: '图片服务返回的不是图片' }
 
