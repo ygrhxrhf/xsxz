@@ -299,11 +299,17 @@ interface FlipRun {
   from: number
   to: number
   progress: number
+  /** 起拖时手捏在纸上的横向位置（页宽 0–1）：决定纸绕哪一点卷（参考站的 beginDrag(u)）。 */
+  u?: number
+  /** 起拖时手捏在纸上的纵向位置（0–1）。 */
+  v?: number
   /** 已经走过的时长（ms）。用累计而不是「开始时间戳」：rAF 的时间原点与 performance.now() 不一定同源。 */
   elapsed: number
   duration: number
   /** 拖页中：进度由手指写，rAF 不推进它。 */
   follow: boolean
+  /** 拖页取消：WebGL 里纸按参考站的自然弹簧回到出发侧，页面不变。 */
+  cancel?: boolean
   /** 拖页时手指在纸上的纵向位置（0–1，页顶为 0）：窄屏卷页的折线按它倾斜。 */
   grabV?: number
   pointerV?: number
@@ -751,7 +757,9 @@ function startFlipRun(direction: 1 | -1, explicitTarget?: number, follow = false
     // 先往后翻、立刻又往回翻：两张纸的落点会互相盖住，这种只按一张纸串（排队）。
     return null
   }
-  const duration = Math.max(1, flipDurationMs.value)
+  // 手机单页：参考站的 stepPhoneFlyers 一次翻页约 0.3s（0.18 + 0.12×行程），
+  // 桌面 PBD 纸才是 0.4s 的 quick 曲线。
+  const duration = Math.max(1, phone.value ? 300 : flipDurationMs.value)
   // 后起的纸不跟前面那张同时起步：等前面那张走了这么远再动，几张纸才是「追着翻」的，
   // 而不是三张纸并排一起飞、一起落。
   const delay = tail && !follow ? FLIP_START_GAP * duration : 0
@@ -840,7 +848,7 @@ function tickFlips(now: number): void {
   let changed = false
   for (let index = 0; index < list.length; index += 1) {
     const run = list[index]!
-    if (run.follow || run.progress >= 1) continue
+    if (run.follow || run.cancel || run.progress >= 1) continue
     const elapsed = run.elapsed + dt
     // elapsed 可以是负的：后起的纸要等前面那张走一段才开始动。
     const t = Math.max(0, Math.min(1, elapsed / Math.max(1, run.duration)))
@@ -859,6 +867,10 @@ function tickFlips(now: number): void {
 function commitFinishedFlips(): void {
   const head = flips.value[0]
   if (!head || head.follow || head.progress < 1) return
+  if (head.cancel) {
+    // 取消的纸只负责回弹，绝不提交页码；计时器会在弹簧平静后摘掉它。
+    return
+  }
   flips.value = flips.value.slice(1)
   currentPage.value = head.to
   syncAnchor()
@@ -1049,7 +1061,7 @@ function canPeel(direction: 1 | -1): boolean {
   return direction === 1 ? hasNextPage.value : currentPage.value > 0
 }
 
-function onPeelStart(direction: 1 | -1): void {
+function onPeelStart(direction: 1 | -1, u?: number, v?: number): void {
   if (peel.value) return
   if (!canPeel(direction)) {
     peel.value = { direction, accepted: false, runId: 0 }
@@ -1057,13 +1069,24 @@ function onPeelStart(direction: 1 | -1): void {
   }
   const target = flipTargetFor(direction)
   const run = target === null ? null : startFlipRun(direction, target, true)
+  if (run) {
+    // 参考站 beginDrag：手捏在外缘（u 0.55–0.97），行靠近页心；纸绕这个点卷。
+    // v 从子层传来时已经换算成「页底为 0」，与参考站的 zone.v 同一套坐标。
+    run.u = Math.max(0.55, Math.min(0.97, u ?? 0.95))
+    run.v = Math.max(0.04, Math.min(0.96, v ?? 0.5))
+  }
   peel.value = { direction, accepted: Boolean(run), runId: run?.id ?? 0 }
 }
 
-function onPeelProgress(progress: number, grabV = 0.5, pointerV = grabV): void {
+function onPeelProgress(progress: number, grabV = 0.5, pointerV = grabV, u?: number): void {
   const active = peel.value
   if (!active?.accepted) return
-  updateRun(active.runId, { progress: Math.max(0, Math.min(1, progress)), grabV, pointerV })
+  updateRun(active.runId, {
+    progress: Math.max(0, Math.min(1, progress)),
+    grabV,
+    pointerV,
+    ...(u === undefined ? {} : { u: Math.max(0.55, Math.min(0.97, u)) }),
+  })
 }
 
 function onPeelEnd(complete: boolean): void {
@@ -1077,14 +1100,39 @@ function onPeelEnd(complete: boolean): void {
   const run = flips.value.find((item) => item.id === active.runId)
   if (!run) return
   if (complete) {
-    // 松手后剩下的行程走快一点：纸已经在手上掀起来了，不该再慢慢挪完。
-    const duration = Math.max(80, flipDurationMs.value * (1 - run.progress) * 0.55)
+    // 松手后走参考站的自然弹簧（k=22，越近落点阻尼越大）：实测从弦角 0.46π 走到
+    // 离落点 0.08 rad 约 0.75s，从 0.1π 约 1.1s，所以时长按剩余角度给，而不是
+    // 按 quick 的 0.4s。参考站是等纸平静了才提交；这里用长度受限的计时器当兜底，
+    // 纸在提交前已经由 landing 混合压到页堆上。
+    // 手机单页的卷页不是 PBD 纸，参考站的 stepPhoneFlyers 用 0.18 + 0.12×剩余行程 秒
+    // 走完松手后的三次曲线；仍按这个时长，别套桌面纸的自然弹簧。
+    const duration = phone.value
+      ? Math.max(120, (0.18 + 0.12 * (1 - run.progress)) * 1000)
+      : Math.max(160, 1100 * (1 - run.progress) + 160)
     updateRun(run.id, { follow: false, elapsed: run.progress * duration, duration })
     ensureFlipLoop()
     scheduleRunFinish(run, duration)
     return
   }
-  settlePeelBack(run.id)
+  if (effectiveRenderer.value) cancelPeelBack(run)
+  else settlePeelBack(run.id)
+}
+
+/**
+ * WebGL 取消：纸不是 0.32× 时长的三次回弹，而是参考站 cancelDrag 的自然弹簧
+ * （targetPhi 回到起手角）。父层只负责在弹簧平静后把这张纸摘掉，页码不提交。
+ */
+function cancelPeelBack(run: FlipRun): void {
+  const from = Math.max(0, run.progress)
+  const duration = Math.max(180, 900 * from + 140)
+  clearRunTimer(run.id)
+  updateRun(run.id, { follow: false, cancel: true, elapsed: 0, duration })
+  const timer = setTimeout(() => {
+    runTimers.delete(run.id)
+    flips.value = flips.value.filter((item) => item.id !== run.id)
+    if (flips.value.length) ensureFlipLoop()
+  }, duration)
+  runTimers.set(run.id, timer)
 }
 
 /** 取消拖页：纸收回原位，页面内容不变。 */
@@ -1367,6 +1415,9 @@ const webglFlips = computed<RealBookSceneFlip[]>(() => flips.value.map((run) => 
   direction: run.direction,
   progress: run.progress,
   follow: run.follow,
+  cancel: run.cancel,
+  u: run.u,
+  v: run.v,
   grabV: run.grabV,
   pointerV: run.pointerV,
   // 用起纸时的快照，不每帧回查页表：页表在翻页途中重排不会让飞页变白纸。

@@ -302,11 +302,16 @@ describe('RealBookWebGLStage', () => {
     dispatch(root, 'pointerdown', 500)
     dispatch(root, 'pointermove', 496)
     expect(started).toEqual([])
-    // 往左拖过阈值：正向翻页，进度随着拖走的距离走。
+    // 往左拖过阈值：正向翻页。100px 只是把纸掀起来一点（参考站的手进度是
+    // 弦角相位：满行程约 1.9 个页宽，不是整页宽的四成），还没到落定线。
     dispatch(root, 'pointermove', 400)
     expect(started).toEqual([1])
-    expect(progress.at(-1)).toBeGreaterThan(0.5)
-    dispatch(root, 'pointerup', 400)
+    expect(progress.at(-1)).toBeGreaterThan(0)
+    expect(progress.at(-1)).toBeLessThan(0.46)
+    // 再拖到半页以外：弦角过 46%，松手落定。
+    dispatch(root, 'pointermove', 150)
+    expect(progress.at(-1)).toBeGreaterThan(0.46)
+    dispatch(root, 'pointerup', 150)
     expect(ended).toEqual([true])
     app.unmount()
   })

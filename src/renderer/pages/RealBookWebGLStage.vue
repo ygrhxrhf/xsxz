@@ -19,7 +19,8 @@ import {
   type CrossSelectionRange,
   type SelectionPoint,
 } from './realBookCrossSelection'
-import { DEFAULT_ZOOM, type RealBookDesk, type RealBookEndpaper } from './realBookWebGLModel'
+import { BOOK_WIDTH, DEFAULT_ZOOM, type RealBookDesk, type RealBookEndpaper } from './realBookWebGLModel'
+import { curlReach } from './realBookLeafSim'
 import { clampPitch, DEFAULT_TILT_DEG, MAX_TILT_DEG, TILT_SENSITIVITY } from './realBookPitch'
 
 const props = withDefaults(defineProps<{
@@ -91,9 +92,12 @@ const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
   (event: 'page-turn', direction: 1 | -1): void
   /** 拖页开始：父组件据此把飞页挂出来（它才知道正反面是哪两页）。 */
-  (event: 'peel-start', direction: 1 | -1): void
-  /** 拖页进度 0–1：纸跟着手走；grabV/pointerV 是起拖与当前手指在纸上的纵向位置（0–1）。 */
-  (event: 'peel-progress', progress: number, grabV: number, pointerV: number): void
+  (event: 'peel-start', direction: 1 | -1, u?: number, v?: number): void
+  /**
+   * 拖页进度 0–1：纸跟着手走；grabV/pointerV 是起拖与当前手指在纸上的纵向位置（0–1），
+   * u 是起拖时手捏在纸上的横向位置（参考站的 beginDrag(u)，决定纸绕哪一点卷）。
+   */
+  (event: 'peel-progress', progress: number, grabV: number, pointerV: number, u?: number): void
   /** 松手：complete 为真则落定翻页，否则纸回弹、页面不变。 */
   (event: 'peel-end', complete: boolean): void
   /** 点书口注释标签：交给父组件打开对应的批注。 */
@@ -126,6 +130,8 @@ let suppressMouseUp = false
 interface PeelState {
   side: 1 | -1
   progress: number
+  /** 起拖时手捏在纸上的位置（页宽 0–1）：参考站的 beginDrag(u) 决定纸绕哪一点卷。 */
+  u: number
   /** 沿翻页方向的移动速度（px/ms）：快速小幅一甩也该翻页。 */
   speed: number
   lastDirectional: number
@@ -1100,17 +1106,6 @@ function pageDragZone(event: PointerEvent): 1 | -1 | null {
   return null
 }
 
-/**
- * 拖满整页要走的距离（px）：书体宽度的四成出头。
- *
- * 取一个比半页略小的量：手指不用真的横跨到对面，纸已经掀到能读的程度；
- * 手指走到对面时 progress 已经封顶在 1，多出来的行程不会让纸翻过头。
- */
-function peelSpan(): number {
-  const rect = hitRef.value?.getBoundingClientRect()
-  return Math.max(120, (rect?.width ?? 600) * 0.42)
-}
-
 /** 沿翻页方向的位移：右侧往左拖是正向。 */
 function directionalDx(side: 1 | -1): number {
   return side === 1 ? -pageDragDx : pageDragDx
@@ -1129,10 +1124,57 @@ function pageVAt(clientY: number): number {
 
 /** 起拖阈值（px）：小于它按点按处理，不让一次点击把纸掀一下再弹回去。 */
 const PEEL_START_PX = 10
-/** 松手时的落定阈值：走过的比例，或者「走得不多但甩得快」。 */
-const PEEL_COMMIT_PROGRESS = 0.3
-const PEEL_FLICK_PROGRESS = 0.06
+/**
+ * 松手时的落定阈值：与参考站 BookModel.endDrag 同一条规则——
+ * 纸角走过 π·0.46（即弦角的 46%），或者「走得不多但甩得快」。
+ */
+const PEEL_COMMIT_PROGRESS = 0.46
+const PEEL_FLICK_PROGRESS = 0.12
 const PEEL_FLICK_SPEED = 0.9
+
+/** 起拖时手捏在纸上的位置（页宽 0–1）：参考站 clamp(zone.u, 0.55, 0.97)。 */
+function grabU(side: 1 | -1, clientX: number): number {
+  const rect = scene?.getBookScreenRect()
+  if (!rect || rect.width <= 0) return 0.95
+  if (props.singlePage) return 0.95
+  const pagePx = rect.width / 2
+  const center = rect.left + rect.width / 2
+  const u = side === 1 ? (clientX - center) / pagePx : (center - clientX) / pagePx
+  return Math.max(0.55, Math.min(0.97, u))
+}
+
+/**
+ * 拖页的手进度 = 参考站的弦角相位。
+ *
+ * 参考站不是按「拖了多少像素」线性翻纸，而是解 `curlReach(phi).x == 手指 x`：
+ * 被捏住的点在卷曲弧面的末端，手指的横向位置决定它现在在弧上的哪一段。
+ * 在纸还平躺时，这个映射对横向移动更敏感；越立起来越线性。参考站再用一半
+ * 线性映射压住近纸面处的敏感性，所以这里同样取 0.5×弦角解 + 0.5×线性。
+ */
+function dragPhase(side: 1 | -1, u: number, directional: number): number {
+  const rect = scene?.getBookScreenRect()
+  const widthPx = rect?.width ?? 600
+  if (props.singlePage) {
+    // 手机卷页：参考站 movePhoneDrag 的线性映射，满行程是两页宽。
+    return Math.max(0, Math.min(1, directional / Math.max(1, widthPx * 2)))
+  }
+  const pagePx = Math.max(1, widthPx / 2)
+  const d = BOOK_WIDTH * u
+  const dxWorld = directional * (BOOK_WIDTH / pagePx)
+  const x = side === 1 ? d - dxWorld : -d + dxWorld
+  let lo = 0
+  let hi = Math.PI
+  for (let i = 0; i < 18; i += 1) {
+    const mid = (lo + hi) / 2
+    if (curlReach(mid, side, 0.5, u, BOOK_WIDTH).x > x) lo = mid
+    else hi = mid
+  }
+  const curlPhi = (lo + hi) / 2
+  // 线性映射与参考站一致：从起手的「满页臂」量到反方向的「满页臂」。
+  const linearPhi = Math.PI * Math.max(0, Math.min(1, (d - x) / (2 * d)))
+  const phi = 0.5 * curlPhi + 0.5 * linearPhi
+  return Math.max(0, Math.min(1, side === 1 ? phi / Math.PI : 1 - phi / Math.PI))
+}
 
 function onPointerDown(event: PointerEvent): void {
   scene?.noteInteraction()
@@ -1167,21 +1209,23 @@ function onPointerMove(event: PointerEvent): void {
       peelState = {
         side: pageDragStart.side,
         progress: 0,
+        u: grabU(pageDragStart.side, event.clientX),
         speed: 0,
         lastDirectional: directional,
         lastAt: performance.now(),
       }
       dragMoved = true
-      emit('peel-start', pageDragStart.side)
+      // v 用参考站的坐标（页底为 0）；窄屏卷页仍把顶为 0 的 grabV 交给场景去换算。
+      emit('peel-start', pageDragStart.side, peelState.u, 1 - pageDragStart.grabV)
     }
     const now = performance.now()
     const dt = Math.max(1, now - peelState.lastAt)
     peelState.speed = (directional - peelState.lastDirectional) / dt
     peelState.lastDirectional = directional
     peelState.lastAt = now
-    peelState.progress = Math.max(0, Math.min(1, directional / peelSpan()))
+    peelState.progress = dragPhase(pageDragStart.side, peelState.u, directional)
     if (Math.abs(pageDragDx) > 4) dragMoved = true
-    emit('peel-progress', peelState.progress, pageDragStart.grabV, pageVAt(event.clientY))
+    emit('peel-progress', peelState.progress, pageDragStart.grabV, pageVAt(event.clientY), peelState.u)
     return
   }
   if (!draggingTilt) {
@@ -1252,7 +1296,8 @@ function onPointerUp(event: PointerEvent): void {
     const active = peelState
     peelState = null
     if (active) {
-      // 甩得快就落定：手甩出去的那一下本来就不需要走满行程。
+      // 与参考站 endDrag 同一条规则：走过 46% 就落定；反方向甩得够快就取消；
+      // 正方向轻甩（走过 12% 以上、速度够）也算落定。
       const complete = active.progress > PEEL_COMMIT_PROGRESS
         || (active.progress > PEEL_FLICK_PROGRESS && active.speed > PEEL_FLICK_SPEED)
       suppressMouseUp = true
@@ -1353,6 +1398,13 @@ onMounted(async () => {
       bookTitle: props.bookTitle,
       bookAuthor: props.bookAuthor,
     })
+    // 观感复核与自动化脚本要看到「纸现在转到哪、卷成什么样」：只挂一个只读探针，
+    // 不参与渲染，也不写任何页面状态。没有它脚本就只能靠截图猜帧。
+    ;(window as unknown as Record<string, unknown>).__rbSceneProbe = () => {
+      const first = scene?.probeFlipState()[0]
+      return first ?? null
+    }
+    ;(window as unknown as Record<string, unknown>).__rbSceneProbeAll = () => scene?.probeFlipState() ?? []
     resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
       scene?.resize()
       updateHitRect()

@@ -38,14 +38,23 @@ import {
   type RealBookEndpaper,
 } from './realBookWebGLModel'
 import type { PageScreenQuad } from './realBookTextLayer'
-import { ClothSheet, flipClothField } from './realBookCloth'
 import { flyerFacePages } from './realBookFlyerText'
 import { idleFlutterAmount, pageCornerPeel } from './realBookPeel'
-// 纸张渲染层来自 Infinite Reader（Apache-2.0）。LeafSim 在这里作为 LeafMesh 的网格载体：
-// 运动仍由已经校过的 ClothSheet（解析弧面 + 弹簧阻尼）给出，逐帧抄进 sim.x / sim.z；
-// 它的 PBD 解算器保留给后续的拖页跟手与悬停预掀。
+// 飞行页的物理来自 Infinite Reader（Apache-2.0）的 BookModel：LeafSim 的 PBD 网格
+// 直接解算纸的卷曲（curlAngles 的对称弧面 + 行滞后 + 空气阻力 + flex 弹簧），
+// 不再另铺一层解析弧面/布料滤波器。
 import { GRID_V, LeafMesh } from './realBookLeafMesh'
 import { LeafSim } from './realBookLeafSim'
+import {
+  advanceFlyer,
+  createFlyerMotion,
+  flyerEnv,
+  releaseFlyer,
+  setDragPhase,
+  setDragPointerRow,
+  setQuickPhase,
+  type FlyerMotionState,
+} from './realBookLeafMotion'
 import { BLANK_TEXTURE, createPaperMaterial, shadowRig, SH_COLS, SH_ROWS, SH_SLOTS, type PaperUniforms } from './realBookPaperMaterial'
 import { CaseBinding } from './realBookCaseBinding'
 
@@ -73,7 +82,13 @@ export interface RealBookSceneFlip {
   progress: number
   /** 拖页中：进度严格跟手，不走惯性 */
   follow: boolean
-  /** 起拖手指在纸上的纵向位置（0–1，页顶为 0）：窄屏卷页的折线按它倾斜。 */
+  /** 拖页取消：纸按参考站的自然弹簧回到出发侧，页面内容不变。 */
+  cancel?: boolean
+  /** 起拖时手捏在纸上的横向位置（页宽 0–1）：参考站的 beginDrag(u)，决定纸绕哪一点卷。 */
+  u?: number
+  /** 起拖时手捏在纸上的纵向位置（0–1，页顶为 0）：参考站的 beginDrag(v)。 */
+  v?: number
+  /** 当前手指/起拖的纵向位置（0–1）：窄屏卷页的折线按它倾斜。 */
   grabV?: number
   /** 当前手指纵向位置（0–1）：手指沿页高移动时折线跟着转。 */
   pointerV?: number
@@ -87,31 +102,44 @@ export interface RealBookSceneFlip {
 /** 桌面高度：书壳、书垛和书页都从这个基准往上叠（略高于桌面，避免与桌/影平面共面）。 */
 const BOOK_BASE_Z = -0.215
 
+/** 与参考站相同的三次平滑；beginDrag 的抓点映射要用它。 */
+const smoothstep01 = (x: number): number => {
+  const value = Math.max(0, Math.min(1, x))
+  return value * value * (3 - 2 * value)
+}
+
 /** 同时在飞的纸上限（含正在落定的那张）。 */
 export const MAX_FLIP_SHEETS = 6
+
+/**
+ * 纸与书页之间的距离比例。
+ *
+ * 参考站的页宽 6.4 / 页高 9.2 与逻辑页（640×920 px）一一对应，纸自己从书脊
+ * 走到对面。我们这里沿用同一套书页坐标，只把纸抬离纸面一点点，避免与静态页
+ * 共面时 z-fighting。
+ */
+const FLIP_SHEET_LIFT = 0.004
 
 /** 一个飞页槽位的全部渲染状态。 */
 interface FlipSheetRuntime {
   group: THREE.Group
   /** 双面纸质网格：正面/背面由 gl_FrontFacing 选纹理，透字与透光也在这层材质里。 */
   leaf: LeafMesh
-  /** 网格载体：每帧从布料抄入 x/z，供 LeafMesh 输出顶点与曲率。 */
+  /** 纸的 PBD 网格：每帧由 `realBookLeafMotion` 解算，LeafMesh 直接读它的 x/z 与曲率。 */
   sim: LeafSim
-  cloth: ClothSheet
+  /** 这一张纸的运动状态（参考站 BookModel.flyers 的字段）。 */
+  motion: FlyerMotionState | null
   /** 当前占用的翻页 id；0 表示空槽。 */
   id: number
   direction: 1 | -1
-  /** 弹簧后的当前进度（驱动几何） */
+  /** 最新的翻页进度（驱动 quick 时钟）。 */
   progress: number
-  /** 上层给到的目标进度 */
-  target: number
-  smooth: number
-  velocity: number
   follow: boolean
   /** 窄屏卷页的手指纵向位置（0–1）：折线随手指倾斜，而不是永远横过页心。 */
   grabV: number
   pointerV: number
-  clothNeedsReset: boolean
+  /** 窄屏松手时纸所在的相位：参考站 stepPhoneFlyers 的三次曲线从这里出发。 */
+  phoneEaseFrom: number
   /**
    * 只给最上面那张纸用的开关：正文由 DOM 文本层贴上去（跟着卷曲走、字更清楚），
    * 纹理里只留纸面、标记、注卡和图片。
@@ -363,15 +391,27 @@ function writePageCurvature(geometry: THREE.PlaneGeometry): void {
   curvature.needsUpdate = true
 }
 
-function makePageGeometry(): THREE.PlaneGeometry {
+/**
+ * 纸面在离书脊 `ax`（世界单位）处的高度：书脊侧压平，外缘微微翘起。
+ *
+ * 左右两页必须镜像：右页的 u=1 是外口，左页的 u=0 才是外口。早先两页共用同一份
+ * 几何，左页的书脊侧反而翘起、外缘是平的，合起来不仅中缝差一个高度，飞页落到
+ * 左页时也会陷进静态页里。现在按 `mirror` 把 z 面翻到正确的一侧，飞页的碰撞面
+ * 直接复用同一条曲线（`leafEnv`），起手和落定都贴着真实的纸面。
+ */
+function pageProfile(ax: number): number {
+  const u = Math.max(0, Math.min(1, ax / BOOK_WIDTH))
+  return 0.008 * Math.sin(u * Math.PI) + 0.018 * Math.exp(-(1 - u) * 9)
+}
+
+function makePageGeometry(mirror = false): THREE.PlaneGeometry {
   const geometry = new THREE.PlaneGeometry(BOOK_WIDTH, BOOK_HEIGHT, PAGE_SEGMENTS_X, PAGE_SEGMENTS_Y)
   const positions = geometry.attributes.position
   for (let index = 0; index < positions.count; index += 1) {
     const x = positions.getX(index)
-    const u = (x + BOOK_WIDTH / 2) / BOOK_WIDTH
-    // 书脊侧压平，外缘微微翘起；幅度很小，只负责让纸面不至于像一块塑料板。
-    const z = 0.008 * Math.sin(u * Math.PI) + 0.018 * Math.exp(-(1 - u) * 9)
-    positions.setZ(index, z)
+    const raw = (x + BOOK_WIDTH / 2) / BOOK_WIDTH
+    const ax = Math.max(0, Math.min(1, mirror ? 1 - raw : raw))
+    positions.setZ(index, pageProfile(ax * BOOK_WIDTH))
   }
   geometry.setAttribute('aCurv', new THREE.BufferAttribute(new Float32Array(positions.count), 1))
   geometry.computeVertexNormals()
@@ -459,15 +499,19 @@ export class RealBookWebGLScene {
   private totalChars = 0
   private pageCount = 0
   private progress = 0
-  private readonly clothSample = new Float32Array(3)
   /** 飞页贴面取样的临时向量：每帧要取上百个点，热路径里不能再分配对象。 */
   private readonly flipSampleA = new THREE.Vector3()
   private readonly flipSampleB = new THREE.Vector3()
   private readonly flipSampleC = new THREE.Vector3()
   private readonly flipSampleView = new THREE.Vector3()
   private readonly flipSampleProjected = new THREE.Vector3()
-  /** 本帧真实间隔（秒），由 loop 写入，供布料积分用。 */
+  /** 本帧真实间隔（秒），由 loop 写入，供 PBD 子步用。 */
   private frameDelta = 1 / 60
+  /**
+   * 飞页的碰撞环境：碰撞面就是静态页的外缘翘起曲线，飞页的落点因此不会陷进纸里。
+   * 左右页镜像后的高度是同一个 |x| 函数，所以一张环境对象可以给所有纸共用。
+   */
+  private readonly leafEnv = flyerEnv((x) => pageProfile(Math.abs(x)))
   private frame = 0
   private disposed = false
   private resizeObserver: ResizeObserver | null = null
@@ -565,8 +609,8 @@ export class RealBookWebGLScene {
     this.backBoard.receiveShadow = true
 
     // 左右页各一份几何：悬停预掀只弯被指到的那一页，共用一份几何会两页一起翘。
-    this.pageGeometryLeft = makePageGeometry()
-    this.pageGeometryRight = makePageGeometry()
+    this.pageGeometryLeft = makePageGeometry(true)
+    this.pageGeometryRight = makePageGeometry(false)
     this.pageRestLeft = new Float32Array(this.pageGeometryLeft.attributes.position.array)
     this.pageRestRight = new Float32Array(this.pageGeometryRight.attributes.position.array)
     const leftPaper = createPaperMaterial()
@@ -679,17 +723,14 @@ export class RealBookWebGLScene {
       group,
       leaf,
       sim: new LeafSim(BOOK_WIDTH, BOOK_HEIGHT),
-      cloth: new ClothSheet(),
+      motion: null,
       id: 0,
       direction: 1,
       progress: 0,
-      target: 0,
-      smooth: 0,
-      velocity: 0,
       follow: false,
       grabV: 0.5,
       pointerV: 0.5,
-      clothNeedsReset: true,
+      phoneEaseFrom: 0,
       domText: false,
       frontPage: null,
       backPage: null,
@@ -917,10 +958,11 @@ export class RealBookWebGLScene {
       const entry = this.flipEntries[index]
       if (!entry) {
         sheet.id = 0
+        sheet.motion = null
         sheet.group.visible = false
         continue
       }
-      const target = Math.max(0, Math.min(1.05, Number.isFinite(entry.progress) ? entry.progress : 0))
+      const target = Math.max(0, Math.min(1, Number.isFinite(entry.progress) ? entry.progress : 0))
       // 卷页折线按手指在纸上的纵向位置倾斜；自动翻页没有手指，固定过页心。
       const grabV = Math.max(0, Math.min(1, entry.grabV ?? 0.5))
       const pointerV = Math.max(0, Math.min(1, entry.pointerV ?? grabV))
@@ -928,19 +970,30 @@ export class RealBookWebGLScene {
       // 窄屏卷页的纸会卷成筒，DOM 小段在卷曲处会叠成一团，改由纹理带字。
       const domText = index === 0 && !this.singlePage
       if (sheet.id !== entry.id) {
-        // 新纸：从它自己的起始进度开始，而不是从上一个 id 停下的地方飞过来。
+        // 新纸：按出发页堆的形状铺平，再接管它自己的进度。
         sheet.id = entry.id
         sheet.direction = entry.direction
         sheet.progress = target
-        sheet.smooth = target
-        sheet.target = target
-        sheet.velocity = 0
+        sheet.phoneEaseFrom = target
+        sheet.follow = entry.follow
         sheet.grabV = grabV
         sheet.pointerV = pointerV
-        sheet.clothNeedsReset = true
         sheet.domText = domText
         sheet.frontPage = entry.front
         sheet.backPage = entry.back
+        // 参考站的起手位置：手捏在外缘（u 默认 0.95），行靠近页心；拖页时用父层给的抓点。
+        // v 由参考站的 beginDrag 再收一次：手指明显在页角附近时才让纸角领得多。
+        const grabU = Math.max(0.55, Math.min(0.97, entry.u ?? 0.95))
+        const rawV = Math.max(0.04, Math.min(0.96, entry.v ?? 0.5))
+        const corner = smoothstep01((Math.abs(rawV - 0.5) - 0.2) / 0.2)
+        const grabVv = this.singlePage ? rawV : Math.max(0.04, Math.min(0.96, 0.5 + (rawV - 0.5) * (0.35 + 0.65 * corner)))
+        sheet.motion = this.singlePage
+          ? null
+          : createFlyerMotion(sheet.sim, entry.direction, grabU, grabVv, this.leafEnv)
+        if (sheet.motion) {
+          if (entry.follow) setDragPhase(sheet.motion, target)
+          else setQuickPhase(sheet.motion, target)
+        }
         this.applySheetPages(sheet)
         continue
       }
@@ -958,35 +1011,33 @@ export class RealBookWebGLScene {
         sheet.domText = domText
         this.applySheetPages(sheet)
       }
+      const releasing = sheet.follow && !entry.follow
+      const wasProgress = sheet.progress
+      if (releasing) sheet.phoneEaseFrom = wasProgress
       sheet.follow = entry.follow
-      sheet.target = target
       sheet.grabV = grabV
       sheet.pointerV = pointerV
+      // 纸的进度只决定 quick 时钟或手指角度；几何由 PBD 网格自己解算。
+      sheet.progress = target
+      if (!sheet.motion) continue
       if (entry.follow) {
-        // 拖页：纸捏在手指上，必须严格跟手；惯性只在松手之后接管。
-        sheet.progress = target
-        sheet.smooth = target
-        sheet.velocity = 0
+        // 拖页：纸捏在手指上，角度严格跟手（参考站 moveDrag 写的是同一个量）。
+        setDragPhase(sheet.motion, target)
+        // 手指纵向位置换到页底为 0，并按参考站的方式只取 30% 的跟随量。
+        const rawPointer = Math.max(0.04, Math.min(0.96, 1 - pointerV))
+        const followV = Math.max(0.04, Math.min(0.96, sheet.motion.grabV + 0.3 * (rawPointer - sheet.motion.grabV)))
+        setDragPointerRow(sheet.motion, followV)
+      } else {
+        // 松手：从当前角度接着走参考站的自然弹簧；同一次翻页里进度回头也要跟着回。
+        if (releasing) releaseFlyer(sheet.motion)
+        // 取消：回到出发侧（参考站的 cancelDrag 把 targetPhi 设回起手角）。
+        sheet.motion.targetPhi = entry.cancel
+          ? (sheet.direction === 1 ? 0 : Math.PI)
+          : (sheet.direction === 1 ? Math.PI : 0)
+        if (sheet.motion.mode === 'quick') setQuickPhase(sheet.motion, target)
       }
     }
     this.sheetsNeedRefresh = false
-  }
-
-  /**
-   * 纸页跟随目标的弹簧滞后与回弹。
-   *
-   * 由 `loop` 按真实帧间隔推进，而不是在上层给进度时按固定 1/60 走：
-   * 上层只在进度变化时调用，掉帧或进度停住时弹簧就停在那儿了。
-   */
-  private advanceFlip(sheet: FlipSheetRuntime, delta: number): void {
-    if (sheet.follow) {
-      sheet.progress = sheet.smooth = sheet.target
-      sheet.velocity = 0
-      return
-    }
-    sheet.velocity += (22 * (sheet.target - sheet.smooth) - 9 * sheet.velocity) * delta
-    sheet.smooth += sheet.velocity * delta
-    sheet.progress = Math.max(-0.05, Math.min(1.05, sheet.smooth))
   }
 
   setProgress(progress: number, totalChars: number, pageCount: number): void {
@@ -1060,52 +1111,34 @@ export class RealBookWebGLScene {
   }
 
   /**
-   * 用 40×8 质点布料驱动飞页网格。
+   * 写飞页网格。
    *
-   * 解析弧面（纸角/书脊双时间线）只决定「纸转到哪儿」，它沿页高是均匀的，
-   * 单靠它会读成一张弯了的硬卡片。布料层在它上面叠马鞍、自由角下垂和行波，
-   * 再按惯性滞后一步，纸才有「被甩起来」的重量。渲染网格（40×26）比布料网格密，
-   * 用双线性采样取场，指望法线把 8 段的高度方向抹匀。
+   * 双页：`sim` 已经被 `realBookLeafMotion` 的 PBD 解算推进过，LeafMesh 直接读
+   * 它的 x/z（40 行 × 40 列），再按 40×26 顶点写出法线与曲率。参考站的纸是
+   * 一整张连续曲面，没有「解析弧面 + 布料低通」两层几何。
+   *
+   * 窄屏：仍然是参考站的 `phoneCurl` 滚动折（纸绕一条会走的折线卷起），
+   * 单页只有一张纸，不走 PBD 网格。
    */
   private writeFlipGeometry(sheet: FlipSheetRuntime, t: number): void {
     if (this.singlePage) {
-      // 窄屏单页：纸绕一条会走的折线卷起，没被卷到的字保持平坦；卷过 90° 后换面由 shader 处理。
-      const clamped = Math.max(0, Math.min(1, t))
-      const curlT = sheet.direction === 1 ? clamped : 1 - clamped
+      let phase = Math.max(0, Math.min(1, t))
+      if (!sheet.follow) {
+        // 参考站 stepPhoneFlyers：松手后从当前相位三次曲线落到目标；quick 的起点是 0。
+        const from = Math.max(0, Math.min(1, sheet.phoneEaseFrom))
+        const span = 1 - from
+        if (span > 1e-6) {
+          const raw = Math.max(0, Math.min(1, (phase - from) / span))
+          phase = from + span * (1 - (1 - raw) ** 3)
+        }
+      }
+      const curlT = sheet.direction === 1 ? phase : 1 - phase
       sheet.leaf.writePhoneCurl(curlT, sheet.grabV, sheet.pointerV, 0)
       return
     }
-    const field = flipClothField({
-      width: BOOK_WIDTH,
-      // 飞页组的 y 已经按窄屏页高缩放过，这里的局部高度仍是整页高。
-      height: BOOK_HEIGHT,
-      progress: t,
-      direction: sheet.direction,
-      singlePage: this.singlePage,
-    })
-    if (sheet.clothNeedsReset) {
-      sheet.cloth.reset(field)
-      sheet.clothNeedsReset = false
-    } else {
-      sheet.cloth.step(field, this.frameDelta)
-    }
-    // 布料（40×8）→ LeafSim 载体：LeafMesh 只读 x/z，y 由行号给出，与布料的 y 一致。
-    // 运动仍来自 ClothSheet；LeafSim 的解算器保留给后续的拖页/预掀，不在这里步进。
-    const sim = sheet.sim
-    const sample = this.clothSample
-    for (let row = 0; row < sim.R; row += 1) {
-      const v = sim.R > 1 ? row / (sim.R - 1) : 0
-      for (let column = 0; column < sim.N; column += 1) {
-        const u = sim.N > 1 ? column / (sim.N - 1) : 0
-        sheet.cloth.sampleInto(u, v, sample, 0)
-        const index = row * sim.N + column
-        sim.x[index] = sample[0]!
-        sim.z[index] = sample[2]!
-      }
-    }
-    sim.side = sheet.direction === 1 ? 1 : -1
+    if (!sheet.motion) return
     // LeafMesh 一次写出顶点、法线与曲率；纸面的暗部、透光与中缝都读这份数据。
-    sheet.leaf.write(sim)
+    sheet.leaf.write(sheet.sim)
   }
 
   /**
@@ -1119,13 +1152,16 @@ export class RealBookWebGLScene {
     const count = Math.min(this.flipEntries.length, this.flipSheets.length)
     const active: FlipSheetRuntime[] = []
     for (let index = 0; index < count; index += 1) active.push(this.flipSheets[index]!)
+    // 参考站只让「最立起来」的两张纸投影，越接近落点透明度越低（落定混合已把纸按到页堆上）。
     const casters = active
+      .filter((sheet) => sheet.motion !== null)
+      .sort((a, b) => Math.abs(a.motion!.phi - Math.PI / 2) - Math.abs(b.motion!.phi - Math.PI / 2))
+      .slice(0, SH_SLOTS)
       .map((sheet) => ({
         sheet,
-        opacity: Math.pow(Math.max(0, Math.sin(Math.PI * Math.max(0, Math.min(1, sheet.progress)))), 0.8),
+        opacity: Math.max(0, 1 - sheet.motion!.landingAmount),
       }))
       .filter((item) => item.opacity > 0.01)
-      .slice(0, SH_SLOTS)
     const texture = shadowRig.uShTex.value
     if (!casters.length || !texture) {
       shadowRig.uShN.value = 0
@@ -1167,7 +1203,7 @@ export class RealBookWebGLScene {
   /**
    * 逐帧推进所有在飞的纸。
    *
-   * 多张纸同时飞的时候，每张纸各有自己的弹簧与布料；层次上先起的纸在**上面**——
+   * 多张纸同时飞的时候，每张纸各有自己的 PBD 网格与运动状态；层次上先起的纸在**上面**——
    * 后来那张是从它底下抽出来的，两人的落点还叠在一起时，谁压谁必须固定，否则会闪。
    * 页间软影由 `syncShadowRig` 统一发布，不再有单独的影子网格。
    */
@@ -1178,14 +1214,64 @@ export class RealBookWebGLScene {
       const active = index < count
       sheet.group.visible = active
       if (!active) continue
-      this.advanceFlip(sheet, this.frameDelta)
+      this.stepFlipMotion(sheet)
       // 纸页 pose 已包含绕脊旋转，组本身不再重复旋转；页心高度就是书页所在平面。
       // 单页卷页的网格局部 x 是 0..W，需要整体左移半页，才能与居中的书页对齐。
-      sheet.group.position.set(this.singlePage ? -BOOK_WIDTH / 2 : 0, 0, this.pagePlaneZ + (count - index) * 0.004)
+      sheet.group.position.set(this.singlePage ? -BOOK_WIDTH / 2 : 0, 0, this.pagePlaneZ + (count - index) * FLIP_SHEET_LIFT)
       this.writeFlipGeometry(sheet, sheet.progress)
     }
-    // 布料写完再发布截面：软影读的就是这一帧的纸面形状。
+    // 网格写完再发布截面：软影读的就是这一帧的纸面形状。
     this.syncShadowRig()
+  }
+
+  /**
+   * 推进一张纸的物理。
+   *
+   * 参考站把运动固定步长积分（1/240，单帧最多 12 步）再渲染：纸的解算是刚性的，
+   * 用帧间隔直接积分会在掉帧时改变轨迹。这里照同一套子步与预算（12 × 1/240 = 50ms，
+   * 与参考站的 `dt = min(dt, 1/20)` 同一上限），单帧走不完的部分就丢掉，不补积。
+   */
+  private stepFlipMotion(sheet: FlipSheetRuntime): void {
+    const motion = sheet.motion
+    if (!motion) return
+    const frame = Math.min(this.frameDelta, 1 / 20)
+    let remaining = frame
+    let steps = 0
+    const h = 1 / 240
+    // quick 时钟由父层的 rAF 时钟每帧写入一次；一个渲染帧内的子步共用这个角度，
+    // 与参考站按 age 推进只在字面上一帧之差（240Hz 子步的分辨率远低于 60Hz 画面）。
+    while (remaining > 1e-6 && steps < 12) {
+      advanceFlyer(motion, h, this.leafEnv)
+      remaining -= h
+      steps += 1
+    }
+  }
+
+  /**
+   * 诊断快照：当前所有在飞纸的角度、网格关键点与帧状态。
+   *
+   * 只在 `window` 上挂一个只读探针（`window.__rbSceneProbe`）时使用；
+   * 截图与观感复核脚本用它读「纸现在转到哪、卷成什么样」，不参与渲染。
+   */
+  probeFlipState(): Array<Record<string, number>> {
+    return this.flipSheets
+      .filter((sheet) => sheet.group.visible && sheet.motion)
+      .map((sheet) => {
+        const motion = sheet.motion!
+        const sim = sheet.sim
+        return {
+          phi: motion.phi,
+          mode: motion.mode === 'quick' ? 0 : motion.mode === 'drag' ? 1 : motion.mode === 'auto' ? 2 : 3,
+          flex: motion.flex,
+          landing: motion.landingAmount,
+          tipX: sim.x[sim.N - 1]!,
+          midX: sim.x[Math.floor(sim.N * 0.6)]!,
+          rootX: sim.x[0]!,
+          tipZ: sim.z[sim.N - 1]!,
+          midZ: sim.z[Math.floor(sim.N * 0.6)]!,
+          progress: sheet.progress,
+        }
+      })
   }
 
   getBookScreenRect(): BookScreenRect {
