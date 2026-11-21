@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { imageBytesInfo } from '../shared/imageBytes'
 import { DEFAULT_AI_PREFS, DEFAULT_COVER_GEN_PREFS, type Book, type CoverGenPrefs } from '../shared/types'
 import { bookDir, getBook, readChapter, setCover } from './library'
-import { assertTrustedAiEndpoint, getApiKey, getSettings } from './settings'
+import { assertTrustedAiEndpoint, getApiKey, getCoverGenApiKey, getSettings } from './settings'
 
 /**
  * AI 封面生成：没有封面的书，按「书名 + 作者 + 题材 + 梗概」画一张竖版封面。
@@ -219,13 +219,23 @@ async function runGenerate(bookId: string, opts: { force?: boolean }): Promise<C
     return { ok: false, code: 'has-cover', message: '这本书已经有封面' }
   }
 
-  const apiKey = await getApiKey()
+  // 图片服务优先用封面自己的地址与 Key；都没填才回退 AI 那一套。
+  const dedicatedBase = (prefs.baseUrl || '').trim()
+  const imageBase = (dedicatedBase || settings.baseUrl || '').replace(/\/+$/, '')
+  if (!/^https?:\/\//i.test(imageBase)) {
+    return { ok: false, code: 'failed', message: '图片服务地址无效，请在设置里填写 http(s) 地址' }
+  }
+  const apiKey = (await getCoverGenApiKey()) || (await getApiKey())
   if (!apiKey) return { ok: false, code: 'no-api-key', message: '还没有配置 API Key' }
-  const ai = settings.ai ?? DEFAULT_AI_PREFS
-  try {
-    assertTrustedAiEndpoint(settings.baseUrl, ai)
-  } catch (error) {
-    return { ok: false, code: 'failed', message: error instanceof Error ? error.message : '接口地址未信任' }
+  // 自定义图片服务由用户自己在设置里填写（与在线语音端点同一套口径）；
+  // 只有回退到 AI 的地址时才需要过 AI 的信任校验。
+  if (!dedicatedBase) {
+    const ai = settings.ai ?? DEFAULT_AI_PREFS
+    try {
+      assertTrustedAiEndpoint(settings.baseUrl, ai)
+    } catch (error) {
+      return { ok: false, code: 'failed', message: error instanceof Error ? error.message : '接口地址未信任' }
+    }
   }
 
   const synopsis = await collectSynopsis(bookId, book)
@@ -236,7 +246,7 @@ async function runGenerate(bookId: string, opts: { force?: boolean }): Promise<C
     synopsis,
     style: prefs.style,
   })
-  const endpoint = `${settings.baseUrl.replace(/\/+$/, '')}/images/generations`
+  const endpoint = `${imageBase}/images/generations`
 
   let payload: unknown
   try {

@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
     ai: { provider: 'custom', trustedCustomOrigins: ['https://api.example.com'] },
   } as Record<string, unknown>,
   apiKey: 'sk-test-secret',
+  coverKey: '',
   book: {
     id: 'd_test',
     title: '测试书',
@@ -23,6 +24,7 @@ const state = vi.hoisted(() => ({
 vi.mock('./settings', () => ({
   getSettings: async () => ({ ...state.settings, ai: { ...DEFAULT_AI_PREFS, ...(state.settings.ai as object) } }),
   getApiKey: async () => state.apiKey,
+  getCoverGenApiKey: async () => state.coverKey,
   assertTrustedAiEndpoint: () => {},
 }))
 
@@ -61,6 +63,7 @@ beforeEach(() => {
     ai: { provider: 'custom', trustedCustomOrigins: ['https://api.example.com'] },
   }
   state.apiKey = 'sk-test-secret'
+  state.coverKey = ''
   state.book = {
     id: 'd_test',
     title: '测试书',
@@ -156,6 +159,37 @@ describe('generateBookCover', () => {
     expect(body.prompt).toContain('测试书')
     expect(state.setCoverCalls).toHaveLength(1)
     expect(state.setCoverCalls[0].sourcePath.endsWith('.png')).toBe(true)
+  })
+
+  it('prefers the dedicated image endpoint and its own key', async () => {
+    ;(state.settings.coverGen as Record<string, unknown>).baseUrl = 'https://img.example.com/v1/'
+    state.coverKey = 'sk-image-only'
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ b64_json: pngBytes().toString('base64') }] }),
+    })
+    const result = await generateBookCover('d_test')
+    expect(result).toMatchObject({ ok: true })
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://img.example.com/v1/images/generations')
+    expect(fetchMock.mock.calls[0][1].headers.authorization).toBe('Bearer sk-image-only')
+  })
+
+  it('falls back to the AI key when the image service has no key of its own', async () => {
+    ;(state.settings.coverGen as Record<string, unknown>).baseUrl = 'https://img.example.com/v1'
+    state.coverKey = ''
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ b64_json: pngBytes().toString('base64') }] }),
+    })
+    await generateBookCover('d_test')
+    expect(fetchMock.mock.calls[0][1].headers.authorization).toBe('Bearer sk-test-secret')
+  })
+
+  it('rejects a non-http image endpoint before calling out', async () => {
+    ;(state.settings.coverGen as Record<string, unknown>).baseUrl = 'ftp://img.example.com'
+    const result = await generateBookCover('d_test')
+    expect(result).toMatchObject({ ok: false })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('surfaces an HTTP failure without leaking the API key', async () => {

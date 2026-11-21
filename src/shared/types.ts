@@ -877,13 +877,19 @@ export interface AiPrefs {
   tierSense: TierSensePrefs
 }
 
-/** AI 生成书籍封面：没有封面的书按梗概画一张竖版封面。走 AI 已有的服务地址与 Key。 */
+/**
+ * AI 生成书籍封面：没有封面的书按梗概画一张竖版封面。
+ * 默认沿用聊天用的服务地址与 Key；图片模型与聊天模型常常不是同一个服务，
+ * 所以 `baseUrl` 与独立的 Key 都允许单独填，留空才回退到 AI 的配置。
+ */
 export interface CoverGenPrefs {
   /** 总开关；关掉后不自动生成，界面上也不给单本/批量入口。 */
   enabled: boolean
   /** 导入入架时如果还没有封面，自动生成一张。 */
   autoOnImport: boolean
   /** 图片模型名，走 OpenAI 兼容的 `/images/generations`。 */
+  /** 图片服务地址（OpenAI 兼容根，例如 `https://api.example.com/v1`）；空串表示沿用 AI 的 baseUrl。 */
+  baseUrl: string
   model: string
   /** 出图尺寸，只接受 COVER_GEN_SIZES 里的值。 */
   size: string
@@ -939,6 +945,10 @@ export interface Settings {
   proxy?: ProxyPrefs
   /** 封面生成偏好；主进程始终补齐，缺省按默认值读取。 */
   coverGen?: CoverGenPrefs
+  /** 图片服务独立 Key 是否已配置；渲染层只拿布尔值。未配置时回退 AI 的 Key。 */
+  coverGenKeyConfigured?: boolean
+  /** 有密文但本机解不开；界面据此提示「重新填写」。 */
+  coverGenKeyUnreadable?: boolean
 }
 
 export interface SettingsUpdate {
@@ -974,6 +984,8 @@ export interface SettingsUpdate {
   proxyPassword?: string
   /** 只合并提交的字段，非法值逐项回退默认。 */
   coverGen?: Partial<CoverGenPrefs>
+  /** 图片服务独立的 Key；空字符串清除（清除后回退 AI 的 Key）。 */
+  coverGenApiKey?: string
 }
 
 /** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */
@@ -1542,6 +1554,7 @@ export const COVER_GEN_SIZES = ['1024x1536', '1024x1024', '768x1024'] as const
 export const DEFAULT_COVER_GEN_PREFS: CoverGenPrefs = {
   enabled: true,
   autoOnImport: true,
+  baseUrl: '',
   model: 'gpt-image-1',
   size: '1024x1536',
   style: '中式网文封面，竖版构图，主体居中，光影饱满，画面里不要出现任何文字',

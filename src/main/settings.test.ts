@@ -36,6 +36,7 @@ import {
   assertTrustedAiEndpoint,
   getApiKey,
   getProxyPassword,
+  getCoverGenApiKey,
   getTencentMapKey,
   getSettings,
   isLegacyDeepSeekModel,
@@ -724,5 +725,23 @@ describe('cover generation prefs', () => {
 
     await updateSettings({ coverGen: { size: 'huge' } })
     expect((await getSettings()).coverGen?.size).toBe('768x1024')
+  })
+  it('stores a dedicated image endpoint and its own key without leaking the key', async () => {
+    await updateSettings({
+      coverGen: { baseUrl: '  https://api.agnes-ai.cn/v1/  ' },
+      coverGenApiKey: 'img-secret-key',
+    })
+    const settings = await getSettings()
+    expect(settings.coverGen?.baseUrl).toBe('https://api.agnes-ai.cn/v1')
+    expect(settings.coverGenKeyConfigured).toBe(true)
+    expect(JSON.stringify(settings)).not.toContain('img-secret-key')
+    expect(await readFile(SETTINGS_FILE, 'utf8')).not.toContain('img-secret-key')
+    expect(await getCoverGenApiKey()).toBe('img-secret-key')
+
+    // 非法地址不当成新配置：保留上一次的有效值
+    await updateSettings({ coverGen: { baseUrl: 'ftp://nope' } })
+    expect((await getSettings()).coverGen?.baseUrl).toBe('')
+    await updateSettings({ coverGenApiKey: '' })
+    expect((await getSettings()).coverGenKeyConfigured).toBe(false)
   })
 })

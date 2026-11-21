@@ -218,13 +218,31 @@ export function normalizeAutoUpdateCheckPrefs(value: unknown): AutoUpdateCheckPr
   }
 }
 
-/** 封面生成偏好：缺字段逐项补默认；模型名与风格长度夹住，尺寸只认白名单。 */
+/**
+ * 封面生成偏好：缺字段逐项补默认；模型名与风格长度夹住，尺寸只认白名单，
+ * 图片地址只收 http(s)，非法或留空都算「沿用 AI 的地址」。
+ */
+export function normalizeCoverGenBaseUrl(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim().replace(/\/+$/, '')
+  if (!trimmed) return ''
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
+    if (url.username || url.password) return ''
+    return trimmed
+  } catch {
+    return ''
+  }
+}
+
 export function normalizeCoverGenPrefs(value: unknown): CoverGenPrefs {
   const prefs = readRecord(value)
   return {
     enabled: typeof prefs.enabled === 'boolean' ? prefs.enabled : DEFAULT_COVER_GEN_PREFS.enabled,
     autoOnImport:
       typeof prefs.autoOnImport === 'boolean' ? prefs.autoOnImport : DEFAULT_COVER_GEN_PREFS.autoOnImport,
+    baseUrl: normalizeCoverGenBaseUrl(prefs.baseUrl),
     model:
       typeof prefs.model === 'string' && prefs.model.trim()
         ? prefs.model.trim().slice(0, 100)
@@ -451,13 +469,15 @@ export async function getSettings(): Promise<Settings> {
   const appearance = (raw.appearance as Partial<AppearancePrefs>) || {}
   const backup = readRecord(raw.autoBackup)
   // 每把 Key 只解一次：getSettings 在主进程里被高频调用，重复解密会把 DPAPI 往返翻倍。
-  const [apiKeyUsable, embeddingKeyUsable, tierSenseKeyUsable, ttsKeyUsable, tencentMapKeyUsable] = await Promise.all([
-    hasUsableEncryptedKey(raw.apiKeyEnc),
-    hasUsableEncryptedKey(raw.embeddingApiKeyEnc),
-    hasUsableEncryptedKey(raw.tierSenseApiKeyEnc),
-    hasUsableEncryptedKey(raw.ttsApiKeyEnc),
-    hasUsableEncryptedKey(raw.tencentMapKeyEnc),
-  ])
+  const [apiKeyUsable, embeddingKeyUsable, tierSenseKeyUsable, ttsKeyUsable, tencentMapKeyUsable, coverGenKeyUsable] =
+    await Promise.all([
+      hasUsableEncryptedKey(raw.apiKeyEnc),
+      hasUsableEncryptedKey(raw.embeddingApiKeyEnc),
+      hasUsableEncryptedKey(raw.tierSenseApiKeyEnc),
+      hasUsableEncryptedKey(raw.ttsApiKeyEnc),
+      hasUsableEncryptedKey(raw.tencentMapKeyEnc),
+      hasUsableEncryptedKey(raw.coverGenApiKeyEnc),
+    ])
   return {
     libraryPath:
       typeof raw.libraryPath === 'string' && raw.libraryPath.trim()
@@ -501,6 +521,8 @@ export async function getSettings(): Promise<Settings> {
     },
     autoUpdateCheck: normalizeAutoUpdateCheckPrefs(raw.autoUpdateCheck),
     coverGen: normalizeCoverGenPrefs(raw.coverGen),
+    coverGenKeyConfigured: coverGenKeyUsable,
+    coverGenKeyUnreadable: hasEncryptedKey(raw.coverGenApiKeyEnc) && !coverGenKeyUsable,
   }
 }
 
@@ -521,6 +543,13 @@ export async function getTencentMapKey(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.tencentMapKeyEnc !== 'string' || !raw.tencentMapKeyEnc) return ''
   return decryptCipher(raw.tencentMapKeyEnc)
+}
+
+/** 图片服务独立 Key；未配置时调用方回退 AI 的 Key。明文只在主进程用。 */
+export async function getCoverGenApiKey(): Promise<string> {
+  const raw = await loadRaw()
+  if (typeof raw.coverGenApiKeyEnc !== 'string' || !raw.coverGenApiKeyEnc) return ''
+  return decryptCipher(raw.coverGenApiKeyEnc)
 }
 
 export function normalizeSettingsUpdatePayload(value: unknown): SettingsUpdate {
@@ -592,6 +621,13 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
       raw.tencentMapKeyEnc = (await safeStorage.encryptStringAsync(mapKey)).toString('base64')
     } else delete raw.tencentMapKeyEnc
   }
+  if (typeof patch.coverGenApiKey === 'string') {
+    const coverKey = patch.coverGenApiKey.trim()
+    if (coverKey) {
+      await requireEncryptionAvailable()
+      raw.coverGenApiKeyEnc = (await safeStorage.encryptStringAsync(coverKey)).toString('base64')
+    } else delete raw.coverGenApiKeyEnc
+  }
   if (patch.appearance) {
     const next = { ...readRecord(raw.appearance), ...readRecord(patch.appearance) }
     if ('skin' in next) next.skin = normalizeSkin(next.skin)
@@ -653,6 +689,8 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
       enabled: typeof incoming.enabled === 'boolean' ? incoming.enabled : previous.enabled,
       autoOnImport:
         typeof incoming.autoOnImport === 'boolean' ? incoming.autoOnImport : previous.autoOnImport,
+      // baseUrl 传空串才是「清掉、回退 AI 地址」；非法地址按未提交处理，保留原值。
+      baseUrl: 'baseUrl' in incoming ? normalizeCoverGenBaseUrl(incoming.baseUrl) : previous.baseUrl,
       model:
         typeof incoming.model === 'string' && incoming.model.trim()
           ? incoming.model.trim().slice(0, 100)

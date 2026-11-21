@@ -320,6 +320,9 @@ const coverGenAutoOnImport = ref(DEFAULT_COVER_GEN_PREFS.autoOnImport)
 const coverGenModel = ref(DEFAULT_COVER_GEN_PREFS.model)
 const coverGenSize = ref(DEFAULT_COVER_GEN_PREFS.size)
 const coverGenStyle = ref(DEFAULT_COVER_GEN_PREFS.style)
+const coverGenBaseUrl = ref(DEFAULT_COVER_GEN_PREFS.baseUrl)
+const coverGenApiKey = ref('')
+const coverGenKeyConfigured = ref(false)
 const coverGenSaving = ref(false)
 const coverSizeOptions = COVER_GEN_SIZES.map((size) => ({ label: size, value: size }))
 const autoUpdateHoursOptions = [
@@ -688,20 +691,26 @@ async function saveCoverGen(): Promise<void> {
   coverGenSaving.value = true
   msg.value = ''
   try {
-    settings.value = await window.api.settings.set({
+    const update: import('@shared/types').SettingsUpdate = {
       coverGen: {
         enabled: coverGenEnabled.value,
         autoOnImport: coverGenAutoOnImport.value,
+        baseUrl: coverGenBaseUrl.value.trim(),
         model: coverGenModel.value.trim(),
         size: coverGenSize.value,
         style: coverGenStyle.value.trim(),
       },
-    })
+    }
+    if (coverGenApiKey.value.trim()) update.coverGenApiKey = coverGenApiKey.value.trim()
+    settings.value = await window.api.settings.set(update)
+    coverGenApiKey.value = ''
     const saved = settings.value.coverGen ?? DEFAULT_COVER_GEN_PREFS
+    coverGenBaseUrl.value = saved.baseUrl
     coverGenModel.value = saved.model
     coverGenSize.value = saved.size
     coverGenStyle.value = saved.style
-    msg.value = '封面设置已保存。'
+    coverGenKeyConfigured.value = Boolean(settings.value.coverGenKeyConfigured)
+    msg.value = '封面设置已保存。' + (coverGenKeyConfigured.value ? ' 图片 Key 已加密存储。' : '')
     msgType.value = 'success'
   } catch (e: unknown) {
     msg.value = e instanceof Error ? e.message : String(e)
@@ -1598,7 +1607,7 @@ onMounted(async () => {
     <n-card v-show="activeSection === 'cover'" title="AI 封面生成" class="settings-card">
       <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">
         没有封面的书，可以用 AI 按书名、题材和梗概画一张竖版封面。<br>
-        走上面 AI 配置里的服务地址与 API Key，调用 OpenAI 兼容的 <code>/images/generations</code>，按张计费；模型需支持图片生成。
+        调用 OpenAI 兼容的 <code>/images/generations</code>，按张计费；图片模型常常与聊天模型不是同一个服务，所以下面可以单独填地址与 Key，留空则沿用上面 AI 的配置。
       </p>
       <n-space vertical :size="16">
         <div class="field">
@@ -1610,6 +1619,26 @@ onMounted(async () => {
           <div class="field-label">导入时自动生成</div>
           <n-switch v-model:value="coverGenAutoOnImport" :disabled="!coverGenEnabled" />
           <div class="field-help">导入 txt / epub 后如果没有封面，就在后台画一张，不阻塞导入。每次导入都会真实消耗一次图片额度。</div>
+        </div>
+        <div class="field">
+          <div class="field-label">图片服务地址</div>
+          <n-input
+            v-model:value="coverGenBaseUrl"
+            placeholder="留空沿用 AI 地址，例如 https://api.example.com/v1"
+            :disabled="!coverGenEnabled"
+          />
+          <div class="field-help">填到 <code>/v1</code> 为止，不要带 <code>/images/generations</code>。</div>
+        </div>
+        <div class="field">
+          <div class="field-label">图片服务 Key</div>
+          <n-input
+            v-model:value="coverGenApiKey"
+            type="password"
+            show-password-on="click"
+            :placeholder="coverGenKeyConfigured ? '已配置，留空不修改' : '留空则沿用 AI 的 Key'"
+            :disabled="!coverGenEnabled"
+          />
+          <div class="field-help">加密保存在本机，不会回传给界面。清空后回退到 AI 的 Key。</div>
         </div>
         <div class="field">
           <div class="field-label">图片模型名</div>
