@@ -24,7 +24,7 @@ import { buildSyncBundle, parseSyncBundle, stripCredentialFields } from './syncC
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 与 ipcMain.handle 的 ...args: any[] 对齐
-export type IpcRegistrar = (channel: string, listener: (...args: any[]) => unknown) => void
+type IpcRegistrar = (channel: string, listener: (...args: any[]) => unknown) => void
 
 /** 一个已订阅的规则清单来源。磁盘格式归 `ruleMarketStore.ts`，这里只当形状用。 */
 export interface MarketSubscription {

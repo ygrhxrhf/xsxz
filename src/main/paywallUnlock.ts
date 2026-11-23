@@ -122,9 +122,6 @@ function stripPaywallNotices(text: string): string {
   return effectiveLength(cleaned) >= MIN_UNLOCK_CHARS ? cleaned : text
 }
 
-/** 私用区（PUA）码点判定已收口到 bodyText：抽取与解锁两条路共用同一口径。 */
-export { looksFontObfuscated } from './bodyText'
-
 /**
  * 一段串够不够格当「被解锁的正文」。
  * 返回清洗后的正文，或 null。

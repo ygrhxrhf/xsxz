@@ -15,7 +15,7 @@ import { probeNodes, summarizeSpeedTest, tcpProbeLatency, type LatencyProbe } fr
 
 /** 主进程 IPC 注册器：把 core 模块和 Electron 解耦，测试里可传入假实现。 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 与 ipcMain.handle 的 ...args: any[] 对齐
-export type IpcRegistrar = (channel: string, listener: (...args: any[]) => unknown) => void
+type IpcRegistrar = (channel: string, listener: (...args: any[]) => unknown) => void
 
 interface ProxyAutoUpdateService {
   readPrefs(): Promise<ProxyAutoUpdatePrefs>

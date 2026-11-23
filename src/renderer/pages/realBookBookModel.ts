@@ -16,7 +16,7 @@ import type { CoverSet } from './realBookCover'
 import { BOARD_THICKNESS, BOOK_HEIGHT, BOOK_WIDTH, COVER_OVERHANG, ENDPAPER_PALETTES, type RealBookEndpaper } from './realBookWebGLModel'
 import { PHONE_CURL_TRAVEL, phoneTurnCommits } from './realBookPhoneCurl'
 
-export const BOOK = { W: BOOK_WIDTH, H: BOOK_HEIGHT, OH: COVER_OVERHANG, TB: BOARD_THICKNESS }
+const BOOK = { W: BOOK_WIDTH, H: BOOK_HEIGHT, OH: COVER_OVERHANG, TB: BOARD_THICKNESS }
 
 interface QuickTurn {
   startAngle: number

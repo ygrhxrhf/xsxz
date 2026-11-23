@@ -29,4 +29,3 @@ export function t(key: string, ...args: unknown[]): string {
   return template.replace(/\{(\d+)\}/g, (_, index: string) => String(args[Number(index)] ?? ''))
 }
 
-export const subscribe = (): (() => void) => () => {}

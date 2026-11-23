@@ -3,8 +3,7 @@
  * web/src/atlas/catalog.ts，Apache-2.0。已修改：类型改从 ./types 取、去掉 .ts 扩展名、接入 spbf。
  * 许可文本见 third_party/infinite-reader/LICENSE，地图数据署名见 src/renderer/public/atlas/README.md。
  */
-import type { BookMap } from './types'
-export type { BookMap, AtlasPlace } from './types'
+import type { AtlasPlace, BookMap } from './types'
 
 /** Reviewed pilot maps. Recognition is exact image identity, never a filename or page-number guess. */
 export const BOOK_MAPS: BookMap[] = [
