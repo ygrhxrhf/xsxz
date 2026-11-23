@@ -13,7 +13,7 @@ export interface SearchView {
   originalOffsets: number[]
 }
 
-export interface ViewToken {
+interface ViewToken {
   term: string
   /** 原始 UTF-16 偏移，与 SearchView.originalOffsets 同一坐标系。 */
   at: number

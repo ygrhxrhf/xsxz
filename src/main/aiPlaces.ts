@@ -11,7 +11,7 @@ import type { AiPlace, AiPlaceKind } from '../shared/types'
 import { getBook } from './library'
 import { getReadFrontier, readClippedChapter } from './readFrontier'
 
-export interface PlaceCandidate {
+interface PlaceCandidate {
   /** 稳定候选 id：`p-<chapterId>-<paragraphIndex>`，模型只能引用它。 */
   id: string
   chapterId: string
@@ -24,7 +24,7 @@ export interface PlaceCandidate {
   clipped: boolean
 }
 
-export interface PlaceExtractionPlan {
+interface PlaceExtractionPlan {
   bookId: string
   bookTitle: string
   chapters: Array<{ id: string; title: string }>
@@ -53,7 +53,7 @@ const MAX_PLACES = 200
 const MAX_QUOTE_CHARS = 400
 const MAX_NAME_CHARS = 40
 const MAX_ALIASES = 5
-export const PLACE_KINDS: readonly AiPlaceKind[] = ['city', 'region', 'landmark', 'other']
+const PLACE_KINDS: readonly AiPlaceKind[] = ['city', 'region', 'landmark', 'other']
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

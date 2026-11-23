@@ -88,7 +88,7 @@ export interface RuleMarketIpcDeps {
  * 并如实返回「同步端点不可达」。要真同步，用 `sync.signIn` 的 `endpoint`
  * 参数指向自己的服务端（自带 HTTP 接口即可）。
  */
-export const DEFAULT_SYNC_ENDPOINT = 'https://sync.spbf.app'
+const DEFAULT_SYNC_ENDPOINT = 'https://sync.spbf.app'
 
 const FILE_VERSION = 1
 
@@ -182,7 +182,7 @@ export function createAccountStore(): AccountStore {
 }
 
 /** 内置 HTTP 传输：POST 数据包，拿回云端版本。 */
-export const defaultSyncTransport: SyncTransport = async ({ endpoint, token, bundle }) => {
+const defaultSyncTransport: SyncTransport = async ({ endpoint, token, bundle }) => {
   const base = endpoint.replace(/\/+$/, '')
   let response: Response
   try {

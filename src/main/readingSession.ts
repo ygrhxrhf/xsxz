@@ -17,11 +17,11 @@ const LOAD_TIMEOUT_MS = 8_000
 const PAGE_CACHE_LIMIT = 6
 const CATALOG_CACHE_LIMIT = 4
 
-export type ReadingPageResult =
+type ReadingPageResult =
   | { ok: true; page: BrowseReadingPage; cached: boolean }
   | { ok: false; message: string }
 
-export interface PageBootstrap {
+interface PageBootstrap {
   pageUrl: string
   pageKind: 'catalog' | 'chapter'
   title: string

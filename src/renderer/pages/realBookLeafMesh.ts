@@ -9,7 +9,7 @@ import type { LeafSim } from './realBookLeafSim'
 import type { GutterFold } from './realBookGutterFold'
 import { phoneCurl, curlPoint } from './realBookPhoneCurl'
 
-export const GRID_U = 40
+const GRID_U = 40
 export const GRID_V = 26
 
 const indexCache = new Map<string, THREE.BufferAttribute>()

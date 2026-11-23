@@ -19,11 +19,11 @@
  * - `job_status` / `job_wait` / `job_cancel` 是桥接层工具，没有对应 IPC 频道，故不在此表。
  */
 
-export type CapabilityTier = 'read' | 'write' | 'destructive'
-export type ConfirmationMode = 'none' | 'dry-run' | 'token'
-export type CapabilityDependency = 'browse' | 'view' | 'key' | 'disk'
+type CapabilityTier = 'read' | 'write' | 'destructive'
+type ConfirmationMode = 'none' | 'dry-run' | 'token'
+type CapabilityDependency = 'browse' | 'view' | 'key' | 'disk'
 
-export interface JsonSchemaProperty {
+interface JsonSchemaProperty {
   type: 'string' | 'number' | 'boolean' | 'object' | 'array'
   description: string
   enum?: readonly string[]
@@ -32,7 +32,7 @@ export interface JsonSchemaProperty {
   additionalProperties?: boolean
 }
 
-export interface JsonSchema {
+interface JsonSchema {
   type: 'object'
   description?: string
   properties: Record<string, JsonSchemaProperty>
@@ -40,7 +40,7 @@ export interface JsonSchema {
   additionalProperties?: boolean
 }
 
-export interface AgentCapability {
+interface AgentCapability {
   channel: string
   /** MCP 工具名；不暴露的频道为 null。 */
   tool: string | null
@@ -2000,7 +2000,7 @@ export const EXPOSED_CAPABILITIES: readonly AgentCapability[] = CAPABILITIES.fil
   (capability) => capability.tool !== null,
 )
 
-export const EXPOSED_CAPABILITIES_BY_TOOL: ReadonlyMap<string, AgentCapability> = new Map(
+const EXPOSED_CAPABILITIES_BY_TOOL: ReadonlyMap<string, AgentCapability> = new Map(
   EXPOSED_CAPABILITIES.map((capability) => [capability.tool!, capability]),
 )
 

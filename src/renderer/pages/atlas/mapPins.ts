@@ -13,9 +13,9 @@ import type { AiPlaceGeo } from '@shared/types'
 import type { BookMap } from './types'
 
 /** 文字地点的固定地图 id。 */
-export const TEXT_MAP_ID = 'text-book'
+const TEXT_MAP_ID = 'text-book'
 
-export interface TextPlaceInput {
+interface TextPlaceInput {
   id: string
   name: string
   latitude: number

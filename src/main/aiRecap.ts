@@ -10,16 +10,16 @@ import type {
 } from '../shared/types'
 import { AI_INPUT_CHARACTER_BUDGET, countTextCharacters, estimateAiTokens } from './aiBudget'
 
-export type AiRecapLength = 'short' | 'standard' | 'detailed'
+type AiRecapLength = 'short' | 'standard' | 'detailed'
 
-export interface RecapChapterInput {
+interface RecapChapterInput {
   id: string
   index: number
   title: string
   status: ChapterStatus | string
 }
 
-export interface RecapMemoryFact {
+interface RecapMemoryFact {
   id: string
   kind: '人物' | '关系' | '伏笔' | '关键事件'
   title: string
@@ -28,7 +28,7 @@ export interface RecapMemoryFact {
   sourceChapters: string[]
 }
 
-export interface AiRecapPlan {
+interface AiRecapPlan {
   prompt: string
   uptoChapterId: string
   summaries: Array<{ chapterId: string; title: string; text: string }>

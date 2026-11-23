@@ -5,7 +5,7 @@
 
 import type { AnnotationColor } from './types'
 
-export interface ParaRange {
+interface ParaRange {
   /** 渲染时的段落下标（空段不计入） */
   index: number
   start: number
@@ -46,7 +46,7 @@ export function buildExcerpt(body: string, offset: number, needleLen: number, ra
   return prefix + body.slice(start, end).replace(/\s*\n+\s*/g, ' ') + suffix
 }
 
-export interface TextSegment {
+interface TextSegment {
   text: string
   hit: boolean
 }

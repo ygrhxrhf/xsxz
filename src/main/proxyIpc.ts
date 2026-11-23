@@ -17,13 +17,13 @@ import { probeNodes, summarizeSpeedTest, tcpProbeLatency, type LatencyProbe } fr
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 与 ipcMain.handle 的 ...args: any[] 对齐
 export type IpcRegistrar = (channel: string, listener: (...args: any[]) => unknown) => void
 
-export interface ProxyAutoUpdateService {
+interface ProxyAutoUpdateService {
   readPrefs(): Promise<ProxyAutoUpdatePrefs>
   setPrefs(patch: { enabled?: boolean; intervalMinutes?: number }): Promise<ProxyAutoUpdatePrefs>
   refresh(): Promise<{ ok: boolean; message?: string; body?: string }>
 }
 
-export interface ProxyIpcDeps {
+interface ProxyIpcDeps {
   /** 订阅自动更新服务。 */
   autoUpdate: ProxyAutoUpdateService
   /** 取当前缓存的订阅正文；测速与概览都从它解析。 */
@@ -33,7 +33,7 @@ export interface ProxyIpcDeps {
 }
 
 /** 订阅正文 → 概览（与 `proxyRuntime.describeSubscription` 同形）。 */
-export function describeSubscriptionBody(body: string): ProxySubscriptionState {
+function describeSubscriptionBody(body: string): ProxySubscriptionState {
   const parsed = parseSubscription(body)
   const byProtocol: Record<string, number> = {}
   for (const node of parsed.nodes) byProtocol[node.protocol] = (byProtocol[node.protocol] ?? 0) + 1

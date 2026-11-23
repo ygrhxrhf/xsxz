@@ -133,7 +133,7 @@ function consumeConfirmToken(tool: string, token: string, args: unknown): Confir
 }
 
 /** settings.get 的返回值进白名单：密文字段与任何明文凭据字段一律剥掉。 */
-export function sanitizeSettingsPayload(value: unknown): unknown {
+function sanitizeSettingsPayload(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sanitizeSettingsPayload)
   if (value !== null && typeof value === 'object') {
     const output: Record<string, unknown> = {}

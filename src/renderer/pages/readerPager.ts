@@ -70,7 +70,7 @@ export interface ReaderParagraphSpan {
   bottom: number
 }
 
-export interface ParagraphPagingInput {
+interface ParagraphPagingInput {
   /** 段落 spans，顺序无关；非法项会被丢掉。 */
   paragraphs: readonly ReaderParagraphSpan[]
   scrollTop: number

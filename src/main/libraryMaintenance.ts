@@ -8,7 +8,7 @@ export function isLibraryRestoring(): boolean {
   return restoring
 }
 
-export function assertLibraryWritable(): void {
+function assertLibraryWritable(): void {
   if (restoring && !restoreContext.getStore()) throw new Error('书库正在恢复，请稍后再试')
 }
 

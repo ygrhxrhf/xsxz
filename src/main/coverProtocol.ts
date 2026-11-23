@@ -10,7 +10,7 @@ import { getLibraryPath } from './library'
  * 不用 `file://`：开发模式页面来自 `http://127.0.0.1`，Chromium 会拦住它加载 `file://` 图片，
  * 封面只剩破损图标。渲染层因此不再拼本机绝对路径，只给书 id 和文件名（见 libraryCard.ts）。
  */
-export const COVER_SCHEME = 'spbf-cover'
+const COVER_SCHEME = 'spbf-cover'
 
 const COVER_FILE = /^cover\.(jpg|png|webp)$/
 

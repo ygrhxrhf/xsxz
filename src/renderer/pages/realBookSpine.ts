@@ -6,7 +6,7 @@
  * 在落页瞬间跳变。
  */
 
-export const MIN_SPINE_LAYERS = 3
+const MIN_SPINE_LAYERS = 3
 export const MAX_SPINE_LAYERS = 12
 export const SPINE_LAYER_SPACING_PX = 1.8
 /** 每层纸的纵深（px）：参考书是纸页本身，不是一块厚砖，纸垛只留几像素的边。 */
@@ -15,7 +15,7 @@ export const SPINE_LAYER_DEPTH_PX = 1.6
 /** 正文字符数对应的视觉厚度：以 10 万字作为中等厚度基准。 */
 const CHARS_PER_LAYER = 5_000
 
-export interface SpineStack {
+interface SpineStack {
   /** 书的总视觉层数（可为小数，CSS 进深用它） */
   total: number
   /** 左侧已读厚度（层） */
@@ -24,7 +24,7 @@ export interface SpineStack {
   remaining: number
 }
 
-export interface SpineLayer {
+interface SpineLayer {
   /** 第几层（0 起） */
   index: number
   /** 纵向偏移（px） */
@@ -35,7 +35,7 @@ export interface SpineLayer {
   opacity: number
 }
 
-export interface SpineLayerOptions {
+interface SpineLayerOptions {
   /** 1 = 向下（剩余侧），-1 = 向上（已读侧） */
   direction?: 1 | -1
   /** 层间距（px） */

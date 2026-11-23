@@ -16,7 +16,7 @@ import type { SiteRule, UnlockMethod } from '../shared/types'
 import { bodyText, cjkLength, cleanBodyText, effectiveLength, linkDensity, looksFontObfuscated, visibleText } from './bodyText'
 
 /** 恢复出的正文至少要有这么多有效字符，才敢当「解锁成功」。 */
-export const MIN_UNLOCK_CHARS = 200
+const MIN_UNLOCK_CHARS = 200
 
 /** 恢复结果必须比页面上已经可见的正文多出这么多字符，否则只是把试读搬了一遍。 */
 const MIN_GAIN_CHARS = 40
@@ -31,7 +31,7 @@ const MAX_CANDIDATE_CHARS = 200_000
 /** 最少中文字数：小说正文的中文占比高，用它挡掉 JS/CSS 噪声。 */
 const MIN_CJK_CHARS = 120
 
-export interface UnlockHit {
+interface UnlockHit {
   body: string
   method: UnlockMethod
   /** 怎么找到的：选择器、脚本位置、属性名，进日志和审计。 */
@@ -40,7 +40,7 @@ export interface UnlockHit {
   continuationUrls?: string[]
 }
 
-export interface UnlockAttempt {
+interface UnlockAttempt {
   ok: boolean
   hit?: UnlockHit
   /** 失败原因：给日志与界面一句话，不含正文。 */
@@ -49,7 +49,7 @@ export interface UnlockAttempt {
   tried?: string[]
 }
 
-export interface UnlockOptions {
+interface UnlockOptions {
   /** 页面上已经能看见的正文（截断的试读部分）；用于判定是否真的多出内容。 */
   visibleBody?: string
   /** 是否附加收集隐藏续页链接，默认 true。 */
@@ -569,7 +569,7 @@ function scoreCompletion(text: string, visible: string): number {
 }
 
 /** 从一段（接口响应或内联数据）文本里恢复出的正文。 */
-export interface RecoveredBody {
+interface RecoveredBody {
   body: string
   method: UnlockMethod
   detail: string

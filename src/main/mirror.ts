@@ -14,21 +14,21 @@ import { canonicalizeUrl } from '../shared/urlHash'
  * - 已完整入库的书按书目地址跳过，不重新抓；只下了一半的书仍交给下载层补章。
  */
 
-export const MIRROR_DEFAULT_MAX_BOOKS = 10
-export const MIRROR_MAX_BOOKS = 50
-export const MIRROR_DEFAULT_MAX_PAGES = 3
-export const MIRROR_MAX_PAGES = 10
+const MIRROR_DEFAULT_MAX_BOOKS = 10
+const MIRROR_MAX_BOOKS = 50
+const MIRROR_DEFAULT_MAX_PAGES = 3
+const MIRROR_MAX_PAGES = 10
 const MIRROR_WAIT_SLICE_MS = 1_000
 const MIRROR_WAIT_LIMIT_MS = 30 * 60_000
 /** 取消 / 撞墙后等下载层收尾：不能再用 30 分钟预算，否则「立即停批」会变成空等。 */
 const MIRROR_CLEANUP_WAIT_MS = 5_000
 
-export interface MirrorCandidate {
+interface MirrorCandidate {
   url: string
   title: string
 }
 
-export interface MirrorStartOptions {
+interface MirrorStartOptions {
   seedUrl?: string
   maxBooks?: number
   maxPages?: number

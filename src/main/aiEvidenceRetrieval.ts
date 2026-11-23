@@ -17,7 +17,7 @@ import { planEvidenceReads, wakeEvidenceIndex } from './aiEvidenceIndex'
 /** 剪枝后最多读盘这么多章：必选集与索引不可用的章不受此限，宁可多读也不能漏引用。 */
 export const MAX_EVIDENCE_CHAPTER_READS = 24
 
-export interface EvidenceChapterHeader {
+interface EvidenceChapterHeader {
   id: string
   index: number
   title: string
@@ -25,7 +25,7 @@ export interface EvidenceChapterHeader {
   file: string
 }
 
-export interface EvidenceReads {
+interface EvidenceReads {
   indexed: number
   total: number
   read: number

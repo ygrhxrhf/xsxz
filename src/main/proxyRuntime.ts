@@ -86,7 +86,7 @@ export async function stopSubscriptionProxy(): Promise<void> {
   if (state.status !== 'stopped') setState({ status: 'stopped' })
 }
 
-export interface StartFromSubscriptionOptions {
+interface StartFromSubscriptionOptions {
   /** 订阅正文（已经过网络拉取；本模块不负责下载）。 */
   body: string
   /** 选第几个节点；缺省沿用上次或 0。 */
@@ -95,7 +95,7 @@ export interface StartFromSubscriptionOptions {
   applyToSession?: boolean
 }
 
-export type StartFromSubscriptionResult =
+type StartFromSubscriptionResult =
   | { ok: true; port: number; node: { name: string; protocol: string } }
   | { ok: false; message: string }
 

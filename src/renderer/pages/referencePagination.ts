@@ -23,7 +23,7 @@ import type {
 } from './realBookPager'
 import type { RealBookNote } from './realBookNotes'
 
-export interface ReferencePaginationLayout {
+interface ReferencePaginationLayout {
   pageWidth: number
   pageHeight: number
   marginTop: number
@@ -37,7 +37,7 @@ export interface ReferencePaginationLayout {
   singlePage: boolean
 }
 
-export interface ReferencePaginationInput {
+interface ReferencePaginationInput {
   chapterTitle: string
   paragraphs: readonly string[]
   paragraphIndexes: readonly number[]

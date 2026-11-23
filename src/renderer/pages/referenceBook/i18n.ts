@@ -7,7 +7,7 @@
  * 许可文本见 third_party/infinite-reader/LICENSE。
  */
 
-export type Locale = 'zh-CN' | 'en'
+type Locale = 'zh-CN' | 'en'
 
 let locale: Locale = 'zh-CN'
 

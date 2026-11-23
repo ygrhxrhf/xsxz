@@ -24,13 +24,13 @@ export interface FlyerTextPiece {
   height: number
 }
 
-export interface FlyerScreenPoint {
+interface FlyerScreenPoint {
   x: number
   y: number
 }
 
 /** 飞页两个面各自该印哪一页、用哪一侧版心。 */
-export interface FlyerFacePage<T> {
+interface FlyerFacePage<T> {
   /** 1 = 正面网格（弧的起点，右页平躺），-1 = 纸背网格（弧的终点，左页平躺）。 */
   face: 1 | -1
   page: T | null
@@ -77,7 +77,7 @@ export function flyerPageIndexes(
     : { front: from - 1, back: from - 2 }
 }
 
-export interface FlyerSplitOptions {
+interface FlyerSplitOptions {
   /** 每段最宽多少逻辑像素。越窄越贴合弧面，代价是 DOM 片段更多。 */
   maxWidth?: number
   /** 每段最多几个字（宽字符的兜底上限）。 */
@@ -88,7 +88,7 @@ export interface FlyerSplitOptions {
  * 一行切段的上限：4 个汉字约 88px，弧面在一段内的弯曲不到 1px；
  * 再加宽会让纸卷得最急的位置出现肉眼可见的折线。
  */
-export const FLYER_PIECE_MAX_WIDTH = 96
+const FLYER_PIECE_MAX_WIDTH = 96
 export const FLYER_PIECE_MAX_CHARS = 6
 
 /**

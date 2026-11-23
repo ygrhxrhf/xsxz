@@ -55,7 +55,7 @@ interface FollowFile {
   updatedAt: string
 }
 
-export interface AiFollowHooks {
+interface AiFollowHooks {
   isDownloadBusy: () => boolean
   sleep: (ms: number) => Promise<void>
 }

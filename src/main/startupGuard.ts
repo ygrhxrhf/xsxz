@@ -20,7 +20,7 @@ export interface StartupGuardDeps {
   onUnavailable?: (error: unknown) => void
 }
 
-export interface StartupGuardResult {
+interface StartupGuardResult {
   ok: boolean
   /** ok 为 false 时给用户看的收尾说明，由调用方 showErrorBox 弹出。 */
   failureDetail?: string
@@ -91,7 +91,7 @@ export async function ensureLibraryPathAtStartup(deps: StartupGuardDeps): Promis
 }
 
 /** 脚本化的启动弹窗：把「用户点了哪个按钮、选了哪个目录」写成按次序消费的列表。 */
-export interface StartupDialogScript {
+interface StartupDialogScript {
   /** 依次返回的按钮下标；默认 [1]（退出）。取完最后一项就一直用它。 */
   messageBox?: number[]
   /** 依次返回的目录选择；`null` 表示取消。取完最后一项就一直用它。 */

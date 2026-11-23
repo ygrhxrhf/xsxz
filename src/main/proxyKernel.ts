@@ -33,7 +33,7 @@ export function kernelConfigPath(userDataDir: string): string {
   return join(userDataDir, 'proxy-kernel', 'config.json')
 }
 
-export interface KernelStartOptions {
+interface KernelStartOptions {
   userDataDir: string
   config: Record<string, unknown>
   port: number
@@ -47,7 +47,7 @@ export interface KernelHandle {
   stop(): Promise<void>
 }
 
-export type KernelStartResult =
+type KernelStartResult =
   | { ok: true; handle: KernelHandle }
   | { ok: false; message: string }
 
@@ -220,7 +220,7 @@ export async function startKernel(
  * 哪怕镜像更快。下载慢的问题交给用户自己的网络条件解决。
  */
 /** 应用内置的 sing-box 版本。升级时只改这一处，界面与文档都从这里取。 */
-export const KERNEL_VERSION = '1.14.4'
+const KERNEL_VERSION = '1.14.4'
 
 export function kernelDownloadUrl(version = KERNEL_VERSION): string {
   const asset =
@@ -238,14 +238,14 @@ export function kernelDownloadUrl(version = KERNEL_VERSION): string {
  * 真实内核约 80MB，压缩包约 32MB；设一个下限是为了拦住「下载到半截」
  * 或「拿 HTML 错误页当压缩包」的情况，不是完整性校验。
  */
-export const KERNEL_MIN_BYTES = 1_000_000
+const KERNEL_MIN_BYTES = 1_000_000
 
 /** 内核可执行文件是否已经在 userData 下（手动放的也算）。 */
 export function kernelInstalled(userDataDir: string): boolean {
   return existsSync(kernelBinaryPath(userDataDir))
 }
 
-export interface KernelInstallResult {
+interface KernelInstallResult {
   ok: boolean
   message?: string
   /** 安装后的可执行文件路径；成功时有值。 */
@@ -254,7 +254,7 @@ export interface KernelInstallResult {
   version?: string
 }
 
-export interface KernelInstallOptions {
+interface KernelInstallOptions {
   userDataDir: string
   /** 缺省用 KERNEL_VERSION。 */
   version?: string

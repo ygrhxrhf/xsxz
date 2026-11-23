@@ -34,7 +34,7 @@ export { MANUAL_PLACE_ID_PREFIX }
 /** 手工标注的章节标题：手工项不隶属于任何一章。 */
 const MANUAL_CHAPTER_TITLE = '手工标注'
 
-export interface ManualPlaceInput {
+interface ManualPlaceInput {
   name?: unknown
   latitude?: unknown
   longitude?: unknown
@@ -43,7 +43,7 @@ export interface ManualPlaceInput {
   paragraphOffset?: unknown
 }
 
-export interface ValidatedManualPlace {
+interface ValidatedManualPlace {
   ok: true
   name: string
   latitude: number
@@ -54,7 +54,7 @@ export interface ValidatedManualPlace {
   paragraphOffset?: number
 }
 
-export interface ManualPlaceError {
+interface ManualPlaceError {
   ok: false
   /** 中文原因，直接给界面显示。 */
   message: string

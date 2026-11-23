@@ -13,7 +13,7 @@ import { isSourceQuote } from './typography'
 import { noteLayoutSignature, noteTextColorOf, type Annotation, type Locator, type NoteTextColor } from './annotations'
 
 /** 与参考站 noteMarkdown.ts 的 NoteRun/NoteBlock 同形的最小类型（笔记 Markdown 排版）。 */
-export interface NoteRun {
+interface NoteRun {
   text: string
   bold?: boolean
   italic?: boolean
@@ -25,7 +25,7 @@ export interface NoteRun {
   footnote?: Footnote
 }
 
-export interface NoteBlock {
+interface NoteBlock {
   kind: 'p' | 'heading' | 'code' | 'quote' | 'list' | 'rule' | 'table'
   runs?: NoteRun[]
   text?: string
@@ -55,11 +55,11 @@ export interface LayoutConfig {
   quoteFamily?: string
 }
 
-export const CJK_FAMILIES =
+const CJK_FAMILIES =
   '"Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", "Noto Serif CJK JP", "Hiragino Mincho ProN", "Noto Serif KR", "Microsoft YaHei", "WenQuanYi Micro Hei", "Droid Sans Fallback"'
-export const SERIF_STACK = `"EB Garamond Variable", "Iowan Old Style", Georgia, ${CJK_FAMILIES}, serif`
+const SERIF_STACK = `"EB Garamond Variable", "Iowan Old Style", Georgia, ${CJK_FAMILIES}, serif`
 
-export const DEFAULT_LAYOUT: LayoutConfig = {
+const DEFAULT_LAYOUT: LayoutConfig = {
   pageW: 640,
   pageH: 920,
   marginTop: 78,
@@ -213,7 +213,7 @@ const lastCh = (t: string) => {
 
 const isPunctCh = (ch: string) => NO_START.has(ch) || NO_END.has(ch) || FW_PUNCT.test(ch)
 
-export function cjkRatio(text: string) {
+function cjkRatio(text: string) {
   let c = 0
   let n = 0
   for (const ch of text) {
@@ -261,7 +261,7 @@ export function measure(font: string, text: string) {
   return w
 }
 
-export function fontString(cfg: LayoutConfig, size: number, run: { bold?: boolean; italic?: boolean; mono?: boolean; weight?: number }) {
+function fontString(cfg: LayoutConfig, size: number, run: { bold?: boolean; italic?: boolean; mono?: boolean; weight?: number }) {
   const weight = run.weight ?? (run.bold ? 650 : 440)
   const fam = run.mono ? 'ui-monospace, "SF Mono", Menlo, monospace' : cfg.family
   return `${run.italic ? 'italic ' : ''}${weight} ${size}px ${fam}`

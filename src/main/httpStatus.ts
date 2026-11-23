@@ -8,7 +8,7 @@
 import type { FailCode } from '../shared/types'
 import { canonicalizeUrl } from '../shared/urlHash'
 
-export type HttpStatusVerdict =
+type HttpStatusVerdict =
   | { action: 'ok' }
   | { action: 'throttle'; code: FailCode; backoffMs: number }
   | { action: 'fail'; code: FailCode }

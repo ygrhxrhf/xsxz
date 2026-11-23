@@ -64,7 +64,7 @@ function extractUrl(src: string): string {
 }
 
 /** 生产构建（file://）下把字体映射到主进程协议；开发态保持 http(s)。 */
-export function resolveFontUrl(url: string): string {
+function resolveFontUrl(url: string): string {
   let absolute = url
   try {
     absolute = new URL(url, typeof document !== 'undefined' ? document.baseURI : undefined).href

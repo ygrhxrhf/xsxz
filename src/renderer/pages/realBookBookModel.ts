@@ -53,7 +53,7 @@ interface Flyer {
   phoneRelease?: { from: number; time: number; duration: number }
 }
 
-export interface BookOptions {
+interface BookOptions {
   singlePage?: boolean
   pageHeight?: number
   leafCount: number

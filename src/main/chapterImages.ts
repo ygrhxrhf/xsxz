@@ -16,7 +16,7 @@ import { getLibraryPath } from './library'
 const MAX_IMAGES_PER_CHAPTER = 20
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
-export interface AttachChapterImagesOptions {
+interface AttachChapterImagesOptions {
   bookId: string
   /** 章节 id（c0001）：用作图片文件名前缀 */
   chapterKey: string

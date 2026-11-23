@@ -91,7 +91,7 @@ const FLIP_SHEET_CLEARANCE_PX = 3
  */
 const FLIP_SAIL_PX = 16
 
-export interface FlipSlicePose {
+interface FlipSlicePose {
   /** 该竖带相对观者平面的转角（deg，负值向外翻） */
   angle: number
   /** 该竖带左缘的转角（deg）：相邻两条的边界角，纸面的明暗按它连续变化 */
@@ -132,7 +132,7 @@ export function flipLight(angleDeg: number): number {
   return Math.min(1, (base + gloss) * verso)
 }
 
-export interface FlipPoseOptions {
+interface FlipPoseOptions {
   /** 整页宽度（px） */
   width: number
   /** 起翻角（deg）：翻动页在起翻时所处半页的折角 */
@@ -168,7 +168,7 @@ export interface FlipPoseOptions {
  * 静态页与翻页必须用同一个「摊平角」：翻动页起手时的角度要等于它所在半页
  * 的弯角，否则起手瞬间纸与下面的静态页差一个角，落定时会跳。
  */
-export interface SpineValleyOptions {
+interface SpineValleyOptions {
   /** 谷的宽度（px）：从书脊向外这一段纸是弯的 */
   valleyWidth: number
   /** 谷底角度（deg）：书脊处的倾角，越大谷越深 */
@@ -177,7 +177,7 @@ export interface SpineValleyOptions {
   slices?: number
 }
 
-export interface SpineValleyStrip {
+interface SpineValleyStrip {
   /** 第几条带 */
   index: number
   /** 沿谷方向的投影位置（px，从书脊算起） */
@@ -392,7 +392,7 @@ function curlExponent(t: number): number {
     + (FLIP_CURL_EXPONENT_END - FLIP_CURL_EXPONENT_START) * smootherstep(t / 0.55)
 }
 
-export interface FlipPhases {
+interface FlipPhases {
   /** 纸角的行程进度（0–1） */
   tip: number
   /** 书脊侧的行程进度（0–1） */
@@ -568,7 +568,7 @@ export function flipBackContentOpacity(angleDeg: number): number {
   return t * t * (3 - 2 * t)
 }
 
-export interface FlipSheetLift {
+interface FlipSheetLift {
   /** 整张纸离桌面的高度（px） */
   lift: number
 }
@@ -606,7 +606,7 @@ export function flipSheetLift(progress: number): FlipSheetLift {
   return { lift: FLIP_SAIL_PX * rise }
 }
 
-export interface FlipSway {
+interface FlipSway {
   /** 整本书此刻的侧倾（deg）：手推书页时书自己也会跟着晃一下 */
   rotateY: number
   /** 整本书离桌面的高度（px）：书被手托起来的量 */

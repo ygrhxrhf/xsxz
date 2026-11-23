@@ -9,7 +9,7 @@ import { getLibraryPath } from './library'
  * 与封面协议同一个理由：开发模式下页面来自 http://127.0.0.1，Chromium 不允许
  * 直接加载 file:// 图片。渲染层只给书 id 与安全文件名，拼路径与校验都在主进程。
  */
-export const IMAGE_SCHEME = 'spbf-image'
+const IMAGE_SCHEME = 'spbf-image'
 
 const SAFE_TOKEN = /^[A-Za-z0-9._-]+$/
 const MIME: Record<string, string> = {

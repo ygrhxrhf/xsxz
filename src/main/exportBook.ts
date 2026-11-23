@@ -4,7 +4,7 @@ import JSZip from 'jszip'
 import { getLibraryPath, loadBook, readChapter } from './library'
 import { parseChapterImage } from '../shared/chapterImages'
 
-export type ExportFormat = 'txt' | 'epub'
+type ExportFormat = 'txt' | 'epub'
 
 export function sanitizeExportName(title: string): string {
   const cleaned = title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim()

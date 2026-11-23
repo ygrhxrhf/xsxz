@@ -13,7 +13,7 @@ export type LibraryMenuKey =
   | 'export-txt'
   | 'export-epub'
   | 'trash'
-export type LibraryMenuEntry = LibraryMenuKey | 'divider-export' | 'divider-trash'
+type LibraryMenuEntry = LibraryMenuKey | 'divider-export' | 'divider-trash'
 
 const CJK_CHARACTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
 const LATIN_OR_NUMBER_CHARACTER = /[\p{Script=Latin}\p{Number}]/u
@@ -156,7 +156,7 @@ export function checkUpdateNeedsBrowse(code?: FailCode | string): boolean {
   return code === 'NeedLogin' || code === 'Paywall' || code === 'Intercepted'
 }
 
-export type FailedChapterGroup = { code: FailCode | ''; label: string; count: number }
+type FailedChapterGroup = { code: FailCode | ''; label: string; count: number }
 
 /**
  * 失败章按失败码收敛成计数：一本站外页能刷出几十条同一面墙的明细，逐条列没人看。
@@ -189,7 +189,7 @@ export function isLibraryFindShortcut(e: {
 }
 
 /** 站点常把同义词用斜杠串成一个标签，拆开后书架才筛得动。 */
-export function splitLibraryTag(raw: string): string[] {
+function splitLibraryTag(raw: string): string[] {
   return raw.split(/[/／]/).map((part) => part.trim()).filter(Boolean)
 }
 
@@ -288,7 +288,7 @@ export function mapLibraryCoverError(message?: string | null): string {
   return '保存失败，已保留原来的信息'
 }
 
-export type LibraryDuplicateGroup = {
+type LibraryDuplicateGroup = {
   key: string
   title: string
   author: string

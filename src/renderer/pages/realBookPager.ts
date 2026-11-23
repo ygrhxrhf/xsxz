@@ -21,7 +21,7 @@ export interface RealBookLine {
   end: number
 }
 
-export interface RealBookLayout {
+interface RealBookLayout {
   /** 版心高度（px）：一页能放多少行 */
   pageHeight: number
   /** 行高（px） */
@@ -116,7 +116,7 @@ export interface RealBookAnchor {
   offset: number
 }
 
-export interface RealBookPaginator {
+interface RealBookPaginator {
   /** 已排好的页（快照数组；每次调用返回新数组，便于响应式更新） */
   readonly pages: RealBookPage[]
   /** 是否已排完整章 */

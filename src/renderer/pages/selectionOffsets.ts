@@ -6,7 +6,7 @@
  * 折叠了，挂载级测试永远等不到工具条。这里只吃 DOM 事实（选区 + 段落下标表 + 规范化正文），
  * 不碰任何组件状态，于是可以直接在 jsdom 里测。
  */
-export interface SelectionOffsets {
+interface SelectionOffsets {
   start: number
   end: number
   /** 选中区间在规范化正文里的原文（含跨段的 `\n\n`），用于划线摘录与漂移校正 */

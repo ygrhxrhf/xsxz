@@ -8,7 +8,7 @@ function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-export function parseEvidenceQueryRewrite(value: Record<string, unknown>): EvidenceSearchQuery {
+function parseEvidenceQueryRewrite(value: Record<string, unknown>): EvidenceSearchQuery {
   const corePhrase = readString(value.corePhrase)
   const keywords = Array.isArray(value.keywords)
     ? value.keywords.filter((item): item is string => typeof item === 'string')
@@ -39,7 +39,7 @@ export interface EvidenceAnswerNote {
 export const MAX_EVIDENCE_ANSWER_NOTES = 12
 export const EVIDENCE_ANSWER_NOTE_CHARACTERS = 120
 
-export interface EvidenceAnnotationSource {
+interface EvidenceAnnotationSource {
   chapterId: string
   excerpt: string
   note?: string
@@ -139,7 +139,7 @@ export function planEvidenceChapterReads<T extends { id: string; index: number }
   return { ordered, progressPosition }
 }
 
-export interface EvidenceQaPipelineOptions {
+interface EvidenceQaPipelineOptions {
   question: string
   taskInstruction: string
   stopped: () => boolean
@@ -154,7 +154,7 @@ export interface EvidenceQaPipelineOptions {
 }
 
 /** 至少这么多段可核验依据才谈得上「够回答」。 */
-export const EVIDENCE_REWRITE_SKIP_MIN_CITATIONS = 3
+const EVIDENCE_REWRITE_SKIP_MIN_CITATIONS = 3
 /**
  * 改述重叠的打分从 30 起、每个少见词形约加 5 分，字面命中则 100 起：
  * 40 分意味着最强那段真带上了两个像样的词形，不是只撞上「什么」「怎么」这类疑问词。
@@ -166,7 +166,7 @@ export function shouldSkipQueryRewrite(result: { citations: readonly AiCitation[
   return result.citations.length >= EVIDENCE_REWRITE_SKIP_MIN_CITATIONS && result.topScore >= EVIDENCE_REWRITE_SKIP_MIN_SCORE
 }
 
-export type EvidenceQaPipelineResult =
+type EvidenceQaPipelineResult =
   | { kind: 'stopped' }
   | { kind: 'noEvidence'; text: string; citations: []; uptoChapterId: string; usage?: AiUsage }
   | { kind: 'answer'; text: string; citations: AiCitation[]; claims: Array<{ text: string; citationIds: string[] }>; uptoChapterId: string; usage?: AiUsage; truncated: boolean }
@@ -218,7 +218,7 @@ export async function executeEvidenceQaPipeline(options: EvidenceQaPipelineOptio
   }
 }
 
-export function mergeAiUsage(...items: Array<AiUsage | undefined>): AiUsage | undefined {
+function mergeAiUsage(...items: Array<AiUsage | undefined>): AiUsage | undefined {
   const merged: AiUsage = {}
   for (const usage of items) {
     if (!usage) continue

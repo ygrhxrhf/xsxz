@@ -10,7 +10,7 @@ import { bookDir } from './library'
  * `fetch(file://...)` 会被拦（与字体/地图数据同一个原因）。这里按书 id
  * 读取书目录 `map/original.<ext>`，只接受 jpg/jpeg/png/webp。
  */
-export const MAP_SCHEME = 'spbf-map'
+const MAP_SCHEME = 'spbf-map'
 
 const SAFE_BOOK = /^[A-Za-z0-9._-]+$/
 const EXTS = ['jpg', 'jpeg', 'png', 'webp'] as const
