@@ -1,5 +1,25 @@
 # HANDOFF
 
+## 死代码与死类型清理（2026-11-23，本轮完成）
+
+- 做到哪：全仓没有任何引用的代码清掉，并收窄了模块导出面。合计 107 文件、+268 / −1004 行（净减 736）。
+  1. `9ce5809` 删 `realBookPeel.ts`（98 行）与 `realBookFlipShadow.ts`（211 行）及各自测试：前者的悬停预掀实际由
+     `RealBookWebGLStage.vue` 的 `updateHoverPeel` + `realBookBookModel` 承担，后者的软影早已换成
+     `realBookPaperMaterial` 的 `shadowRig`；同步修正 `docs/真实书籍-WebGL复刻.md` 里过时的文件名与单测清单。
+  2. `a89e060` 删 30 处零引用导出与类型（22 文件，−288 行），清掉删除后残留的无用 import / 局部变量。
+  3. `e4e4ef9` 256 处「只在本文件用」的 `export` 收成私有（94 文件）；`9900dfa` 再清 7 处死符号
+     （`annotations.ts` 的 `uid`、`i18n.ts` 的 `subscribe`、paywallUnlock 对 bodyText 的空转再导出、
+     `catalog.ts` 的类型再导出改成普通 import、两个 `IpcRegistrar`、`realBookBookModel` 的 `BOOK`）。
+- 关键取舍：判据不用 knip 的原始结论，而是「全仓任何文件（含 .vue / scripts / docs）都不出现该名字」。
+  knip 会漏解析 `.vue` 的跨行 import 和行内 `import('...')` 类型断言，原始清单里 14 处是活代码。
+- 验证：`npm run typecheck` 0；`npx vitest run --maxWorkers=4` 197 文件 / **2006 用例全绿**
+  （基线 2017 − 删掉的 11）；`npm run build` 0；`npx knip` 的 `src/` 未用导出从 129 + 180 降到 7 + 7。
+- 已知 flaky：`aiEvidenceIndex.test.ts`（60s）与 `browseState.test.ts`（20s）在满并发下会超时，
+  单独跑 9.2s / 5.4s 通过，`--maxWorkers=4` 全绿；两个模块本轮没有逻辑改动。
+- 未验证/边界：没跑 e2e（本轮只动类型与导出可见性）；`atlas/hydrology.test.ts` 未声明的
+  `@maplibre/maplibre-gl-style-spec` 仍在；knip 的 4 个入口文件与 3 条依赖误报没处理。
+- 下一步第一条命令：`git push origin master`（需用户点头）。
+
 ## 工作区收口 + 启动自动追更（2026-11-21，本轮完成）
 
 - 做到哪：清掉约 930MB 未跟踪产物（`.multi-agent/tmp/` 483M、`.multi-agent/visual/` 451M 的截图与探针 exe），
