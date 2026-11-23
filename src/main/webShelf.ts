@@ -165,13 +165,6 @@ function bookId(host: string, catalogUrl: string): string {
   return canonicalBookId(host, catalogUrl)
 }
 
-export function webShelfBookIdForUrl(url: string): string | null {
-  if (!isHttpUrl(url)) return null
-  const host = normalizeHost(url)
-  const catalogUrl = normalizeUrl(url)
-  try { return bookId(host, catalogUrl) } catch { return null }
-}
-
 export async function listWebShelf(): Promise<WebShelfBook[]> {
   return sortBooks((await load()).books)
 }

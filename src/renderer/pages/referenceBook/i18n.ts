@@ -13,10 +13,6 @@ let locale: Locale = 'zh-CN'
 
 export const getLocale = (): Locale => locale
 
-export function setLocale(next: Locale): void {
-  locale = next
-}
-
 const ZH: Record<string, string> = {
   'Read on the desk': '在书桌上阅读',
   '注': '注',

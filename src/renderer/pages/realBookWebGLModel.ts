@@ -11,7 +11,6 @@ export const COVER_OVERHANG = 0.15
 export const BOARD_THICKNESS = 0.11
 export const PAGE_TEXTURE_WIDTH = 640
 export const PAGE_TEXTURE_HEIGHT = 920
-export const PAGE_ASPECT = PAGE_TEXTURE_HEIGHT / PAGE_TEXTURE_WIDTH
 
 export const CAMERA_FOV = 24
 export const DEFAULT_TILT_RAD = 0.44
@@ -101,10 +100,6 @@ export function cameraPose(
 
 export function degreesToTilt(degrees: number): number {
   return clamp((Number.isFinite(degrees) ? degrees : 0) * Math.PI / 180, MIN_TILT_RAD, MAX_TILT_RAD)
-}
-
-export function tiltToDegrees(radians: number): number {
-  return clamp(Number.isFinite(radians) ? radians : 0, MIN_TILT_RAD, MAX_TILT_RAD) * 180 / Math.PI
 }
 
 /** 书本总厚度：页数和字符数共同决定，夹在参考站的 0.14–1.15 场景单位。 */

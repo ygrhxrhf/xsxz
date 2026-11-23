@@ -432,12 +432,6 @@ const PAGE_TEXT_RE = /下一页|下页|后一页|下一\s*页|第\s*\d+\s*页|\d
  */
 const PAGE_HREF_RE = /[?&](?:page|p|pg)=\d+|[?&](?:all|full|whole)=1|\/(?:all|readall|full)\.html?$|_\d+\.html?$/i
 
-export interface ContinuationCandidate {
-  url: string
-  /** 从哪找到的：给人话，便于在界面提示。 */
-  detail: string
-}
-
 /** 收集同域、被藏起来或指向「整页/后续页」的链接。只回候选，不抓。 */
 export function findContinuationUrls(html: string, pageUrl: string, limit = 5): string[] {
   const parsed = parseDom(html, pageUrl)

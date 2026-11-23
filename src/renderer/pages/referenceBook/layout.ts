@@ -174,6 +174,7 @@ interface PaginationCache {
   definitions: string
   chapters: ChapterLayout[]
 }
+
 // Keep reusable chapter geometry out of serializable pagination/worker payloads.
 const paginationCaches = new WeakMap<Paginated, PaginationCache>()
 
@@ -209,6 +210,7 @@ const lastCh = (t: string) => {
   const a = Array.from(t)
   return a[a.length - 1]
 }
+
 const isPunctCh = (ch: string) => NO_START.has(ch) || NO_END.has(ch) || FW_PUNCT.test(ch)
 
 export function cjkRatio(text: string) {
@@ -246,7 +248,6 @@ function ctx2d() {
 }
 
 const widthCache = new Map<string, number>()
-export function clearMeasureCache() { widthCache.clear() }
 export function measure(font: string, text: string) {
   const key = font + '|' + text
   let w = widthCache.get(key)

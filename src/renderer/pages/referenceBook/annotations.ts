@@ -5,7 +5,6 @@
  * 许可文本见 third_party/infinite-reader/LICENSE，署名见 third_party/infinite-reader/NOTICE。
  */
 import { noteFontIdOf, type NoteFontId } from './noteFontCatalog'
-import type { Block, Chapter } from './types'
 
 export type MarkKind = 'highlight' | 'underline' | 'judou'
 export type MarkColor = 'yellow' | 'pink' | 'green' | 'blue' | 'orange' | 'violet'
@@ -17,47 +16,6 @@ export const JUDOU_INK = '#b4472f'
 /** One stored character; records written before the field existed fall back to the default. */
 export function judouSymbolOf(symbol: string | undefined) {
     return Array.from(symbol?.trim() ?? '')[0] ?? JUDOU_DEFAULT_SYMBOL
-}
-
-const judouGraphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-
-/** Source offsets stay in UTF-16, but a slash always belongs to a whole printed character. */
-export function resolveJudou(chapter: Chapter | undefined, range: Locator, marks: readonly Annotation[]) {
-  if (!chapter) return null
-
-  function at(block: Block, offset: number) {
-    if (offset < 0 || offset >= block.text.length) return null
-    const glyph = judouGraphemes.segment(block.text).containing(offset)
-    if (!glyph?.segment.trim()) return null
-    const start = block.start + glyph.index
-    const locator = { chapter: range.chapter, start, end: start + glyph.segment.length }
-    const existing = marks.find(a => a.kind === 'judou' && a.locator.chapter === locator.chapter &&
-      a.locator.start >= start && a.locator.end <= locator.end && a.locator.start < a.locator.end)
-    return { locator, quote: glyph.segment, existing }
-  }
-
-  // A range may end on whitespace or the separator between two EPUB blocks.
-  for (let i = chapter.blocks.length - 1; i >= 0; i--) {
-    const block = chapter.blocks[i]
-    if (block.start > range.end || block.footnoteDefinition || block.kind === 'img' || block.kind === 'hr') continue
-    const blockEnd = block.start + block.text.length
-    if (blockEnd < range.start) break
-    if (!block.text) continue
-
-    if (range.start === range.end) {
-      const offset = range.end - block.start
-      const before = at(block, offset - 1)
-      if (before?.existing) return before
-      const after = at(block, offset)
-      // Either side can remove a slash. At a paragraph start the first character is the target.
-      return after?.existing ? after : before ?? after
-    }
-
-    const start = Math.max(0, range.start - block.start)
-    const selected = block.text.slice(start, range.end - block.start).trimEnd()
-    if (selected) return at(block, start + selected.length - 1)
-  }
-  return null
 }
 
 export type NoteTextColor = 'default' | MarkColor
@@ -121,12 +79,6 @@ export interface Annotation {
   note?: StickyNote
   createdAt: number
   updatedAt: number
-}
-
-/** Identity of a synced annotation. Tag-only edits must not be treated as already saved. */
-export function annotationSignature(a: Annotation) {
-  const tags = a.note?.tags?.length ? a.note.tags : null
-    return JSON.stringify([a.kind, a.color, a.kind === 'judou' ? judouSymbolOf(a.symbol) : null, a.note ? [a.note.text, Math.round(a.note.x * 100), Math.round(a.note.y * 100), Math.round(a.note.rot * 1000), tags, noteTextColorOf(a.note.textColor), noteFontIdOf(a.note.font)] : null])
 }
 
 /** Only note content and placement affect pagination, not sync timestamps or legacy desk positions. */

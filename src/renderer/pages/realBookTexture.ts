@@ -24,8 +24,6 @@ export const PAGE_TEXTURE_MARGIN_BOTTOM = 100
 export const PAGE_TEXTURE_MARGIN_INNER = 80
 /** 外口边距：左页（奇数页）靠书脊的一侧。 */
 export const PAGE_TEXTURE_MARGIN_OUTER = 58
-/** 兼容旧调用：对称版心统一按订口边距。 */
-export const PAGE_TEXTURE_MARGIN_X = PAGE_TEXTURE_MARGIN_INNER
 
 export interface RealBookTextureHighlight {
   start: number

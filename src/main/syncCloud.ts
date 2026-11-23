@@ -26,8 +26,6 @@ export const SYNC_SETTINGS_WHITELIST = [
   'ai',
 ] as const
 
-export type SyncSettingsField = (typeof SYNC_SETTINGS_WHITELIST)[number]
-
 /** 深度剔除凭据形状的字段。 */
 export function stripCredentialFields<T>(value: T): T {
   if (Array.isArray(value)) {

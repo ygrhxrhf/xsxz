@@ -277,8 +277,6 @@ export function spineValleyPoses(options: SpineValleyOptions): SpineValleyStrip[
   return strips
 }
 
-
-
 /**
  * 起翻 / 落位角：必须落在两半页各自的折角上。
  *
@@ -293,23 +291,6 @@ export function flipAngles(direction: 1 | -1, bendDeg: number): { from: number; 
     : { from: -(180 - bend), to: -bend }
 }
 
-/**
- * 翻页的总节奏（0–1）：把手上的时间换成纸的时间。
- *
- * 真书翻页不是匀速的：手先把纸角捏起来（慢），然后一甩（快），
- * 纸落到对面时被手按住（再慢下来）。直接用线性时间驱动几何，
- * 纸会「啪」地一下窜到对面再慢慢摊平——读起来像被弹出去的纸片。
- *
- * 用余弦做总节奏：两端斜率为 0，中段最快。
- *
- * 这一层是**整条动画链的唯一时间源**：竖带几何、纸面离桌、书的随动、投影
- * 都吃同一个缓动后的进度，动画才是一个整体——不然纸慢了书还在晃，
- * 读起来就像几段各走各的动画拼在一起。
- */
-export function flipEase(progress: number): number {
-  const t = clamp01(progress)
-  return 0.5 - 0.5 * Math.cos(Math.PI * t)
-}
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.max(0, Math.min(1, value))
@@ -480,7 +461,6 @@ export function flipPoses(progress: number, options: FlipPoseOptions): FlipSlice
     const s01 = clamp01(s)
     return rootAngle + scaledGap * Math.pow(s01, exponent)
   }
-  const sliceWidth = width / slices
   // 竖带在纸上的边界：越靠纸角越窄。
   const boundaries: number[] = []
   for (let index = 0; index <= slices; index += 1) {
@@ -586,29 +566,6 @@ export function flipBackContentOpacity(angleDeg: number): number {
   if (angle >= full) return 1
   const t = (angle - 90) / (full - 90)
   return t * t * (3 - 2 * t)
-}
-
-/**
- * 每条竖带此刻的角速度（deg/ms），已归一化到 0–1。
- *
- * 真实翻书时纸在空中的那一下是糊的，匀速的机械动画无论多快都每帧清晰——
- * 清晰就读成「贴图在转」，不是「纸在飞」。渲染层用它给高速段加一点动态模糊。
- *
- * 归一化是必需的：调用方要的是「这条带比最慢的那条快多少」，
- * 而不是角速度的绝对值（绝对值一大就全都糊成一片，纸上的字反而看不清）。
- */
-export function flipSliceSpeeds(progress: number, options: FlipPoseOptions): number[] {
-  const dt = 0.015
-  const before = flipPoses(Math.max(0, progress - dt), options)
-  const after = flipPoses(Math.min(1, progress + dt), options)
-  const count = Math.min(before.length, after.length)
-  const speeds: number[] = []
-  for (let index = 0; index < count; index += 1) {
-    speeds.push(Math.abs(after[index]!.angle - before[index]!.angle) / (2 * dt))
-  }
-  const peak = speeds.reduce((max, value) => Math.max(max, value), 0)
-  if (peak <= 0) return speeds.map(() => 0)
-  return speeds.map((value) => value / peak)
 }
 
 export interface FlipSheetLift {

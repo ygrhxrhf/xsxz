@@ -21,11 +21,6 @@ export interface OcrImage {
   detail: string
 }
 
-export interface OcrText {
-  text: string
-  detail: string
-}
-
 /** 一章最多认多少张切片图：再多就是漫画，不是正文。 */
 export const MAX_OCR_IMAGES = 12
 
@@ -281,7 +276,6 @@ async function missingEngineLanguages(worker: OcrWorkerLike): Promise<string[]> 
     return []
   }
 }
-
 
 /**
  * OCR 后处理：tesseract 认中文时会在每个字之间插空格（实测「石 阶 尽 头」），

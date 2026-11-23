@@ -39,6 +39,3 @@ export function detectWebGL(): boolean {
   }
 }
 
-export function defaultRealBookRenderer(): RealBookRenderer {
-  return detectWebGL() ? 'webgl' : 'css'
-}

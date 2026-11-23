@@ -24,11 +24,3 @@ export interface BookMap {
   recognition?: { model: string; unresolved: string[] }
 }
 
-export interface AtlasRecognition {
-  status: 'recognized' | 'not_map' | 'uncertain'
-  map: BookMap | null
-  message: string
-  model: string
-  recognizedAt: number
-  cached: boolean
-}

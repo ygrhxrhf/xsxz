@@ -410,13 +410,6 @@ export function createRealBookPaginator(
   }
 }
 
-/** 页首锚点。 */
-export function anchorForPage(pages: readonly RealBookPage[], pageIndex: number): RealBookAnchor | null {
-  const page = pages[pageIndex]
-  if (!page) return null
-  return { paragraph: page.paragraph, offset: page.offset }
-}
-
 /** 锚点落在哪一页；锚点在正文范围外时钳到最近的页。 */
 export function pageForAnchor(pages: readonly RealBookPage[], anchor: RealBookAnchor): number {
   if (!pages.length) return 0

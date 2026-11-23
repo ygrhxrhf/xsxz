@@ -15,12 +15,7 @@ export type ReaderFontId = (typeof READER_FONTS)[number]['id']
 export const DEFAULT_READER_FONT: ReaderFontId = 'wenkai'
 export type QuoteFontId = 'wenkai' | 'inherit'
 export const DEFAULT_QUOTE_FONT: QuoteFontId = 'wenkai'
-export function quoteFontIdOf(value: unknown): QuoteFontId {
-  return value === 'inherit' ? 'inherit' : DEFAULT_QUOTE_FONT
-}
-export function readerFontIdOf(value: unknown): ReaderFontId {
-  return READER_FONTS.find((font) => font.id === value)?.id ?? DEFAULT_READER_FONT
-}
+
 export interface FontAsset {
   url: string
   family?: string
@@ -29,23 +24,6 @@ export interface FontAsset {
   range: string
 }
 
-/** Read Fontsource's generated @font-face declarations, retaining Unicode subsets. */
-export function fontAssetsFromCss(css: string): FontAsset[] {
-  return [...css.matchAll(/@font-face\s*\{([^}]+)\}/g)].map(([, body]) => {
-    const value = (name: string) => body.match(new RegExp(`${name}:\\s*([^;]+)`))?.[1].trim() ?? ''
-    return {
-      family: value('font-family').replace(/['"]/g, ''),
-      // Small Vite assets may be inlined as data URLs containing a semicolon.
-      url: body.match(/src:\s*url\(["']?([^)'"\s]+)/)?.[1] ?? '',
-      weight: value('font-weight') || '400',
-      style: value('font-style') === 'italic' ? 'italic' : 'normal',
-      range: value('unicode-range') || 'U+0-10FFFF',
-    }
-  })
-}
-export function fontRangeContains(range: string, codepoint: number) {
-  return fontRangeIntersects(range, [codepoint])
-}
 export function fontRangeIntersects(range: string, codepoints: readonly number[]) {
   return range.split(',').some((part) => {
     const [first, last] = part.trim().replace(/^U\+/i, '').split('-')

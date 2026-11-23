@@ -75,29 +75,6 @@ export function markBand(line: { y: number; baseline: number }, fontSize: number
   return { top, bot }
 }
 
-/** The mark whose painted band lies under a page-content point, if any. */
-export function markUnderPoint(page: Page, x: number, y: number, marks: Annotation[], cfg: LayoutConfig): Annotation | null {
-  let bandHit: Annotation | null = null
-  for (const mark of marks) {
-    if (bandHit && mark.kind !== 'judou') continue
-    if (mark.locator.chapter !== page.chapter) continue
-    if (mark.locator.end <= page.start || mark.locator.start >= page.end) continue
-    for (const r of rangeRects(page, mark.locator.start, mark.locator.end)) {
-      // Slashes are painted over other marks. Only their own hit area takes priority.
-      if (mark.kind === 'judou') {
-        if (judouHit(r, cfg, x, y)) return mark
-        continue
-      }
-      const band = markBand(r.line, cfg.fontSize, mark.kind)
-      if (y < band.top - 1.25 || y > band.bot + 1.25) continue
-      if (x < r.x0 - 2 || x > r.x1 + 2) continue
-      bandHit = mark
-      break
-    }
-  }
-  return bandHit
-}
-
 /** Rects (page content coordinates) covered by a chapter-offset range. */
 export function rangeRects(page: Page, start: number, end: number): MarkRect[] {
   const out: MarkRect[] = []

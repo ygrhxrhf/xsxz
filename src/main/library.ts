@@ -1401,10 +1401,6 @@ export async function writeChapterFile(bookId: string, chapterId: string, data: 
   })
 }
 
-export async function markChapterReady(bookId: string, chapterId: string, status: ChapterStatus): Promise<void> {
-  await markChapterStatus(bookId, chapterId, status)
-}
-
 /**
  * 批量写入章节正文：导入一本 txt 要写上千章，逐章走 `writeChapterFile`
  * 会把同一份 book.json 反复读、反复写上千次（导入卡住的主因）。

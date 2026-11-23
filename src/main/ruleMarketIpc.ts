@@ -103,10 +103,6 @@ interface AccountFile {
 /** 单测注入目录；null = 用真实的 userData 目录。 */
 let overrideDir: string | null = null
 
-export function setRuleMarketDir(dir: string | null): void {
-  overrideDir = dir
-}
-
 function userDataRoot(): string {
   return overrideDir ?? app.getPath('userData')
 }
