@@ -59,5 +59,5 @@
 ## 断点记录（每次停下前更新）
 
 - 状态：已完成（待用户决定是否推送）
-- 下一步第一条命令：`git push origin master`（需用户点头）
+- 下一步第一条命令：在主检出里 `git checkout master && git merge --ff-only slim/deadcode && git push origin master`（需用户点头）
 - 未验证项：未在干净机器上重装验证；未跑 e2e（本轮只动类型与导出可见性，没有行为面）

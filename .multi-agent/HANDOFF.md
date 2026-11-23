@@ -18,7 +18,8 @@
   单独跑 9.2s / 5.4s 通过，`--maxWorkers=4` 全绿；两个模块本轮没有逻辑改动。
 - 未验证/边界：没跑 e2e（本轮只动类型与导出可见性）；`atlas/hydrology.test.ts` 未声明的
   `@maplibre/maplibre-gl-style-spec` 仍在；knip 的 4 个入口文件与 3 条依赖误报没处理。
-- 下一步第一条命令：`git push origin master`（需用户点头）。
+- 下一步第一条命令：提交在分支 `slim/deadcode` 上（本 worktree 原来是 detached HEAD）。
+  在主检出里 `git checkout master && git merge --ff-only slim/deadcode`，再 `git push origin master`（需用户点头）。
 
 ## 工作区收口 + 启动自动追更（2026-11-21，本轮完成）
 
