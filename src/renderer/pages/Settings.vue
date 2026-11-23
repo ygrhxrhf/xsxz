@@ -1383,13 +1383,13 @@ onMounted(async () => {
 }
 
 .skin-swatch.light {
-  background: linear-gradient(90deg, #f5f6f8 0 36%, #ffffff 36%);
-  border: 1px solid #e5e8ec;
+  background: linear-gradient(90deg, #f6f6f2 0 36%, #ffffff 36%);
+  border: 1px solid #dedfd5;
 }
 
 .skin-swatch.dark {
-  background: linear-gradient(90deg, #242426 0 36%, #282a2e 36%);
-  border: 1px solid #393b40;
+  background: linear-gradient(90deg, #0a0a0a 0 36%, #131713 36%);
+  border: 1px solid #2a312a;
 }
 
 .sw-dot {
@@ -1398,12 +1398,12 @@ onMounted(async () => {
   border-radius: 50%;
 }
 
-.light .d1 { background: #4b93dd; }
-.light .d2 { background: #e5e8ec; }
-.light .d3 { background: #25272b; }
-.dark .d1 { background: #79b5f2; }
-.dark .d2 { background: #393b40; }
-.dark .d3 { background: #e8e9eb; }
+.light .d1 { background: #5f7f14; }
+.light .d2 { background: #dedfd5; }
+.light .d3 { background: #0d0f0c; }
+.dark .d1 { background: #a8e64f; }
+.dark .d2 { background: #2a312a; }
+.dark .d3 { background: #fafafa; }
 
 .skin-name {
   font-size: 13px;

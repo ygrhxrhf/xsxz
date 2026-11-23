@@ -3,7 +3,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NInputNumber, NProgress, NTag, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, DEFAULT_TTS_PREFS, DEFAULT_WEB_READING_PREFS } from '@shared/types'
 import { READER_THEME_COLORS } from '@shared/readerTheme'
-import type { BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, MirrorProgress, PreviewPageKind, ReaderPrefs, WebAnnotation, WebReadingPrefs, WebShelfChapter } from '@shared/types'
+import type { BookListItem, BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, MirrorProgress, PreviewPageKind, ReaderPrefs, WebAnnotation, WebReadingPrefs, WebShelfBook, WebShelfChapter } from '@shared/types'
+import { libraryCoverSrc } from './libraryCard'
 import { adjacentVisualPage, scrollTopForVisualPage, visualPageCount, visualPageIndex, visualPageLabel } from './readerPager'
 import { approximateBookRatioFromIndex, clampRatio, paragraphIndexAtViewportCenter, readerScrollBehavior, selectionPopupPosition, shouldAutoHideReaderTools, wheelPageDirection } from './readerHelpers'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
@@ -23,6 +24,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'open-book', bookId: string): void
   (e: 'edit-site-rule', host: string): void
+  (e: 'open-web-book', url: string): void
 }>()
 const message = useMessage()
 
@@ -311,6 +313,91 @@ const siteLabel = computed(() => {
   return host ? `当前站点：${host}` : '尚未打开网页'
 })
 
+/** 是否真有网页在原生视图里：about:blank 不算，起始页据此代替空白网页。 */
+const browsing = computed(() => Boolean(state.value.url && state.value.url !== 'about:blank'))
+
+const startGreeting = computed(() => {
+  const hour = new Date().getHours()
+  if (hour < 6) return '夜深了，读两页再睡'
+  if (hour < 12) return '早上好，挑一本开始'
+  if (hour < 18) return '下午好，续上昨天那章'
+  return '晚上好，慢慢读'
+})
+
+type StartRecent = {
+  key: string
+  title: string
+  meta: string
+  cover: string | null
+  kind: 'library' | 'web'
+  bookId?: string
+  url?: string
+}
+
+const libraryPath = ref('')
+const recentBooks = ref<StartRecent[]>([])
+const startInput = ref<HTMLInputElement | null>(null)
+
+/** 起始页的「继续阅读」：本地书库 + 网页书架，按最近读过排序。 */
+async function loadStartRecent() {
+  let books: BookListItem[] = []
+  let shelfBooks: WebShelfBook[] = []
+  try {
+    const [library, shelf, settings] = await Promise.all([
+      window.api.library.list(),
+      window.api.shelf.list(),
+      window.api.settings.get(),
+    ])
+    books = library.books
+    if (shelf.ok) shelfBooks = shelf.books
+    if (settings.libraryPath) libraryPath.value = settings.libraryPath
+  } catch {
+    return
+  }
+  const local = books.slice(0, 6).map((book) => ({
+    sortAt: book.progress?.updatedAt || book.updatedAt,
+    item: {
+      key: `library-${book.id}`,
+      title: book.title,
+      meta: `${book.chapterCount} 章 · ${book.progress ? '继续上次进度' : '尚未开始'}`,
+      cover: libraryCoverSrc(libraryPath.value, book.id, book.coverPath),
+      kind: 'library' as const,
+      bookId: book.id,
+    },
+  }))
+  const web = shelfBooks.slice(0, 4).map((book) => ({
+    sortAt: book.progress?.updatedAt || book.updatedAt,
+    item: {
+      key: `web-${book.id}`,
+      title: book.title,
+      meta: book.lastChapter?.title ? `网页书架 · ${book.lastChapter.title}` : '网页书架',
+      cover: book.coverUrl || null,
+      kind: 'web' as const,
+      url: book.progress ? book.lastChapter.url : book.catalogUrl,
+    },
+  }))
+  recentBooks.value = [...local, ...web]
+    .sort((a, b) => b.sortAt.localeCompare(a.sortAt))
+    .slice(0, 5)
+    .map((entry) => entry.item)
+}
+
+function openRecent(item: StartRecent) {
+  if (item.kind === 'library' && item.bookId) {
+    emit('open-book', item.bookId)
+    return
+  }
+  if (item.url) emit('open-web-book', item.url)
+}
+
+/** 原生网页视图盖在 Vue 之上：没有网页、或不在浏览页时收起来，起始页和重绘后的外壳才看得见。 */
+function syncNativeVisibility() {
+  const visible = Boolean(props.active && browsing.value && !readingPage.value)
+  void window.api.browse.setVisible(visible).catch(() => {})
+}
+
+watch([browsing, () => props.active, readingPage], syncNativeVisibility)
+
 function editCurrentSiteRule() {
   const host = currentHost()
   if (!host) {
@@ -362,6 +449,7 @@ watch(() => props.active, (active) => {
   if (active) {
     void refreshAdSetting(currentHost())
     void resumeBrowse()
+    void loadStartRecent()
   }
 })
 
@@ -1179,7 +1267,12 @@ function onKeydown(event: KeyboardEvent) {
   if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
   if (event.ctrlKey && event.key.toLowerCase() === 'f') {
     event.preventDefault()
-    if (!readingPage.value) findOpen.value = true
+    if (!readingPage.value && browsing.value) findOpen.value = true
+    return
+  }
+  if (!readingPage.value && !browsing.value && event.key === '/') {
+    event.preventDefault()
+    startInput.value?.focus()
     return
   }
   if (event.altKey && event.key === 'ArrowUp') {
@@ -1405,6 +1498,8 @@ onMounted(async () => {
   window.addEventListener('resize', onWindowResize)
   window.addEventListener('keydown', onKeydown)
   void resumeBrowse()
+  void loadStartRecent()
+  syncNativeVisibility()
   unsubs.push(window.api.browse.onState((s) => {
     state.value = s
     if (s.loading) { hidePicking.value = false; hiddenCount.value = 0 }
@@ -1459,6 +1554,7 @@ onMounted(async () => {
       retryingFailed.value = false
       // Closed mid-run must not cancel; surface the terminal tag + open button.
       showProgress.value = true
+      if (p.status === 'done') void loadStartRecent()
     }
   }))
   unsubs.push(window.api.mirror.onProgress((progress) => { mirrorProgress.value = progress }))
@@ -1481,106 +1577,187 @@ onUnmounted(() => {
 
 <template>
   <div class="page browse-page">
-    <form v-show="!toolbarCollapsed && !readingPage" class="browse-toolbar" @submit="onSubmit">
-      <div class="browser-nav-row">
-        <button class="browser-icon-button" type="button" title="后退" aria-label="后退" :disabled="!state.canGoBack" @click="back">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
-        </button>
-        <button class="browser-icon-button" type="button" title="前进" aria-label="前进" :disabled="!state.canGoForward" @click="forward">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
-        </button>
-        <button
-          class="browser-icon-button"
-          type="button"
-          :title="state.loading ? '停止加载' : '刷新'"
-          :aria-label="state.loading ? '停止加载' : '刷新'"
-          @click="state.loading ? stop() : reload()"
-        >
-          <svg v-if="state.loading" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z" /></svg>
-          <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66" /><path d="M20 4v7h-7" /></svg>
-        </button>
-        <input v-model="address" aria-label="网页地址" placeholder="粘贴或输入网址，回车打开" spellcheck="false" />
-        <button class="browser-open-button" type="submit">打开</button>
-      </div>
-      <div class="browser-action-row">
-        <div class="site-status" :class="{ inactive: !currentHost() }" :title="siteLabel">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg>
-          <span>{{ siteLabel }}</span>
-        </div>
-        <div class="browser-actions">
-          <n-button
-            type="primary"
-            size="small"
-            :disabled="downloading || mirrorRunning || !address"
-            :loading="previewing || downloading"
-            @click.prevent="startDownload"
-          >
-            下载本书
-          </n-button>
-          <n-button
-            size="small"
-            secondary
-            :disabled="mirrorRunning || !state.url"
-            @click.prevent="openMirror"
-          >
-            {{ mirrorRunning ? '镜像中…' : '整站镜像' }}
-          </n-button>
-          <details class="browser-more">
-            <summary>更多工具</summary>
-            <div class="browser-more-content">
-              <n-button size="small" secondary :disabled="!currentHost()" @click.prevent="editCurrentSiteRule">
-                配置本站规则
-              </n-button>
-              <n-button size="small" secondary :disabled="!currentHost()" :loading="adFilterBusy" @click.prevent="toggleAdFilter">
-                {{ adFilterEnabled ? '去广告：已开启' : '去广告：已关闭' }}
-              </n-button>
-              <button type="button" aria-label="缩小网页" @click.prevent="setZoom(-0.1)">－</button>
-              <button type="button" title="恢复默认缩放" @click.prevent="setZoom('reset')">{{ Math.round(state.zoom * 100) }}%</button>
-              <button type="button" aria-label="放大网页" @click.prevent="setZoom(0.1)">＋</button>
-              <button type="button" @click.prevent="findOpen ? closeFind() : findOpen = true">{{ findOpen ? '关闭查找' : '网页查找' }}</button>
-              <button type="button" @click.prevent="hideAction(hidePicking ? 'stop' : 'start')">{{ hidePicking ? '退出点选' : '点选隐藏' }}</button>
-              <button type="button" :disabled="hiddenCount === 0" @click.prevent="hideAction('undo')">撤销隐藏{{ hiddenCount ? `（${hiddenCount}）` : '' }}</button>
-              <n-button
-                v-if="downloadProgress && !showProgress"
-                size="small"
-                tertiary
-                @click.prevent="restoreProgressDrawer"
-              >
-                下载进度
-              </n-button>
+    <div v-show="!readingPage" class="browse-body">
+      <aside class="browse-side" aria-label="浏览辅助">
+        <section class="side-block">
+          <p class="side-label">当前站点</p>
+          <div class="browser-action-row">
+            <div class="site-status" :class="{ inactive: !currentHost() }" :title="siteLabel">
+              <span>{{ siteLabel }}</span>
             </div>
-          </details>
+            <div class="browser-actions">
+              <n-button
+                type="primary"
+                size="small"
+                :disabled="downloading || mirrorRunning || !address"
+                :loading="previewing || downloading"
+                @click.prevent="startDownload"
+              >
+                下载本书
+              </n-button>
+              <n-button
+                size="small"
+                secondary
+                :disabled="mirrorRunning || !state.url"
+                @click.prevent="openMirror"
+              >
+                {{ mirrorRunning ? '镜像中…' : '整站镜像' }}
+              </n-button>
+              <details class="browser-more">
+                <summary>更多工具</summary>
+                <div class="browser-more-content">
+                  <n-button size="small" secondary :disabled="!currentHost()" @click.prevent="editCurrentSiteRule">
+                    配置本站规则
+                  </n-button>
+                  <n-button size="small" secondary :disabled="!currentHost()" :loading="adFilterBusy" @click.prevent="toggleAdFilter">
+                    {{ adFilterEnabled ? '去广告：已开启' : '去广告：已关闭' }}
+                  </n-button>
+                  <div class="side-inline">
+                    <button type="button" aria-label="缩小网页" @click.prevent="setZoom(-0.1)">－</button>
+                    <button type="button" title="恢复默认缩放" @click.prevent="setZoom('reset')">{{ Math.round(state.zoom * 100) }}%</button>
+                    <button type="button" aria-label="放大网页" @click.prevent="setZoom(0.1)">＋</button>
+                  </div>
+                  <button type="button" class="side-tool" @click.prevent="findOpen ? closeFind() : findOpen = true">{{ findOpen ? '关闭查找' : '网页查找' }}</button>
+                  <button type="button" class="side-tool" @click.prevent="hideAction(hidePicking ? 'stop' : 'start')">{{ hidePicking ? '退出点选' : '点选隐藏' }}</button>
+                  <button type="button" class="side-tool" :disabled="hiddenCount === 0" @click.prevent="hideAction('undo')">撤销隐藏{{ hiddenCount ? `（${hiddenCount}）` : '' }}</button>
+                  <n-button
+                    v-if="downloadProgress && !showProgress"
+                    size="small"
+                    tertiary
+                    @click.prevent="restoreProgressDrawer"
+                  >
+                    下载进度
+                  </n-button>
+                </div>
+              </details>
+            </div>
+          </div>
+        </section>
+
+        <section class="side-block side-recent">
+          <div class="side-head">
+            <span class="side-label">继续阅读</span>
+            <span v-if="recentBooks.length" class="side-count">{{ String(recentBooks.length).padStart(2, '0') }}</span>
+          </div>
+          <ul v-if="recentBooks.length" class="recent-list">
+            <li v-for="(item, index) in recentBooks" :key="item.key">
+              <button type="button" class="recent-row" @click="openRecent(item)">
+                <span class="recent-index" aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span>
+                <span
+                  class="recent-thumb"
+                  :class="{ 'has-cover': item.cover }"
+                  :style="item.cover ? { backgroundImage: `url(${item.cover})` } : undefined"
+                ><template v-if="!item.cover">{{ item.title.slice(0, 1) }}</template></span>
+                <span class="recent-text">
+                  <span class="recent-title">{{ item.title }}</span>
+                  <span class="recent-meta">{{ item.meta }}</span>
+                </span>
+              </button>
+            </li>
+          </ul>
+          <div v-else class="recent-empty">
+            <p><strong>书架还是空的</strong>打开一个小说站，点「加书架」或下载本书。</p>
+          </div>
+        </section>
+
+        <p class="side-note">正文只在本机渲染<br />阅读模式不落盘</p>
+      </aside>
+
+      <div class="browse-main">
+        <form v-show="!toolbarCollapsed && !readingPage" class="browse-toolbar" @submit="onSubmit">
+          <div class="browser-nav-row">
+            <div class="nav-group">
+              <button class="browser-icon-button" type="button" title="后退" aria-label="后退" :disabled="!state.canGoBack" @click="back">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+              </button>
+              <button class="browser-icon-button" type="button" title="前进" aria-label="前进" :disabled="!state.canGoForward" @click="forward">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+              </button>
+              <button
+                class="browser-icon-button"
+                type="button"
+                :title="state.loading ? '停止加载' : '刷新'"
+                :aria-label="state.loading ? '停止加载' : '刷新'"
+                @click="state.loading ? stop() : reload()"
+              >
+                <svg v-if="state.loading" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z" /></svg>
+                <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66" /><path d="M20 4v7h-7" /></svg>
+              </button>
+            </div>
+            <label class="address-field">
+              <svg class="address-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg>
+              <input v-model="address" aria-label="网页地址" placeholder="粘贴或输入网址，回车打开" spellcheck="false" />
+              <span class="address-hint" aria-hidden="true">Enter</span>
+            </label>
+            <button class="browser-open-button" type="submit">打开</button>
+          </div>
+          <div v-if="state.loading" class="browse-loading" aria-hidden="true"><span /></div>
+        </form>
+
+        <div v-if="!readingPage" class="web-reading-controls">
+          <button type="button" @click="toolbarCollapsed = !toolbarCollapsed">{{ toolbarCollapsed ? '展开工具栏' : '收起工具栏' }}</button>
+          <template v-if="toolbarCollapsed">
+            <button type="button" :disabled="!state.canGoBack" @click="back">后退</button>
+            <button type="button" :disabled="!state.canGoForward" @click="forward">前进</button>
+            <button type="button" @click="state.loading ? stop() : reload()">{{ state.loading ? '停止' : '刷新' }}</button>
+            <span class="web-current-site" :title="state.url">{{ currentHost() || '尚未打开网页' }}</span>
+          </template>
+          <button type="button" :disabled="!state.previousChapter" :title="state.previousChapter?.title || '未识别到上一章'" @click="changeChapter('previous')">上一章</button>
+          <button type="button" :disabled="!state.nextChapter" :title="state.nextChapter?.title || '未识别到下一章'" @click="changeChapter('next')">下一章</button>
+          <button type="button" :disabled="!state.url || readingBusy" @click="readingPage ? exitReadingMode() : enterReadingMode()">{{ readingPage ? '返回原网页' : '阅读模式' }}</button>
+          <span class="web-shortcut-hint">Alt＋↑ / Alt＋↓ 翻章</span>
+        </div>
+
+        <div v-if="findOpen && !readingPage" class="web-find-row">
+          <input ref="findInput" v-model="findQuery" aria-label="查找网页文字" placeholder="查找当前网页" @input="runFind()" @keydown.enter.prevent="runFind(true, true)" />
+          <span>{{ findResult.matches ? `${findResult.activeMatch} / ${findResult.matches}` : '无匹配' }}</span>
+          <button type="button" @click="runFind(false, true)">上一处</button>
+          <button type="button" @click="runFind(true, true)">下一处</button>
+          <button type="button" @click="closeFind">关闭</button>
+        </div>
+
+        <div v-if="!readingPage && (resumeError || previewFailure)" class="browse-notice" role="alert">
+          <p>{{ resumeError || previewFailure?.message }}</p>
+          <button v-if="resumeError" type="button" @click="retryResume">重试</button>
+          <button v-else-if="previewFailure?.code === 'BodyGarbled'" type="button" @click="previewFailure = null; reload()">刷新页面</button>
+          <button v-else-if="previewFailure?.pageKind === 'chapter'" type="button" @click="editCurrentSiteRule">配置本站规则</button>
+          <button type="button" @click="resumeError ? resumeError = '' : previewFailure = null">关闭</button>
+        </div>
+
+        <div v-show="!readingPage" class="browse-canvas">
+          <section v-if="!readingPage && !browsing" class="start-page" aria-label="起始页">
+            <div class="start-grid" aria-hidden="true"><span class="start-glow" /></div>
+            <div class="start-stage">
+              <div class="start-top">
+                <span class="start-kicker"><span class="start-dot" aria-hidden="true" />本地阅读终端</span>
+                <span class="start-top-note">离线书库 · 自备 AI</span>
+              </div>
+              <h1 class="start-title">把想读的故事，<br /><em>都留在本机。</em></h1>
+              <p class="start-sub">粘贴小说站地址开始浏览。读到喜欢的书，一键下载进本地书库，没网也能接着读。网页正文只在本机渲染，阅读模式不落盘。</p>
+              <form class="start-search" @submit="onSubmit">
+                <span class="start-prompt" aria-hidden="true">›</span>
+                <input
+                  ref="startInput"
+                  v-model="address"
+                  aria-label="起始页网址"
+                  placeholder="粘贴或输入小说站网址，回车开始"
+                  spellcheck="false"
+                />
+                <button type="submit">开始浏览</button>
+              </form>
+              <ul class="start-meta">
+                <li><b>本地书库</b><span>下载后离线可读</span></li>
+                <li><b>阅读模式</b><span>去广告 · 可排版</span></li>
+                <li><b>AI 助手</b><span>自备 API Key</span></li>
+              </ul>
+              <p class="start-foot">Alt＋↑↓ 换章 · Ctrl＋F 网页查找</p>
+            </div>
+          </section>
+          <div ref="slot" v-show="!readingPage" class="browse-slot" />
         </div>
       </div>
-    </form>
-    <div v-if="!readingPage" class="web-reading-controls">
-      <button type="button" @click="toolbarCollapsed = !toolbarCollapsed">{{ toolbarCollapsed ? '展开工具栏' : '收起工具栏' }}</button>
-      <template v-if="toolbarCollapsed">
-        <button type="button" :disabled="!state.canGoBack" @click="back">后退</button>
-        <button type="button" :disabled="!state.canGoForward" @click="forward">前进</button>
-        <button type="button" @click="state.loading ? stop() : reload()">{{ state.loading ? '停止' : '刷新' }}</button>
-        <span class="web-current-site" :title="state.url">{{ currentHost() || '尚未打开网页' }}</span>
-      </template>
-      <button type="button" :disabled="!state.previousChapter" :title="state.previousChapter?.title || '未识别到上一章'" @click="changeChapter('previous')">上一章</button>
-      <button type="button" :disabled="!state.nextChapter" :title="state.nextChapter?.title || '未识别到下一章'" @click="changeChapter('next')">下一章</button>
-      <button type="button" :disabled="!state.url || readingBusy" @click="readingPage ? exitReadingMode() : enterReadingMode()">{{ readingPage ? '返回原网页' : '阅读模式' }}</button>
-      <span class="web-shortcut-hint">Alt＋↑ / Alt＋↓ 翻章</span>
     </div>
-    <div v-if="findOpen && !readingPage" class="web-find-row">
-      <input ref="findInput" v-model="findQuery" aria-label="查找网页文字" placeholder="查找当前网页" @input="runFind()" @keydown.enter.prevent="runFind(true, true)" />
-      <span>{{ findResult.matches ? `${findResult.activeMatch} / ${findResult.matches}` : '无匹配' }}</span>
-      <button type="button" @click="runFind(false, true)">上一处</button>
-      <button type="button" @click="runFind(true, true)">下一处</button>
-      <button type="button" @click="closeFind">关闭</button>
-    </div>
-    <div v-if="!readingPage && (resumeError || previewFailure)" class="browse-notice" role="alert">
-      <p>{{ resumeError || previewFailure?.message }}</p>
-      <button v-if="resumeError" type="button" @click="retryResume">重试</button>
-      <button v-else-if="previewFailure?.code === 'BodyGarbled'" type="button" @click="previewFailure = null; reload()">刷新页面</button>
-      <button v-else-if="previewFailure?.pageKind === 'chapter'" type="button" @click="editCurrentSiteRule">配置本站规则</button>
-      <button type="button" @click="resumeError ? resumeError = '' : previewFailure = null">关闭</button>
-    </div>
-    <div ref="slot" v-show="!readingPage" class="browse-slot" />
+
     <div
       v-if="readingPage"
       ref="readingStage"
@@ -1987,39 +2164,58 @@ onUnmounted(() => {
   background: var(--app-bg);
 }
 
+/* 章节工具条：与命令条同一套发丝线语言 */
 .web-reading-controls, .web-find-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-1);
+  gap: 2px;
+  margin: 8px 16px 0;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-1) 82%, transparent);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(18px) saturate(140%);
   z-index: 2;
 }
 
 .web-reading-controls button, .web-find-row button {
   border: 0;
-  border-radius: 999px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
-  padding: 6px 12px;
+  padding: 6px 10px;
+  font: 12px/1 var(--font-ui);
   cursor: pointer;
+  transition: background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
 }
 
-.web-reading-controls button:hover:not(:disabled), .web-find-row button:hover:not(:disabled) { background: var(--surface-2); color: var(--text-primary); }
+.web-reading-controls button:hover:not(:disabled), .web-find-row button:hover:not(:disabled) { background: color-mix(in srgb, var(--focus) 10%, transparent); color: var(--text-primary); }
+.web-current-site {
+  min-width: 0;
+  max-width: 32ch;
+  overflow: hidden;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font: 11px/1.3 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .web-more { min-width: 0; margin-left: auto; }
 .web-more[open] { flex: 1 0 100%; }
 .web-more-content { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); padding-top: var(--space-2); }
-.web-shortcut-hint { margin-left: var(--space-2); }
-.web-more summary, .browser-more summary { list-style: none; border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; color: var(--text-secondary); background: var(--surface-1); font-size: 12px; cursor: pointer; }
+.web-shortcut-hint { margin-left: auto; padding-right: 6px; }
+.web-more summary, .browser-more summary { list-style: none; border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; color: var(--text-secondary); background: var(--surface-1); font: 11px/1.4 var(--font-mono); cursor: pointer; transition: border-color var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing), background var(--motion-duration) var(--motion-easing); }
 .web-more summary::-webkit-details-marker, .browser-more summary::-webkit-details-marker { display: none; }
-.web-more summary:hover, .browser-more summary:hover { border-color: var(--hover-line); color: var(--focus); }
+.web-more summary:hover, .browser-more summary:hover { border-color: color-mix(in srgb, var(--focus) 40%, transparent); background: color-mix(in srgb, var(--focus) 8%, transparent); color: var(--focus); }
 .web-more summary:focus-visible, .browser-more summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .web-reading-controls button:disabled { opacity: 0.45; cursor: default; }
 .web-shortcut-hint { color: var(--text-muted); font-size: 12px; }
-.web-find-row input { min-width: 160px; flex: 1; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--input-bg); color: var(--text-primary); }
+.web-find-row input { min-width: 160px; flex: 1; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--border) 85%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--surface-2) 80%, transparent); color: var(--text-primary); font: inherit; font-size: 13px; }
 .web-find-row span { min-width: 70px; text-align: center; }
 /* 阅读模式是沉浸层：正文自己滚，工具条浮在上面，不占正文高度。 */
 .web-reading-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--web-outer); color: var(--web-ink); }
@@ -2160,61 +2356,275 @@ onUnmounted(() => {
 .web-mark-actions { display: flex; gap: 6px; margin-top: 6px; }
 .web-mark-note-edit { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 
-.browse-toolbar {
-  position: relative;
-  z-index: 2;
-  height: auto;
-  display: block;
-  padding: 0;
-  border-bottom: 1px solid var(--border);
+/* 两栏：左侧常驻上下文栏，右侧命令条 + 网页 / 起始页 */
+.browse-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.browse-side {
+  display: flex;
+  flex: 0 0 264px;
+  flex-direction: column;
+  gap: 10px;
+  width: 264px;
+  padding: 12px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-1) 42%, transparent);
+}
+
+.browse-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.side-block {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
   background: var(--surface-1);
 }
 
-.browser-nav-row,
-.browser-action-row {
+.side-label {
+  margin: 0;
+  color: var(--text-muted);
+  font: 10px/1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+}
+
+.side-head {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.side-count {
+  color: var(--focus);
+  font: 10px/1 var(--font-mono);
+}
+
+.side-recent {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 180px;
+  padding-bottom: 4px;
+}
+
+.side-note {
+  margin: 0 2px;
+  color: var(--text-muted);
+  font: 10px/1.7 var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+.browse-side .browser-action-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-height: 0;
+  margin: 8px 0 0;
+  padding: 0;
+  border-top: 0;
+}
+
+.browse-side .site-status {
+  font-size: 11px;
+}
+
+.browse-side .browser-actions {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.browse-side .browser-actions :deep(.n-button) {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.browse-side .browser-more {
+  width: 100%;
+}
+
+.browse-side .browser-more summary {
+  width: 100%;
+}
+
+.browse-side .browser-more-content {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 6px;
+  padding-top: 8px;
+}
+
+.side-inline {
+  display: flex;
+  gap: 4px;
+}
+
+.side-inline button,
+.side-tool {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: 11px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.side-inline button {
+  flex: 1;
+  padding: 6px 4px;
+}
+
+.side-tool {
+  width: 100%;
+  text-align: left;
+}
+
+.side-inline button:hover,
+.side-tool:hover:not(:disabled) {
+  border-color: var(--hover-line);
+  color: var(--text-primary);
+  background: var(--surface-2);
+}
+
+.side-tool:disabled {
+  color: var(--disabled);
+  cursor: default;
+}
+
+.browse-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.browse-slot {
+  position: absolute;
+  inset: 0;
+}
+
+/* 命令条：只有导航与地址，操作搬到左栏 */
+.browse-toolbar {
+  position: relative;
+  z-index: 3;
+  display: block;
+  height: auto;
+  margin: 12px 14px 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(20px) saturate(140%);
 }
 
 .browser-nav-row {
-  min-height: 60px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 2px;
 }
 
-.browser-action-row {
-  min-height: 48px;
-  justify-content: space-between;
-  border-top: 1px solid var(--border);
+.nav-group {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   background: var(--surface-1);
 }
 
-.browser-nav-row input {
-  min-width: 120px;
-  height: 40px;
+.nav-group .browser-icon-button + .browser-icon-button {
+  border-left: 1px solid var(--border);
+}
+
+.address-field {
+  position: relative;
+  display: flex;
   flex: 1;
+  align-items: center;
+  min-width: 120px;
+}
+
+.address-icon {
+  position: absolute;
+  left: 10px;
+  width: 15px;
+  height: 15px;
+  color: var(--text-muted);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+  transition: color var(--motion-duration) var(--motion-easing);
+}
+
+.address-field:focus-within .address-icon {
+  color: var(--focus);
+}
+
+.address-hint {
+  position: absolute;
+  right: 8px;
+  padding: 3px 5px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0 var(--space-3);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font: 10px/1 var(--font-mono);
+  letter-spacing: 0.12em;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-duration) var(--motion-easing);
+}
+
+.address-field:focus-within .address-hint {
+  opacity: 1;
+}
+
+.browser-nav-row input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 54px 0 32px;
   color: var(--text-primary);
-  background: var(--input-bg);
-  font: inherit;
-  font-size: 14px;
+  background: var(--surface-2);
+  font: 13px/1 var(--font-mono);
+  letter-spacing: 0.01em;
   transition: border-color var(--motion-duration) var(--motion-easing), background var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing);
 }
 
 .browser-nav-row input::placeholder {
   color: var(--text-muted);
+  font-family: var(--font-ui);
+  letter-spacing: 0;
 }
 
 .browser-nav-row input:hover {
   border-color: var(--hover-line);
-  background: var(--input-bg);
 }
 
 .browser-nav-row input:focus {
   border-color: var(--focus);
-  background: var(--input-bg);
+  background: var(--surface-1);
   box-shadow: var(--input-ring);
 }
 
@@ -2223,27 +2633,26 @@ onUnmounted(() => {
 }
 
 .browser-icon-button {
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
   display: grid;
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 999px;
-  color: var(--text-primary);
-  background: var(--chip-bg);
+  border-radius: 0;
+  color: var(--text-secondary);
+  background: transparent;
   cursor: pointer;
-  transition: border-color var(--motion-duration) var(--motion-easing), background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
+  transition: background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
 }
 
 .browser-icon-button:hover:not(:disabled) {
-  border-color: var(--hover-line);
-  background: var(--chip-hover-bg);
+  background: var(--surface-2);
+  color: var(--text-primary);
 }
 
 .browser-icon-button:active:not(:disabled) {
-  border-color: var(--focus);
   background: var(--surface-3);
 }
 
@@ -2255,62 +2664,69 @@ onUnmounted(() => {
 
 .browser-icon-button:disabled {
   color: var(--disabled);
-  border-color: var(--border);
-  background: var(--chip-bg);
-  opacity: 1;
   cursor: default;
 }
 
 .browser-icon-button svg,
 .site-status svg {
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .browser-open-button {
-  height: 40px;
+  height: 34px;
   flex: 0 0 auto;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: 999px;
-  padding: 0 var(--space-3);
+  padding: 0 18px;
   color: var(--on-accent);
   background: var(--focus);
-  font: inherit;
-  font-size: 14px;
+  font: 600 13px/1 var(--font-ui);
+  letter-spacing: 0.01em;
   cursor: pointer;
-  transition: background var(--motion-duration) var(--motion-easing);
+  transition: filter var(--motion-duration) var(--motion-easing), transform var(--motion-duration) var(--motion-easing);
 }
 
 .browser-open-button:hover:not(:disabled) {
-  filter: brightness(1.08);
+  filter: brightness(1.06);
 }
 
 .browser-open-button:active:not(:disabled) {
-  filter: brightness(0.94);
+  transform: translateY(1px);
 }
 
 .browser-open-button:disabled {
-  color: var(--on-accent);
   background: var(--disabled);
   cursor: default;
 }
 
 .site-status {
-  min-width: 0;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 8px;
+  min-width: 0;
   color: var(--text-secondary);
-  font-size: 12px;
+  font: 11px/1.4 var(--font-mono);
+  letter-spacing: 0.04em;
 }
 
-.site-status.inactive {
-  color: var(--text-muted);
+.site-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 1px;
+  background: var(--disabled);
+}
+
+.site-status:not(.inactive)::before {
+  background: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 14%, transparent);
 }
 
 .site-status span {
@@ -2319,18 +2735,386 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.site-status.inactive {
+  color: var(--text-muted);
+}
+
 .browser-actions {
-  flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.browser-more { min-width: 0; }
-.browser-more[open] { flex: 1 0 100%; }
-.browser-more-content { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); padding-top: var(--space-2); }
+.browser-more {
+  min-width: 0;
+}
+
+.browser-more[open] {
+  flex: 1 0 100%;
+}
+
+.browser-more-content {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+/* 加载指示：一条贴着命令条底边的细扫描线 */
+.browse-loading {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 2px;
+  height: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.browse-loading span {
+  display: block;
+  width: 30%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, var(--focus), transparent);
+  animation: browse-loading-slide 1.1s linear infinite;
+}
+
+@keyframes browse-loading-slide {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(380%); }
+}
+
+/* ---------- 起始页：网格 + 左侧强调竖线的编辑版式 ---------- */
+.start-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: clamp(20px, 3vw, 44px);
+}
+
+.start-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 64px 64px;
+  -webkit-mask-image: radial-gradient(110% 100% at 20% 20%, #000 30%, transparent 82%);
+  mask-image: radial-gradient(110% 100% at 20% 20%, #000 30%, transparent 82%);
+}
+
+.start-glow {
+  position: absolute;
+  left: 32%;
+  top: -240px;
+  width: 820px;
+  height: 440px;
+  transform: translateX(-50%);
+  background: radial-gradient(50% 50% at 50% 50%, color-mix(in srgb, var(--focus) 14%, transparent), transparent 72%);
+}
+
+.start-stage {
+  position: relative;
+  z-index: 1;
+  width: min(760px, 100%);
+  margin: auto;
+  padding-left: clamp(16px, 2.4vw, 26px);
+  border-left: 2px solid var(--focus);
+}
+
+.start-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+.start-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-muted);
+  font: 10px/1 var(--font-mono);
+  letter-spacing: 0.14em;
+}
+
+.start-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 14%, transparent);
+}
+
+.start-top-note {
+  color: var(--text-muted);
+  font: 10px/1 var(--font-mono);
+  letter-spacing: 0.12em;
+}
+
+.start-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: clamp(34px, 4vw, 54px);
+  font-weight: 650;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.start-title em {
+  font-style: normal;
+  color: var(--focus);
+}
+
+.start-sub {
+  max-width: 32em;
+  margin: 16px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+.start-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 26px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing);
+}
+
+.start-search:focus-within {
+  border-color: var(--focus);
+  box-shadow: var(--input-ring), var(--shadow-card);
+}
+
+.start-prompt {
+  margin-left: 8px;
+  color: var(--focus);
+  font: 14px/1 var(--font-mono);
+}
+
+.start-search input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: 13px/1 var(--font-mono);
+  outline: none;
+}
+
+.start-search input::placeholder {
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+}
+
+.start-search button {
+  flex: 0 0 auto;
+  height: 38px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--on-accent);
+  background: var(--focus);
+  font: 600 13px/1 var(--font-ui);
+  cursor: pointer;
+  transition: filter var(--motion-duration) var(--motion-easing);
+}
+
+.start-search button:hover {
+  filter: brightness(1.07);
+}
+
+/* 三条规格：只用两类发丝线，不用卡片 */
+.start-meta {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 26px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  list-style: none;
+}
+
+.start-meta li {
+  flex: 1 1 150px;
+  min-width: 0;
+  padding: 12px 16px 12px 0;
+}
+
+.start-meta li + li {
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+}
+
+.start-meta b {
+  display: block;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.start-meta span {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font: 11px/1.5 var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+.start-foot {
+  margin: 22px 0 0;
+  color: var(--text-muted);
+  font: 10px/1.6 var(--font-mono);
+  letter-spacing: 0.1em;
+}
+
+/* ---------- 左栏里的继续阅读 ---------- */
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-duration) var(--motion-easing);
+}
+
+.recent-list li:last-child .recent-row {
+  border-bottom: 0;
+}
+
+.recent-row:hover {
+  background: var(--hover);
+}
+
+.recent-index {
+  flex: 0 0 16px;
+  color: var(--text-muted);
+  font: 10px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+.recent-thumb {
+  flex: 0 0 26px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background-image: linear-gradient(150deg, color-mix(in srgb, var(--focus) 18%, var(--surface-2)), var(--surface-3));
+  background-size: cover;
+  background-position: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.recent-thumb.has-cover {
+  color: transparent;
+}
+
+.recent-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.recent-title {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-meta {
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 10px/1.3 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-empty p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.recent-empty strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+@media (max-width: 1180px) {
+  .browse-side {
+    flex-basis: 232px;
+    width: 232px;
+  }
+}
+
+@media (max-height: 720px) {
+  .start-title {
+    font-size: clamp(28px, 3vw, 40px);
+  }
+
+  .start-top {
+    margin-bottom: 14px;
+  }
+
+  .start-sub {
+    margin-top: 10px;
+  }
+
+  .start-search {
+    margin-top: 18px;
+  }
+
+  .start-meta {
+    margin-top: 18px;
+  }
+}
 
 .dl-progress {
   padding: var(--space-2) 0;
