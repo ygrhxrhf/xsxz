@@ -633,6 +633,7 @@
       "title": "示例书名",
       "author": "示例作者",
       "coverUrl": "https://example.com/cover.jpg",
+      "description": "站点书页上的简介，最多 800 字；抓不到为空串。",
       "catalogUrl": "https://example.com/book/65/",
       "lastChapter": { "title": "第 12 章 起风", "url": "https://example.com/book/65/12.html" },
       "chapters": [
@@ -650,6 +651,7 @@
 ```
 
 - 网页书只保存书目、目录快照与阅读位置，**不保存正文**；打开与续读都在内置浏览器里进行。
+- 书目字段（`title` / `author` / `coverUrl` / `description`）按「书页」口径取：章节页上的章名不会写成书名（`og:novel:book_name`、书页容器、目录链接文字、`<title>` 里剥掉章名与站点名）；加入时优先用目录页的书目信息，刷新目录时补齐旧的缺字段条目。
 - 上限：最多 500 本；每本 `chapters` 最多 3000 条，超出时保留靠前的 3000 条并把目录标为截断。
 - `chapters` 允许为空数组（抓不到目录的站），此时书架显示「目录待识别」，跳章依赖页面里的上一章 / 下一章。
 - `id` 由 host + 规范化 `catalogUrl` 生成，同一本书重复加入时更新原条目而不新增。

@@ -539,6 +539,8 @@ export interface WebShelfBook {
   title: string
   author: string
   coverUrl?: string
+  /** 站点书页上的简介；抓不到为空串。口径与书库书目一致。 */
+  description: string
   catalogUrl: string
   /** 最近读到的章节。 */
   lastChapter: WebShelfChapter

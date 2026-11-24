@@ -4,7 +4,9 @@ import { join } from 'node:path'
 import { atomicWriteText } from './atomicFile'
 import { canonicalBookId } from './library'
 import { normalizeHost } from './siteRules'
+import { getReadingPos } from './browseState'
 import { loadCatalog, loadPageBootstrap } from './readingSession'
+import { looksLikeChapterTitle, type BookIdentity } from './extract'
 import type { WebShelfBook, WebShelfChapter, WebShelfProgress } from '../shared/types'
 
 /**
@@ -14,6 +16,8 @@ import type { WebShelfBook, WebShelfChapter, WebShelfProgress } from '../shared/
 const FILE_VERSION = 1
 export const WEB_SHELF_BOOK_LIMIT = 500
 export const WEB_SHELF_CHAPTER_LIMIT = 3000
+/** 简介落盘上限，与提取侧一致。 */
+const MAX_INTRO_CHARS = 800
 /** 同一本书两次刷新之间的最小间隔，避免连点刷新打站点。 */
 export const REFRESH_BACKOFF_MS = 10 * 60 * 1000
 export const REFRESH_ALL_LIMIT = 50
@@ -109,6 +113,7 @@ function asBook(value: unknown): WebShelfBook | null {
     title: typeof item.title === 'string' && item.title.trim() ? item.title.trim().slice(0, 200) : '未命名',
     author: typeof item.author === 'string' ? item.author.trim().slice(0, 120) : '',
     coverUrl: isHttpUrl(item.coverUrl) ? String(item.coverUrl) : undefined,
+    description: typeof item.description === 'string' ? item.description.replace(/\s+/g, ' ').trim().slice(0, MAX_INTRO_CHARS) : '',
     catalogUrl: normalizeUrl(item.catalogUrl),
     lastChapter,
     chapters: dedupeChapters(chapters),
@@ -122,15 +127,16 @@ function asBook(value: unknown): WebShelfBook | null {
   }
 }
 
+function timeOf(value: string): number {
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 function sortBooks(books: WebShelfBook[]): WebShelfBook[] {
-  const time = (value: string): number => {
-    const parsed = Date.parse(value)
-    return Number.isFinite(parsed) ? parsed : 0
-  }
   return [...books].sort((a, b) => {
     const aKey = a.progress?.updatedAt || a.createdAt
     const bKey = b.progress?.updatedAt || b.createdAt
-    return time(bKey) - time(aKey)
+    return timeOf(bKey) - timeOf(aKey)
   })
 }
 
@@ -187,8 +193,29 @@ function chapterIndex(chapters: WebShelfChapter[], url: string): number {
 }
 
 /**
+ * 书名候选：优先站点书页信息，最后才用页面标题。
+ * 章节名（「第 12 章 xxx」）不会当书名，除非实在没有别的可依。
+ */
+function shelfTitle(candidates: Array<string | undefined>, fallback: string): string {
+  const cleaned = candidates.map((value) => (value ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean)
+  const strong = cleaned.find((value) => !looksLikeChapterTitle(value))
+  return (strong || cleaned[0] || fallback).slice(0, 200)
+}
+
+function firstText(candidates: Array<string | undefined>): string {
+  for (const candidate of candidates) {
+    const value = (candidate ?? '').replace(/\s+/g, ' ').trim()
+    if (value) return value
+  }
+  return ''
+}
+
+/**
  * 加入书架：以当前页为入口，能认目录就存目录快照，认不出也允许加入。
  * 同一本书重复加入时更新原条目并保留阅读位置。
+ *
+ * 书名 / 作者 / 封面 / 简介按书页口径取：章节页上的章名不会被存成书名，
+ * 目录页（书页）上的简介一并存下，和其它书目字段一起改。
  */
 export async function addWebShelf(input: { url?: string }): Promise<ShelfResult<{ book: WebShelfBook }>> {
   const url = typeof input?.url === 'string' ? input.url.trim() : ''
@@ -200,12 +227,19 @@ export async function addWebShelf(input: { url?: string }): Promise<ShelfResult<
   const catalogUrl = normalizeUrl(info.catalogUrl || info.pageUrl)
 
   let chapters = dedupeChapters(info.chapters)
+  let catalogBook: BookIdentity | undefined
   if (!chapters.length && catalogUrl !== normalizeUrl(info.pageUrl)) {
     const catalog = await loadCatalog(catalogUrl)
-    if (catalog.ok) chapters = dedupeChapters(catalog.chapters)
+    if (catalog.ok) {
+      chapters = dedupeChapters(catalog.chapters)
+      catalogBook = catalog.book
+    }
   } else if (!chapters.length && info.pageKind === 'chapter') {
     const catalog = await loadCatalog(info.pageUrl)
-    if (catalog.ok) chapters = dedupeChapters(catalog.chapters)
+    if (catalog.ok) {
+      chapters = dedupeChapters(catalog.chapters)
+      catalogBook = catalog.book
+    }
   }
 
   const shelf = await load()
@@ -213,20 +247,30 @@ export async function addWebShelf(input: { url?: string }): Promise<ShelfResult<
   const now = new Date().toISOString()
   const existing = shelf.books.find((book) => book.id === id)
   const lastChapter = chapters[chapterIndex(chapters, info.pageUrl)] ?? { title: info.title, url: normalizeUrl(info.pageUrl) }
+  // 加书架之前已经在阅读模式读过的，位置按章节地址存在 browse-state 里：
+  // 接过来，书架「最近在读」加入后立刻能接着读，而不是等下次滚动才有进度。
+  const saved = await getReadingPos(lastChapter.url).catch(() => null)
+  const seeded = saved
+    ? asProgress({ paragraphIndex: saved.paragraphIndex, scrollRatio: saved.scrollRatio, updatedAt: saved.updatedAt })
+    : null
+  const progress = seeded && (!existing?.progress || timeOf(seeded.updatedAt) > timeOf(existing.progress.updatedAt))
+    ? seeded
+    : existing?.progress ?? null
 
   const book: WebShelfBook = {
     id,
     host,
-    title: info.title || existing?.title || '未命名',
-    author: info.author || existing?.author || '',
-    coverUrl: info.coverUrl ?? existing?.coverUrl,
+    title: shelfTitle([catalogBook?.title, info.title, existing?.title], '未命名'),
+    author: firstText([catalogBook?.author, info.author, existing?.author]).slice(0, 120),
+    coverUrl: catalogBook?.coverUrl ?? info.coverUrl ?? existing?.coverUrl,
+    description: firstText([catalogBook?.description, info.description, existing?.description]).slice(0, MAX_INTRO_CHARS),
     catalogUrl,
     lastChapter,
     chapters,
     chaptersFetchedAt: chapters.length ? now : existing?.chaptersFetchedAt ?? '',
     addedChapters: existing?.addedChapters ?? 0,
     lastRefreshedAt: existing?.lastRefreshedAt ?? '',
-    progress: existing?.progress ?? null,
+    progress,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   }
@@ -302,6 +346,16 @@ export async function refreshWebShelf(id: string): Promise<ShelfResult<{ added: 
   book.addedChapters = added
   book.updatedAt = now
   book.catalogUrl = normalizeUrl(catalog.catalogUrl)
+  // 顺带修正旧条目：早先按章节页加入的书会把章名当书名，也没有简介。
+  const meta = catalog.book
+  if (meta) {
+    if (meta.title && (!book.title.trim() || book.title === '未命名' || looksLikeChapterTitle(book.title))) {
+      book.title = meta.title.slice(0, 200)
+    }
+    if (meta.author && !book.author.trim()) book.author = meta.author.slice(0, 120)
+    if (meta.description && !book.description.trim()) book.description = meta.description.slice(0, MAX_INTRO_CHARS)
+    if (meta.coverUrl && !book.coverUrl) book.coverUrl = meta.coverUrl
+  }
   await save()
   notify('refresh')
   return { ok: true, added, book: { ...book } }

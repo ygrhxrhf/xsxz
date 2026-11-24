@@ -41,7 +41,13 @@ function chapterHtml(): string {
 
 function catalogHtml(count = 6): string {
   const items = Array.from({ length: count }, (_, index) => `<li><a href="/book/65/c${index + 1}.html">第${index + 1}章 起风</a></li>`).join('')
-  return `<!doctype html><html><head><title>示例书 目录</title></head><body><div id="list"><ul>${items}</ul></div></body></html>`
+  return `<!doctype html><html><head><title>示例书 目录</title>
+    <meta property="og:novel:book_name" content="示例书">
+    <meta property="og:novel:author" content="示例作者">
+  </head><body>
+    <div id="intro"><p>${'风暴从山口压下来的那一夜，少年第一次听见了钟声。'.repeat(3)}</p></div>
+    <div id="list"><ul>${items}</ul></div>
+  </body></html>`
 }
 
 beforeEach(() => {
@@ -141,6 +147,76 @@ describe('reading session catalog and bootstrap', () => {
     expect(res.bootstrap.pageKind).toBe('catalog')
     expect(res.bootstrap.catalogUrl).toBe(CHAPTER_URL)
     expect(res.bootstrap.chapters).toHaveLength(6)
+  })
+
+  it('reads the book name and intro from a catalog page', async () => {
+    setReadingHtmlLoaderForTests(async () => catalogHtml())
+    const res = await loadPageBootstrap(CHAPTER_URL)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.bootstrap.title).toBe('示例书')
+    expect(res.bootstrap.author).toBe('示例作者')
+    expect(res.bootstrap.description).toContain('风暴从山口压下来的那一夜')
+  })
+
+  it('carries the catalog book identity along with its chapters', async () => {
+    setReadingHtmlLoaderForTests(async () => catalogHtml())
+    const res = await loadCatalog(CHAPTER_URL)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.book?.title).toBe('示例书')
+    expect(res.book?.description).toContain('风暴从山口压下来的那一夜')
+  })
+
+  it('章节页拿书名而不是章名：og:novel 书页信息优先', async () => {
+    setReadingHtmlLoaderForTests(async () => `<!doctype html><html><head>
+      <title>第 2 章 起风 - 万古神帝 - 某小说网</title>
+      <meta property="og:novel:book_name" content="万古神帝">
+      <meta property="og:novel:author" content="飞天鱼">
+      <meta property="og:image" content="/cover.jpg">
+    </head><body>
+      <div id="intro"><p>${'前世惨死，今生重来，少年从山谷里走出，一步一步走回那座城。'.repeat(2)}</p></div>
+      <div id="content"><p>${BODY_TEXT}</p><p>${BODY_TEXT}</p></div>
+      <a href="/book/65/">万古神帝</a>
+      <a href="/book/65/">目录</a>
+      <a href="/book/65/c1.html">上一章</a>
+    </body></html>`)
+    const res = await loadPageBootstrap(CHAPTER_URL)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.bootstrap.pageKind).toBe('chapter')
+    expect(res.bootstrap.title).toBe('万古神帝')
+    expect(res.bootstrap.author).toBe('飞天鱼')
+    expect(res.bootstrap.coverUrl).toBe('https://example.com/cover.jpg')
+    expect(res.bootstrap.description).toContain('前世惨死')
+  })
+
+  it('没有书页 meta 时从 <title> 里剥掉章名与站点名', async () => {
+    setReadingHtmlLoaderForTests(async () => `<!doctype html><html><head>
+      <title>第 2 章 起风 - 万古神帝 - 某小说网</title>
+    </head><body>
+      <div id="content"><p>${BODY_TEXT}</p><p>${BODY_TEXT}</p></div>
+      <a href="/book/65/c1.html">上一章</a>
+    </body></html>`)
+    const res = await loadPageBootstrap(CHAPTER_URL)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.bootstrap.title).toBe('万古神帝')
+    expect(res.bootstrap.description).toBe('')
+  })
+
+  it('标题里没有书名时用面包屑里指回上级路径的链接文字', async () => {
+    setReadingHtmlLoaderForTests(async () => `<!doctype html><html><head>
+      <title>第 2 章 起风</title>
+    </head><body>
+      <nav><a href="/">首页</a> &gt; <a href="/book/65/">万古神帝</a></nav>
+      <div id="content"><p>${BODY_TEXT}</p><p>${BODY_TEXT}</p></div>
+      <a href="/book/65/c1.html">上一章</a>
+    </body></html>`)
+    const res = await loadPageBootstrap(CHAPTER_URL)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.bootstrap.title).toBe('万古神帝')
   })
 
   it('bootstraps a chapter page with its own url as the catalog entry', async () => {
