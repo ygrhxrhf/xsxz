@@ -156,6 +156,8 @@ export class AiReadingFollowService {
   private readonly pending = new Set<string>()
   private readonly explicit = new Set<string>()
   private readonly streaks = new Map<string, number>()
+  /** 因为没 Key 停下的书：设置变更时只把它们捡回来，不必每次保存设置都扫全库。 */
+  private readonly stalled = new Set<string>()
   private readonly hooks: AiFollowHooks
 
   constructor(private readonly queue: AiQueue, hooks: Partial<AiFollowHooks> = {}) {
@@ -185,6 +187,7 @@ export class AiReadingFollowService {
     const running = this.drainPromise
     this.pending.clear()
     this.explicit.clear()
+    this.stalled.clear()
     this.activeBookId = ''
     await running?.catch(() => {})
   }
@@ -200,8 +203,11 @@ export class AiReadingFollowService {
   }
 
   settingsChanged(): Promise<void> {
-    // 补 Key 后要重新把有活的书捡回队列：没 Key 时它们已经从本轮 drain 里停下了。
-    return this.discover()
+    // 补 Key 后只把因此停下的书捡回队列；普通偏好保存不该触发全库扫描。
+    if (!this.stalled.size) return Promise.resolve()
+    for (const bookId of this.stalled) this.pending.add(bookId)
+    this.stalled.clear()
+    return this.drain()
   }
 
   private async discover(): Promise<void> {
@@ -380,10 +386,17 @@ export class AiReadingFollowService {
     // 自动触发受设置页总开关约束；用户点了「继续 / 现在整理」才算当场授权。
     if (!settings.ai?.autoReadingFollow && !this.explicit.has(bookId)) return 'stopped'
     if (file.paused) return this.reviveIfMaterialChanged(bookId, file)
-    // 没 Key 不是「等一会儿就会好」：让队列停下，等设置变更时 discover() 重新把它捡起来。
-    if (!settings.apiKeyConfigured) return 'stopped'
+    // 没 Key 不是「等一会儿就会好」：让队列停下并记下来，设置变更时再试一次。
+    if (!settings.apiKeyConfigured) {
+      this.stalled.add(bookId)
+      return 'stopped'
+    }
     const apiKey = await getApiKey()
-    if (!apiKey) return 'stopped'
+    if (!apiKey) {
+      this.stalled.add(bookId)
+      return 'stopped'
+    }
+    this.stalled.delete(bookId)
     const book = await getBook(bookId)
     this.activeBookId = bookId
     try {

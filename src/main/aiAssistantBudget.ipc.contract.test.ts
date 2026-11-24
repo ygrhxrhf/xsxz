@@ -12,7 +12,7 @@ describe('assistant budget transparency IPC contract', () => {
     expect(source).toContain("sendAiBudget(jobId, 'memory', memoryBudget)")
     expect(source).toContain("sendAiBudget(jobId, 'qa', promptBudget(")
     expect(source).toContain("onRewriteStarted: (messages) => sendAiBudget(jobId, 'qa', promptBudget(")
-    expect(source).toContain('buildEvidenceQueryRewriteMessages(question)')
+    expect(source).toContain('buildEvidenceQueryRewriteMessages(question, history)')
     expect(source).toContain("import { aiBudgetWarning, promptBudget } from './aiBudget'")
     expect(budgetHelper).toContain('batchCount: requestGroups.length')
     expect(source).toContain("'仅发送查询改写；0 条本地证据，未请求最终回答'")

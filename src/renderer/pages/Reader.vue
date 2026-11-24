@@ -3081,7 +3081,7 @@ async function applyCleanedBody() {
   if (!book.value || !currentChapter.value || !aiResult.value) return
   // 清理结果基于当时那份正文：中途换源、重下或手修过就拒绝覆盖，让用户重新清一次。
   const current = await window.api.library.readChapter(book.value.id, currentChapter.value.id)
-  if (!current.chapter || current.chapter.body !== lastCleanOriginal.value) {
+  if (lastCleanOriginal.value && (!current.chapter || current.chapter.body !== lastCleanOriginal.value)) {
     message.error('正文在清理后已发生变化，已拒绝覆盖。请重新生成清理预览。')
     return
   }
