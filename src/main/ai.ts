@@ -401,9 +401,10 @@ function buildRequestBody(
     if (allowExtensions && policy.mode === 'high' && config.thinkingEnabled !== false) {
       body.reasoning_effort = 'high'
     }
-    if (allowExtensions && policy.structured) body.response_format = { type: 'json_object' }
-    if (allowExtensions && stream) body.stream_options = { include_usage: true }
   }
+  // JSON 模式与 usage 回传是所有 OpenAI 兼容端点的通用参数；个别服务不认时会被 400/422 降级路径摘掉。
+  if (allowExtensions && policy.structured) body.response_format = { type: 'json_object' }
+  if (allowExtensions && stream) body.stream_options = { include_usage: true }
   return body
 }
 
@@ -452,7 +453,7 @@ function hasCompatibilityExtensions(body: Record<string, unknown>): boolean {
 }
 
 function isTransientStatus(status: number): boolean {
-  return status === 429 || status === 500 || status === 503
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504
 }
 
 function finishResult(

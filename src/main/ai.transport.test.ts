@@ -108,11 +108,11 @@ describe('task-aware request bodies', () => {
     )
   })
 
-  it('safely downgrades a deepseek provider flag on a non-official host', async () => {
+  it('keeps JSON mode but drops DeepSeek-only flags on a non-official host', async () => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>
       expect(body).not.toHaveProperty('reasoning_effort')
-      expect(body).not.toHaveProperty('response_format')
+      expect(body.response_format).toEqual({ type: 'json_object' })
       expect(body).not.toHaveProperty('temperature')
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"events":[]}' }, finish_reason: 'stop' }] }), { status: 200 })
     }))
@@ -127,23 +127,22 @@ describe('task-aware request bodies', () => {
   it.each([
     'http://api.deepseek.com/v1',
     'https://api.deepseek.com:8443/v1',
-  ])('does not send DeepSeek extensions to a non-official protocol or port: %s', async (baseUrl) => {
+  ])('does not send DeepSeek-only extensions to a non-official protocol or port: %s', async (baseUrl) => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>
       expect(body).not.toHaveProperty('reasoning_effort')
-      expect(body).not.toHaveProperty('response_format')
+      expect(body.response_format).toEqual({ type: 'json_object' })
       expect(body).not.toHaveProperty('temperature')
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"events":[]}' }, finish_reason: 'stop' }] }), { status: 200 })
     }))
     await runAiTaskCompletion({ ...deepseek, baseUrl }, messages, { task: 'memory' })
   })
 
-  it('sends only OpenAI-compatible core fields to custom services', async () => {
+  it('sends JSON mode to custom OpenAI-compatible services', async () => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>
-      expect(body).toMatchObject({ model: 'custom-model', stream: false, max_tokens: 3_000 })
+      expect(body).toMatchObject({ model: 'custom-model', stream: false, max_tokens: 3_000, response_format: { type: 'json_object' } })
       expect(body).not.toHaveProperty('reasoning_effort')
-      expect(body).not.toHaveProperty('response_format')
       expect(body).not.toHaveProperty('temperature')
       expect(body).not.toHaveProperty('stream_options')
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"events":[]}' }, finish_reason: 'stop' }] }), { status: 200 })

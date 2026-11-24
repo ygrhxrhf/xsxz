@@ -3,6 +3,7 @@ import { getAiTaskPolicy } from './ai'
 import {
   buildPlaceCandidates,
   buildPlaceUserPrompt,
+  fitPlaceCandidatesToBudget,
   parsePlaceExtraction,
   PLACE_SYSTEM_PROMPT,
 } from './aiPlaces'
@@ -36,6 +37,18 @@ describe('aiPlaces 候选段落', () => {
     expect(PLACE_SYSTEM_PROMPT).toContain('严禁输出经纬度')
     expect(PLACE_SYSTEM_PROMPT).toContain('candidateId')
     expect(PLACE_SYSTEM_PROMPT).toContain('逐字')
+  })
+
+  it('候选再多也把系统提示与用户 JSON 压在 30000 字预算内', () => {
+    const candidates = Array.from({ length: 200 }, (_, index) => ({
+      id: `p-c1-${index}`, chapterId: 'c1', chapterTitle: '第一章',
+      paragraphIndex: index, text: '洛阳'.repeat(400), clipped: false,
+    }))
+    const fitted = fitPlaceCandidatesToBudget(candidates)
+    expect(fitted.truncated).toBe(true)
+    expect(fitted.candidates.length).toBeLessThan(candidates.length)
+    expect(Array.from(PLACE_SYSTEM_PROMPT).length + Array.from(fitted.user).length).toBeLessThanOrEqual(30_000)
+    expect(fitted.user).toContain(fitted.candidates.at(-1)!.id)
   })
 
   it('地名任务不强制结构化参数，兼容不支持 response_format 的模型', () => {
