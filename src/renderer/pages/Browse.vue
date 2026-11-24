@@ -371,14 +371,16 @@ async function loadStartRecent() {
   let books: BookListItem[] = []
   let shelfBooks: WebShelfBook[] = []
   try {
+    // 三个来源各自兜底：启动瞬间书库还在建索引时，任意一个抛错都会把整排「继续阅读」清空，
+    // 看上去像“书架还是空的”。分开 catch 至少还能显示拿到的那部分。
     const [library, shelf, settings] = await Promise.all([
-      window.api.library.list(),
-      window.api.shelf.list(),
-      window.api.settings.get(),
+      window.api.library.list().catch(() => ({ books: [] as BookListItem[] })),
+      window.api.shelf.list().catch(() => ({ ok: false as const })),
+      window.api.settings.get().catch(() => null),
     ])
-    books = library.books
+    books = library.books ?? []
     if (shelf.ok) shelfBooks = shelf.books
-    if (settings.libraryPath) libraryPath.value = settings.libraryPath
+    if (settings?.libraryPath) libraryPath.value = settings.libraryPath
   } catch {
     return
   }
