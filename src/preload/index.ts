@@ -146,7 +146,8 @@ const api = {
     onChanged: (handler: (payload: { reason: 'add' | 'remove' | 'refresh' | 'progress' }) => void) => on('shelf.changed', handler),
   },
   library: {
-    list: () => ipcRenderer.invoke('library.list') as Promise<{ books: BookListItem[] }>,
+    list: () =>
+      ipcRenderer.invoke('library.list') as Promise<{ books: BookListItem[]; libraryPath?: string; readable?: boolean }>,
     get: (bookId: string) => ipcRenderer.invoke('library.get', { bookId }) as Promise<{ book?: import('../shared/types').Book; ok?: false; message?: string }>,
     readBookStats: (bookId: string) =>
       ipcRenderer.invoke('library.readBookStats', { bookId }) as Promise<{ stats?: Array<{ chapterId: string; chars: number }>; ok?: false; message?: string }>,

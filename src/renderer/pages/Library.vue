@@ -38,6 +38,7 @@ const emit = defineEmits<{
   (e: 'open-book', bookId: string): void
   (e: 'go-browse', url?: string): void
   (e: 'open-web-book', url: string): void
+  (e: 'go-settings'): void
 }>()
 
 const message = useMessage()
@@ -123,6 +124,8 @@ const editTitle = ref('')
 const editAuthor = ref('')
 const editTags = ref<string[]>([])
 const libraryPath = ref('')
+/** 书库目录本身能不能读：false 时不能说“还没有书”，那是“书不见了”的观感。 */
+const libraryReadable = ref(true)
 const qualityOpen = ref(false)
 const qualityLoading = ref(false)
 const qualityReport = ref<QualityReport | null>(null)
@@ -156,6 +159,16 @@ const visibleBooks = computed(() =>
     sortKey.value,
   ),
 )
+
+/**
+ * 已经排进「最近在读」那一排的书，不在下面网格里再画一遍（同屏出现两次很困惑）；
+ * 搜索 / 筛选时以结果为准全画，否则会让人以为搜索结果少了。
+ */
+const gridBooks = computed(() => {
+  if (hasActiveFilter.value) return visibleBooks.value
+  const shown = new Set(recentViews.value.filter((v) => v.kind === 'library').map((v) => v.bookId || ''))
+  return visibleBooks.value.filter((b) => !shown.has(b.id))
+})
 const libraryTags = computed(() => collectLibraryTags(books.value))
 const duplicateGroups = computed(() => findLibraryDuplicateGroups(books.value))
 const duplicateOpen = ref(false)
@@ -387,6 +400,7 @@ async function refresh() {
     if (refreshTracker.isLatest(requestId)) {
       books.value = res.books
       libraryPath.value = nextLibraryPath
+      libraryReadable.value = res.readable !== false
       loadError.value = ''
     }
   } catch {
@@ -1282,7 +1296,15 @@ onUnmounted(() => {
         </n-button>
         <n-button class="shelf-action" @click="emit('go-browse')">浏览下载</n-button>
         <n-button v-if="checkAllLoading" class="shelf-action" size="small" @click="handleCancelCheckAll">停止</n-button>
-        <n-button v-else class="shelf-action" :disabled="!books.length" @click="handleCheckAll">全部检查更新</n-button>
+        <n-button
+          v-else
+          class="shelf-action"
+          :disabled="!books.length"
+          :title="books.length ? '逐本检查有没有新章节' : '书架还是空的，先下载或导入一本再检查更新'"
+          @click="handleCheckAll"
+        >
+          全部检查更新
+        </n-button>
         <n-button
           v-if="coverBatchRunning"
           class="shelf-action"
@@ -1393,6 +1415,16 @@ onUnmounted(() => {
       </div>
     </section>
 
+    <section v-else-if="!libraryReadable" class="library-empty empty-state">
+      <h3>书库目录读不到</h3>
+      <p>书库设在这里：<code class="library-path">{{ libraryPath || '（未设置）' }}</code></p>
+      <p>目录被删了、盘符掉线，或路径写错时就会这样。书不会因此消失，把路径改回去、或把盘接回来再重试即可。</p>
+      <div class="empty-actions">
+        <n-button type="primary" @click="refresh">重新读取</n-button>
+        <n-button @click="emit('go-settings')">去设置里改路径</n-button>
+      </div>
+    </section>
+
     <section v-else-if="!books.length && !webBooks.length && !hasActiveFilter" class="library-empty empty-state">
       <h3>还没有书</h3>
       <p>导入一本 txt 或 epub，或去浏览里下载。在内置浏览器里打开小说网页后，还能用阅读模式的「加书架」收藏网址。</p>
@@ -1441,15 +1473,17 @@ onUnmounted(() => {
           </button>
         </div>
       </section>
-      <div v-if="visibleBooks.length" class="lib-list-head">
-        <span class="lib-count">{{ visibleBooks.length }} 本书</span>
+      <div v-if="gridBooks.length" class="lib-list-head">
+        <span class="lib-count">
+          {{ recentViews.length && !hasActiveFilter ? `其余 ${gridBooks.length} 本` : `${gridBooks.length} 本书` }}
+        </span>
       </div>
       <div
-        v-if="visibleBooks.length"
+        v-if="gridBooks.length"
         class="book-grid"
         :class="{ 'book-grid-large': virtualizeBooks, 'book-grid-compact': shelfDensity === 'compact' }"
       >
-      <n-card v-for="b in visibleBooks" :key="b.id" hoverable class="book-card">
+      <n-card v-for="b in gridBooks" :key="b.id" hoverable class="book-card">
         <button class="book-open-area" type="button" :aria-label="`打开《${b.title}》`" @click="emit('open-book', b.id)">
           <div class="book-cover" :style="coverStyle(b.id)" aria-hidden="true">
             <!-- 大书库里封面不少：屏外延迟加载，解码放到主线程外，滚动时少卡顿。 -->
@@ -1997,6 +2031,18 @@ onUnmounted(() => {
 }
 
 /* 网格上方的计数行：轻轻交代这一屏有多少本，替代以前每行一条的「书架板」。 */
+/* 书库顶部一排八个按钮都是同一种描边样式 = 没有主次。只留「继续读」实心，其余退成低调描边。 */
+.shelf-action:not(.n-button--primary-type) {
+  --n-text-color: var(--text-secondary);
+  --n-text-color-hover: var(--text);
+  --n-border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  --n-border-hover: 1px solid color-mix(in srgb, currentColor 32%, transparent);
+  --n-color: transparent;
+  --n-color-hover: color-mix(in srgb, currentColor 6%, transparent);
+  --n-color-pressed: color-mix(in srgb, currentColor 10%, transparent);
+  --n-color-focus: transparent;
+}
+
 .lib-list-head {
   display: flex;
   align-items: center;
@@ -2662,6 +2708,12 @@ onUnmounted(() => {
   color: var(--error);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.library-path {
+  display: inline-block; max-width: 100%; padding: 2px 6px; border-radius: 6px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  font: 12px/1.6 var(--font-mono); word-break: break-all;
 }
 
 .empty-actions {

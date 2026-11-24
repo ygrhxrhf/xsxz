@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import type { Ref } from 'vue'
-import type { Book, ChapterMeta, ReaderReadingMode, AiResumeCardView, AiBookUsage, AiBudgetEstimate, AiBudgetEvent, AiChapterNote, AiCitation, AiEvidenceChatMessage, AiFollowCoverage, AiFollowMode, AiMaterialCoverage, AiMemoryBase, AiMemoryCharacter, AiMemoryFile, AiTimelineView, AiUsage } from '@shared/types'
+import type { Book, ChapterMeta, ReaderReadingMode, AiChatMessage, AiResumeCardView, AiBookUsage, AiBudgetEstimate, AiBudgetEvent, AiChapterNote, AiCitation, AiEvidenceChatMessage, AiFollowCoverage, AiFollowMode, AiMaterialCoverage, AiMemoryBase, AiMemoryCharacter, AiMemoryFile, AiTimelineView, AiUsage } from '@shared/types'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { clearRetriedAssistantSaveToken, describeAssistantStage, currentAssistantStage as resolveAssistantStage, type AssistantJobKind, type AssistantPanelTab, type AssistantSaveTokenState, type AssistantStageState } from './aiAssistantStatus'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
@@ -898,7 +898,10 @@ async function sendChat() {
   chatInput.value = ''
   chatStarting.value = true
   try {
-    const res = await window.api.ai.chatStream(book.value.id, currentChapter.value.id, chatMessages.value)
+    // 主进程只读 role/content，且 IPC 走 structured clone：Vue 的响应式数组/对象是 Proxy，
+    // 原样传过去会直接抛「An object could not be cloned」，问答永远起不来。这里发一份纯快照。
+    const history: AiChatMessage[] = chatMessages.value.map((m) => ({ role: m.role, content: m.content }))
+    const res = await window.api.ai.chatStream(book.value.id, currentChapter.value.id, history)
     if (!res.ok) {
       chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
       return
@@ -907,8 +910,10 @@ async function sendChat() {
     chatLoading.value = true
     chatMessages.value.push({ role: 'assistant', content: '' })
     chatAssistantIndex.value = chatMessages.value.length - 1
-  } catch {
-    chatMessages.value.push({ role: 'assistant', content: '错误：无法启动问答任务' })
+  } catch (error) {
+    // 失败要说人话：保留真实原因并给出下一步，别再吞成一句「无法启动」。
+    const detail = error instanceof Error ? error.message : String(error)
+    chatMessages.value.push({ role: 'assistant', content: `错误：问答没能启动（${detail}）。再点一次「发送问题」可以重试；反复失败请到设置里检查模型服务。` })
   } finally {
     chatStarting.value = false
   }

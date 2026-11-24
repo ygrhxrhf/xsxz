@@ -608,6 +608,22 @@ export async function listBooks(): Promise<BookListItem[]> {
   return rebuildIndex()
 }
 
+/**
+ * 书库目录本身能不能读。listBooks() 把“目录读不到”和“目录里没书”都返回成 []，
+ * 界面就只能说“还没有书”——换了书库路径或盘符掉线时，用户会以为自己的书全没了。
+ */
+export async function libraryDirState(): Promise<{ path: string; readable: boolean }> {
+  const path = getLibraryPath()
+  try {
+    const st = await stat(path)
+    if (!st.isDirectory()) return { path, readable: false }
+    await readdir(path)
+    return { path, readable: true }
+  } catch {
+    return { path, readable: false }
+  }
+}
+
 export async function getBook(bookId: string): Promise<Book> {
   await reconcilePendingChapters(bookId)
   return loadBook(bookId)

@@ -885,9 +885,12 @@ async function testAi() {
     if (res.ok) {
       msg.value = '连接成功'
       msgType.value = 'success'
+      // 结果原先只落在卡片最底部那行小字上，离按钮隔着一整块设置，用户容易以为没反应。
+      message.success('连接成功')
     } else {
       msg.value = res.message || '连接失败'
       msgType.value = 'error'
+      message.error(res.message || '连接失败')
     }
   } catch (e: unknown) {
     msg.value = String(e)
@@ -1185,7 +1188,7 @@ onMounted(async () => {
       >
         {{ skin === 'light' ? '切换到深色' : '切换到浅色' }}
       </button>
-      <p class="field-help">外观只在这里切换，浏览、书库和阅读共用这一项。</p>
+      <p class="field-help">外观只在这里切换，浏览、书库和阅读共用这一项。字体、行距、主题和列宽在阅读器的「外观 / 排版」面板里调，不在这里另开一份。</p>
     </n-card>
 
     <n-card v-show="activeSection === 'library'" title="书库" class="settings-card">
@@ -1844,6 +1847,11 @@ onMounted(async () => {
 
     <n-card v-show="activeSection === 'appearance'" title="阅读偏好" class="settings-card">
       <p style="color:var(--text-muted);font-size:13px">字体、行距、主题和列宽请在阅读器的“外观”面板中调整。</p>
+      <ul class="reader-pref-hints">
+        <li>默认 18px / 1.8 行高，一行约 38 字。长篇小说其实不用改。</li>
+        <li>夜里把主题切到「夜间」，再用「屏幕压暗」压一档，比单纯调暗屏幕护眼。</li>
+        <li>觉得滚动费劲，就把阅读方式换成「屏幕翻页」，左右方向键翻页。</li>
+      </ul>
     </n-card>
 
     <n-card v-show="activeSection === 'about'" title="关于" class="settings-card">
@@ -2233,6 +2241,9 @@ onMounted(async () => {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+.reader-pref-hints { margin: 10px 0 0; padding-left: 18px; color: var(--text-muted); font-size: 12.5px; line-height: 1.9; }
+.reader-pref-hints li { margin: 0; }
 
 .form-msg {
   margin-top: 8px;
