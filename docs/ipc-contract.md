@@ -291,7 +291,7 @@
 
 `SettingsUpdate.proxyPassword` 单独提交明文密码，落盘经 `safeStorage`；空串清除。`settings.get` 永不返回代理密码明文，只给 `passwordConfigured`。
 
-作用范围是浏览与下载共用的 `persist:novel` 分区（`src/main/proxy.ts` 的 `applyProxyToSession`）：一处设置，浏览能打开的页面下载就走得通。应用代理后会调 `closeAllConnections()` 断开在途连接——Chromium 的 `setProxy` 只影响**之后**建立的连接，不断旧连接会出现「改了设置但还要开系统代理才生效」。
+作用范围是浏览与下载共用的 `persist:novel` 分区（`src/main/proxy.ts` 的 `applyProxyToSession`）：一处设置，浏览能打开的页面下载就走得通。同一份设置也应用到 `defaultSession`：AI / 向量 / TTS / 封面图在主进程用 `net.fetch`（`src/main/aiFetch.ts`）发出，跟随这个会话的代理，因此需要代理才能访问的模型服务与浏览共用同一条出口。应用代理后会调 `closeAllConnections()` 断开在途连接——Chromium 的 `setProxy` 只影响**之后**建立的连接，不断旧连接会出现「改了设置但还要开系统代理才生效」。
 
 **断连前必须先等一小段**（`PROXY_SETTLE_BEFORE_CLOSE_MS`，当前 300ms）。实测（Electron 43 / Chrome 150，2026-11-03）：当代理指向一个**已经死掉**的本地进程（内核被 kill 但配置还指着它）时，网络层积压着大量到死端口的连接，此时「改代理 + **立刻** `closeAllConnections`」会让 network service 崩掉（`Network service crashed or was terminated`），会话随即不可用，用户看到的是「整个软件的网络坏了」。复现矩阵：只 close 不改代理 → 不崩；改 direct 不 close → 不崩；改 direct + 立刻 close → **崩 2 次**；改 direct + 等 300ms + close → **不崩且会话可用**。断连本身失败不当作换代理失败（代理已经切过去了），`setProxy` 失败才返回 `{ ok: false }`。
 
@@ -505,7 +505,7 @@
 
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
-| `ai.clean` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean }` | `{ ok: true; result: AiCleanResult; budget: AiBudgetEstimate } \| { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate } \| { ok: false; stopped?: boolean; message: string }` |
+| `ai.clean` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean; jobId?: string }` | `{ ok: true; result: AiCleanResult; budget: AiBudgetEstimate } \| { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate } \| { ok: false; stopped?: boolean; message: string }` |
 | `ai.test` | invoke | `{ baseUrl?: string; model?: string; apiKey?: string; provider?: AiProvider; thinkingEnabled?: boolean }`（均可空，空则用已保存设置） | `{ ok: true; text: string } \| { ok: false; message: string }` |
 | `ai.summarizeChapter` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.chapterNote` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean; overwriteUserNote?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate } \| { ok:false; userNoteConfirmedRequired:true; message:string } \| { ok:false; message:string }` |
@@ -550,13 +550,13 @@
 
 `ai.test` 发一条最小 chat completions 探活。401/403、429、超时、5xx 返回中文分级文案。
 
-`ai.extractPlaces` 只扫描已读边界内的正文：模型只允许引用候选段落 id 并给出逐字引文，段号与段内偏移由主进程按引文在段内的真实位置计算，模型不返回坐标；引文不在原文、地点名不在引文、候选 id 不认识的条目直接丢弃。结果按书落盘到书目录 `ai/places.json`，供书中地图页列出地名、后续地理编码与跳回原文复用，不重复花模型配额；达到输入预算提醒阈值时先返回 `confirmationRequired`。
+`ai.extractPlaces` 只扫描已读边界内的正文：模型只允许引用候选段落 id 并给出逐字引文，段号与段内偏移由主进程按引文在段内的真实位置计算，模型不返回坐标；引文不在原文、地点名不在引文、候选 id 不认识的条目直接丢弃。结果按书落盘到书目录 `ai/places.json`，供书中地图页列出地名、后续地理编码与跳回原文复用，不重复花模型配额；达到输入预算提醒阈值时先返回 `confirmationRequired`。系统提示与候选 JSON 合计必须压在 30000 字硬预算内，超出时从末尾裁候选并把 `truncated` 置真，不得把超预算请求发出去。
 
-`ai.findScenes` 在本书明确开启语义索引后，将已读原文向量与本地字面结果合并，服务失败时返回本地结果。索引按本书增量建立，缺 Key、损坏或暂停原因由状态频道显示。`ai.resumeCard` 只在上次阅读间隔至少 24 小时且附近有读完章节时提供缓存或生成入口；`ai.generateResumeCard` 由读者手动触发，来源变化时缓存过期。`ai.timeline` 读取现有记忆更新顺带记录的人物与伏笔状态，来源变化的条目隐藏并提示重建。问答 `AiDoneEvent.claims` 与聊天 v2 的 `claims` 逐条列结论和引用 ID；引用坐标经主进程校验，语义支持关系仍需读者核查。
+`ai.findScenes` 在本书明确开启语义索引后，将已读原文向量与本地字面结果合并，服务失败时返回本地结果。索引按本书增量建立，缺 Key、损坏或暂停原因由状态频道显示。状态与找场景不得为了计算总段数把全书正文读一遍：总段数随索引落盘，找场景复用证据剪枝（最多 24 章投机候选），语义候选只在最终前 8 条上读正文复核。`ai.resumeCard` 只在上次阅读间隔至少 24 小时且附近有读完章节时提供缓存或生成入口；`ai.generateResumeCard` 由读者手动触发，来源变化时缓存过期。`ai.timeline` 读取现有记忆更新顺带记录的人物与伏笔状态，来源变化的条目隐藏并提示重建。问答 `AiDoneEvent.claims` 与聊天 v2 的 `claims` 逐条列结论和引用 ID；引用坐标经主进程校验，语义支持关系仍需读者核查。
 
 自动概览、自动整理、自动语义索引共享每书每自然月估算 tokens 上限，默认 100000。请求前预留、按服务用量结算；未报告用量或结果不明时计入预留估算。手动任务显示估算后可确认继续。token 上限不等于服务商账单金额。
 
-`AiBudgetEstimate` 统计 Unicode 字符；token 估算按中日韩字符数 ÷ 1.5、其他字符数 ÷ 4，合计乘 1.1 后向上取整，不计算金额。`ai.clean` 的完整未分批请求超过 30000 字且 `confirmOverBudget` 不为 true 时，必须在任何模型请求前返回 `confirmationRequired` 与缩减后的实际发送范围。确认后按规范化段落分批，每批仅携带目标前后各一段只读上下文；只合并模型返回的目标段。任一批失败、取消或截断时不返回可应用的 `AiCleanResult`。`ai.storySoFar` 使用同一确认门禁：只缩减已存摘要和正常记忆材料，不读取正文；确认前不得读取 Key、创建任务或联网。
+`AiBudgetEstimate` 统计 Unicode 字符；token 估算按中日韩字符数 ÷ 1.5、其他字符数 ÷ 4，合计乘 1.1 后向上取整，不计算金额。`ai.clean` 的完整未分批请求超过 30000 字且 `confirmOverBudget` 不为 true 时，必须在任何模型请求前返回 `confirmationRequired` 与缩减后的实际发送范围。确认后按规范化段落分批，每批仅携带目标前后各一段只读上下文；只合并模型返回的目标段。渲染层可传可选 `jobId`，主进程只据此发 `ai.stage`（`requesting`，`detail` 为「清理第 n/m 批」），不改变返回形状；渲染层应用预览前必须确认当前正文仍等于 `AiCleanResult.original`，变了就拒绝覆盖。任一批失败、取消或截断时不返回可应用的 `AiCleanResult`。`ai.storySoFar` 使用同一确认门禁：只缩减已存摘要和正常记忆材料，不读取正文；确认前不得读取 Key、创建任务或联网。
 
 任何按「截至某章」组织材料的 AI 任务，都必须先把章节列表夹紧到已存阅读进度 `book.progress.chapterId`（若有）：只读该截止内 `ready` 章正文，再取其中最近 10 章。不得把进度之后的未读章送进模型。无进度时以请求的 `uptoChapterId` 为截止。
 
@@ -564,7 +564,7 @@
 
 `ai.chapterNotes` 返回的 `notes` 过滤掉目录里已不存在的章并按章节序排列；`stale` 只对请求的 `chapterId` 判定，因为只有主进程能拿当前正文重算 hash，其余章节一律不带过期结论，界面不得替它们谎报新鲜度。
 
-`ai.chatStream` 的本地检索按章剪枝：先用 `ai/index/` 的布隆清单决定哪些已读章值得读盘，一次提问最多读 24 章投机候选；记忆或摘要指向的章、当前章与进度章属于必选集，不受该额度限制。问句里的字面信号短到测不出词形时（单字短语，或被归一化压成单字的「」引用）取消剪枝资格，照旧全量读已读章。索引缺失、损坏、没建完或书库正在恢复一律当「不知道」，退回全扫。**剪枝永远不可能是少给引用的原因**：只有过滤器判「一定不含」才跳过读盘，判「可能含」仍要读原文复核。位图与清单只在本机参与决策，不得进入任何提示词或发往模型服务。
+`ai.chatStream` 的本地检索按章剪枝：先用 `ai/index/` 的布隆清单决定哪些已读章值得读盘，一次提问最多读 24 章投机候选；记忆或摘要指向的章、当前章与进度章属于必选集，不受该额度限制。**不得在检索前预读全部已读章**：只有带划线的章为了核对批注原文可以单独读，数量由批注所在章决定。问句里的字面信号短到测不出词形时（单字短语，或被归一化压成单字的「」引用）取消剪枝资格，照旧全量读已读章。索引缺失、损坏、没建完或书库正在恢复一律当「不知道」，退回全扫。**剪枝永远不可能是少给引用的原因**：只有过滤器判「一定不含」才跳过读盘，判「可能含」仍要读原文复核。位图与清单只在本机参与决策，不得进入任何提示词或发往模型服务。
 
 人物卡 / 伏笔追踪的生成侧已下线：`ai.characterCard` 与 `ai.getCharacterCard` 不再是契约频道，界面也没有对应入口。旧书遗留的 `<bookDir>/ai/characters.json` 只由 `ai.getMemory` 经 `readAiMemoryCompat` 在 `memory.json` 缺失或无效时兼容读取一次，主进程不再生成或改写该文件，`CharacterCard` 类型仅为这份兼容读取保留。
 
@@ -572,7 +572,7 @@
 
 `AiRequestStage` 固定为 `preparing`、`queued`、`indexing`、`rewriting`、`searching`、`requesting`、`saving`。`queued` 与 `indexing` 只携带 `detail` 文案、不改变终态，也不参与成败判断；界面必须为每个阶段留兜底文案，`detail` 缺失或全空白时按阶段名显示，不得显示空白。`ai.getMemory` 在 `memory.json` 存在时只返回新记忆；不存在时可返回旧 `characters.json` 兼容视图。`ai.updateMemory` / `rebuildMemory` 成功时通过 `ai.done.memoryUpdate` 传递 `AiMemoryUpdateResult`；生成成功但保存失败时仍返回 `ok:true`、完整 `memoryUpdate` 和 `saveToken`，旧正式文件不变；取消或模型/解析失败返回 `ok:false`，不得携带可误认为正式结果的 `memoryUpdate`。`ai.retrySave` 只能使用当前主进程内存中的一次性令牌，不得重新请求模型。`memoryUpdate.remainingChapters` 是被 `followMaxChaptersPerRun` 截断后仍未处理的已读章节数，不是「每次固定 5 章」的排队余量；增量更新一次可以跑完多批，重建恒为 `0`。
 
-`ai.chatStream`（已读证据问答）成功时通过 `ai.done` 同时返回 `text`、候选白名单内的 `citations`、`uptoChapterId` 与 `stopped`。保存失败仍保留这些字段并追加 `saveToken`；重开后 `ai.getChat` 返回 `AiGetChatResult`，v1 消息按无来源兼容读取，v2 消息保留引用、已读截止和停止状态。
+`ai.chatStream`（已读证据问答）会把同一本书之前的问答作为不可信 `conversation` 上下文带进查询改写与最终回答，只用于还原追问里的指代，不进入证据白名单、不得当作剧情事实；只有最后一条 user 消息是本次问题。成功时通过 `ai.done` 同时返回 `text`、候选白名单内的 `citations`、`uptoChapterId` 与 `stopped`。保存失败仍保留这些字段并追加 `saveToken`；重开后 `ai.getChat` 返回 `AiGetChatResult`，v1 消息按无来源兼容读取，v2 消息保留引用、已读截止和停止状态。
 
 `ai.chatStream` 的回答按 `ai.chunk` 流式推送：任务要求 `response_format` 为 JSON，因此只转发 `answer` 字段中已完成解码的部分（不完整的 `\`、`\uXXXX` 或代理对必须挂起等后续帧），改写与检索阶段不发 `ai.chunk`；服务不守 JSON 约定时不转发任何字符，改由 `ai.done.text` 一次性给出，两种路径下终态文本必须一致。用户在任意时刻停止（阶段之间或流中途 abort）时，`ai.done` 仍必须恰好一个：已流出非空正文时走 `ok:true` 分支，携带 `stopped:true`、停止前的 `text`、当次候选 `citations` 与 `uptoChapterId`，并把这条部分回答写进 `chat.json`；只有正文为空才允许 `text:''` 且不留空消息。
 
