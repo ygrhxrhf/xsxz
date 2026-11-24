@@ -76,8 +76,8 @@ describe('shared visual shell contract', () => {
   it('keeps shell lifecycle and Naive UI radii aligned with the design system', async () => {
     const app = await readRendererSource('App.vue')
     expect(app).toContain("const tab = ref<Tab>('browse')")
-    expect(app).toContain("const withProgress = books.filter((b) => b.progress)")
-    expect(app).toContain("tab.value = 'reader'")
+    expect(app).not.toContain('window.api.library.list()')
+    expect(app).toContain("  currentBookId.value = bookId\n  tab.value = 'reader'\n")
     expect(app.match(/v-show="tab ===/g)).toHaveLength(4)
     expect(app).toContain('unsubProgress = window.api.download.onProgress(onDownloadProgress)')
     expect(app).toContain('unsubProgress?.()')
