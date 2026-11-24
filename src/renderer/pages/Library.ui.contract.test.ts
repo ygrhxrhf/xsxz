@@ -73,6 +73,24 @@ describe('Library comfortable card contract', () => {
     expect(source).toContain('web-update-badge')
     // 网页书不用 v-html，封面缺图时退回首字
     expect(source).toContain('libraryCoverText(book.title)')
+    // 卡片带站点简介（两行封顶），加入书架时已存盘。
+    expect(source).toContain('v-if="book.description" class="book-intro"')
+    expect(source).toContain(':title="book.description"')
+  })
+
+  it('keeps 最近在读 shared by library books and web books', async () => {
+    const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
+    // 两种来源一起按 progress.updatedAt 比，谁读得晚显示谁；网页书也能出现在最近在读。
+    expect(source).toContain("type ContinueItem =")
+    expect(source).toContain("const web: ContinueItem[] = webBooks.value")
+    expect(source).toContain("return all.sort((a, b) => b.at - a.at)[0] ?? null")
+    expect(source).toContain("kicker: '最近在读 · 网页书'")
+    expect(source).toContain('v-if="continueView && !hasActiveFilter"')
+    expect(source).toContain('{{ continueView.kicker }}')
+    // 卡片按钮和顶部「继续读」都走同一个入口，网页书用 open-web-book。
+    expect(source).toContain("if (item.kind === 'library') emit('open-book', item.book.id)")
+    expect(source).toContain('else continueWebBook(item.book)')
+    expect(source).not.toContain('continueBook')
   })
 
   it('keeps title, author, status, progress, and running result text visible', async () => {

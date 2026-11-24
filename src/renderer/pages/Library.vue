@@ -173,15 +173,21 @@ function shelfProgress(book: BookListItem): number {
  */
 const virtualizeBooks = computed(() => visibleBooks.value.length > 60)
 
-const continueBook = computed(() => {
-  const withProgress = books.value.filter((book) => book.progress?.chapterId)
-  if (!withProgress.length) return null
-  return [...withProgress].sort((a, b) => {
-    const aTime = Date.parse(a.progress?.updatedAt || '') || 0
-    const bTime = Date.parse(b.progress?.updatedAt || '') || 0
-    return bTime - aTime
-  })[0]
-})
+/** 最近在读：书库书和网页书在同一张卡里按时间比，谁读得晚显示谁。 */
+type ContinueItem =
+  | { kind: 'library'; book: BookListItem; at: number }
+  | { kind: 'web'; book: WebShelfBook; at: number }
+
+interface ContinueView {
+  key: string
+  title: string
+  author: string
+  kicker: string
+  coverSrc: string
+  progress: string
+  time: string
+}
+
 // 网页书架：只存书目、目录快照与阅读位置，正文留在站点上。
 const webBooks = ref<WebShelfBook[]>([])
 const webRefreshing = ref(false)
@@ -266,6 +272,45 @@ function webProgressLabel(book: WebShelfBook): string {
 function webChapterCountLabel(book: WebShelfBook): string {
   return book.chapters.length ? `${book.chapters.length} 章` : '目录待识别'
 }
+
+const continueItem = computed<ContinueItem | null>(() => {
+  const local: ContinueItem[] = books.value
+    .filter((book) => book.progress?.chapterId)
+    .map((book) => ({ kind: 'library', book, at: Date.parse(book.progress?.updatedAt || '') || 0 }))
+  const web: ContinueItem[] = webBooks.value
+    .filter((book) => book.progress)
+    .map((book) => ({ kind: 'web', book, at: Date.parse(book.progress?.updatedAt || '') || 0 }))
+  const all = [...local, ...web]
+  if (!all.length) return null
+  return all.sort((a, b) => b.at - a.at)[0] ?? null
+})
+
+const continueView = computed<ContinueView | null>(() => {
+  const item = continueItem.value
+  if (!item) return null
+  if (item.kind === 'library') {
+    const book = item.book
+    return {
+      key: book.id,
+      title: book.title,
+      author: book.author || '未知作者',
+      kicker: '最近在读',
+      coverSrc: coverImgSrc(book) || '',
+      progress: fmtProgress(book),
+      time: fmtProgressTime(book),
+    }
+  }
+  const book = item.book
+  return {
+    key: book.id,
+    title: book.title,
+    author: book.author || book.host,
+    kicker: '最近在读 · 网页书',
+    coverSrc: book.coverUrl || '',
+    progress: webProgressLabel(book),
+    time: '',
+  }
+})
 
 const initialLoading = computed(() => loading.value && books.value.length === 0)
 const loadError = ref('')
@@ -1088,7 +1133,10 @@ function openDuplicateBook(bookId: string) {
 }
 
 function continueReading() {
-  if (continueBook.value) emit('open-book', continueBook.value.id)
+  const item = continueItem.value
+  if (!item) return
+  if (item.kind === 'library') emit('open-book', item.book.id)
+  else continueWebBook(item.book)
 }
 
 async function refreshRecap() {
@@ -1190,10 +1238,10 @@ onUnmounted(() => {
         </span>
         <span v-if="checkAllStatus" class="checkall-status">{{ checkAllStatus }}</span>
         <n-button
-          v-if="continueBook"
+          v-if="continueView"
           class="shelf-action"
           type="primary"
-          :title="`继续读《${continueBook.title}》`"
+          :title="`继续读《${continueView.title}》`"
           @click="continueReading"
         >
           继续读
@@ -1325,17 +1373,19 @@ onUnmounted(() => {
 
     <template v-else>
       <p v-if="loadError" class="library-inline-error" role="alert">{{ loadError }}</p>
-      <section v-if="continueBook && !hasActiveFilter" class="shelf-continue">
-        <button class="shelf-continue-open" type="button" @click="continueReading">
-          <div class="book-cover" :style="coverStyle(continueBook.id)" aria-hidden="true">
-            <img v-if="continueBook.coverPath" class="book-cover-img" :src="coverImgSrc(continueBook) || undefined" alt="" />
-            <span v-else>{{ libraryCoverText(continueBook.title) }}</span>
+      <section v-if="continueView && !hasActiveFilter" class="shelf-continue">
+        <button class="shelf-continue-open" type="button" :title="`继续读《${continueView.title}》`" @click="continueReading">
+          <div class="book-cover" :style="coverStyle(continueView.key)" aria-hidden="true">
+            <img v-if="continueView.coverSrc" class="book-cover-img" :src="continueView.coverSrc" alt="" />
+            <span v-else>{{ libraryCoverText(continueView.title) }}</span>
           </div>
           <div class="shelf-continue-copy">
-            <div class="shelf-kicker">最近在读</div>
-            <div class="book-title" :title="continueBook.title">{{ continueBook.title }}</div>
-            <div class="book-author">{{ continueBook.author || '未知作者' }}</div>
-            <div class="book-progress">{{ fmtProgress(continueBook) }} · {{ fmtProgressTime(continueBook) }}</div>
+            <div class="shelf-kicker">{{ continueView.kicker }}</div>
+            <div class="book-title" :title="continueView.title">{{ continueView.title }}</div>
+            <div class="book-author">{{ continueView.author }}</div>
+            <div class="book-progress">
+              {{ continueView.progress }}<template v-if="continueView.time"> · {{ continueView.time }}</template>
+            </div>
           </div>
           <span class="shelf-continue-cta" aria-hidden="true">继续阅读<i>›</i></span>
         </button>
@@ -1468,6 +1518,7 @@ onUnmounted(() => {
               </div>
               <div class="book-title" :title="book.title">{{ book.title }}</div>
               <div class="book-author" :title="book.host">{{ book.author || book.host }}</div>
+              <div v-if="book.description" class="book-intro" :title="book.description">{{ book.description }}</div>
               <div class="book-progress" :title="webProgressLabel(book)">{{ webProgressLabel(book) }}</div>
               <div class="book-progress-time">{{ webChapterCountLabel(book) }}</div>
             </button>
@@ -1987,6 +2038,18 @@ onUnmounted(() => {
 
 .web-shelf-open .book-progress {
   margin-top: 2px;
+}
+
+/* 简介两行封顶：卡片仍然矮，但书名下面能看出这是哪本书。 */
+.web-shelf-open .book-intro {
+  display: -webkit-box;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .web-update-badge {
