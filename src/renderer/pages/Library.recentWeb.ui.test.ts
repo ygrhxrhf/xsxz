@@ -65,6 +65,7 @@ function settings(): Settings {
     tts: DEFAULT_TTS_PREFS,
     appearance: DEFAULT_APPEARANCE_PREFS,
     ai: { ...DEFAULT_AI_PREFS },
+    downloadPace: 'standard',
   }
 }
 
