@@ -110,7 +110,8 @@ const api = {
     setVisible: (visible: boolean) => ipcRenderer.invoke('browse.setVisible', { visible }),
     resume: () => ipcRenderer.invoke('browse.resume') as Promise<{ ok: boolean; restored?: boolean; message?: string }>,
     zoom: (factor: number) => ipcRenderer.invoke('browse.zoom', { factor }) as Promise<{ ok: boolean; factor?: number; message?: string }>,
-    readingPage: (url?: string) => ipcRenderer.invoke('browse.readingPage', { url }) as Promise<{ ok: true; page: BrowseReadingPage } | { ok: false; message: string }>,
+    // isCatalog：当前页其实是书页（目录页），没有章节可读；调用方应改成「从第一章开始」。
+    readingPage: (url?: string) => ipcRenderer.invoke('browse.readingPage', { url }) as Promise<{ ok: true; page: BrowseReadingPage } | { ok: false; message: string; isCatalog?: boolean }>,
     setReadingMode: (enabled: boolean) => ipcRenderer.invoke('browse.setReadingMode', { enabled }),
     chapter: (direction: 'previous' | 'next') => ipcRenderer.invoke('browse.chapter', { direction }) as Promise<{ ok: boolean; message?: string }>,
     prefetchChapter: (url: string) => ipcRenderer.invoke('browse.prefetchChapter', { url }) as Promise<{ ok: boolean; cached: boolean }>,

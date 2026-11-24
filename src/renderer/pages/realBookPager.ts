@@ -114,6 +114,11 @@ export interface RealBookPage {
 export interface RealBookAnchor {
   paragraph: number
   offset: number
+  /**
+   * 整本连排（continuous）时，这个段落属于窗口里的哪一章。
+   * 非连续（单章）模式不设；进度/锚点据此落到正确的章。
+   */
+  chapterId?: string
 }
 
 export interface RealBookPaginator {

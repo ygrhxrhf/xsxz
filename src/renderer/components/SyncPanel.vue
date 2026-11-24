@@ -8,6 +8,7 @@
 import { onMounted, ref } from 'vue'
 import { NAlert, NButton, NInput, NSpace, NTag, useMessage } from 'naive-ui'
 import type { SyncAccountState, SyncResult } from '@shared/types'
+import { userFacingError, errorDetail } from '../userFacingError'
 
 const message = useMessage()
 
@@ -19,14 +20,17 @@ const signingIn = ref(false)
 const syncing = ref(false)
 const result = ref<SyncResult | null>(null)
 const error = ref('')
+const errorTitle = ref('')
 
 async function loadStatus() {
   error.value = ''
   try {
     const res = await window.api.sync.status()
     if (res.ok) state.value = res.state
+    errorTitle.value = ''
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '读取登录状态失败'
+    error.value = userFacingError(e, '读取登录状态失败，请稍后重试')
+    errorTitle.value = errorDetail(e)
   }
 }
 
@@ -91,7 +95,7 @@ onMounted(loadStatus)
       同步内容只有设置与站点规则；书库正文、API Key、书签与批注都不上云。令牌只存在本机，不进同步数据包。
     </n-alert>
 
-    <n-alert v-if="error" type="error" :bordered="false">{{ error }}</n-alert>
+    <n-alert v-if="error" type="error" :bordered="false" :title="errorTitle">{{ error }}</n-alert>
 
     <div class="sync-status">
       <span>登录状态：</span>

@@ -1379,6 +1379,15 @@ onUnmounted(() => {
               {{ libraryUnlockedNote(b) }}
             </div>
             <div class="book-progress" :title="fmtProgress(b)">{{ fmtProgress(b) }}</div>
+            <!-- 读过的书给一条细进度条：把「第几章」这件主信息变成一眼看得见的长度。 -->
+            <div
+              v-if="shelfProgress(b)"
+              class="book-progress-bar"
+              role="img"
+              :aria-label="`阅读进度 ${shelfProgress(b)}%`"
+            >
+              <i :style="{ width: `${shelfProgress(b)}%` }" />
+            </div>
             <!-- 没读过时 fmtProgress 已经说了「还没开始读」，不再补一行「未读」。 -->
             <div v-if="b.progress" class="book-progress-time" :title="fmtProgressTime(b)">{{ fmtProgressTime(b) }}</div>
             <div
@@ -1826,15 +1835,23 @@ onUnmounted(() => {
   outline-offset: 1px;
 }
 
+/* 标签是筛选器不是内容：给一段浅色容器把它从书卡上分开，默认只露一行。 */
 .lib-tag-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
-  max-height: 32px;
+  gap: var(--space-2) var(--space-1);
+  max-height: 34px;
   overflow: hidden;
+  padding: 5px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
 }
 
-.lib-tag-chips.expanded { max-height: none; }
+.lib-tag-chips.expanded {
+  max-height: none;
+  padding-bottom: var(--space-2);
+}
 
 .lib-tag-toggle {
   flex: 0 0 auto;
@@ -1995,25 +2012,42 @@ onUnmounted(() => {
   margin-bottom: var(--space-6);
 }
 
+/* 「继续读」是本页第一行动：给它一层极淡的纸纹底和左侧色条，区别于普通书卡。 */
 .shelf-continue-open {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-4);
   width: min(720px, 100%);
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  padding: var(--space-4);
+  padding: var(--space-4) var(--space-6) var(--space-4) var(--space-4);
   color: inherit;
-  background: var(--surface-1);
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--focus) 7%, transparent), transparent 62%),
+    var(--surface-1);
   text-align: left;
   cursor: pointer;
   box-shadow: var(--shadow-card);
-  transition: border-color var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing);
+  transition: border-color var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing), transform var(--motion-duration) var(--motion-easing);
+}
+
+/* 左侧那条竖向赭红细线：暗示「从这里接着读」。 */
+.shelf-continue-open::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: linear-gradient(to bottom, var(--focus), color-mix(in srgb, var(--focus) 35%, transparent));
 }
 
 .shelf-continue-open:hover {
   border-color: var(--card-hover-border);
   box-shadow: var(--card-hover-shadow);
+  transform: translateY(-1px);
 }
 
 .shelf-continue-copy {
@@ -2024,11 +2058,20 @@ onUnmounted(() => {
   gap: 2px;
 }
 
+/* CTA 做成胶囊按钮，不再是孤零零一行文字。 */
 .shelf-continue-cta {
   flex: 0 0 auto;
-  color: var(--focus);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 14px 7px 16px;
+  border-radius: var(--radius-pill);
+  background: var(--focus);
+  color: var(--on-accent);
   font-size: 13px;
   font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: 0 1px 2px rgba(28, 25, 21, 0.14);
 }
 
 .shelf-continue-cta i,
@@ -2038,10 +2081,11 @@ onUnmounted(() => {
 }
 
 .shelf-kicker {
-  margin-bottom: 2px;
-  color: var(--text-muted);
-  font-size: 12px;
-  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+  color: var(--focus);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
 }
 
 .cover-progress {
@@ -2118,7 +2162,7 @@ onUnmounted(() => {
   display: grid;
   place-items: center;
   overflow: hidden;
-  border-radius: 3px 8px 8px 3px;
+  border-radius: 3px 10px 10px 3px;
   color: #f7f3e8;
   background: linear-gradient(
     160deg,
@@ -2180,14 +2224,15 @@ onUnmounted(() => {
   text-shadow: none;
 }
 
-/* 书名是卡片的主信息：两行封顶；卡片右上角有「更多」，右侧留出 44px 不让按钮压住第一行。 */
+/* 书名是卡片的主信息：衬线体、两行封顶；右上角有「更多」，右侧留 44px 不被按钮压住。 */
 .book-title {
   display: -webkit-box;
   overflow: hidden;
   color: var(--text-primary);
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.45;
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.4;
   letter-spacing: 0.01em;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -2234,13 +2279,44 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-/* 「开始阅读」是卡片里唯一的主操作，压在文字区底部，和封面下缘对齐。 */
+/* 「继续阅读」做成一颗小胶囊，右侧带箭头，和普通文字拉开主次。 */
 .book-open-hint {
   margin-top: auto;
-  padding-top: var(--space-2);
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: auto;
+  padding: 4px 11px 4px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
   color: var(--focus);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
+  transition: background var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
+}
+
+.book-card:hover .book-open-hint {
+  background: var(--focus);
+  color: var(--on-accent);
+}
+
+/* 阅读进度条：2px 细线，颜色用强调色的淡版，不抢书名。 */
+.book-progress-bar {
+  overflow: hidden;
+  width: 100%;
+  max-width: 140px;
+  height: 3px;
+  margin-top: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+}
+
+.book-progress-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--focus), color-mix(in srgb, var(--focus) 60%, #e0a06e));
 }
 
 .book-open-hint i {

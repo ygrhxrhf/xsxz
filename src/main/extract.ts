@@ -12,6 +12,7 @@ import { canonicalizeUrl, isPathLikeHash } from '../shared/urlHash'
 import { injectImageTokens } from '../shared/chapterImageSource'
 import { bodyText, cleanBodyText, effectiveLength, linkDensity, looksGarbled, visibleText } from './bodyText'
 import { unlockAllowed, unlockPaywalledBody } from './paywallUnlock'
+import type { CatalogDetect } from './browseReading'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -390,10 +391,26 @@ const NAV_PARAGRAPHS = [
   /^(?:章节错误|内容有误|举报本章|报错|意见反馈|商务合作|广告投放)[:：]?\s*.{0,40}$/,
   // 章节页的分页标记：「第190章 先生早晨(第1/2页)」整段只是标题+页码时删掉
   /^[^\n]{0,60}[（(]\s*第\s*\d+\s*\/\s*\d+\s*页\s*[）)]$/,
+  // 站点把面包屑和正文粘成一段：「笔趣阁 > 书名\n加入书架 手机阅读」。
+  // 只在整段很短时生效（isNoise 已限 160 字），长段落里的同样字样是真正文。
+  /^[\s\S]{0,40}>[\s\S]{0,40}$/,
+  // 字号 / 护眼 / 关灯这类排版控件被当成段落：「字体：\n大\n中\n小\n护眼\n关灯」。
+  /^(?:字体|字号|背景)[:：]?[\s\S]{0,60}$/,
 ]
 
 /** 完全相同的长段落只留一次：站点把正文连发两遍时清掉重复。 */
 const REPEAT_PARAGRAPH_MIN_LENGTH = 12
+
+/**
+ * 分段页残句：「(第1/3页),点击下一页继续阅读」「（本章未完，请翻页）」。
+ *
+ * 站点常把这类字样粘在正文中间，整段删会带走剧情，所以只在句内切掉；
+ * 连同紧邻的括号 / 逗号一起吃掉，避免留下半个标点。
+ */
+const PAGER_FRAGMENT_RES: RegExp[] = [
+  /[（(【\[]?\s*第\s*\d+\s*\/\s*\d+\s*页\s*[）)】\]]?[，,、]?\s*(?:点击|按|点)?\s*(?:下一页|下页|继续阅读)[。！!]?/g,
+  /[（(【\[]?\s*(?:本章未完|未完待续)[，,]?\s*(?:请翻页|点击下一页|下一页继续阅读)[）)】\]]?[。！!]?/g,
+]
 const BODY_CLEAN_LINE_LIMIT = 200
 const BODY_CLEAN_MAX_LINES = 20
 
@@ -445,10 +462,17 @@ function cleanAdParagraphs(raw: string, rule?: SiteRule): string {
     seen.add(text)
     return true
   })
-  if (deduped.length === paragraphs.length) return base
-  if (deduped.length === base.split(/\n{2,}/).length) return base
-  const cleaned = deduped.join('\n\n').trim()
-  return effectiveLength(cleaned) >= 80 ? cleaned : base
+  const dedupedChanged = deduped.length !== paragraphs.length && deduped.length !== base.split(/\n{2,}/).length
+  const joined = dedupedChanged ? deduped.join('\n\n').trim() : base
+  // 分段页残句：只在句内切除，删完还剩正文才算数。
+  const stripped = joined.split(/\n{2,}/)
+    .map((paragraph) => PAGER_FRAGMENT_RES.reduce((text, re) => text.replace(re, ''), paragraph))
+    .map((paragraph) => paragraph.replace(/\s{2,}/g, ' ').trim())
+    .filter((paragraph) => paragraph.length > 0)
+    .join('\n\n')
+  if (stripped && effectiveLength(stripped) >= 80 && stripped !== joined) return stripped
+  if (!dedupedChanged) return base
+  return effectiveLength(joined) >= 80 ? joined : base
 }
 
 /** 文本从哪来的：正文容器里的截断章文才能用弱档付费词。 */
@@ -959,4 +983,30 @@ export function extractBody(html: string, pageUrl: string, rule?: SiteRule): Ext
   }
   if (wall) return bodyWallFail(wall, unlockOut.reason)
   return { body: cleanAdParagraphs(body, rule), bodyRaw: body, ok: true }
+}
+
+/**
+ * 供浏览阅读模式用的目录探测：回答「这一页骨子里是不是书页」。
+ *
+ * 只暴露两个布尔判断，不导出内部启发式；调用方拿到 false 就继续当章节读。
+ */
+export const catalogDetect: CatalogDetect = {
+  hasCatalog(doc, url, rule) {
+    const ruled = tryCatalogFromRule(doc, url, rule)
+    if (ruled && ruled.chapters.length >= 2) return true
+    const generic = tryCatalogFromDoc(doc, url)
+    return Boolean(generic && generic.chapters.length >= 5)
+  },
+  hasChapterLinks(doc, url) {
+    let count = 0
+    for (const a of doc.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+      const raw = (a.getAttribute('href') || '').trim()
+      if (shouldSkipCatalogHref(raw, a.href)) continue
+      if (!sameDomain(a.href, url)) continue
+      if (!isChapterLink(a)) continue
+      count += 1
+      if (count >= 2) return true
+    }
+    return false
+  },
 }

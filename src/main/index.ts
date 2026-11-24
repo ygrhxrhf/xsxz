@@ -84,6 +84,7 @@ import { browserAdCss } from './browserAds'
 import { discoverChapterLinks, extractBrowseReadingPage } from './browseReading'
 import { getBrowseZoom, getLastBrowsePosition, getReadingPos, setBrowsePosition, setBrowseZoom, setReadingPos, clampZoom } from './browseState'
 import { appendReadingContinuations, destroyReadingSession, loadCatalog, loadReadingPage, prefetchReadingPage } from './readingSession'
+import { catalogDetect } from './extract'
 import {
   addWebShelf,
   getWebShelfChapters,
@@ -909,8 +910,9 @@ function registerIpc(): void {
       if (wc.getURL() !== url) return { ok: false, message: '网页已跳转，请重新开启阅读模式' }
       if (html.length > 8_000_000) return { ok: false, message: '当前网页过大，无法开启阅读模式' }
       const rule = await findSiteRuleForUrl(url)
-      const page = extractBrowseReadingPage(html, url, rule)
-      if (!page.ok) return { ok: false, message: page.message }
+      const page = extractBrowseReadingPage(html, url, rule, catalogDetect)
+      // 书页（目录页）：给出标记，前端改成「从第一章开始」，而不是丢一句糊涂错误。
+      if (!page.ok) return { ok: false, message: page.message, isCatalog: Boolean(page.isCatalog) }
       const links = discoverChapterLinks(html, url, rule)
       // 站点分页章节只给当前页 HTML：补抓续页拼上，否则正文缺后半章。
       const body = await appendReadingContinuations(page.page.body, html, url, rule)

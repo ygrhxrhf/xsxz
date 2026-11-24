@@ -8,6 +8,7 @@
 import { onMounted, ref } from 'vue'
 import { NAlert, NButton, NEmpty, NInput, NSpace, NSpin, NTag, useMessage } from 'naive-ui'
 import type { RuleMarketEntry, RuleMarketSource } from '@shared/types'
+import { userFacingError, errorDetail } from '../userFacingError'
 
 const message = useMessage()
 
@@ -19,6 +20,7 @@ const subscribeUrl = ref('')
 const subscribing = ref(false)
 const unsubscribingUrl = ref('')
 const error = ref('')
+const errorTitle = ref('')
 /**
  * 已订阅的清单地址。
  *
@@ -50,8 +52,10 @@ async function load() {
     const listing = await window.api.ruleMarket.list()
     entries.value = listing.entries
     sources.value = listing.sources
+    errorTitle.value = ''
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '读取市场失败'
+    error.value = userFacingError(e, '站点规则市场读取失败，请稍后重试')
+    errorTitle.value = errorDetail(e)
   } finally {
     loading.value = false
   }
@@ -129,7 +133,7 @@ onMounted(load)
       <n-button type="primary" :loading="subscribing" @click="subscribe">订阅</n-button>
     </n-space>
 
-    <n-alert v-if="error" type="error" :bordered="false">{{ error }}</n-alert>
+    <n-alert v-if="error" type="error" :bordered="false" :title="errorTitle">{{ error }}</n-alert>
 
     <div v-if="subscribedUrls.length" class="market-subscriptions">
       <div class="market-subscriptions__title">已订阅的来源</div>

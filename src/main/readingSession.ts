@@ -1,7 +1,7 @@
 import { session, WebContentsView } from 'electron'
 import type { BrowseChapterLink, BrowseReadingChapter, BrowseReadingPage, SiteRule, WebShelfChapter } from '../shared/types'
 import { discoverChapterLinks, extractBrowseReadingPage } from './browseReading'
-import { extractCatalog, extractPage } from './extract'
+import { extractCatalog, extractPage, findCatalogPageUrls } from './extract'
 import { findContinuationUrls } from './paywallUnlock'
 import { findSiteRuleForUrl } from './siteRules'
 import { DOWNLOAD_SESSION_PARTITION, HIDDEN_VIEW_BOUNDS, isDownloadBusy } from './download'
@@ -276,7 +276,27 @@ export async function loadCatalog(catalogUrl: string): Promise<{ ok: true; catal
       const html = await fetchHtml(catalogUrl)
       let rule
       try { rule = await findSiteRuleForUrl(catalogUrl) } catch { rule = undefined }
-      return extractCatalog(html, catalogUrl, rule).map((chapter) => ({ title: chapter.title, url: chapter.url }))
+      const merged = extractCatalog(html, catalogUrl, rule)
+      // 站点把目录切成多页（?page=2 / _2.html / /list/2/）时只取第一页会丢章：
+      // 这里和下载器一样逐页补齐，各自自校验，只有真产出章节才合并，单页失败跳过。
+      //
+      // 只在页面真的露出分页链接时才补：很多站的目录是单页的，
+      // 每本书都盲抓几页会把站点打到限流，反过来让目录整个取不到。
+      const pageUrls = merged.length ? findCatalogPageUrls(html, catalogUrl, 5) : []
+      const seen = new Set(merged.map((chapter) => chapter.url))
+      for (const pageUrl of pageUrls) {
+        try {
+          const pageHtml = await fetchHtml(pageUrl)
+          let pageRule
+          try { pageRule = await findSiteRuleForUrl(pageUrl) } catch { pageRule = undefined }
+          for (const chapter of extractCatalog(pageHtml, pageUrl, pageRule)) {
+            if (seen.has(chapter.url)) continue
+            seen.add(chapter.url)
+            merged.push(chapter)
+          }
+        } catch { /* 续页抓取失败不改判：第一页的目录仍可用 */ }
+      }
+      return merged.map((chapter) => ({ title: chapter.title, url: chapter.url }))
     })
     if (!chapters.length) return { ok: false, message: '这个页面里没有找到章节目录' }
     rememberCatalog(key, chapters)

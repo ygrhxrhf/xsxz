@@ -83,6 +83,12 @@ import { clampTtsRate, splitIntoParagraphs, useTts } from './useTts'
 import { ttsBodyHash, validTtsPosition } from './ttsPosition'
 import { decorateText } from '@shared/paragraphSearch'
 import { isSiteTailParagraph } from './readerTail'
+import {
+  buildRealBookWindow,
+  mergedWindowParagraphs,
+  type RealBookWindow,
+  type RealBookWindowChapter,
+} from './realBookWindow'
 import RealBookStage from './RealBookStage.vue'
 import type { RealBookAnchor } from './realBookPager'
 import {
@@ -155,7 +161,7 @@ import type { CapturedProgressWrite } from './readerProgressWriter'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
 import { buildMindmapTree, type MindmapAnchor } from './readerMindmap'
 
-const props = defineProps<{ bookId?: string }>()
+const props = defineProps<{ bookId?: string; appSkin?: string }>()
 const emit = defineEmits<{
   (e: 'back'): void
   (e: 'go-browse', url?: string): void
@@ -196,6 +202,12 @@ const catalogItemRefs = new Map<string, HTMLElement>()
 const fontSize = ref(DEFAULT_READER_PREFS.fontSize)
 const lineHeight = ref(DEFAULT_READER_PREFS.lineHeight)
 const theme = ref<ReaderTheme>(DEFAULT_READER_PREFS.theme)
+// 应用皮肤切到深色时，没自己选过阅读主题（还停在默认「纸白」）的书跟着进夜间；
+// 显式选过其它主题的不动。切回浅色也不回退（夜间正文在浅色界面同样可读），
+// 只有用户自己在「外观」里改主题才覆盖。App 那边同时把持久化落到 settings。
+watch(() => props.appSkin, (s) => {
+  if (s === 'dark' && theme.value === 'paper') theme.value = 'night'
+})
 const fontFamily = ref<ReaderFontFamily>(DEFAULT_READER_PREFS.fontFamily)
 /** 真实书籍的书页字体；参考站默认霞鹜文楷，与经典模式的正文字体分开存。 */
 const bookFontFamily = ref<ReaderFontFamily>(DEFAULT_READER_PREFS.bookFontFamily ?? 'wenkai')
@@ -946,6 +958,140 @@ const pendingRealBookAnchor = ref<RealBookAnchor | null>(null)
 
 const realBookVisibleParas = computed(() => visibleParaIndexes.value)
 const realBookParagraphTexts = computed(() => realBookVisibleParas.value.map((index) => paras.value[index] ?? ''))
+
+// —— 真实书籍「整本连排」：把包含当前章的一段连续已下载章合成一本物理书，翻页跨章不停顿 ——
+const REALBOOK_CONT_KEY = 'spore:reader-realbook-continuous:v1'
+const realBookContinuous = ref(localStorage.getItem(REALBOOK_CONT_KEY) !== '0')
+function setRealBookContinuous(on: boolean): void {
+  realBookContinuous.value = on
+  try {
+    localStorage.setItem(REALBOOK_CONT_KEY, on ? '1' : '0')
+  } catch {
+    /* 忽略存储失败 */
+  }
+}
+
+/** 窗口内各章的段落输入：正文 + 过滤站点尾巴后的可见段落（段落号相对该章自身正文）。 */
+interface ChapterParaInput {
+  body: string
+  paragraphs: string[]
+  paragraphIndexes: number[]
+}
+const realBookWindowInputs = ref<Map<string, ChapterParaInput>>(new Map())
+/** 连排窗口：含当前章的最大连续 ready 段（页数封顶、前向优先）。组成不变则不换引用，避免书页重排。 */
+const realBookWindow = ref<RealBookWindow | null>(null)
+let realBookWindowKey = ''
+let realBookWindowBookId = ''
+
+/** 与单章路径同源：切段 + 过滤尾巴，段落号相对该章正文。 */
+function paraInputForBody(body: string): ChapterParaInput {
+  const list = splitIntoParagraphs(body)
+  const visible: number[] = []
+  for (let i = 0; i < list.length; i += 1) {
+    if (!isSiteTailParagraph(list[i])) visible.push(i)
+  }
+  return { body, paragraphs: visible.map((i) => list[i] ?? ''), paragraphIndexes: visible }
+}
+
+const isWebGLRealBook = computed(
+() => isRealBook.value && realBookRenderer.value === 'webgl',
+)
+/** 连排生效：WebGL 真实书籍 + 开关开 + 窗口 ≥2 章（单章窗口等价旧路径，不动）。 */
+const realBookContinuousActive = computed(
+  () =>
+    isWebGLRealBook.value &&
+    realBookContinuous.value &&
+    !!realBookWindow.value &&
+    realBookWindow.value.length > 1,
+)
+const mergedRealBook = computed(() =>
+  realBookContinuousActive.value && realBookWindow.value ? mergedWindowParagraphs(realBookWindow.value) : null,
+)
+const effectiveRealBookParagraphs = computed<string[]>(() =>
+  mergedRealBook.value ? mergedRealBook.value.paragraphs : realBookParagraphTexts.value,
+)
+const effectiveRealBookParagraphIndexes = computed<number[]>(() =>
+  mergedRealBook.value ? mergedRealBook.value.paragraphIndexes : realBookVisibleParas.value,
+)
+const effectiveRealBookWindowChapters = computed<RealBookWindowChapter[]>(() =>
+  realBookContinuousActive.value && realBookWindow.value ? realBookWindow.value.chapters : [],
+)
+
+/** 取齐窗口候选章正文（已下载，readChapter 快）并装配连排窗口。 */
+async function loadRealBookWindow(): Promise<void> {
+  if (!isWebGLRealBook.value || !book.value || !currentChapter.value) {
+    if (!isWebGLRealBook.value) {
+      realBookWindow.value = null
+      realBookWindowKey = ''
+    }
+    return
+  }
+  const bookId = book.value.id
+  if (bookId !== realBookWindowBookId) {
+    realBookWindowBookId = bookId
+    realBookWindowInputs.value = new Map()
+    realBookWindow.value = null
+    realBookWindowKey = ''
+  }
+  const catalog = chapters.value
+  const current = currentChapter.value
+  // 当前章正文已在 chapterBody 里，先播种。
+  realBookWindowInputs.value.set(current.id, paraInputForBody(chapterBody.value))
+  // 候选：当前章前后各 30 章里的 ready 章；buildRealBookWindow 再按连续 ready 收住边界。
+  const idx = catalog.findIndex((c) => c.id === current.id)
+  const candidates = catalog.slice(Math.max(0, idx - 30), Math.min(catalog.length, idx + 31)).filter((c) => c.status === 'ready')
+  await Promise.all(
+    candidates
+      .filter((c) => c.status === 'ready' && !realBookWindowInputs.value.has(c.id))
+      .map(async (c) => {
+        const { chapter } = await window.api.library.readChapter(bookId, c.id)
+        if (chapter && chapter.status === 'ready' && chapter.body) {
+          realBookWindowInputs.value.set(c.id, paraInputForBody(chapter.body))
+        }
+      }),
+  )
+  const window_ = buildRealBookWindow(catalog, current, (meta) => {
+    const input = realBookWindowInputs.value.get(meta.id)
+    return input
+      ? { paragraphs: input.paragraphs, paragraphIndexes: input.paragraphIndexes }
+      : { paragraphs: [], paragraphIndexes: [] }
+  }, {
+    maxParagraphs: 2600,
+    bodyAvailable: (meta) => meta.id === current.id || realBookWindowInputs.value.has(meta.id),
+  })
+  const key = bookId + '|' + (window_ ? window_.chapters.map((c) => c.meta.id).join(',') : '')
+  if (key !== realBookWindowKey) {
+    realBookWindow.value = window_
+    realBookWindowKey = key
+  }
+}
+
+/** 连排：当前摊开页所属章变了就路由 currentChapter/chapterBody（进度/TTS/划线/批注都跟它走）。 */
+function onRealBookAnchorUpdate(anchor: RealBookAnchor | null): void {
+  realBookAnchor.value = anchor
+  if (!anchor || !realBookContinuousActive.value) return
+  const targetId = anchor.chapterId
+  if (!targetId || targetId === currentChapter.value?.id) return
+  const target = chapters.value.find((c) => c.id === targetId)
+  if (!target) return
+  currentChapter.value = target
+  const input = realBookWindowInputs.value.get(target.id)
+  if (input) chapterBody.value = input.body
+}
+
+watch(
+  () => [isWebGLRealBook.value, book.value?.id, currentChapter.value?.id, chapters.value],
+  () => {
+    void loadRealBookWindow()
+  },
+)
+watch(realBookContinuous, (on) => {
+  if (on) void loadRealBookWindow()
+  else {
+    realBookWindow.value = null
+    realBookWindowKey = ''
+  }
+})
 /** 划线在真实书籍里的落位：段落下标 + 段内局部偏移（与经典模式同一坐标系换算而来）。 */
 const realBookHighlightSpans = computed(() => {
   const starts = paraNormStarts.value
@@ -2112,7 +2258,7 @@ async function openChapter(ch: ChapterMeta, scrollRatio = 0, progress?: ReadingP
         // 分页渲染层的恢复走页表：先把锚点交给舞台，页表重排后自行落位。
         realBookRestoreAnchor.value = pendingRealBookAnchor.value
           ?? (progress && progress.paragraphIndex !== undefined
-            ? { paragraph: progress.paragraphIndex, offset: progress.paragraphOffset ?? 0 }
+? { paragraph: progress.paragraphIndex, offset: progress.paragraphOffset ?? 0, chapterId: progress.chapterId }
             : classicAnchorSnapshot.value)
         pendingRealBookAnchor.value = null
         realBookRestoreToken.value += 1
@@ -3466,6 +3612,28 @@ onUnmounted(() => {
       </div>
 
       <div class="reader-stage">
+        <!-- 工具条收起时（沉浸 / 未唤回）整个 chrome 都不可见，
+             新用户找不到回书库的出口：补一个不抢戏的浮动返回。工具条出现即隐藏。 -->
+        <button
+          v-if="!isRealBook && !toolsVisible"
+          class="reader-float-back"
+          type="button"
+          title="返回书库"
+          aria-label="返回书库"
+          @click="emit('back')"
+        ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg><span>书库</span></button>
+        <!-- 左侧那片背景不该空着：给一张极淡的书名 / 章节牌，读到哪一眼可见。 -->
+        <aside
+          v-if="!isRealBook && !toolsVisible && book"
+          class="reader-plate"
+          aria-hidden="true"
+        >
+          <p class="reader-plate-title">{{ book.title }}</p>
+          <p class="reader-plate-meta">
+            <span v-if="currentChapterIndex >= 0">第 {{ currentChapterIndex + 1 }} / {{ chapters.length }} 章</span>
+          </p>
+          <p v-if="currentChapter?.title" class="reader-plate-chapter">{{ currentChapter.title }}</p>
+        </aside>
         <div class="reader-body" :class="{ 'reader-body-paged': pagedView, 'reader-body-realbook': isRealBook }">
         <div v-if="bookView === 'classic'" class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentZoneMouseup">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
@@ -3550,8 +3718,11 @@ onUnmounted(() => {
             :columns="sheetColumns === 'double' ? 2 : 1"
             :pitch="realBookPitch"
             ref="realBookStageRef"
-            :paragraphs="realBookParagraphTexts"
-            :paragraph-indexes="realBookVisibleParas"
+            :paragraphs="effectiveRealBookParagraphs"
+            :paragraph-indexes="effectiveRealBookParagraphIndexes"
+            :continuous="realBookContinuousActive"
+            :window-chapters="effectiveRealBookWindowChapters"
+            :current-chapter-id="currentChapter?.id ?? ''"
             :chapter-title="currentChapter?.title ?? ''"
             :highlights="realBookHighlightSpans"
             :search-query="showSearch ? searchQuery : ''"
@@ -3567,7 +3738,7 @@ onUnmounted(() => {
             :restore-token="realBookRestoreToken"
             :reveal-note-id="inlineNoteRevealId"
             :reveal-note-token="inlineNoteRevealToken"
-            @update:anchor="realBookAnchor = $event"
+@update:anchor="onRealBookAnchorUpdate($event)"
             @update:page="onRealBookPage"
             @update:page-count="realBookPageCount = $event"
             @update:pitch="realBookPitch = $event"
@@ -3675,6 +3846,12 @@ onUnmounted(() => {
                   <button type="button" :class="{ active: realBookRenderer === 'css' }" :aria-pressed="realBookRenderer === 'css'" @click="realBookRenderer = 'css'">CSS 3D 回退</button>
                 </div>
                 <div class="control-label">{{ webglSupported ? 'WebGL 提供连续纸面、书脊厚度和自由视角；CSS 3D 保留原实现。' : '当前环境不支持 WebGL，已使用 CSS 3D。' }}</div>
+                <div class="control-label">整本连排</div>
+                <div class="option-grid" role="group" aria-label="整本连排">
+                  <button type="button" :class="{ active: realBookContinuous }" :aria-pressed="realBookContinuous" @click="setRealBookContinuous(true)">连排</button>
+                  <button type="button" :class="{ active: realBookContinuous === false }" :aria-pressed="realBookContinuous === false" @click="setRealBookContinuous(false)">单章</button>
+                </div>
+                <div class="control-label">连排把已下载的相邻章拼成一本物理书，翻页跨章不停顿；单章则一章一本。仅 WebGL 3D 生效。</div>
                 <div class="control-label">书籍字体</div>
                 <div class="option-grid four" role="group" aria-label="书籍字体">
                   <button
@@ -5319,6 +5496,69 @@ onUnmounted(() => {
   background: transparent;
   overflow: visible;
 }
+/* 工具条收起时的浮动返回：半透明贴在左上，跟随阅读主题，不抢正文。
+   只在 classic 模式用；真实书籍底栏已有 rb-btn 书库钮。 */
+.reader-float-back {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 28;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px 5px 8px;
+  border: 1px solid var(--r-line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--reader-paper) 78%, transparent);
+  color: var(--reader-paper-text);
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  backdrop-filter: blur(3px);
+  transition: opacity 0.2s ease, background-color 0.2s ease;
+}
+.reader-float-back:hover {
+  opacity: 1;
+  background: var(--reader-paper);
+}
+
+/* 左页留白里的书名牌：极淡、不可点，只是让画面不空。 */
+.reader-plate {
+  position: absolute;
+  z-index: 12;
+  top: 84px;
+  left: 32px;
+  max-width: 220px;
+  pointer-events: none;
+  user-select: none;
+}
+
+.reader-plate-title {
+  margin: 0;
+  color: color-mix(in srgb, var(--reader-paper-text) 42%, transparent);
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+}
+
+.reader-plate-meta {
+  margin: 6px 0 0;
+  color: color-mix(in srgb, var(--reader-paper-text) 26%, transparent);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.reader-plate-chapter {
+  margin: 3px 0 0;
+  color: color-mix(in srgb, var(--reader-paper-text) 22%, transparent);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.reader-float-back svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+
 .reader-toolbar.reader-toolbar-realbook .real-book-page-label {
   position: absolute;
   width: 1px;
