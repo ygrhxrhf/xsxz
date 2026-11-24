@@ -2283,19 +2283,24 @@ onUnmounted(() => {
         class="web-reading-chrome top"
         @mouseenter="clearReadingHideTimer"
       >
-        <button type="button" title="返回原网页（Esc）" @click="exitReadingMode">← 返回</button>
+        <button type="button" title="返回原网页（Esc）" @click="exitReadingMode"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg><span>返回</span></button>
         <span class="web-reading-title" :title="readingChapterLabel">{{ readingChapterLabel }}</span>
+        <!-- 图标 + 文字：和书库阅读器的顶栏同一套图形与字号，两个阅读入口看着才是同一个软件。 -->
         <div class="web-chrome-actions">
-          <button type="button" @click="openCatalog">目录</button>
-          <button type="button" @click="openInBookFind">搜索</button>
-          <button type="button" @click="marksOpen = true">标记</button>
+          <button type="button" @click="openCatalog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span>目录</span></button>
+          <button type="button" @click="openInBookFind"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><span>搜索</span></button>
+          <button type="button" @click="marksOpen = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg><span>标记</span></button>
           <span class="web-chrome-sep" aria-hidden="true"></span>
-          <button type="button" class="secondary" :class="{ active: autoScrolling }" @click="toggleAutoScroll">{{ autoScrolling ? '暂停' : '自动' }}</button>
-          <button type="button" class="secondary" :class="{ active: ttsSpeaking }" @click="toggleTts">{{ ttsSpeaking ? '停止' : '听书' }}</button>
-          <button type="button" class="secondary" :class="{ active: webAiPanelOpen }" @click="toggleWebAiPanel">AI</button>
+          <button type="button" class="secondary" :class="{ active: autoScrolling }" @click="toggleAutoScroll">
+            <svg v-if="autoScrolling" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+            <span>{{ autoScrolling ? '暂停' : '自动' }}</span>
+          </button>
+          <button type="button" class="secondary" :class="{ active: ttsSpeaking }" @click="toggleTts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10z"/><path d="M18 9a5 5 0 0 1 0 6"/></svg><span>{{ ttsSpeaking ? '停止' : '听书' }}</span></button>
+          <button type="button" class="secondary" :class="{ active: webAiPanelOpen }" @click="toggleWebAiPanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg><span>AI</span></button>
           <span class="web-chrome-sep" aria-hidden="true"></span>
-          <button type="button" :disabled="shelfSaving" @click="addCurrentToShelf">加书架</button>
-          <button type="button" :class="{ active: readingPanel }" @click="readingPanel = !readingPanel; webAiPanelOpen = false">排版</button>
+          <button type="button" :disabled="shelfSaving" @click="addCurrentToShelf"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18v18H6.5A2.5 2.5 0 0 1 4 18.5z"/><path d="M11 9v6M8 12h6"/></svg><span>加书架</span></button>
+          <button type="button" :class="{ active: readingPanel }" @click="readingPanel = !readingPanel; webAiPanelOpen = false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M4 11h16M4 16h12M4 21h8"/></svg><span>排版</span></button>
         </div>
       </header>
 
@@ -2793,6 +2798,15 @@ onUnmounted(() => {
 .web-reading-chrome.bottom button { color: rgba(244, 235, 211, 0.86); }
 .web-reading-chrome.bottom button:hover { background: rgba(244, 235, 211, 0.12); }
 .web-reading-chrome.bottom button:disabled { color: rgba(244, 235, 211, 0.34); }
+/* 图标 + 文字：尺寸与书库阅读器顶栏一致（16px 图标、4px 间距、13px 字）。 */
+.web-reading-chrome.top button {
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.web-reading-chrome.top button svg {
+  width: 16px; height: 16px; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}
+
 /* 顶栏里的次要动作（自动 / 听书 / 加书架）压一档，别和「目录 / 搜索 / 标记」抢注意力。 */
 .web-reading-chrome.top .web-chrome-actions button.secondary { color: color-mix(in srgb, var(--web-ink) 58%, transparent); }
 .web-reading-chrome.top .web-chrome-actions button.secondary:hover { color: var(--web-ink); }
