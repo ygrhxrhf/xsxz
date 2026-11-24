@@ -1333,18 +1333,13 @@ onUnmounted(() => {
         </n-button>
       </div>
     </header>
-    <n-alert
-      v-if="autoUpdateBanner"
-      class="auto-update-banner"
-      type="info"
-      :show-icon="false"
-      closable
-      @close="dismissAutoUpdateBanner"
-    >
-      <strong>自动追更</strong>
-      <span v-if="autoUpdateAtText"> · {{ autoUpdateAtText }}</span>
-      <div>{{ autoUpdateSummary }}</div>
-    </n-alert>
+    <!-- 自动追更的结果多数时候是「暂无新章」：不值得占一张两行高的告示牌，压成一行细条。 -->
+    <div v-if="autoUpdateBanner" class="auto-update-note" role="status">
+      <span class="auto-update-note__tag">自动追更</span>
+      <span v-if="autoUpdateAtText" class="auto-update-note__time">{{ autoUpdateAtText }}</span>
+      <span class="auto-update-note__text" :title="autoUpdateSummary">{{ autoUpdateSummary }}</span>
+      <button type="button" class="auto-update-note__close" aria-label="关闭这条提示" @click="dismissAutoUpdateBanner">×</button>
+    </div>
     <div v-if="books.length" class="lib-toolbar">
       <div class="lib-toolbar-row">
         <n-input
@@ -1371,7 +1366,10 @@ onUnmounted(() => {
           >紧凑</button>
         </div>
       </div>
-      <div v-if="libraryTags.length" class="lib-tag-chips" :class="{ expanded: tagsExpanded }" role="list" aria-label="按标签筛选">
+      <div v-if="libraryTags.length" class="lib-tag-chips" :class="{ expanded: tagsExpanded }">
+        <!-- 标签一多，「更多标签」原来排在最后一个 flex 项，跟着一起被 max-height 裁掉了。
+             现在标签自己滚/折，开关常驻右侧。 -->
+        <div class="lib-tag-list" role="list" aria-label="按标签筛选">
         <n-tag
           v-for="tag in libraryTags"
           :key="tag"
@@ -1384,6 +1382,7 @@ onUnmounted(() => {
         >
           {{ tag }}
         </n-tag>
+        </div>
         <button type="button" class="lib-tag-toggle" @click="tagsExpanded = !tagsExpanded">
           {{ tagsExpanded ? '收起标签' : '更多标签' }}
         </button>
@@ -1913,9 +1912,25 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.auto-update-banner {
-  margin: 0 0 var(--space-6);
+/* 自动追更：一行细条，不再往下推整页内容。 */
+.auto-update-note {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 var(--space-4); padding: 5px 2px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted); font-size: 12.5px; line-height: 1.6;
 }
+.auto-update-note__tag {
+  flex: 0 0 auto; padding: 0 6px; border-radius: 4px;
+  background: color-mix(in srgb, var(--focus) 12%, transparent);
+  color: var(--focus); font-size: 11.5px;
+}
+.auto-update-note__time { flex: 0 0 auto; color: var(--text-muted); }
+.auto-update-note__text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-update-note__close {
+  flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: var(--text-muted); font-size: 14px; line-height: 1; cursor: pointer;
+}
+.auto-update-note__close:hover { background: color-mix(in srgb, currentColor 10%, transparent); color: var(--text); }
 
 .lib-toolbar {
   display: flex;
@@ -1974,18 +1989,27 @@ onUnmounted(() => {
 /* 标签是筛选器不是内容：给一段浅色容器把它从书卡上分开，默认只露一行。 */
 .lib-tag-chips {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2) var(--space-1);
-  max-height: 34px;
-  overflow: hidden;
+  align-items: flex-start;
+  gap: var(--space-2);
   padding: 5px var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface-1);
 }
+.lib-tag-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-1);
+  min-width: 0;
+  max-height: 34px;
+  overflow: hidden;
+}
 
-.lib-tag-chips.expanded {
+.lib-tag-chips.expanded .lib-tag-list {
   max-height: none;
+}
+.lib-tag-chips.expanded {
   padding-bottom: var(--space-2);
 }
 
@@ -2230,7 +2254,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  width: 268px;
+  /* 268px 时右侧文案只有 ~160px，日期会被省略号吃掉（「11月24日 1…」），放宽到 300。 */
+  width: 300px;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
@@ -2376,11 +2401,16 @@ onUnmounted(() => {
   overflow: hidden;
   border-radius: 3px 10px 10px 3px;
   color: #f7f3e8;
-  background: linear-gradient(
-    160deg,
-    hsl(calc(var(--cover-hue) * 1deg) 28% 32%),
-    hsl(calc(var(--cover-hue-secondary) * 1deg) 34% 24%)
-  );
+  /* 三层叠出布面书封：书脊一道高光、左上角一点织物反光、底下才是色相渐变。
+     只有渐变时，一排字母封面看着像色块；有这几笔才像一本手工装帧的书。 */
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 9%, rgba(0, 0, 0, 0) 91%, rgba(0, 0, 0, 0.14)),
+    radial-gradient(130% 92% at 18% 0%, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0) 58%),
+    linear-gradient(
+      160deg,
+      hsl(calc(var(--cover-hue) * 1deg) 28% 32%),
+      hsl(calc(var(--cover-hue-secondary) * 1deg) 34% 24%)
+    );
   box-shadow: var(--shadow-card);
   font-size: 24px;
   font-weight: 700;
