@@ -259,6 +259,9 @@ const viewportCenterPara = ref(-1)
 // AI state
 const aiLoading = ref(false)
 const cleanRunning = ref(false)
+const cleanJobId = ref('')
+const cleanProgress = ref('')
+const lastCleanOriginal = ref('')
 const aiResult = ref('')
 const aiResultTitle = ref('')
 const cleanBudget = ref<AiBudgetEstimate | null>(null)
@@ -3025,9 +3028,13 @@ async function runCleanBody(confirmOverBudget: boolean) {
   cleanRunning.value = true
   aiResultTitle.value = '清正文'
   try {
-    const res = await window.api.ai.clean(book.value.id, currentChapter.value.id, confirmOverBudget)
+    const jobId = `clean-${Date.now()}`
+    cleanJobId.value = jobId
+    cleanProgress.value = '准备清理…'
+    const res = await window.api.ai.clean(book.value.id, currentChapter.value.id, confirmOverBudget, jobId)
     if (res.ok) {
       aiResult.value = res.result.cleaned
+      lastCleanOriginal.value = res.result.original
       lastCleanBudget.value = res.budget
       showAiOutput()
       void loadAssistantMaterial()
@@ -3047,6 +3054,8 @@ async function runCleanBody(confirmOverBudget: boolean) {
   } finally {
     aiLoading.value = false
     cleanRunning.value = false
+    cleanJobId.value = ''
+    cleanProgress.value = ''
   }
 }
 
@@ -3070,6 +3079,12 @@ async function stopCleanBody() {
 
 async function applyCleanedBody() {
   if (!book.value || !currentChapter.value || !aiResult.value) return
+  // 清理结果基于当时那份正文：中途换源、重下或手修过就拒绝覆盖，让用户重新清一次。
+  const current = await window.api.library.readChapter(book.value.id, currentChapter.value.id)
+  if (!current.chapter || current.chapter.body !== lastCleanOriginal.value) {
+    message.error('正文在清理后已发生变化，已拒绝覆盖。请重新生成清理预览。')
+    return
+  }
   await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, aiResult.value)
   chapterPrefetch.invalidate(book.value.id, currentChapter.value.id)
   chapterBody.value = aiResult.value
@@ -3281,6 +3296,9 @@ async function pinChatToBottom() {
 }
 watch(showAiAssistant, (open) => { if (open) void pinChatToBottom() })
 watch(aiAssistantTab, (tab) => { if (tab === 'qa' && showAiAssistant.value) void pinChatToBottom() })
+watch(() => assistantStages.value[cleanJobId.value], (stage) => {
+  if (cleanJobId.value && stage?.detail) cleanProgress.value = stage.detail
+})
 
 // 读完即上报：不能只等「切到下一章」那一刻，否则全书最后一章、或读到底又滚回去的章节永远不会进自动追剧。
 const finishedReported = new Set<string>()
@@ -4469,6 +4487,7 @@ onUnmounted(() => {
                   <div v-if="aiResultTitle === '清正文' && lastCleanBudget">
                     预计发送：{{ lastCleanBudget.chapterCount }} 章 / {{ lastCleanBudget.paragraphCount }} 段，约 {{ lastCleanBudget.sentCharacters }} 字 / {{ lastCleanBudget.estimatedTokens }} tokens（估算）
                   </div>
+                  <div v-if="aiResultTitle === '清正文' && cleanProgress" class="subtle">{{ cleanProgress }}</div>
                   <div v-else-if="!aiResult" class="subtle">清正文、翻译这类一次性结果会显示在这里。</div>
                 </div>
                 <div v-if="aiResult" class="ai-result">{{ aiResult }}</div>

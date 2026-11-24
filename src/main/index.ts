@@ -47,7 +47,7 @@ import {
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
-import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, getTencentMapKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider, getProxyPassword } from './settings'
+import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, getTencentMapKey, normalizeCustomOrigin, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider, getProxyPassword } from './settings'
 import { parsePlaceExtraction, placeExtractionPlan } from './aiPlaces'
 import { choosePlaceCandidate, confirmPlace as confirmMapPlace, geocodePlaces, readPlaces, savePlaces, searchPlaceCandidates } from './mapPlaces'
 import { getMapImage, setMapImage } from './mapImage'
@@ -2357,6 +2357,7 @@ function registerIpc(): void {
     bookId: string
     chapterId: string
     confirmOverBudget?: boolean
+    jobId?: string
   }) => {
     try {
       const settings = await getSettings()
@@ -2376,6 +2377,7 @@ function registerIpc(): void {
       }
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const cleanJobId = typeof args.jobId === 'string' && args.jobId.trim() ? args.jobId.trim().slice(0, 80) : ''
       const exclusive = await aiExclusive({
         lane: 'interactive', cls: 'clean', bookId: args.bookId,
         dedupeKey: `clean:${args.bookId}:${args.chapterId}`,
@@ -2389,6 +2391,9 @@ function registerIpc(): void {
             signal,
             plan,
             async (usage) => { await persistAiUsage(args.bookId, usage) },
+            (done, total) => {
+              if (cleanJobId) sendAiStage(cleanJobId, 'requesting', `清理第 ${done}/${total} 批`)
+            },
           )
         } catch (error) {
           if (signal.aborted) throw new DOMException('aborted', 'AbortError')
@@ -2754,10 +2759,16 @@ function registerIpc(): void {
         const providedModel = typeof payload?.model === 'string' ? payload.model.trim() : ''
         const baseUrl = providedBaseUrl || settings.baseUrl
         const model = providedModel || settings.model
+        // 「测试连接」本身就是用户对这个地址的临时授权：只在本次调用里信任，失败不落盘。
+        const origin = normalizeCustomOrigin(baseUrl)
+        const aiPrefs = settings.ai ?? DEFAULT_AI_PREFS
+        const testSettings = origin && !aiPrefs.trustedCustomOrigins.includes(origin)
+          ? { ...settings, ai: { ...aiPrefs, trustedCustomOrigins: [...aiPrefs.trustedCustomOrigins, origin] } }
+          : settings
         const exclusive = await aiExclusive(
           { lane: 'interactive', cls: 'test' },
           () => testConnection(
-            trustedAiConfig(settings, apiKey, {
+            trustedAiConfig(testSettings, apiKey, {
               baseUrl,
               model,
               provider: payload?.provider,
