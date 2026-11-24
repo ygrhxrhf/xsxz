@@ -427,6 +427,9 @@ async function applySavedProxy(): Promise<void> {
     if (!prefs) return
     const res = await applyProxyToSession(novelSession(), prefs)
     if (!res.ok) console.warn(`代理未应用：${res.message}`)
+    // AI / 向量 / TTS 走主进程 net.fetch，认 defaultSession 的代理；与浏览共用同一份设置。
+    const defaultRes = await applyProxyToSession(session.defaultSession, prefs)
+    if (!defaultRes.ok) console.warn(`AI 请求代理未应用：${defaultRes.message}`)
   } catch (e) {
     console.warn('应用代理设置失败：', e)
   }

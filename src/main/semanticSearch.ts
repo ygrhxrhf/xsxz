@@ -6,6 +6,7 @@ import type { AiCitation, AiUsage, Book } from '../shared/types'
 import { estimateAiTokens } from './aiBudget'
 import { reserveAutomaticTokens } from './aiMonthlyBudget'
 import type { AiQueue } from './aiScheduler'
+import { aiFetch } from './aiFetch'
 import { selectLocalEvidence } from './aiEvidenceSearch'
 import { planEvidenceReads } from './aiEvidenceIndex'
 import { atomicWriteText, bookDir, getBook, readChapter, withBookLock } from './library'
@@ -53,7 +54,7 @@ async function embeddings(texts: string[], signal?: AbortSignal): Promise<{ vect
   const apiKey = await getEmbeddingApiKey()
   if (!embedding?.baseUrl || !embedding.model || !apiKey) throw new Error('请先在设置中配置向量服务地址、模型和 Key')
   assertTrustedAiEndpoint(embedding.baseUrl, { ...settings.ai!, provider: 'custom' })
-  const response = await fetch(`${embedding.baseUrl.replace(/\/+$/, '')}/embeddings`, {
+  const response = await aiFetch(`${embedding.baseUrl.replace(/\/+$/, '')}/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ model: embedding.model, input: texts }),

@@ -10,6 +10,7 @@ import type {
   ChapterStatus,
 } from '../shared/types'
 import { BUILTIN_AI_PROMPTS } from '../shared/aiPrompts'
+import { aiFetch } from './aiFetch'
 import {
   AI_INPUT_CHARACTER_BUDGET,
   CLEAN_PARAGRAPH_SEGMENT_LIMIT,
@@ -558,7 +559,7 @@ export async function runAiTaskCompletion(
   try {
     while (true) {
       const body = buildRequestBody(config, messages, policy, stream, !compatibilityDowngraded)
-      const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      const response = await aiFetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
         body: JSON.stringify(body),
