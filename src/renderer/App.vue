@@ -44,80 +44,81 @@ const tabs: { id: Tab; label: string; iconPaths: string[] }[] = [
   },
 ]
 
-// 微信读书式浅色界面：浅灰画布、白色纸面与克制的蓝色操作色。
+// 纸白 + 近黑墨色 + 单一橄榄绿：结构上的发丝线，克制的强调色。
 const lightOverrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: '#4b93dd',
-    primaryColorHover: '#65a5e7',
-    primaryColorPressed: '#3278bf',
-    primaryColorSuppl: '#4b93dd',
-    infoColor: '#4b93dd',
-    infoColorHover: '#65a5e7',
-    infoColorPressed: '#3278bf',
-    infoColorSuppl: '#4b93dd',
-    successColor: '#3b9d77',
-    warningColor: '#b48436',
-    errorColor: '#d85a60',
-    textColorBase: '#25272b',
-    textColor1: '#25272b',
-    textColor2: '#60656d',
-    textColor3: '#898f97',
-    placeholderColor: '#a0a6ae',
-    borderColor: '#e5e8ec',
-    dividerColor: '#eceef1',
+    primaryColor: '#5f7f14',
+    primaryColorHover: '#6f9418',
+    primaryColorPressed: '#4d6a10',
+    primaryColorSuppl: '#5f7f14',
+    infoColor: '#5f7f14',
+    infoColorHover: '#6f9418',
+    infoColorPressed: '#4d6a10',
+    infoColorSuppl: '#5f7f14',
+    successColor: '#3b7f4a',
+    warningColor: '#8a6a1d',
+    errorColor: '#b4483d',
+    textColorBase: '#0d0f0c',
+    textColor1: '#0d0f0c',
+    textColor2: '#4f574b',
+    textColor3: '#828a7c',
+    placeholderColor: '#a3a99b',
+    borderColor: '#dedfd5',
+    dividerColor: '#e6e7de',
     cardColor: '#ffffff',
     modalColor: '#ffffff',
     popoverColor: '#ffffff',
     drawerColor: '#ffffff',
-    inputColor: '#f7f8fa',
-    actionColor: '#f7f8fa',
-    hoverColor: 'rgba(37, 39, 43, 0.05)',
+    inputColor: '#f3f3ee',
+    actionColor: '#f3f3ee',
+    hoverColor: 'rgba(13, 15, 12, 0.05)',
     borderRadius: '10px',
     borderRadiusSmall: '8px',
   },
   Card: {
-    borderRadius: '16px',
-    borderColor: '#e9ebee',
+    borderRadius: '14px',
+    borderColor: '#dedfd5',
     color: '#ffffff',
   },
   Dialog: {
-    borderRadius: '18px',
+    borderRadius: '14px',
   },
   Tag: {
-    borderRadius: '999px',
+    borderRadius: '4px',
   },
 }
 
+// 深色对应参考站点的技术黑：近黑底、绿灰文字、单一荧光绿强调。
 const darkOverrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: '#79b5f2',
-    primaryColorHover: '#9ac9f6',
-    primaryColorPressed: '#5b9ddd',
-    primaryColorSuppl: '#79b5f2',
-    infoColor: '#79b5f2',
-    successColor: '#79c8a4',
-    warningColor: '#e3bb79',
-    errorColor: '#ef9299',
-    textColorBase: '#e8e9eb',
-    textColor1: '#e8e9eb',
-    textColor2: '#c0c2c7',
-    textColor3: '#93969d',
-    placeholderColor: '#82858d',
-    borderColor: '#393b40',
-    dividerColor: '#33353a',
-    cardColor: '#282a2e',
-    modalColor: '#282a2e',
-    popoverColor: '#282a2e',
-    drawerColor: '#282a2e',
-    inputColor: '#303237',
-    actionColor: '#303237',
-    hoverColor: 'rgba(232, 233, 235, 0.07)',
+    primaryColor: '#a8e64f',
+    primaryColorHover: '#b9f06a',
+    primaryColorPressed: '#93cf3d',
+    primaryColorSuppl: '#a8e64f',
+    infoColor: '#a8e64f',
+    successColor: '#a7e88c',
+    warningColor: '#e2c26b',
+    errorColor: '#f0917f',
+    textColorBase: '#fafafa',
+    textColor1: '#fafafa',
+    textColor2: '#b6c4b0',
+    textColor3: '#7d8a78',
+    placeholderColor: '#6f7a6a',
+    borderColor: '#2a312a',
+    dividerColor: '#242b24',
+    cardColor: '#131713',
+    modalColor: '#12160f',
+    popoverColor: '#12160f',
+    drawerColor: '#12160f',
+    inputColor: '#171d17',
+    actionColor: '#171d17',
+    hoverColor: 'rgba(250, 250, 250, 0.06)',
     borderRadius: '10px',
     borderRadiusSmall: '8px',
   },
-  Card: { borderRadius: '16px', borderColor: '#393b40' },
-  Dialog: { borderRadius: '18px' },
-  Tag: { borderRadius: '999px' },
+  Card: { borderRadius: '14px', borderColor: '#2a312a' },
+  Dialog: { borderRadius: '14px' },
+  Tag: { borderRadius: '4px' },
 }
 
 // 本地快照决定首帧，settings.json 在加载后校正为权威值。
@@ -190,14 +191,7 @@ function cancelSidebarDownload() {
   void window.api.download.cancel().catch(() => {})
 }
 
-function syncBrowseVisibility() {
-  void window.api.browse.setVisible(tab.value === 'browse').catch(() => {})
-}
-
-watch(tab, syncBrowseVisibility)
-
 onMounted(async () => {
-  syncBrowseVisibility()
   unsubProgress = window.api.download.onProgress(onDownloadProgress)
   try {
     const s = await window.api.settings.get()
@@ -230,14 +224,13 @@ onUnmounted(() => {
   <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
       <div :class="['app-shell', { 'app-shell-reader': tab === 'reader' && !!currentBookId }]">
-        <header v-if="!(tab === 'reader' && currentBookId)" class="app-bar">
+        <aside v-if="!(tab === 'reader' && currentBookId)" class="app-rail" aria-label="主导航">
           <span class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">
               <path d="M3 5.5A3.5 3.5 0 0 1 6.5 2H11v17H6.5A3.5 3.5 0 0 0 3 22V5.5Z" />
               <path d="M21 5.5A3.5 3.5 0 0 0 17.5 2H13v17h4.5A3.5 3.5 0 0 1 21 22V5.5Z" />
             </svg>
           </span>
-          <span class="brand-title">小说浏览器</span>
           <nav class="app-nav" aria-label="主要功能">
             <button
               v-for="item in tabs"
@@ -245,6 +238,7 @@ onUnmounted(() => {
               class="nav-btn"
               :class="{ active: tab === item.id }"
               type="button"
+              :title="item.label"
               :aria-current="tab === item.id ? 'page' : undefined"
               @click="tab = item.id"
             >
@@ -254,7 +248,7 @@ onUnmounted(() => {
               <span class="nav-label">{{ item.label }}</span>
             </button>
           </nav>
-          <div class="app-bar-actions">
+          <div class="app-rail-foot">
             <div v-if="dlRunning" class="sidebar-dl" role="status">
               <div class="sidebar-dl-title" :title="dlRunning.title">{{ dlRunning.title }}</div>
               <div class="sidebar-dl-row">
@@ -264,7 +258,7 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
-        </header>
+        </aside>
         <section class="main">
           <BrowsePage
             v-show="tab === 'browse'"
@@ -274,6 +268,7 @@ onUnmounted(() => {
             :prefill-reading="browsePrefillReading"
             @open-book="openBook"
             @edit-site-rule="goSettingsWithHost"
+            @open-web-book="openWebBook"
           />
           <LibraryPage
             v-show="tab === 'library'"
