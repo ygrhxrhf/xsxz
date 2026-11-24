@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { createApp, h, nextTick } from 'vue'
 import { afterEach, describe, expect, it } from 'vitest'
 import RealBookWebGLStage from './RealBookWebGLStage.vue'
@@ -323,5 +325,17 @@ describe('RealBookWebGLStage', () => {
     stage.setPitch(-10)
     expect(pitches).toEqual([0])
     app.unmount()
+  })
+
+  it('选字命中交给行盒子，段落盒子不吃指针事件', () => {
+    // 段落盒子按整页铺满，行是绝对定位的。段落盒子一旦自己吃指针事件，
+    // 光标落在任何位置都先命中最后一个段落，落点被吸到那一行——上半页拖选就会选到下半页的字。
+    const source = readFileSync(join(import.meta.dirname, 'RealBookWebGLStage.vue'), 'utf-8')
+
+    const paraRule = /\.real-book-text-para \{([^}]*)\}/.exec(source)?.[1] ?? ''
+    expect(paraRule).toContain('pointer-events: none')
+
+    const lineRule = /\.real-book-text-line \{([^}]*)\}/.exec(source)?.[1] ?? ''
+    expect(lineRule).toContain('pointer-events: auto')
   })
 })

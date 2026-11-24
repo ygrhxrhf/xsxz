@@ -2061,7 +2061,7 @@ defineExpose({
 </script>
 
 <template>
-  <div ref="hostRef" :class="['real-book-stage', { 'is-sheet': variant === 'sheet', 'is-phone': phone }]" :style="stageStyle" @mouseup="onStageMouseup">
+  <div ref="hostRef" :class="['real-book-stage', { 'is-sheet': variant === 'sheet', 'is-phone': phone, 'is-webgl': effectiveRenderer }]" :style="stageStyle" @mouseup="onStageMouseup">
     <!-- 离屏量测容器：宽度与版心一致，量出来的断行与真实渲染一致 -->
     <div ref="measureRef" class="real-book-measure" :style="measureStyle" aria-hidden="true"></div>
     <!-- 批注卡量高：与真实卡片同一套宽度、字体与三行截断，只把结果交给分页器。 -->
@@ -2694,6 +2694,23 @@ defineExpose({
 }
 
 .real-book-stage.is-sheet .real-book-viewport { padding-bottom: 0; }
+
+/* WebGL 真实书籍是整屏的书桌照：参考站的画布铺满窗口，桌面不能有外壳内边距，
+   也不能把 CSS 3D 用来躲页堆的那两段上下留白再让出来，否则书会被压小一圈、
+   四周露出一圈浅色底（顶部那条空白就是这么来的）。 */
+.real-book-stage.is-webgl {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0;
+  background: transparent;
+}
+.real-book-stage.is-webgl .real-book-viewport {
+  flex: 1 1 0;
+  height: 100%;
+  padding-top: 0;
+  padding-bottom: 0;
+}
 
 .real-book-book {
   /* 透视提到书体层：缩放、俯仰与两页的 V 形折角都在同一层，页面（子级）才吃得到同一个透视。

@@ -1848,6 +1848,10 @@ onBeforeUnmount(() => {
 .real-book-text-para {
   position: absolute;
   inset: 0;
+  /* 段落盒子按整页铺满（行是绝对定位的），它自己不能吃指针事件：
+     否则光标在任何位置都先命中最后一个段落盒子，浏览器只能把落点吸到那个段落最近的一行，
+     上半页拖选就会选到下半页的字。命中交给真正有字的行盒子。 */
+  pointer-events: none;
 }
 
 .real-book-text-line {
@@ -1855,6 +1859,7 @@ onBeforeUnmount(() => {
   white-space: pre;
   background: transparent;
   overflow: hidden;
+  pointer-events: auto;
 }
 
 /* 页眉页脚：与正文同一层、同一套页角投影，字是矢量清晰的。 */
