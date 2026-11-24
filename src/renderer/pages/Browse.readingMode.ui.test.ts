@@ -21,6 +21,29 @@ describe('Browse web reading mode contract', () => {
     expect(source).toContain('scrollTopForVisualPage(next, el.scrollHeight, el.clientHeight)')
   })
 
+  it('offers scroll, single-column and double-column page layouts', async () => {
+    const source = await browseSource()
+    // 排版面板里的三种翻页方式
+    expect(source).toContain("setPageLayout('scroll')")
+    expect(source).toContain("setPageLayout('single')")
+    expect(source).toContain("setPageLayout('double')")
+    expect(source).toContain("setWebReading('columns'")
+    // 单栏/双栏用同一套横向分栏：一屏一页，栏距取两倍留白使翻页按屏对齐
+    expect(source).toContain('reading-columns-2')
+    expect(source).toContain('column-count: 2')
+    expect(source).toContain('column-gap: calc(var(--web-col-pad) * 2)')
+    // 页码、翻页、吸附都走横向滚动容器
+    expect(source).toContain('columnPageCount(el.scrollWidth')
+    expect(source).toContain('columnPageIndex(el.scrollLeft')
+    expect(source).toContain('el.scrollTo({ left: columnScrollLeft(next, width), behavior })')
+    expect(source).toContain('snapColumnPage()')
+    expect(source).toContain("el.scrollTo({ left: columnScrollLeft(columnPageForOffset(offset, width), width), behavior })")
+    // 分栏模式下触控板横扫与自动翻页也得能用
+    expect(source).toContain('Math.abs(event.deltaX) > Math.abs(event.deltaY)')
+    expect(source).toContain('function startColumnAutoPage')
+    expect(source).toContain('turnReadingPage(1, { keepAuto: true })')
+  })
+
   it('ships catalog, auto scroll, TTS and shelf entries inside reading mode', async () => {
     const source = await browseSource()
     expect(source).toContain('class="web-reading-catalog"')

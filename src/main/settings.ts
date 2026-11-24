@@ -329,6 +329,8 @@ export function normalizeWebReadingPrefs(value: unknown): WebReadingPrefs {  con
   return {
     autoPage: typeof prefs.autoPage === 'boolean' ? prefs.autoPage : DEFAULT_WEB_READING_PREFS.autoPage,
     autoSpeed: Math.round(readFiniteClamped(prefs.autoSpeed, 1, 5, DEFAULT_WEB_READING_PREFS.autoSpeed)),
+    // 只认 1 / 2：旧文件没有这个字段时按单栏，未知值也回单栏。
+    columns: prefs.columns === 2 ? 2 : 1,
   }
 }
 

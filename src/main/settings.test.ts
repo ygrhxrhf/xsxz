@@ -44,6 +44,7 @@ import {
   normalizeCustomOrigin,
   normalizeReaderPrefs,
   normalizeSkin,
+  normalizeWebReadingPrefs,
   normalizeSettingsUpdatePayload,
   normalizeTrustedCustomOrigins,
   resetSettingsCacheForTests,
@@ -197,6 +198,17 @@ describe('settings atomic persistence', () => {
     } finally {
       setAtomicWriteBeforeCommitForTests(null)
     }
+  })
+})
+
+describe('normalizeWebReadingPrefs', () => {
+  it('keeps 1 or 2 columns and falls back to single column for anything else', () => {
+    expect(normalizeWebReadingPrefs({}).columns).toBe(1)
+    expect(normalizeWebReadingPrefs({ columns: 2 }).columns).toBe(2)
+    expect(normalizeWebReadingPrefs({ columns: 3 }).columns).toBe(1)
+    expect(normalizeWebReadingPrefs({ columns: '2' }).columns).toBe(1)
+    // 旧文件只有自动滚动偏好：补默认而不丢已有值
+    expect(normalizeWebReadingPrefs({ autoPage: false, autoSpeed: 5 })).toEqual({ autoPage: false, autoSpeed: 5, columns: 1 })
   })
 })
 

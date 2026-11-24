@@ -616,6 +616,8 @@ export interface WebReadingPrefs {
   autoPage: boolean
   /** 自动滚动/自动翻页速度档，1–5。 */
   autoSpeed: number
+  /** 翻页模式下的版面：1 单栏、2 双栏（左右两页，像翻开的书）。滚动模式下忽略。 */
+  columns: 1 | 2
 }
 
 /**
@@ -1470,6 +1472,7 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
 export const DEFAULT_WEB_READING_PREFS: WebReadingPrefs = {
   autoPage: true,
   autoSpeed: 3,
+  columns: 1,
 }
 
 /** 缺省直连：不改变任何现存用户的网络行为。 */

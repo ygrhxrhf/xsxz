@@ -6,6 +6,7 @@ import { READER_THEME_COLORS } from '@shared/readerTheme'
 import type { BookListItem, BrowseFavorite, BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, MirrorProgress, PreviewPageKind, ReaderPrefs, WebAnnotation, WebReadingPrefs, WebShelfBook, WebShelfChapter } from '@shared/types'
 import { libraryCoverSrc } from './libraryCard'
 import { adjacentVisualPage, scrollTopForVisualPage, visualPageCount, visualPageIndex, visualPageLabel } from './readerPager'
+import { autoPageIntervalMs, columnPageCount, columnPageForOffset, columnPageIndex, columnScrollLeft } from './readingColumns'
 import { approximateBookRatioFromIndex, clampRatio, paragraphIndexAtViewportCenter, readerScrollBehavior, selectionPopupPosition, shouldAutoHideReaderTools, wheelPageDirection } from './readerHelpers'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
 import { selectionRangeOffsets } from './selectionOffsets'
@@ -94,6 +95,10 @@ let readingToolsLocked = false
 let lastToolActivityAt = Date.now()
 let readingSaveTimer: ReturnType<typeof setTimeout> | null = null
 let readingRestoreTimer: ReturnType<typeof setTimeout> | null = null
+/** 分栏滚动停下后吸回整页的短定时器。 */
+let columnSnapTimer: ReturnType<typeof setTimeout> | null = null
+/** 分栏自动翻页的节拍器。 */
+let autoPageTimer: ReturnType<typeof setTimeout> | null = null
 let readingParagraphIndex = 0
 /** 位置恢复期间不写回，避免把恢复动作当成用户滚动。 */
 let readingRestoring = false
@@ -118,6 +123,8 @@ const readingStyle = computed(() => {
     '--web-outer': colors.outer,
     '--web-font': p.fontFamily === 'serif' ? '"STSong", "Songti SC", "SimSun", serif' : p.fontFamily === 'mono' ? '"Cascadia Mono", "Consolas", monospace' : '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
     '--web-width': p.contentWidth === 'narrow' ? '32em' : p.contentWidth === 'wide' ? '46em' : '38em',
+    // 分栏时版心改由左右留白控制：栏距取两倍留白，翻页步长才恰好等于一屏宽。
+    '--web-col-pad': p.contentWidth === 'narrow' ? 'clamp(40px, 9vw, 120px)' : p.contentWidth === 'wide' ? 'clamp(18px, 3vw, 36px)' : 'clamp(28px, 6vw, 72px)',
     '--web-size': `${p.fontSize}px`,
     '--web-line': String(p.lineHeight),
     '--web-spacing': p.paragraphSpacing === 'compact' ? '0.2em' : p.paragraphSpacing === 'relaxed' ? '0.8em' : '0.45em',
@@ -192,6 +199,8 @@ const inBookFindHits = computed(() => {
     .filter((index) => index >= 0)
 })
 const readingPaged = computed(() => readerPrefs.value.readingMode === 'screen')
+/** 翻页模式下的栏数：1 单栏、2 双栏；滚动模式不分栏。 */
+const readingColumns = computed(() => (readingPaged.value ? webReading.value.columns : 0))
 const readingChapter = computed(() => readingPage.value?.chapter ?? null)
 /** 上一章 / 下一章：阅读页上下文优先，找不到时退回可见网页识别到的链接。 */
 const canPrevChapter = computed(() => Boolean(readingChapter.value?.previous || state.value.previousChapter))
@@ -583,7 +592,9 @@ function restoreProgressDrawer() {
 /** 窗口尺寸变化：网页视图重算边界，阅读模式重算页码。 */
 function onWindowResize() {
   reportBounds()
-  if (readingPage.value) syncReadingPage()
+  if (!readingPage.value) return
+  syncReadingPage()
+  snapColumnPage()
 }
 
 function reportBounds() {
@@ -711,16 +722,92 @@ function activeSectionEl(): HTMLElement | null {
     ?? article.querySelector<HTMLElement>('.web-reading-section')
 }
 
-/** 视口上沿附近是哪一章：连排时章界由滚动位置决定，而不是进场时那一章。 */
+function readingViewportWidth(): number {
+  return Math.max(1, readingViewportEl()?.clientWidth ?? 1)
+}
+
+/** 分栏模式下的总页数：横向内容有几个视口宽。 */
+function readingColumnPageCount(el: HTMLElement): number {
+  return columnPageCount(el.scrollWidth, Math.max(1, el.clientWidth))
+}
+
+/** 把横向滚动吸到整页：分栏排版停在两栏之间会露出半栏文字。 */
+function snapColumnPage(): void {
+  const el = readingViewportEl()
+  if (!el || !readingColumns.value) return
+  const width = Math.max(1, el.clientWidth)
+  const target = columnScrollLeft(columnPageIndex(el.scrollLeft, width), width)
+  if (Math.abs(el.scrollLeft - target) > 1) el.scrollLeft = target
+}
+
+/** 当前屏里阅读顺序最靠前的段落：先左栏，再从上到下。 */
+function columnParagraphIndex(): number {
+  const el = readingViewportEl()
+  const article = activeSectionEl()
+  if (!el || !article) return -1
+  const viewport = el.getBoundingClientRect()
+  const secondColumnFrom = viewport.left + viewport.width / 2
+  let best: { band: number; top: number; index: number } | null = null
+  const paragraphs = [...article.querySelectorAll('p')] as HTMLElement[]
+  paragraphs.forEach((node, index) => {
+    const rect = node.getBoundingClientRect()
+    if (rect.bottom <= viewport.top + 1 || rect.top >= viewport.bottom - 1) return
+    if (rect.right <= viewport.left + 1 || rect.left >= viewport.right - 1) return
+    const band = readingColumns.value === 2 && rect.left >= secondColumnFrom ? 1 : 0
+    const top = Math.max(0, rect.top - viewport.top)
+    if (!best || band < best.band || (band === best.band && top < best.top)) best = { band, top, index }
+  })
+  const index = best?.index ?? -1
+  readingCenterParagraph.value = index
+  return index
+}
+
+/** 当前读到第几段：分栏按屏取，滚动按视口中心取。 */
+function currentReadingAnchor(): number {
+  if (!readingPage.value) return -1
+  if (readingColumns.value) return columnParagraphIndex()
+  if (readingCenterParagraph.value >= 0) return readingCenterParagraph.value
+  return resolveParagraphAnchor()
+}
+
+/** 分栏模式：滚到某一段所在的那一屏。 */
+function scrollToColumnParagraph(index: number, behavior: ScrollBehavior = 'auto'): void {
+  const el = readingViewportEl()
+  if (!el) return
+  const width = Math.max(1, el.clientWidth)
+  const article = activeSectionEl()
+  const target = index >= 0 ? article?.querySelectorAll<HTMLElement>('p')[index] : undefined
+  const articleEl = readingArticleEl()
+  if (!target || !articleEl) {
+    el.scrollTo({ left: 0, behavior })
+    return
+  }
+  const pad = Number.parseFloat(getComputedStyle(articleEl).paddingLeft) || 0
+  const offset = target.getBoundingClientRect().left - el.getBoundingClientRect().left + el.scrollLeft - pad
+  el.scrollTo({ left: columnScrollLeft(columnPageForOffset(offset, width), width), behavior })
+}
+
+/** 当前屏起点附近是哪一章：连排时章界由滚动位置决定，而不是进场时那一章。 */
 function sectionAtViewport(): BrowseReadingPage | null {
   const el = readingViewportEl()
   const article = readingArticleEl()
   if (!el || !article || readingSections.value.length < 1) return readingPage.value
-  const probe = el.getBoundingClientRect().top + Math.min(el.clientHeight * 0.35, 260)
-  let current: HTMLElement | null = article.querySelector<HTMLElement>('.web-reading-section')
-  for (const node of article.querySelectorAll<HTMLElement>('.web-reading-section')) {
-    if (node.getBoundingClientRect().top <= probe) current = node
-    else break
+  const rect = el.getBoundingClientRect()
+  const sections = article.querySelectorAll<HTMLElement>('.web-reading-section')
+  let current: HTMLElement | null = sections[0] ?? null
+  if (readingColumns.value) {
+    // 分栏后章是横向铺开的：看当前屏左侧落在哪一节的横向范围里。
+    const probe = rect.left + Math.min(rect.width * 0.25, 160)
+    for (const node of sections) {
+      if (node.getBoundingClientRect().left <= probe) current = node
+      else break
+    }
+  } else {
+    const probe = rect.top + Math.min(el.clientHeight * 0.35, 260)
+    for (const node of sections) {
+      if (node.getBoundingClientRect().top <= probe) current = node
+      else break
+    }
   }
   const url = current?.dataset.section
   return readingSections.value.find((section) => section.url === url) ?? readingPage.value
@@ -763,13 +850,25 @@ async function appendNextSection(): Promise<void> {
 function syncReadingPage() {
   const el = readingViewportEl()
   if (!el) { readingPageIndex.value = 0; readingPageCount.value = 1; readingRatio.value = 0; return }
+  if (readingColumns.value) {
+    const width = Math.max(1, el.clientWidth)
+    const count = readingColumnPageCount(el)
+    readingPageCount.value = count
+    readingPageIndex.value = Math.min(count - 1, columnPageIndex(el.scrollLeft, width))
+    readingRatio.value = count > 1 ? readingPageIndex.value / (count - 1) : 0
+    return
+  }
   readingPageCount.value = visualPageCount(el.scrollHeight, el.clientHeight)
   readingPageIndex.value = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
   readingRatio.value = clampRatio(el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0)
 }
 
-/** 视口中心最近的段落下标，作为位置记忆的锚点。 */
+/** 视口中心最近的段落下标，作为位置记忆的锚点；分栏时取当前屏最靠前的段落。 */
 function resolveParagraphAnchor(): number {
+  if (readingColumns.value) {
+    const index = columnParagraphIndex()
+    return index >= 0 ? index : 0
+  }
   const el = readingViewportEl()
   const total = readingParagraphs.value.length
   if (!el || total === 0) return 0
@@ -790,6 +889,20 @@ function restoreReadingPosition(position: { paragraphIndex: number; scrollRatio:
   const el = readingViewportEl()
   if (!el) { readingRestoring = false; return }
   readingRestoring = true
+  if (readingColumns.value) {
+    if (position.paragraphIndex >= 0) scrollToColumnParagraph(position.paragraphIndex)
+    else {
+      const count = readingColumnPageCount(el)
+      const page = clampRatio(position.scrollRatio) * Math.max(0, count - 1)
+      el.scrollLeft = columnScrollLeft(Math.round(page), Math.max(1, el.clientWidth))
+    }
+    readingCenterParagraph.value = position.paragraphIndex
+    readingParagraphIndex = position.paragraphIndex
+    syncReadingPage()
+    if (readingRestoreTimer) clearTimeout(readingRestoreTimer)
+    readingRestoreTimer = setTimeout(() => { readingRestoreTimer = null; readingRestoring = false }, 400)
+    return
+  }
   const article = activeSectionEl()
   const paragraphs = article ? [...article.querySelectorAll('p')] : []
   const target = paragraphs[position.paragraphIndex] as HTMLElement | undefined
@@ -831,6 +944,15 @@ function pageByScreen(direction: 1 | -1) {
   const el = readingViewportEl()
   if (!el) return
   const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
+  if (readingColumns.value) {
+    const width = Math.max(1, el.clientWidth)
+    const count = readingColumnPageCount(el)
+    const current = columnPageIndex(el.scrollLeft, width)
+    const next = Math.max(0, Math.min(count - 1, current + direction))
+    el.scrollTo({ left: columnScrollLeft(next, width), behavior })
+    readingPageIndex.value = next
+    return
+  }
   if (readingPaged.value) {
     const count = visualPageCount(el.scrollHeight, el.clientHeight)
     const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
@@ -843,10 +965,19 @@ function pageByScreen(direction: 1 | -1) {
 }
 
 /** 翻页；到本章头尾接着翻章。滚动模式与翻页模式都走真实滚动容器。 */
-function turnReadingPage(delta: number) {
+function turnReadingPage(delta: number, options: { keepAuto?: boolean } = {}) {
   const el = readingViewportEl()
   if (!el) return
-  stopAutoScroll()
+  if (!options.keepAuto) stopAutoScroll()
+  if (readingColumns.value) {
+    const width = Math.max(1, el.clientWidth)
+    const count = readingColumnPageCount(el)
+    const next = columnPageIndex(el.scrollLeft, width) + delta
+    if (next < 0) { void changeChapter('previous'); return }
+    if (next > count - 1) { void changeChapter('next'); return }
+    pageByScreen(delta > 0 ? 1 : -1)
+    return
+  }
   if (readingPaged.value) {
     const count = visualPageCount(el.scrollHeight, el.clientHeight)
     const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
@@ -864,6 +995,14 @@ function turnReadingPage(delta: number) {
 
 function onReadingWheel(event: WheelEvent) {
   if (!readingPaged.value || event.ctrlKey || event.metaKey) return
+  // 分栏是横向的：触控板横扫也当翻页，不再只认纵向滚轮。
+  if (readingColumns.value && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+    if (Math.abs(event.deltaX) < 8) return
+    event.preventDefault()
+    stopAutoScroll()
+    turnReadingPage(event.deltaX > 0 ? 1 : -1)
+    return
+  }
   const direction = wheelPageDirection(event.deltaY)
   if (!direction) return
   event.preventDefault()
@@ -877,13 +1016,20 @@ function onReadingScroll() {
   saveReadingPosition()
   if (selPopup.value) closeSelectionTools()
   maybeAppendNextSection()
+  // 手势/触控板把分栏滚到两栏之间时，停下来后吸回整页。
+  if (readingColumns.value) {
+    if (columnSnapTimer) clearTimeout(columnSnapTimer)
+    columnSnapTimer = setTimeout(() => { columnSnapTimer = null; snapColumnPage() }, 180)
+  }
 }
 
 /** 滚到章末附近就把下一章接上来；超过窗口上限时 appendNextSection 自己丢最旧的一章。 */
 function maybeAppendNextSection(): void {
   const el = readingViewportEl()
   if (!el || appendingSection.value) return
-  if (el.scrollHeight - el.scrollTop - el.clientHeight > 260) return
+  if (readingColumns.value) {
+    if (el.scrollWidth - el.scrollLeft - el.clientWidth > 260) return
+  } else if (el.scrollHeight - el.scrollTop - el.clientHeight > 260) return
   if (!readingTailNext.value) return
   void appendNextSection()
 }
@@ -1170,8 +1316,31 @@ function autoScrollStep(timestamp: number) {
   autoScrollRaf = requestAnimationFrame(autoScrollStep)
 }
 
+function clearAutoPageTimer() {
+  if (autoPageTimer) { clearTimeout(autoPageTimer); autoPageTimer = null }
+}
+
+function autoPageDelay(): number {
+  return autoPageIntervalMs(webReading.value.autoSpeed)
+}
+
+/** 分栏模式没有纵向滚动：按节拍翻一页，章末照旧自动续章。 */
+function startColumnAutoPage() {
+  if (!readingPage.value) return
+  autoScrolling.value = true
+  const tick = (): void => {
+    autoPageTimer = null
+    if (!autoScrolling.value) return
+    turnReadingPage(1, { keepAuto: true })
+    saveReadingPosition()
+    if (autoScrolling.value) autoPageTimer = setTimeout(tick, autoPageDelay())
+  }
+  autoPageTimer = setTimeout(tick, autoPageDelay())
+}
+
 function startAutoScroll() {
   if (!readingPage.value || autoScrolling.value) return
+  if (readingColumns.value) { startColumnAutoPage(); return }
   autoScrolling.value = true
   lastAutoTickAt = 0
   autoScroll.start()
@@ -1179,6 +1348,7 @@ function startAutoScroll() {
 }
 
 function stopAutoScroll() {
+  clearAutoPageTimer()
   if (!autoScrolling.value && autoScrollRaf == null) return
   autoScrolling.value = false
   autoScroll.stop()
@@ -1189,11 +1359,16 @@ function stopAutoScroll() {
 function toggleAutoScroll() {
   if (autoScrolling.value) {
     stopAutoScroll()
-    message.info('已暂停自动滚动')
+    message.info(readingColumns.value ? '已暂停自动翻页' : '已暂停自动滚动')
     return
   }
   startAutoScroll()
-  if (autoScrolling.value) message.info(`自动滚动中（${autoScrollSpeed.value} px/秒，速度 ${webReading.value.autoSpeed}）`)
+  if (!autoScrolling.value) return
+  if (readingColumns.value) {
+    message.info(`自动翻页中（每 ${Math.round(autoPageDelay() / 1000)} 秒一页，速度 ${webReading.value.autoSpeed}）`)
+    return
+  }
+  message.info(`自动滚动中（${autoScrollSpeed.value} px/秒，速度 ${webReading.value.autoSpeed}）`)
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,12 +1377,18 @@ function toggleAutoScroll() {
 
 function scrollToParagraph(index: number) {
   const el = readingViewportEl()
+  if (!el) return
+  const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
+  if (readingColumns.value) {
+    scrollToColumnParagraph(index, behavior)
+    return
+  }
   const article = activeSectionEl()
   const paragraphs = article ? [...article.querySelectorAll('p')] : []
   const target = paragraphs[index] as HTMLElement | undefined
-  if (!el || !target) return
+  if (!target) return
   const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - el.clientHeight * 0.4
-  el.scrollTo({ top: Math.max(0, top), behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true) })
+  el.scrollTo({ top: Math.max(0, top), behavior })
 }
 
 const tts = useTts({
@@ -1369,7 +1550,7 @@ async function switchReadingChapter(url: string, options: { keepAutoScroll?: boo
     scheduleReadingTools()
     await nextTick()
     const el = readingViewportEl()
-    if (el) el.scrollTop = 0
+    if (el) { el.scrollTop = 0; el.scrollLeft = 0 }
     syncReadingPage()
     readingRestoring = false
     const saved = await window.api.browse.getReadingPos(url)
@@ -1453,12 +1634,22 @@ async function addCurrentToShelf() {
 }
 
 function setReaderPref<K extends keyof ReaderPrefs>(key: K, value: ReaderPrefs[K]) {
+  const anchor = currentReadingAnchor()
   readerPrefs.value = { ...readerPrefs.value, [key]: value }
   void window.api.settings.set({ reader: { [key]: value } })
   void nextTick(() => {
-    syncReadingPage()
     const el = readingViewportEl()
-    if (el && readingPaged.value) el.scrollTop = scrollTopForVisualPage(readingPageIndex.value, el.scrollHeight, el.clientHeight)
+    if (!el) return
+    if (readingColumns.value) {
+      // 字号 / 行距变了，栏宽跟着变：按段落锚点重新算在第几页。
+      el.scrollTop = 0
+      scrollToColumnParagraph(anchor)
+      syncReadingPage()
+      return
+    }
+    el.scrollLeft = 0
+    syncReadingPage()
+    if (readingPaged.value) el.scrollTop = scrollTopForVisualPage(readingPageIndex.value, el.scrollHeight, el.clientHeight)
   })
   saveReadingPosition()
 }
@@ -1466,7 +1657,28 @@ function setReaderPref<K extends keyof ReaderPrefs>(key: K, value: ReaderPrefs[K
 function setWebReading<K extends keyof WebReadingPrefs>(key: K, value: WebReadingPrefs[K]) {
   webReading.value = { ...webReading.value, [key]: value }
   void window.api.settings.set({ webReading: { [key]: value } })
-  if (key === 'autoSpeed' && autoScrolling.value) message.info(`自动滚动速度 ${value}`)
+  if (key === 'autoSpeed' && autoScrolling.value) message.info(readingColumns.value ? `自动翻页间隔已调（${Math.round(autoPageDelay() / 1000)} 秒一页）` : `自动滚动速度 ${value}`)
+}
+
+/**
+ * 翻页方式：滚动 / 单栏 / 双栏。
+ * 换栏数时先把当前段落记下来，重排后回到同一段，不让读者丢位置。
+ */
+function setPageLayout(mode: 'scroll' | 'single' | 'double') {
+  if (!readingPage.value) return
+  if (mode === 'scroll') {
+    if (!readingPaged.value) return
+    const anchor = currentReadingAnchor()
+    setReaderPref('readingMode', 'scroll')
+    void nextTick(() => scrollToParagraph(anchor))
+    return
+  }
+  const columns: 1 | 2 = mode === 'double' ? 2 : 1
+  if (readingPaged.value && webReading.value.columns === columns) return
+  const anchor = currentReadingAnchor()
+  if (webReading.value.columns !== columns) setWebReading('columns', columns)
+  if (!readingPaged.value) setReaderPref('readingMode', 'screen')
+  else void nextTick(() => { scrollToColumnParagraph(anchor); syncReadingPage() })
 }
 
 /** 聚焦模式：朗读中跟朗读段，否则跟视口中心段。 */
@@ -2061,7 +2273,7 @@ onUnmounted(() => {
       v-if="readingPage"
       ref="readingStage"
       class="web-reading-stage"
-      :class="{ paged: readingPaged, 'tools-hidden': !readingToolsVisible, 'catalog-open': catalogOpen }"
+      :class="{ paged: readingPaged, 'cols-2': readingColumns === 2, 'tools-hidden': !readingToolsVisible, 'catalog-open': catalogOpen }"
       :style="readingStyle"
       @mousemove="scheduleReadingTools"
       @click.self="readingToolsVisible = !readingToolsVisible"
@@ -2120,9 +2332,13 @@ onUnmounted(() => {
           <button type="button" @click="setReaderPref('fontSize', Math.max(12, readerPrefs.fontSize - 1))">A−</button>
           <strong>{{ readerPrefs.fontSize }}</strong>
           <button type="button" @click="setReaderPref('fontSize', Math.min(36, readerPrefs.fontSize + 1))">A＋</button>
-          <button type="button" :class="{ active: readingPaged }" @click="setReaderPref('readingMode', readingPaged ? 'scroll' : 'screen')">
-            {{ readingPaged ? '翻页模式' : '滚动模式' }}
-          </button>
+        </div>
+        <div class="web-panel-row">
+          <span>翻页</span>
+          <button type="button" :class="{ active: !readingPaged }" @click="setPageLayout('scroll')">滚动</button>
+          <button type="button" :class="{ active: readingPaged && readingColumns === 1 }" @click="setPageLayout('single')">单栏</button>
+          <button type="button" :class="{ active: readingPaged && readingColumns === 2 }" @click="setPageLayout('double')">双栏</button>
+          <em class="web-panel-note">翻页时左右整屏换页；双栏像摊开的书，两页一起翻</em>
         </div>
         <div class="web-panel-row">
           <span>版心</span>
@@ -2211,6 +2427,7 @@ onUnmounted(() => {
       <div
         ref="readingViewport"
         class="web-reading-viewport"
+        :class="{ 'reading-columns': readingColumns > 0, 'reading-columns-1': readingColumns === 1, 'reading-columns-2': readingColumns === 2 }"
         @scroll.passive="onReadingScroll"
         @wheel="onReadingWheel"
         @mouseup="onReadingMouseup"
@@ -2570,6 +2787,7 @@ onUnmounted(() => {
 .web-panel-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .web-panel-row span { width: 36px; font-size: 12px; opacity: 0.7; }
 .web-panel-hint { margin: 0; font-size: 12px; opacity: 0.6; }
+.web-panel-note { flex-basis: 100%; font-size: 11px; font-style: normal; opacity: 0.55; }
 /* AI 面板：文字说明 + 一个主行动，排版沿用 .web-reading-panel 的浮层样式 */
 .web-ai-guide { width: min(460px, calc(100% - 28px)); }
 .web-guide-line { margin: 0; font-size: 13px; line-height: 1.7; opacity: 0.85; }
@@ -2596,6 +2814,17 @@ onUnmounted(() => {
   background: var(--web-paper); color: var(--web-ink);
   font: var(--web-size)/var(--web-line) var(--web-font); white-space: pre-wrap; overflow-wrap: anywhere;
 }
+/* 单栏 / 双栏：正文按栏横向铺开，一屏就是一页。
+   栏距取两倍左右留白，于是每栏步长恰好是「一屏宽 ÷ 栏数」，翻页按屏对齐。 */
+.web-reading-viewport.reading-columns { overflow-x: auto; overflow-y: hidden; }
+.web-reading-viewport.reading-columns .web-reading-article {
+  width: 100%; min-height: 0; height: 100%; margin: 0;
+  padding: 56px var(--web-col-pad) 64px;
+  column-gap: calc(var(--web-col-pad) * 2);
+  column-fill: auto;
+}
+.web-reading-viewport.reading-columns-1 .web-reading-article { column-count: 1; }
+.web-reading-viewport.reading-columns-2 .web-reading-article { column-count: 2; }
 .web-reading-section + .web-reading-section {
   margin-top: 3em;
   padding-top: 2.4em;
