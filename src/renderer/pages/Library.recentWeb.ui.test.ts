@@ -135,21 +135,23 @@ describe('书架里的网页书', () => {
     unmount()
   })
 
-  it('最近在读显示网页书，点开走 open-web-book', async () => {
+  it('最近在读排成一排：最新的排最前，点开网页书走 open-web-book', async () => {
     const { unmount } = await mountLibrary()
-    const recent = document.querySelector('.shelf-continue') as HTMLElement | null
+    const recent = document.querySelector('.shelf-recent') as HTMLElement | null
     expect(recent).not.toBeNull()
-    expect(recent!.textContent).toContain('最近在读 · 网页书')
-    expect(recent!.textContent).toContain('万古神帝')
-    expect(recent!.textContent).toContain('读到第 2 / 2 章')
-    const open = recent!.querySelector('.shelf-continue-open') as HTMLButtonElement
-    open.click()
+    const cards = [...recent!.querySelectorAll('.shelf-recent-card')] as HTMLElement[]
+    expect(cards).toHaveLength(2)
+    expect(cards[0].classList.contains('is-latest')).toBe(true)
+    expect(cards[0].textContent).toContain('最近在读 · 网页书')
+    expect(cards[0].textContent).toContain('万古神帝')
+    expect(cards[0].textContent).toContain('读到第 2 / 2 章')
+    cards[0].click()
     await flushUi()
     expect(opened).toEqual([webBook.lastChapter.url])
     unmount()
   })
 
-  it('读得比本地书早时，最近在读仍显示本地书', async () => {
+  it('读得比本地书早时，排在最前的是本地书，但两本都还在排里', async () => {
     installApi()
     const older: WebShelfBook = { ...webBook, progress: { ...webBook.progress!, updatedAt: '2026-11-10T08:00:00.000Z' } }
     const api = (window as unknown as { api: Record<string, any> }).api
@@ -162,10 +164,33 @@ describe('书架里的网页书', () => {
     document.body.appendChild(host)
     app.mount(host)
     await flushUi()
-    const recent = document.querySelector('.shelf-continue') as HTMLElement | null
-    expect(recent?.textContent).toContain('书库里的旧书')
-    expect(recent?.textContent).not.toContain('网页书')
+    const cards = [...document.querySelectorAll('.shelf-recent-card')] as HTMLElement[]
+    expect(cards).toHaveLength(2)
+    expect(cards[0].textContent).toContain('书库里的旧书')
+    expect(cards[1].textContent).toContain('万古神帝')
     app.unmount()
     host.remove()
+  })
+
+  it('左右箭头把这一排横向挪动，滚到头不困住页面', async () => {
+    const { unmount } = await mountLibrary()
+    const row = document.querySelector('.shelf-recent-row') as HTMLElement | null
+    expect(row).not.toBeNull()
+    const moves: ScrollToOptions[] = []
+    ;(row as unknown as { scrollBy: (options: ScrollToOptions) => void }).scrollBy = (options) => { moves.push(options) }
+    const arrows = [...document.querySelectorAll('.shelf-recent-arrows button')] as HTMLButtonElement[]
+    expect(arrows).toHaveLength(2)
+    arrows[1].click()
+    arrows[0].click()
+    expect(moves[0]?.left).toBeGreaterThan(0)
+    expect(moves[1]?.left).toBeLessThan(0)
+
+    // jsdom 没有布局：scrollWidth/clientWidth 都是 0，此时滚轮必须放给页面。
+    let prevented = false
+    const wheel = new WheelEvent('wheel', { deltaY: 120, cancelable: true })
+    wheel.preventDefault = () => { prevented = true }
+    row!.dispatchEvent(wheel)
+    expect(prevented).toBe(false)
+    unmount()
   })
 })

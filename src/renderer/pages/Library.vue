@@ -178,14 +178,17 @@ type ContinueItem =
   | { kind: 'library'; book: BookListItem; at: number }
   | { kind: 'web'; book: WebShelfBook; at: number }
 
-interface ContinueView {
+interface RecentView {
   key: string
+  kind: 'library' | 'web'
   title: string
   author: string
   kicker: string
   coverSrc: string
   progress: string
   time: string
+  bookId?: string
+  url?: string
 }
 
 // 网页书架：只存书目、目录快照与阅读位置，正文留在站点上。
@@ -273,44 +276,69 @@ function webChapterCountLabel(book: WebShelfBook): string {
   return book.chapters.length ? `${book.chapters.length} 章` : '目录待识别'
 }
 
-const continueItem = computed<ContinueItem | null>(() => {
+/** 最近在读最多排这么多本：够摊一屏横向滑，也不至于把首屏拖慢。 */
+const RECENT_LIMIT = 20
+
+const recentItems = computed<ContinueItem[]>(() => {
   const local: ContinueItem[] = books.value
     .filter((book) => book.progress?.chapterId)
     .map((book) => ({ kind: 'library', book, at: Date.parse(book.progress?.updatedAt || '') || 0 }))
   const web: ContinueItem[] = webBooks.value
     .filter((book) => book.progress)
     .map((book) => ({ kind: 'web', book, at: Date.parse(book.progress?.updatedAt || '') || 0 }))
-  const all = [...local, ...web]
-  if (!all.length) return null
-  return all.sort((a, b) => b.at - a.at)[0] ?? null
+  return [...local, ...web].sort((a, b) => b.at - a.at).slice(0, RECENT_LIMIT)
 })
 
-const continueView = computed<ContinueView | null>(() => {
-  const item = continueItem.value
-  if (!item) return null
+const recentViews = computed<RecentView[]>(() => recentItems.value.map((item) => {
   if (item.kind === 'library') {
     const book = item.book
     return {
-      key: book.id,
+      key: `library-${book.id}`,
+      kind: 'library',
       title: book.title,
       author: book.author || '未知作者',
       kicker: '最近在读',
       coverSrc: coverImgSrc(book) || '',
       progress: fmtProgress(book),
       time: fmtProgressTime(book),
+      bookId: book.id,
     }
   }
   const book = item.book
   return {
-    key: book.id,
+    key: `web-${book.id}`,
+    kind: 'web',
     title: book.title,
     author: book.author || book.host,
     kicker: '最近在读 · 网页书',
     coverSrc: book.coverUrl || '',
     progress: webProgressLabel(book),
     time: '',
+    url: book.lastChapter.url || book.catalogUrl,
   }
-})
+}))
+
+/** 横向一排「最近在读」：箭头把这一排左右挪一屏多一点。 */
+const recentRow = ref<HTMLElement | null>(null)
+
+function scrollRecent(direction: 1 | -1): void {
+  const el = recentRow.value
+  if (!el) return
+  el.scrollBy({ left: direction * Math.max(280, el.clientWidth * 0.8), behavior: 'smooth' })
+}
+
+/** 鼠标滚轮竖着滚时，让这一排横着走；滚到头就还给页面，不把读者困在条里。 */
+function onRecentWheel(event: WheelEvent): void {
+  const el = recentRow.value
+  if (!el) return
+  if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return
+  if (Math.abs(event.deltaY) < 2) return
+  const max = el.scrollWidth - el.clientWidth
+  if (max <= 1) return
+  if ((event.deltaY < 0 && el.scrollLeft <= 0) || (event.deltaY > 0 && el.scrollLeft >= max - 1)) return
+  event.preventDefault()
+  el.scrollLeft = Math.max(0, Math.min(max, el.scrollLeft + event.deltaY))
+}
 
 const initialLoading = computed(() => loading.value && books.value.length === 0)
 const loadError = ref('')
@@ -1132,11 +1160,17 @@ function openDuplicateBook(bookId: string) {
   emit('open-book', bookId)
 }
 
+function openRecentItem(item: RecentView) {
+  if (item.kind === 'library') {
+    if (item.bookId) emit('open-book', item.bookId)
+    return
+  }
+  if (item.url) emit('open-web-book', item.url)
+}
+
 function continueReading() {
-  const item = continueItem.value
-  if (!item) return
-  if (item.kind === 'library') emit('open-book', item.book.id)
-  else continueWebBook(item.book)
+  const first = recentViews.value[0]
+  if (first) openRecentItem(first)
 }
 
 async function refreshRecap() {
@@ -1238,10 +1272,10 @@ onUnmounted(() => {
         </span>
         <span v-if="checkAllStatus" class="checkall-status">{{ checkAllStatus }}</span>
         <n-button
-          v-if="continueView"
+          v-if="recentViews.length"
           class="shelf-action"
           type="primary"
-          :title="`继续读《${continueView.title}》`"
+          :title="`继续读《${recentViews[0].title}》`"
           @click="continueReading"
         >
           继续读
@@ -1373,22 +1407,39 @@ onUnmounted(() => {
 
     <template v-else>
       <p v-if="loadError" class="library-inline-error" role="alert">{{ loadError }}</p>
-      <section v-if="continueView && !hasActiveFilter" class="shelf-continue">
-        <button class="shelf-continue-open" type="button" :title="`继续读《${continueView.title}》`" @click="continueReading">
-          <div class="book-cover" :style="coverStyle(continueView.key)" aria-hidden="true">
-            <img v-if="continueView.coverSrc" class="book-cover-img" :src="continueView.coverSrc" alt="" />
-            <span v-else>{{ libraryCoverText(continueView.title) }}</span>
+      <section v-if="recentViews.length && !hasActiveFilter" class="shelf-recent">
+        <div class="shelf-recent-head">
+          <span class="shelf-kicker">最近在读</span>
+          <span class="shelf-recent-count">{{ recentViews.length }} 本</span>
+          <div class="shelf-recent-arrows">
+            <button type="button" aria-label="向左滚动最近在读" title="向左" @click="scrollRecent(-1)">‹</button>
+            <button type="button" aria-label="向右滚动最近在读" title="向右" @click="scrollRecent(1)">›</button>
           </div>
-          <div class="shelf-continue-copy">
-            <div class="shelf-kicker">{{ continueView.kicker }}</div>
-            <div class="book-title" :title="continueView.title">{{ continueView.title }}</div>
-            <div class="book-author">{{ continueView.author }}</div>
-            <div class="book-progress">
-              {{ continueView.progress }}<template v-if="continueView.time"> · {{ continueView.time }}</template>
+        </div>
+        <div ref="recentRow" class="shelf-recent-row" role="list" aria-label="最近在读" @wheel="onRecentWheel">
+          <button
+            v-for="(item, index) in recentViews"
+            :key="item.key"
+            type="button"
+            role="listitem"
+            class="shelf-recent-card"
+            :class="{ 'is-latest': index === 0 }"
+            :title="`继续读《${item.title}》`"
+            @click="openRecentItem(item)"
+          >
+            <div class="book-cover" :style="coverStyle(item.key)" aria-hidden="true">
+              <img v-if="item.coverSrc" class="book-cover-img" :src="item.coverSrc" alt="" />
+              <span v-else>{{ libraryCoverText(item.title) }}</span>
             </div>
-          </div>
-          <span class="shelf-continue-cta" aria-hidden="true">继续阅读<i>›</i></span>
-        </button>
+            <div class="shelf-recent-copy">
+              <div class="shelf-kicker">{{ item.kicker }}</div>
+              <div class="book-title" :title="item.title">{{ item.title }}</div>
+              <div class="book-author" :title="item.author">{{ item.author }}</div>
+              <div class="book-progress">{{ item.progress }}</div>
+              <div v-if="item.time" class="book-progress-time">{{ item.time }}</div>
+            </div>
+          </button>
+        </div>
       </section>
       <div v-if="visibleBooks.length" class="lib-list-head">
         <span class="lib-count">{{ visibleBooks.length }} 本书</span>
@@ -2071,49 +2122,108 @@ onUnmounted(() => {
   gap: 6px;
 }
 
-.shelf-continue {
+/* 最近在读：一排横向卡片，竖着滚的鼠标滚轮也能让它左右走，箭头挪一屏多一点。 */
+.shelf-recent {
   margin-bottom: var(--space-6);
 }
 
-/* 「继续读」是本页第一行动：给它一层极淡的纸纹底和左侧色条，区别于普通书卡。 */
-.shelf-continue-open {
+.shelf-recent-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.shelf-recent-count {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.shelf-recent-arrows {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.shelf-recent-arrows button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color var(--motion-duration) var(--motion-easing), color var(--motion-duration) var(--motion-easing);
+}
+
+.shelf-recent-arrows button:hover {
+  border-color: var(--hover-line);
+  color: var(--text-primary);
+}
+
+.shelf-recent-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 2px 8px;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.shelf-recent-row::-webkit-scrollbar {
+  height: 0;
+}
+
+.shelf-recent-card {
   position: relative;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: var(--space-4);
-  width: min(720px, 100%);
-  overflow: hidden;
+  gap: 12px;
+  width: 268px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  padding: var(--space-4) var(--space-6) var(--space-4) var(--space-4);
-  color: inherit;
   background:
-    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--focus) 7%, transparent), transparent 62%),
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--focus) 6%, transparent), transparent 62%),
     var(--surface-1);
+  color: inherit;
   text-align: left;
   cursor: pointer;
+  scroll-snap-align: start;
   box-shadow: var(--shadow-card);
   transition: border-color var(--motion-duration) var(--motion-easing), box-shadow var(--motion-duration) var(--motion-easing), transform var(--motion-duration) var(--motion-easing);
 }
 
-/* 左侧那条竖向赭红细线：暗示「从这里接着读」。 */
-.shelf-continue-open::before {
+/* 最新读的那本给一条赭红竖线：一眼看出「从这里接着读」。 */
+.shelf-recent-card.is-latest::before {
   content: '';
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
   width: 3px;
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
   background: linear-gradient(to bottom, var(--focus), color-mix(in srgb, var(--focus) 35%, transparent));
 }
 
-.shelf-continue-open:hover {
+.shelf-recent-card:hover {
   border-color: var(--card-hover-border);
   box-shadow: var(--card-hover-shadow);
   transform: translateY(-1px);
 }
 
-.shelf-continue-copy {
+.shelf-recent-card .book-cover {
+  width: 72px;
+  height: 100px;
+  align-self: center;
+}
+
+.shelf-recent-copy {
   min-width: 0;
   flex: 1;
   display: flex;
@@ -2121,23 +2231,16 @@ onUnmounted(() => {
   gap: 2px;
 }
 
-/* CTA 做成胶囊按钮，不再是孤零零一行文字。 */
-.shelf-continue-cta {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 7px 14px 7px 16px;
-  border-radius: var(--radius-pill);
-  background: var(--focus);
-  color: var(--on-accent);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  box-shadow: 0 1px 2px rgba(28, 25, 21, 0.14);
+.shelf-recent-copy .book-title {
+  font-size: 15px;
+  -webkit-line-clamp: 2;
 }
 
-.shelf-continue-cta i,
+.shelf-recent-copy .book-progress,
+.shelf-recent-copy .book-progress-time {
+  margin-top: 2px;
+}
+
 .book-open-hint i {
   margin-left: 2px;
   font-style: normal;
@@ -2642,9 +2745,6 @@ onUnmounted(() => {
     font-size: 20px;
   }
 
-  .shelf-continue-cta {
-    display: none;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
