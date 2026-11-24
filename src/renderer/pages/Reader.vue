@@ -280,8 +280,13 @@ const pointerInToolbar = ref(false)
 const activeToolPanel = ref<'tts' | 'ai' | 'shortcuts' | null>(null)
 const activeBottomPanel = ref<'catalog' | 'progress' | 'background' | 'font' | 'more' | null>(null)
 
-/** 真实书籍的目录 / 标记抽屉与参考站左侧面板一致：暗底奶油白字，而不是应用浅色抽屉。 */
-const realBookDrawerTheme = computed(() => (isRealBook.value ? darkTheme : undefined))
+/**
+ * 目录 / 标记抽屉与参考站左侧面板一致：暗底奶油白字。
+ * 关键是不能只在真实书籍里给 darkTheme：下面那组 theme-overrides 是无条件生效的，
+ * 经典模式下 theme 为 undefined 时抽屉照样被刷成近黑底，可文字还是浅色主题那套深灰，
+ * 目录里除了当前章几乎整片看不清。所以抽屉恒用暗色主题。
+ */
+const realBookDrawerTheme = computed(() => darkTheme)
 const realBookDrawerThemeOverrides = {
   common: {
     bodyColor: 'rgba(24, 28, 25, 0.96)',
@@ -3259,6 +3264,24 @@ const {
   clearChat,
 } = assistant
 
+/**
+ * 打开「聊书」后把抽屉滚到最底：抽屉内容比窗口高，输入框在对话末尾，
+ * 不滚就得先往下翻半屏才找得到在哪里提问。
+ */
+async function pinChatToBottom() {
+  await nextTick()
+  // 真正会滚的是 .n-drawer-body-content-wrapper（body 自己是 overflow:hidden），
+  // 不写死类名：往上找第一个真能滚的祖先。
+  let el = document.querySelector('.chat-input-row')?.parentElement ?? null
+  while (el && el !== document.body) {
+    if (el.scrollHeight > el.clientHeight + 4 && getComputedStyle(el).overflowY !== 'visible') break
+    el = el.parentElement
+  }
+  if (el && el !== document.body) el.scrollTop = el.scrollHeight
+}
+watch(showAiAssistant, (open) => { if (open) void pinChatToBottom() })
+watch(aiAssistantTab, (tab) => { if (tab === 'qa' && showAiAssistant.value) void pinChatToBottom() })
+
 watch(
   [fontSize, lineHeight, theme, fontFamily, bookFontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, showInlineNotes, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
   () => {
@@ -3505,7 +3528,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="readerRootRef" :class="['reader-wrap', { 'immersive-locked': immersiveMode === 'locked' }]" :style="readerThemeStyle" @focusin="onReaderFocusIn">
+  <div ref="readerRootRef" :class="['reader-wrap', { 'immersive-locked': immersiveMode === 'locked', 'drawer-open': showDrawer }]" :style="readerThemeStyle" @focusin="onReaderFocusIn">
     <!-- No book selected -->
     <div v-if="!book" class="page placeholder">
       <h2>阅读</h2>
@@ -3549,6 +3572,7 @@ onUnmounted(() => {
           <span class="tool-button tool-text" role="status" data-reader-dl="progress">已下 {{ downloadProgress!.done }} / {{ downloadProgress!.total }} 章</span>
           <button class="tool-button tool-text" type="button" data-reader-dl="cancel" @click="cancelReaderDownload">取消</button>
         </template>
+        <span class="toolbar-sep" aria-hidden="true"></span>
         <button class="tool-button tool-text" type="button" title="设置" aria-label="设置" @click="emit('go-settings')">设置</button>
         <button class="tool-button tool-text" type="button" title="浏览" aria-label="浏览" @click="emit('go-browse')">浏览</button>
         <button class="tool-button tool-button-offstage" title="快捷键说明" aria-label="快捷键说明" @click="toggleToolPanel('shortcuts')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M7 10h1M10 10h1M13 10h1M16 10h1M7 14h7M16 14h1"/></svg></button>
@@ -3632,7 +3656,6 @@ onUnmounted(() => {
           <p class="reader-plate-meta">
             <span v-if="currentChapterIndex >= 0">第 {{ currentChapterIndex + 1 }} / {{ chapters.length }} 章</span>
           </p>
-          <p v-if="currentChapter?.title" class="reader-plate-chapter">{{ currentChapter.title }}</p>
         </aside>
         <div class="reader-body" :class="{ 'reader-body-paged': pagedView, 'reader-body-realbook': isRealBook }">
         <div v-if="bookView === 'classic'" class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentZoneMouseup">
@@ -3659,7 +3682,7 @@ onUnmounted(() => {
               <p
                 :data-p="i"
                 :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: paras.length }) }]"
-              ><template v-for="(s, j) in segs" :key="j"><span v-if="s.noteId" class="classic-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="openInlineNoteEditor(s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="openInlineNoteEditor(s.noteId)" @keydown.space.stop.prevent="openInlineNoteEditor(s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)">从此段朗读</button></p>
+              ><template v-for="(s, j) in segs" :key="j"><span v-if="s.noteId" class="classic-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="openInlineNoteEditor(s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="openInlineNoteEditor(s.noteId)" @keydown.space.stop.prevent="openInlineNoteEditor(s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><span v-if="ttsSupported && chapterReady" class="para-tts-zone" aria-hidden="true"></span><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3l4-3.2v11.4l-4-3.2H4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18 6a8.5 8.5 0 0 1 0 12"/></svg><span class="para-tts-label">从此段朗读</span></button></p>
               <aside
                 v-for="note in classicInlineNotes.get(i) ?? []"
                 :key="note.id"
@@ -3835,7 +3858,7 @@ onUnmounted(() => {
             </template>
             <template v-else-if="activeBottomPanel === 'background'">
               <strong>背景</strong>
-              <div class="option-grid four"><button v-for="item in [{v:'paper',l:'纸白'},{v:'sepia',l:'暖黄'},{v:'gray',l:'柔灰'},{v:'night',l:'夜间'}]" :key="item.v" :class="{ active: theme === item.v }" @click="theme = item.v as ReaderTheme">{{ item.l }}</button></div>
+              <div class="option-grid four theme-swatches"><button v-for="item in [{v:'paper',l:'纸白'},{v:'sepia',l:'暖黄'},{v:'gray',l:'柔灰'},{v:'night',l:'夜间'}]" :key="item.v" :class="[{ active: theme === item.v }, `swatch-${item.v}`]" @click="theme = item.v as ReaderTheme">{{ item.l }}</button></div>
               <div class="control-label">屏幕压暗 {{ dim > 0 ? `${dim}%` : '关' }}</div>
               <n-slider v-model:value="dim" :min="0" :max="70" :step="5" :format-tooltip="(v: number) => (v > 0 ? `压暗 ${v}%` : '不压暗')" />
               <div class="control-label">夜间想更暗时拉高；只压暗正文区，导航箭头与页码不受影响</div>
@@ -4152,47 +4175,6 @@ onUnmounted(() => {
             结果已生成，但未能保存到书库。
             <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantSaveBusy" @click="retryAssistantSave">重试保存</n-button>
           </div>
-          <section class="ai-reading-desk" aria-label="AI 阅读工作台">
-            <div class="ai-reading-desk__title">
-              <strong>现在可以做什么</strong>
-              <span>先选任务，再由你决定是否调用模型。</span>
-            </div>
-            <div class="ai-reading-desk__actions">
-              <button type="button" @click="aiAssistantTab = 'recap'"><strong>接着读</strong><span>{{ recapText ? '查看已保存前情' : '整理读到这里的剧情' }}</span></button>
-              <button type="button" @click="aiAssistantTab = 'memory'"><strong>找人物与伏笔</strong><span>{{ memoryData ? `${memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length} 条本地记忆` : '建立已读剧情记忆' }}</span></button>
-              <button type="button" @click="aiAssistantTab = 'qa'"><strong>带依据地问</strong><span>回答可跳回已读原文</span></button>
-              <button type="button" @click="aiAssistantTab = 'notes'"><strong>记住本章</strong><span>{{ currentChapterNote ? '已有笔记，可继续修改' : '生成或手写本章笔记' }}</span></button>
-            </div>
-          </section>
-          <div class="ai-budget-status">
-            <strong>读完一章后整理</strong>
-            <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
-              <n-radio-button value="manual">手动</n-radio-button>
-              <n-radio-button value="ask">提醒我</n-radio-button>
-              <n-radio-button value="auto">自动</n-radio-button>
-            </n-radio-group>
-            <div class="subtle">读到章节末尾再换章时上报排队；本章不足一屏、翻页即到底的短章同样算读完。自动模式会调用模型并消耗你的 API 额度，关窗、切书后主进程接着跑。</div>
-            <div v-if="follow" class="subtle">
-              <span v-if="follow.queuedChapters">待整理 {{ follow.queuedChapters }} 章。</span>
-              <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章<span v-if="follow.uptoChapterTitle">，到「{{ follow.uptoChapterTitle }}」</span>。</span>
-              <span v-if="follow.running">正在整理，跑完当前章节才让路。</span>
-              <span v-else-if="follow.paused">已暂停：{{ follow.pauseReason || '达到单次章数上限' }}。</span>
-              <span v-if="follow.failed">上次失败：{{ follow.failed.message }}。</span>
-              <span>本轮累计 {{ follow.calls }} 次调用、约 {{ follow.estimatedTokens }} tokens（估算，不计算金额）。</span>
-            </div>
-            <div v-if="follow?.mode === 'auto' && !autoFollowEnabled" class="subtle">
-              设置页的「读完一章自动整理」总开关是关的，所以不会自己跑；点「现在整理」可以手动跑一轮。
-            </div>
-            <n-space>
-              <n-button size="small" :disabled="!follow?.queuedChapters" @click="runFollowNow">{{ follow?.paused ? '继续整理' : '现在整理' }}</n-button>
-              <n-button v-if="follow && follow.mode !== 'manual'" size="small" @click="stopFollowAuto">停止自动</n-button>
-            </n-space>
-            <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens；未报告的用量不计入 token 总数。不计算金额。</div>
-            <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
-          </div>
-          <div v-if="autoBudget" class="subtle">
-            本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens（已含排队预留 {{ autoBudget.reservedTokens }}）；达到上限会暂停自动任务，实际费用以服务商账单为准。
-          </div>
           <n-tabs v-model:value="aiAssistantTab" type="line" animated>
             <n-tab-pane name="recap" tab="前情">
               <section v-if="resumeCardView?.available" class="ai-budget-status">
@@ -4480,6 +4462,50 @@ onUnmounted(() => {
               </n-space>
             </n-tab-pane>
           </n-tabs>
+
+          <!-- 任务是主体，参数是背景：任务入口放在页签里，整理开关 / 配额这类设置挪到页签之后，
+               否则从「聊书」进来第一屏全是配额和状态，提问要滚半屏才看得见。 -->
+          <section class="ai-reading-desk" aria-label="AI 阅读工作台">
+            <div class="ai-reading-desk__title">
+              <strong>现在可以做什么</strong>
+              <span>先选任务，再由你决定是否调用模型。</span>
+            </div>
+            <div class="ai-reading-desk__actions">
+              <button type="button" @click="aiAssistantTab = 'recap'"><strong>接着读</strong><span>{{ recapText ? '查看已保存前情' : '整理读到这里的剧情' }}</span></button>
+              <button type="button" @click="aiAssistantTab = 'memory'"><strong>找人物与伏笔</strong><span>{{ memoryData ? `${memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length} 条本地记忆` : '建立已读剧情记忆' }}</span></button>
+              <button type="button" @click="aiAssistantTab = 'qa'"><strong>带依据地问</strong><span>回答可跳回已读原文</span></button>
+              <button type="button" @click="aiAssistantTab = 'notes'"><strong>记住本章</strong><span>{{ currentChapterNote ? '已有笔记，可继续修改' : '生成或手写本章笔记' }}</span></button>
+            </div>
+          </section>
+          <div class="ai-budget-status">
+            <strong>读完一章后整理</strong>
+            <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
+              <n-radio-button value="manual">手动</n-radio-button>
+              <n-radio-button value="ask">提醒我</n-radio-button>
+              <n-radio-button value="auto">自动</n-radio-button>
+            </n-radio-group>
+            <div class="subtle">读到章节末尾再换章时上报排队；本章不足一屏、翻页即到底的短章同样算读完。自动模式会调用模型并消耗你的 API 额度，关窗、切书后主进程接着跑。</div>
+            <div v-if="follow" class="subtle">
+              <span v-if="follow.queuedChapters">待整理 {{ follow.queuedChapters }} 章。</span>
+              <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章<span v-if="follow.uptoChapterTitle">，到「{{ follow.uptoChapterTitle }}」</span>。</span>
+              <span v-if="follow.running">正在整理，跑完当前章节才让路。</span>
+              <span v-else-if="follow.paused">已暂停：{{ follow.pauseReason || '达到单次章数上限' }}。</span>
+              <span v-if="follow.failed">上次失败：{{ follow.failed.message }}。</span>
+              <span>本轮累计 {{ follow.calls }} 次调用、约 {{ follow.estimatedTokens }} tokens（估算，不计算金额）。</span>
+            </div>
+            <div v-if="follow?.mode === 'auto' && !autoFollowEnabled" class="subtle">
+              设置页的「读完一章自动整理」总开关是关的，所以不会自己跑；点「现在整理」可以手动跑一轮。
+            </div>
+            <n-space>
+              <n-button size="small" :disabled="!follow?.queuedChapters" @click="runFollowNow">{{ follow?.paused ? '继续整理' : '现在整理' }}</n-button>
+              <n-button v-if="follow && follow.mode !== 'manual'" size="small" @click="stopFollowAuto">停止自动</n-button>
+            </n-space>
+            <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens；未报告的用量不计入 token 总数。不计算金额。</div>
+            <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
+          </div>
+          <div v-if="autoBudget" class="subtle">
+            本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens（已含排队预留 {{ autoBudget.reservedTokens }}）；达到上限会暂停自动任务，实际费用以服务商账单为准。
+          </div>
           <template #footer>
             <n-button v-if="recapLoading && aiAssistantTab === 'recap'" type="warning" @click="stopRecap">停止生成</n-button>
           </template>
@@ -4771,6 +4797,8 @@ onUnmounted(() => {
   background: var(--reader-paper);
   color: var(--reader-paper-text);
 }
+
+.reader-content::-webkit-scrollbar { width: 0; height: 0; }
 
 .ch-title {
   /* 书页版式的章名：小一号、靠左、弱色，不抢正文 */
@@ -5116,8 +5144,10 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
+/* 选中页签不再刷成实心白药丸：浅色主题下 --r-bar-bg 是白色，可抽屉在深色皮肤 / 真实书籍里是暗底，
+   奶油白字落在白底上对比度只有 1.1:1（实测）。改用当前字色的半透明底色，浅底深字、暗底浅字都成立。 */
 .drawer-tab.active {
-  background: var(--r-bar-bg, #fff);
+  background: color-mix(in srgb, currentColor 14%, transparent);
   font-weight: 600;
 }
 
@@ -5438,7 +5468,15 @@ onUnmounted(() => {
 .chat-input-row {
   display: flex;
   gap: 8px;
+  /* 抽屉内容比窗口高，输入框原来会被推到屏幕下方，用户点「聊书」后找不到在哪输入。
+     吸在抽屉底边，滑到哪都能直接提问。 */
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding: 8px 0;
+  background: var(--card);
 }
+
 
 .reader-toolbar {
   position: absolute;
@@ -5483,6 +5521,15 @@ onUnmounted(() => {
   padding: 0;
   border: 0;
   overflow: hidden;
+}
+
+/* 目录 / 标记抽屉是 teleport 到 body 的浮层，它自己的 z-index 是 auto，而阅读器顶栏在应用栈里是 30，
+   于是抽屉展开时「残经 / 书架 / 搜索 / 标记 / 地图」会浮在暗色抽屉上面。抽屉本来就盖住了那块区域，
+   开抽屉时直接把顶栏收掉，比给三层栈抢 z-index 稳。 */
+.reader-wrap.drawer-open .reader-toolbar {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* 真实书籍的沉浸式 chrome：页面上不摆应用顶栏，工具入口全在底栏与书页里。
@@ -5536,7 +5583,9 @@ onUnmounted(() => {
 
 .reader-plate-title {
   margin: 0;
-  color: color-mix(in srgb, var(--reader-paper-text) 42%, transparent);
+  /* 26%/42% 在纸色底上几乎看不见，可“读到第几章”是读者真的想知道的信息。
+     提亮到能读，但仍然比正文弱一档，不抢注意力。 */
+  color: color-mix(in srgb, var(--reader-paper-text) 66%, transparent);
   font-family: var(--font-serif);
   font-size: 15px;
   font-weight: 600;
@@ -5546,17 +5595,11 @@ onUnmounted(() => {
 
 .reader-plate-meta {
   margin: 6px 0 0;
-  color: color-mix(in srgb, var(--reader-paper-text) 26%, transparent);
+  color: color-mix(in srgb, var(--reader-paper-text) 50%, transparent);
   font-size: 11px;
   letter-spacing: 0.08em;
 }
 
-.reader-plate-chapter {
-  margin: 3px 0 0;
-  color: color-mix(in srgb, var(--reader-paper-text) 22%, transparent);
-  font-size: 11.5px;
-  line-height: 1.5;
-}
 .reader-float-back svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 
 .reader-toolbar.reader-toolbar-realbook .real-book-page-label {
@@ -5587,6 +5630,8 @@ onUnmounted(() => {
   transform: translateX(-50%) translateY(8px);
 }
 .toolbar-gap { flex: 1 1 auto; min-width: 8px; }
+/* 顶栏分组竖线：工具动作 | 设置 / 浏览 / 快捷键（和网页阅读模式同一条分隔线）。 */
+.toolbar-sep { width: 1px; height: 16px; margin: 0 6px; background: color-mix(in srgb, var(--text) 14%, transparent); }
 .tool-button.tool-text { width: auto; flex-basis: auto; padding: 0 10px; font: inherit; font-size: 13px; }
 /* 图标 + 文字：新用户光看图标认不出「搜索 / 标记 / 朗读 / AI」，补上文字标签。 */
 .tool-button.tool-icon-text {
@@ -5683,6 +5728,17 @@ onUnmounted(() => {
   backdrop-filter: blur(14px) saturate(0.82);
   color: rgba(244, 235, 211, 0.82);
 }
+/* 目录/进度/背景/字体/批注：图标下面补一行小字。只留图形时新用户得把鼠标移上去才知道每个按钮干什么，
+   悬浮提示在首次使用和触屏场景都指望不上（顶栏「搜索/标记/朗读/AI」已按同样理由加了字）。 */
+.reader-bottombar:not(.is-realbook) .bottom-button {
+  width: auto; min-width: 46px; height: auto; padding: 5px 7px; gap: 3px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.reader-bottombar:not(.is-realbook) .bottom-button-text {
+  position: static; width: auto; height: auto; overflow: visible; clip: auto; clip-path: none;
+  font-size: 10px; line-height: 1; letter-spacing: 0.04em; opacity: 0.78;
+}
+
 .bottom-button {
   position: relative; display: grid; place-items: center;
   width: 34px; height: 34px; min-width: 0; min-height: 0; padding: 0;
@@ -5884,8 +5940,11 @@ onUnmounted(() => {
   background: rgba(244, 235, 211, 0.14);
 }
 .bottom-panel {
-  position: absolute; top: 50%; right: calc(100% + 12px); width: min(390px, calc(100vw - 96px));
-  max-height: min(440px, 70vh); transform: translateY(-50%); overflow-y: auto; display: flex;
+  /* 向上展开：原先 top:50% + translateY(-50%) 把整个面板居中到底栏上，底栏贴着窗口底边时
+     面板下沿会跑出屏幕（440 高面板实测出屏 177px），「字号 / 行距 / 主题 / 恢复默认」全在屏幕外。
+     改成把面板底边钉在底栏上沿，高度仍由 max-height 控制。 */
+  position: absolute; bottom: calc(100% + 12px); right: calc(100% + 12px); width: min(390px, calc(100vw - 96px));
+  max-height: min(440px, 70vh); overflow-y: auto; display: flex;
   flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--r-line);
   border-radius: var(--radius-overlay); background: var(--popover-bg); box-shadow: var(--shadow-overlay);
   /* 面板是深色底栏的子节点，会继承底栏的奶油白字色；面板自己刷的是浅色浮层底，
@@ -5916,6 +5975,8 @@ onUnmounted(() => {
 .reader-progress-row.panel { height: 6px; overflow: hidden; background: var(--r-surface); }
 
 .reader-content {
+  /* 纸页上不长浏览器滚动条：滚动位置另有底部那条细进度线，原生滚动条会穿破“纸”的观感。 */
+  scrollbar-width: none;
   position: relative;
   min-height: 0;
   width: min(100%, 38em);
@@ -5953,18 +6014,23 @@ onUnmounted(() => {
 
 .reader-page-indicator {
   /* 挂在 .reader-body（不滚动的定位上下文）上，不随正文滚动走掉。
-     居中放在底边：翻页改由点按正文左右区完成，底边不再占按钮位。 */
+     原来 bottom:14px 落在纸页下沿外面、浮在桌面上，像贴歪的标签；
+     提到 34px 落进纸内下边距，颜色改用纸面字色，看着是页脚而不是外挂。 */
   position: absolute;
   z-index: 26;
   right: 50%;
   transform: translateX(50%);
-  bottom: 14px;
-  padding: 2px 8px;
+  /* 34px 是相对 .reader-body 量的，它比纸页底边低约 10px，页码于是半个身子挂在纸外（实测 749 > 739）。 */
+  bottom: 46px;
+  padding: 1px 10px;
   border-radius: 999px;
   pointer-events: none;
-  color: var(--r-muted);
-  background: color-mix(in srgb, var(--reader-paper) 82%, transparent);
+  color: color-mix(in srgb, var(--reader-paper-text) 46%, transparent);
+  /* 页码是浮在滚动正文上的：给一层纸色底，压在段落上时也像个“页码钤印”，不像错位的字。 */
+  background: color-mix(in srgb, var(--reader-paper) 86%, transparent);
+  backdrop-filter: blur(2px);
   font-size: 12px;
+  letter-spacing: 0.04em;
 }
 
 .reader-progress-track {
@@ -6166,8 +6232,18 @@ onUnmounted(() => {
 .large-chapter .reader-gap.bottom { margin-bottom: var(--paragraph-spacing, .45em); }
 .para-tts-start {
   position: absolute;
-  top: 0;
-  right: 0;
+  /* 不再「鼠标扫过整段就弹」，也不再落在字上：原先钉在段落右上角，
+     正好压住第一行的末尾几个字（实测截图里「第 7 段的」被盖掉）。
+     现在挂在版心右侧的留白里，垂直居中于这一段，像页边的旁注。 */
+  top: 50%;
+  /* 版心右侧只有 60px 留白，54px 宽的文字胶囊放不进去，会压掉行尾十几个字；
+     改成留白里的一枚 28px 图标，悬浮提示给全称。 */
+  right: -40px;
+  width: 28px; height: 28px; padding: 0;
+  display: grid; place-items: center;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
   padding: 2px 6px;
   border: 1px solid var(--r-line);
   border-radius: var(--radius-control);
@@ -6180,8 +6256,18 @@ onUnmounted(() => {
   cursor: pointer;
   transition: opacity var(--motion-duration) var(--motion-easing), background var(--motion-duration) var(--motion-easing);
 }
-.para:hover .para-tts-start, .para-tts-start:focus-visible { opacity: 1; }
-.para-tts-start:hover { background: var(--r-hover); }
+.para-tts-start svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.para-tts-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.para-tts-zone {
+  position: absolute;
+  /* 热区跟着按钮一起挪到右侧留白：整段高度都能触发，但永远不盖字。 */
+  top: 0;
+  bottom: 0;
+  right: -60px;
+  width: 58px;
+}
+.para-tts-zone:hover + .para-tts-start, .para-tts-start:focus-visible { opacity: 1; }
 .para-tts-start:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 2px; }
 .shortcut-list { display: grid; gap: 8px; margin: 0; }
 .shortcut-list div { display: grid; gap: 2px; }
@@ -6213,6 +6299,18 @@ onUnmounted(() => {
 .option-grid button:hover { border-color: var(--hover-line); background: var(--surface-3); }
 .option-grid button.active { border-color: var(--active-chapter); background: var(--info-surface); color: var(--text); font-weight: 600; }
 .option-grid button:focus-visible { outline: 2px solid var(--r-focus); outline-offset: 1px; }
+
+/* 背景主题：光写「纸白 / 暖黄 / 柔灰 / 夜间」四个词，点下去才知道长什么样。
+   每个选项前面补一块真实色块（取的就是各主题的纸色）。 */
+.theme-swatches button { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.theme-swatches button::before {
+  content: ''; flex: 0 0 auto; width: 12px; height: 12px; border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+}
+.theme-swatches .swatch-paper::before { background: #f7f3e8; }
+.theme-swatches .swatch-sepia::before { background: #efe1c3; }
+.theme-swatches .swatch-gray::before { background: #dfdfd9; }
+.theme-swatches .swatch-night::before { background: #1b1f22; }
 
 @media (prefers-reduced-motion: reduce) {
   .reader-wrap, .reader-wrap *, .reader-toolbar, .reader-bottombar, .reader-progress-fill { transition: none !important; animation: none !important; scroll-behavior: auto !important; }

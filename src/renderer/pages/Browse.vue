@@ -2289,9 +2289,11 @@ onUnmounted(() => {
           <button type="button" @click="openCatalog">目录</button>
           <button type="button" @click="openInBookFind">搜索</button>
           <button type="button" @click="marksOpen = true">标记</button>
-          <button type="button" :class="{ active: autoScrolling }" @click="toggleAutoScroll">{{ autoScrolling ? '暂停' : '自动' }}</button>
-          <button type="button" :class="{ active: ttsSpeaking }" @click="toggleTts">{{ ttsSpeaking ? '停止' : '听书' }}</button>
-          <button type="button" :class="{ active: webAiPanelOpen }" @click="toggleWebAiPanel">AI</button>
+          <span class="web-chrome-sep" aria-hidden="true"></span>
+          <button type="button" class="secondary" :class="{ active: autoScrolling }" @click="toggleAutoScroll">{{ autoScrolling ? '暂停' : '自动' }}</button>
+          <button type="button" class="secondary" :class="{ active: ttsSpeaking }" @click="toggleTts">{{ ttsSpeaking ? '停止' : '听书' }}</button>
+          <button type="button" class="secondary" :class="{ active: webAiPanelOpen }" @click="toggleWebAiPanel">AI</button>
+          <span class="web-chrome-sep" aria-hidden="true"></span>
           <button type="button" :disabled="shelfSaving" @click="addCurrentToShelf">加书架</button>
           <button type="button" :class="{ active: readingPanel }" @click="readingPanel = !readingPanel; webAiPanelOpen = false">排版</button>
         </div>
@@ -2322,10 +2324,10 @@ onUnmounted(() => {
       <div v-if="readingPanel" class="web-reading-panel" role="dialog" aria-label="阅读排版">
         <div class="web-panel-row">
           <span>背景</span>
-          <button type="button" :class="{ active: readerPrefs.theme === 'paper' }" @click="setReaderPref('theme', 'paper')">纸白</button>
-          <button type="button" :class="{ active: readerPrefs.theme === 'sepia' }" @click="setReaderPref('theme', 'sepia')">暖黄</button>
-          <button type="button" :class="{ active: readerPrefs.theme === 'gray' }" @click="setReaderPref('theme', 'gray')">柔灰</button>
-          <button type="button" :class="{ active: readerPrefs.theme === 'night' }" @click="setReaderPref('theme', 'night')">夜间</button>
+          <button type="button" class="swatch swatch-paper" :class="{ active: readerPrefs.theme === 'paper' }" @click="setReaderPref('theme', 'paper')">纸白</button>
+          <button type="button" class="swatch swatch-sepia" :class="{ active: readerPrefs.theme === 'sepia' }" @click="setReaderPref('theme', 'sepia')">暖黄</button>
+          <button type="button" class="swatch swatch-gray" :class="{ active: readerPrefs.theme === 'gray' }" @click="setReaderPref('theme', 'gray')">柔灰</button>
+          <button type="button" class="swatch swatch-night" :class="{ active: readerPrefs.theme === 'night' }" @click="setReaderPref('theme', 'night')">夜间</button>
         </div>
         <div class="web-panel-row">
           <span>字号</span>
@@ -2758,23 +2760,44 @@ onUnmounted(() => {
   background: var(--web-outer); scrollbar-width: none; overscroll-behavior: contain;
 }
 .web-reading-viewport::-webkit-scrollbar { width: 0; height: 0; }
+/* 与书库阅读器的 .reader-toolbar 同一把尺子：56px 高、24px 内边距、13px 字。
+   两个阅读入口长得像同一家做的，比各写一套更容易维护。 */
 .web-reading-chrome {
-  position: absolute; left: 0; right: 0; z-index: 4;
-  display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 14px;
+  position: absolute; z-index: 4;
+  display: flex; align-items: center; gap: 4px; min-height: 56px; padding: 6px 24px;
   color: var(--web-ink); background: color-mix(in srgb, var(--web-paper) 94%, transparent);
   backdrop-filter: blur(6px); transition: opacity 160ms ease, transform 160ms ease;
 }
-.web-reading-chrome.top { top: 0; border-bottom: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent); }
-.web-reading-chrome.bottom { bottom: 0; justify-content: center; border-top: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent); }
+.web-reading-chrome.top { top: 0; left: 0; right: 0; border-bottom: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent); }
+/* 底栏改成和书库阅读器一样的深色浮层胶囊：同样是「阅读时浮在纸上的控制条」。
+   原来是一条通栏白条，跟另一个阅读器完全不是一套语言。 */
+.web-reading-chrome.bottom {
+  left: 50%; right: auto; transform: translateX(-50%);
+  bottom: 18px; width: max-content; max-width: calc(100% - 32px);
+  min-height: 0; padding: 7px 10px; border: 1px solid rgba(233, 220, 188, 0.16); border-radius: 18px;
+  background: rgba(24, 28, 25, 0.88); color: rgba(244, 235, 211, 0.82);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 245, 216, 0.08);
+  backdrop-filter: blur(14px) saturate(0.82);
+}
 .web-reading-stage.tools-hidden .web-reading-chrome { opacity: 0; pointer-events: none; }
 .web-reading-stage.tools-hidden .web-reading-chrome.top { transform: translateY(-100%); }
-.web-reading-stage.tools-hidden .web-reading-chrome.bottom { transform: translateY(100%); }
+.web-reading-stage.tools-hidden .web-reading-chrome.bottom { transform: translate(-50%, 100%); }
 .web-reading-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .web-chrome-actions { margin-left: auto; display: flex; align-items: center; gap: 2px; }
 .web-reading-chrome button, .web-reading-panel button, .catalog-head button {
-  border: 0; border-radius: 999px; background: transparent; color: inherit;
-  padding: 6px 10px; font-size: 13px; cursor: pointer;
+  border: 0; border-radius: 8px; background: transparent; color: inherit;
+  padding: 6px 10px; font-size: 13px; line-height: 1.4; cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
 }
+.web-reading-chrome button:hover { background: color-mix(in srgb, var(--web-ink) 8%, transparent); }
+.web-reading-chrome.bottom button { color: rgba(244, 235, 211, 0.86); }
+.web-reading-chrome.bottom button:hover { background: rgba(244, 235, 211, 0.12); }
+.web-reading-chrome.bottom button:disabled { color: rgba(244, 235, 211, 0.34); }
+/* 顶栏里的次要动作（自动 / 听书 / 加书架）压一档，别和「目录 / 搜索 / 标记」抢注意力。 */
+.web-reading-chrome.top .web-chrome-actions button.secondary { color: color-mix(in srgb, var(--web-ink) 58%, transparent); }
+.web-reading-chrome.top .web-chrome-actions button.secondary:hover { color: var(--web-ink); }
+/* 分组竖线：导航动作 | 朗读 / 自动 / AI | 书架 / 排版 */
+.web-chrome-sep { width: 1px; height: 16px; margin: 0 6px; background: color-mix(in srgb, var(--web-ink) 14%, transparent); }
 .web-reading-chrome button:hover:not(:disabled), .web-reading-panel button:hover, .catalog-head button:hover { background: color-mix(in srgb, var(--web-ink) 10%, transparent); }
 .web-reading-chrome button.active, .web-reading-panel button.active { background: color-mix(in srgb, var(--web-ink) 18%, transparent); font-weight: 600; }
 .web-reading-chrome button:disabled { opacity: 0.4; cursor: default; }
@@ -2810,7 +2833,7 @@ onUnmounted(() => {
 
 .web-reading-article {
   box-sizing: border-box; width: min(100%, var(--web-width)); margin: 0 auto;
-  min-height: 100%; padding: 56px clamp(28px, 6vw, 72px) 72px;
+  min-height: 100%; padding: 56px clamp(28px, 6vw, 72px) 96px;
   background: var(--web-paper); color: var(--web-ink);
   font: var(--web-size)/var(--web-line) var(--web-font); white-space: pre-wrap; overflow-wrap: anywhere;
 }
@@ -2824,12 +2847,31 @@ onUnmounted(() => {
   column-fill: auto;
 }
 .web-reading-viewport.reading-columns-1 .web-reading-article { column-count: 1; }
+/* 一屏一页时也得守版心：原先 width:100% 把行宽拉到整个窗口（18px 下一行 59 字，远超中文舒服的 30~40 字）。
+   左右内边距按「(窗口宽 - 版心宽) / 2」算，翻页步长仍是一屏宽，所以页对齐不受影响。 */
+.web-reading-viewport.reading-columns-1 .web-reading-article {
+  padding-left: max(24px, calc((100% - var(--web-width)) / 2));
+  padding-right: max(24px, calc((100% - var(--web-width)) / 2));
+}
 .web-reading-viewport.reading-columns-2 .web-reading-article { column-count: 2; }
 .web-reading-section + .web-reading-section {
   margin-top: 3em;
   padding-top: 2.4em;
   border-top: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent);
 }
+/* 背景四个档位的类名（swatch-paper/sepia/gray/night）之前只有类名没有样式，
+   面板上只是四个一样的灰胶囊，点之前看不出纸色。补一枚圆点色卡。 */
+.web-reading-panel .swatch { display: inline-flex; align-items: center; gap: 6px; }
+.web-reading-panel .swatch::before {
+  content: ''; width: 12px; height: 12px; border-radius: 50%;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  flex: 0 0 auto;
+}
+.web-reading-panel .swatch-paper::before { background: #fbf8f0; }
+.web-reading-panel .swatch-sepia::before { background: #f1e2c4; }
+.web-reading-panel .swatch-gray::before { background: #e6e7e3; }
+.web-reading-panel .swatch-night::before { background: #1a211d; }
+
 .web-reading-append-error { color: var(--negative, #d64545); }
 
 .web-reading-article h1 { font-size: 1.35em; font-weight: 600; line-height: 1.5; text-align: center; margin: 0.6em 0 1.6em; }
@@ -3010,7 +3052,17 @@ onUnmounted(() => {
 
 .browse-side .browser-more summary {
   width: 100%;
+  /* 它和上面两颗 secondary 按钮同一列，但原来是 11px 等宽字 + 白底描边，
+     看着就像一个输入框。这里拉回按钮的字形字号並补一个展开箭头。 */
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 10px;
+  font: inherit; font-size: 13px;
+  color: var(--text-secondary);
 }
+.browse-side .browser-more summary::after {
+  content: '▾'; font-size: 10px; line-height: 1; opacity: 0.7;
+}
+.browse-side .browser-more[open] summary::after { content: '▴'; }
 
 .browse-side .browser-more-content {
   flex-direction: column;
