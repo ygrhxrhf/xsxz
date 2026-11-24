@@ -3282,6 +3282,24 @@ async function pinChatToBottom() {
 watch(showAiAssistant, (open) => { if (open) void pinChatToBottom() })
 watch(aiAssistantTab, (tab) => { if (tab === 'qa' && showAiAssistant.value) void pinChatToBottom() })
 
+// 读完即上报：不能只等「切到下一章」那一刻，否则全书最后一章、或读到底又滚回去的章节永远不会进自动追剧。
+const finishedReported = new Set<string>()
+watch(positionRatio, async (ratio) => {
+  const target = book.value
+  const chapter = currentChapter.value
+  if (!target || !chapter || !chapterReady.value || ratio < 0.999 || finishedReported.has(chapter.id)) return
+  finishedReported.add(chapter.id)
+  const outcome = await readerProgress.writeNow().catch(() => 'failed')
+  if (outcome === 'failed') {
+    finishedReported.delete(chapter.id)
+    return
+  }
+  if (book.value?.id === target.id && currentChapter.value?.id === chapter.id) {
+    void reportFinishedChapter({ bookId: target.id, chapterId: chapter.id, ratio })
+  }
+})
+watch(() => book.value?.id, () => finishedReported.clear())
+
 watch(
   [fontSize, lineHeight, theme, fontFamily, bookFontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, showInlineNotes, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
   () => {

@@ -200,7 +200,8 @@ export class AiReadingFollowService {
   }
 
   settingsChanged(): Promise<void> {
-    return this.wake()
+    // 补 Key 后要重新把有活的书捡回队列：没 Key 时它们已经从本轮 drain 里停下了。
+    return this.discover()
   }
 
   private async discover(): Promise<void> {
@@ -379,9 +380,10 @@ export class AiReadingFollowService {
     // 自动触发受设置页总开关约束；用户点了「继续 / 现在整理」才算当场授权。
     if (!settings.ai?.autoReadingFollow && !this.explicit.has(bookId)) return 'stopped'
     if (file.paused) return this.reviveIfMaterialChanged(bookId, file)
-    if (!settings.apiKeyConfigured) return 'yielded'
+    // 没 Key 不是「等一会儿就会好」：让队列停下，等设置变更时 discover() 重新把它捡起来。
+    if (!settings.apiKeyConfigured) return 'stopped'
     const apiKey = await getApiKey()
-    if (!apiKey) return 'yielded'
+    if (!apiKey) return 'stopped'
     const book = await getBook(bookId)
     this.activeBookId = bookId
     try {
@@ -541,8 +543,9 @@ export class AiReadingFollowService {
       if (chapter.body.trim() && isFullyRead(chapter.body, frontier.chapters[meta.id])) ordered.push({ ...meta, body: chapter.body })
     }
     if (!ordered.length) {
-      await this.markMemoryApplied(book.id, chapterIds, false)
-      return 'progress'
+      // 这几种章此刻不可整理（正文失效 / 未读完）。不要盖章，也不要空转：
+      // 留在待整理里，等下一次读完新章或用户点「继续」时再试。
+      return 'idle'
     }
     const existing = await visibleMemory(book.id, await readAiMemory(book.id))
     const instruction = resolveAiTaskInstruction(settings.ai ?? DEFAULT_AI_PREFS, 'memory')
@@ -582,7 +585,8 @@ export class AiReadingFollowService {
       const first = chapterIds[0]!
       return this.handleFailure(book.id, first, file.done[first]?.sig ?? '', job.message)
     }
-    await this.markMemoryApplied(book.id, chapterIds, true)
+    // 只标记真的进了这次请求的章：正文失效/未读完的章留在待整理里，不能被一起盖章丢记忆。
+    await this.markMemoryApplied(book.id, ordered.map((chapter) => chapter.id), true)
     return 'progress'
   }
 
