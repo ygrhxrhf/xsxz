@@ -48,6 +48,8 @@ function makeAssistant(overrides: { book?: Book | null } = {}) {
     resumeCardWarning: ref(''),
     showSelPopup: ref(false),
     selectedExcerpt: ref(''),
+    selectedRange: ref(null),
+    selectionOffsets: () => null,
     restoringChat: ref(false),
     aiResult: ref(''),
     aiResultTitle: ref(''),

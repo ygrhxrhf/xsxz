@@ -9,7 +9,7 @@
  * 分页结果如何落到纹理坐标，而不需要 WebGL 上下文。
  */
 
-import type { RealBookLine } from './realBookPager'
+import type { RealBookLine, RealBookNoteLine } from './realBookPager'
 import type { RealBookNote } from './realBookNotes'
 import { drawPlanInk } from './referenceBook/drawPlanInk'
 
@@ -53,6 +53,15 @@ export interface RealBookTextureNoteItem {
   note: RealBookNote
   /** 分页器为其预留的高度（含段间距） */
   height: number
+  /** 上游 PlacedInlineNote 片段：是否由上一页延续而来 */
+  continued: boolean
+  /** 上游 PlacedInlineNote 片段：是否还有后续片段 */
+  continues: boolean
+  /** 片段的行级墨迹数据，交给上游 renderPage 内联绘制 */
+  lines: readonly RealBookNoteLine[]
+  textColor: string
+  /** 分页时算好的页内 y（相对版心顶部）；缺省按流式累加 */
+  y?: number
 }
 
 /** 页内图片块：正文里以 `[图]` 标记占位，纹理层按版心宽度画出来。 */
@@ -82,6 +91,10 @@ export interface RealBookTexturePage {
   /** 参考站页码标签；缺省用 pageNumber。 */
   label?: string
   items: readonly RealBookTextureItem[]
+  /** 参考站 layout 原始页：有它时墨迹层原样交给上游 renderPage。 */
+  source?: import('./referenceBook/layout').Page
+  /** 高亮的章内字符偏移（与 source 的 Word.s/e 同一坐标）。 */
+  sourceMarks?: ReadonlyArray<{ start: number; end: number; color: string }>
 }
 
 export interface RealBookTextureStyle {
@@ -150,6 +163,11 @@ export interface PageTextureNoteBox {
   y: number
   width: number
   height: number
+  // 与上游 PlacedInlineNote 一致的片段字段（必填）
+  continued: boolean
+  continues: boolean
+  lines: readonly RealBookNoteLine[]
+  textColor: string
 }
 
 export interface PageTexturePlan {
@@ -176,6 +194,9 @@ export interface PageTexturePlan {
   notes: PageTextureNoteBox[]
   images: PageTextureImageBox[]
   side: 'left' | 'right'
+  /** 透传自 RealBookTexturePage.source。 */
+  source?: import('./referenceBook/layout').Page
+  sourceMarks?: ReadonlyArray<{ start: number; end: number; color: string }>
 }
 
 export interface PageTextureImageBox {
@@ -275,14 +296,19 @@ export function buildPageTexturePlan(
       continue
     }
     if (item.kind === 'note') {
-      const noteHeight = Math.max(24, item.height)
-      if (y + noteHeight > height - marginBottom) break
+      // 高度与位置沿用分页器按上游 placeNote 算好的值，不再二次推算。
+      const noteHeight = item.height
+      if (y + noteHeight > height - marginBottom + 0.5) break
       notes.push({
         note: item.note,
         x: marginX,
         y,
         width: contentWidth,
         height: noteHeight,
+        continued: item.continued,
+        continues: item.continues,
+        lines: item.lines,
+        textColor: item.textColor,
       })
       y += noteHeight
       firstItem = false
@@ -322,6 +348,8 @@ export function buildPageTexturePlan(
     height,
     marginX,
     special: page.special,
+    source: page.source,
+    sourceMarks: page.sourceMarks,
     marginTop,
     marginBottom,
     headHeight,
@@ -588,27 +616,7 @@ export function drawPageTexture(
     }
   }
 
-  // 页内批注卡：保留纸张的轻量层次，不用高对比色块抢正文。
-  for (const box of plan.notes) {
-    ctx.fillStyle = 'rgba(83,67,42,0.055)'
-    ctx.fillRect(box.x, box.y + 3, box.width, Math.max(18, box.height - 6))
-    ctx.fillStyle = 'rgba(120,82,47,0.55)'
-    ctx.fillRect(box.x, box.y + 6, 1.5, Math.max(10, box.height - 12))
-    ctx.fillStyle = muted
-    ctx.font = `500 ${Math.max(8, fontSize * 0.56)}px ${family}`
-    ctx.fillText(box.note.source === 'ai' ? '笔记 · AI' : '笔记', box.x + 10, box.y + fontSize * 0.8)
-    ctx.fillStyle = ink
-    ctx.font = `440 ${Math.max(9, fontSize * 0.82)}px ${family}`
-    const lines = wrapTextureText(ctx, box.note.text, box.width - 20).slice(0, 3)
-    lines.forEach((text, index) => {
-      ctx.fillText(text, box.x + 10, box.y + fontSize * 1.55 + index * fontSize * 0.95)
-    })
-    if (box.note.tags?.length) {
-      ctx.fillStyle = muted
-      ctx.font = `440 ${Math.max(8, fontSize * 0.58)}px ${family}`
-      ctx.fillText(box.note.tags.map((tag) => `#${tag}`).join(' '), box.x + 10, box.y + box.height - 8)
-    }
-  }
+  // 便签不在这里画：统一由 drawPlanInk 交给上游 renderPage 内联绘制（含跨页片段与「笔记 · 续」）。
   }
 
   // 页脚页码也由 DOM 文本层画（见上方页眉页脚段），这里不再重复。
@@ -647,7 +655,21 @@ export function textureStyleSignature(page: RealBookTexturePage, style: RealBook
       if (item.kind === 'image') {
         return ['image', item.file, item.width, item.height, item.caption, Math.round(item.displayHeight)]
       }
-      return ['note', item.note.id, item.note.text, item.note.tags ?? [], item.height]
+      return [
+        'note',
+        item.note.id,
+        item.note.text,
+        item.note.tags ?? [],
+        item.height,
+        item.continued,
+        item.continues,
+        item.textColor,
+        item.lines.map((line) => [
+          Math.round(line.y),
+          Math.round(line.h),
+          line.words.map((word) => word.text).join(''),
+        ]),
+      ]
     }),
     imageEpoch: style.imageEpoch ?? 0,
     bookTitle: style.bookTitle,

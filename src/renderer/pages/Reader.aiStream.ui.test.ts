@@ -108,6 +108,7 @@ async function mountAssistant(
       onBudget: (fn: (event: never) => void) => { handlers.budget = fn as Handlers['budget']; return () => { handlers.budget = undefined } },
       onDone: (fn: (event: AiDoneEvent) => void) => { handlers.done = fn; return () => { handlers.done = undefined } },
       chatStream: async () => { chatStarts.count += 1; return { ok: true, jobId: 'qa-1' } },
+      agentChat: async () => { chatStarts.count += 1; return { ok: true, jobId: 'qa-1' } },
       getChat: async () => ({ ok: true, version: 2, messages: [] }),
       clearChat: async () => ({ ok: true }),
       cancel: async (jobId?: string) => { notes.cancels.push(jobId ?? ''); return { ok: true } },
@@ -297,9 +298,12 @@ describe('Reader 问答流式呈现', () => {
     const reader = await mountAssistant(handlers, chatStarts)
     try {
       await reader.selectText(2, 4)
-      const askButton = [...document.querySelectorAll<HTMLButtonElement>('.sel-popup button')]
-        .find((item) => item.textContent?.includes('问 AI'))
-      expect(askButton, '选区工具条应有「问 AI」入口').toBeTruthy()
+      // 工具条默认是图标条：点「⋯」展开完整菜单，再按文字找入口。
+      document.querySelector<HTMLButtonElement>('.sel-popup [aria-label="更多操作"]')?.click()
+      await nextTick()
+      const askButton = [...document.querySelectorAll<HTMLButtonElement>('.sel-menu button')]
+        .find((item) => item.textContent?.includes('解释这段'))
+      expect(askButton, '选区菜单应有「解释这段」入口').toBeTruthy()
       askButton!.click()
       await vi.waitFor(() => expect(reader.bubbles()).toHaveLength(1))
       expect(chatStarts.count).toBe(1)

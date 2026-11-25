@@ -175,6 +175,10 @@ function noteAnnotations(input: ReferencePaginationInput, metas: readonly Meta[]
       note: {
         text: note.text,
         textColor: 'default',
+        // 上游 placeNote 用 noteFontFamily(a.note.font, cfg.family) 定便签字体；
+        // 缺字段会落到 noteFontIdOf(undefined) = 'inherit'，便签就与正文同体，
+        // 手写感全丢。spbf 没有字体选择 UI，沿用上游默认的霞鹜文楷。
+        font: 'wenkai',
         tags: note.tags?.slice(0, 5),
         x: 0,
         y: 0,
@@ -211,7 +215,15 @@ function convertPage(
   seen: Set<number>,
 ): RealBookPage {
   if (page.special) {
-    return { items: [], paragraph: 0, offset: 0, special: page.special, label: page.label }
+    return { items: [], paragraph: 0, offset: 0, special: page.special, label: page.label, source: page }
+  }
+  const paragraphStarts = new Map<number, number>()
+  for (const line of page.lines) {
+    for (const word of line.words) {
+      if (word.s < 0) continue
+      const meta = metaAt(metas, word.s)
+      if (meta && meta.kind === 'p' && !paragraphStarts.has(meta.para)) paragraphStarts.set(meta.para, meta.start)
+    }
   }
   const events: PageEvent[] = []
   // 同一段落在连续行里合并成一个文本块；遇到图片/换段/空行就断开。
@@ -265,8 +277,11 @@ function convertPage(
     })
   }
   for (const note of page.notes ?? []) {
+    // 对照上游 book/layout.ts placeNote（:667-705）：便签只由 locator 决定落点，不看块类型。
+    // 本地 noteAnnotations 已把锚点限定在段落块内，这里只需定位到该段；
+    // 不再额外丢弃 kind !== 'p' 的命中，避免便签在块边界上消失。
     const meta = metaAt(metas, note.locator.start)
-    if (!meta || meta.kind !== 'p') continue
+    if (!meta) continue
     events.push({
       kind: 'note',
       y: note.y,
@@ -276,6 +291,11 @@ function convertPage(
         paragraph: meta.para,
         anchorOffset: clamp(note.locator.end - meta.start, 0, meta.end - meta.start),
         height: note.h,
+        // Preserve upstream fragment structure for inline note rendering
+        continued: note.continued,
+        continues: note.continues,
+        lines: note.lines,
+        textColor: note.textColor,
       },
     })
   }
@@ -301,7 +321,7 @@ function convertPage(
   }
   const paragraph = firstText?.paragraph ?? 0
   const offset = firstText?.start ?? 0
-  return { items, paragraph, offset, label: page.label }
+  return { items, paragraph, offset, label: page.label, source: page, paragraphStarts }
 }
 
 /** 分页 + 映射成 spbf 的页模型。 */

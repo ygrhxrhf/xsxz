@@ -12,32 +12,9 @@ import type { Align, Block, BlockKind, Footnote, ParsedBook } from './types'
 import { isSourceQuote } from './typography'
 import { noteLayoutSignature, noteTextColorOf, type Annotation, type Locator, type NoteTextColor } from './annotations'
 
-/** 与参考站 noteMarkdown.ts 的 NoteRun/NoteBlock 同形的最小类型（笔记 Markdown 排版）。 */
-export interface NoteRun {
-  text: string
-  bold?: boolean
-  italic?: boolean
-  mono?: boolean
-  sup?: boolean
-  strike?: boolean
-  code?: boolean
-  href?: string
-  footnote?: Footnote
-}
+import type { NoteBlock, NoteRun } from './noteMarkdown'
 
-export interface NoteBlock {
-  kind: 'p' | 'heading' | 'code' | 'quote' | 'list' | 'rule' | 'table'
-  runs?: NoteRun[]
-  text?: string
-  heading?: number
-  indent: number
-  /** 引用深度；上游 Markdown 解析会给数字，纯文本笔记给 0。 */
-  quote: number
-  marker?: string
-  cells?: NoteRun[][]
-  align?: Align[]
-  tableHeader?: boolean
-}
+export type { NoteBlock, NoteRun }
 
 export interface LayoutConfig {
   /** A continuous single-page sequence, without spread padding. */
@@ -565,17 +542,10 @@ export async function paginate(
   }
 
   // The paint worker imports layout metrics but must not load DOM-based Markdown dependencies.
-  // spbf 的批注正文按纯文本排版：不解析 Markdown，只按空行分段落、段内保留换行。
-  const markdown = (source: string): NoteBlock[] => source
-    .split(/\n{2,}/)
-    .map((paragraph) => ({
-      kind: 'p' as const,
-      runs: [{ text: paragraph.replace(/\n/g, ' ') }],
-      text: paragraph.replace(/\n/g, ' '),
-      indent: 0,
-      quote: 0,
-    }))
-    .filter((block) => block.text.length > 0)
+  // 只有确实存在批注正文时才动态载入 Markdown 解析，保持 Worker 首屏不带 remark。
+  const markdown = notes.some((a) => a.note!.text.trim())
+    ? (await import('./noteMarkdown')).parseNoteMarkdown
+    : undefined
 
   let page: Page | null = null
   let cursor = 0

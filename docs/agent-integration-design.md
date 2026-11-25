@@ -420,6 +420,7 @@ export interface AgentCapability {
 | `ai.storySoFar` | `ai_story_so_far` | 费 | dry | key | 只读摘要与记忆材料，不读正文 |
 | `ai.getSummaries` | `ai_get_summaries` | 读 | — | disk | |
 | `ai.chatStream` | `ai_chat_stream` | 费 | dry | key | 返回 `AiJobStart`；进度走 `job_status` |
+| `ai.agentChat` | `ai_agent_chat` | 费 | dry | key | pi 内核多轮 agent；工具只读已读前沿以内的正文 |
 | `ai.getChat` | `ai_get_chat` | 读 | — | disk | 兼容 v1/v2 |
 | `ai.clearChat` | `ai_clear_chat` | 破 | tok | disk | 清空该书问答历史 |
 | `ai.translateStream` | `ai_translate_stream` | 费 | — | key | 传 `bookId` 时计入每书用量 |

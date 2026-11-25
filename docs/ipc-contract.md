@@ -514,6 +514,7 @@
 | `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.getSummaries` | invoke | `{ bookId: string }` | `{ ok: true; summaries: AiSummaries } \| { ok: false; message: string }` |
 | `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart`（已读证据问答，最后一条 user 消息即问题） |
+| `ai.agentChat` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart`（pi 内核的多轮对话 agent，工具只读已读前沿以内的正文） |
 | `ai.getChat` | invoke | `{ bookId: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省） |
 | `ai.clearChat` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.translateStream` | invoke | `{ text: string; bookId?: string }` | `AiJobStart`；传入书籍 ID 时计入每书用量 |
@@ -617,7 +618,7 @@ window.api = {
   annotations: { list, add, update, remove },
   webAnnotations: { list, add, update, remove },
   siteRules: { list, preview, upsert, remove },
-  ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
+  ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, agentChat, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
 }
 ```
 

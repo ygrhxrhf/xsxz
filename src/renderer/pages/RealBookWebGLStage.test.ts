@@ -118,6 +118,10 @@ describe('RealBookWebGLStage', () => {
           createdAt: '2026-01-01T00:00:00.000Z',
         },
         height: 80,
+        continued: false,
+        continues: false,
+        lines: [],
+        textColor: 'default',
       }],
     }
     const clicked: string[] = []
@@ -187,7 +191,7 @@ describe('RealBookWebGLStage', () => {
     expect(await mountWithFlip(-1, 0.3)).toEqual(['none', ''])
   })
 
-  it('页内注卡与图片走 DOM：卡片可点开批注、图片走协议、图注与标签贴在页面上', async () => {
+  it('页内图片走 DOM（图片走协议、图注贴在页面上）；便签只由纹理内联绘制，不再有 DOM 卡片或文字行', async () => {
     const page: RealBookTexturePage = {
       pageNumber: 2,
       chapterTitle: '第一章',
@@ -204,6 +208,10 @@ describe('RealBookWebGLStage', () => {
             createdAt: '2026-01-01T00:00:00.000Z',
           },
           height: 80,
+          continued: false,
+          continues: false,
+          lines: [],
+          textColor: 'default',
         },
         { kind: 'image', file: 'pic.png', width: 100, height: 50, caption: '插图一', displayHeight: 120 },
       ],
@@ -223,18 +231,13 @@ describe('RealBookWebGLStage', () => {
     })
     app.mount(host)
     await nextTick()
-    const card = document.querySelector('.real-book-note-card') as HTMLElement | null
-    expect(card?.getAttribute('title')).toBe('这是一条批注')
-    card?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await nextTick()
-    expect(clicked).toEqual(['n1'])
+    // 旧的 DOM 便签卡片与逐行文字已删除：便签统一由纹理里的上游 renderPage 内联绘制。
+    expect(document.querySelector('.real-book-note-card')).toBeNull()
+    expect(clicked).toEqual([])
     const image = document.querySelector('.real-book-webgl-image img') as HTMLImageElement | null
     expect(image?.getAttribute('src')).toBe('spbf-image://i/b1/pic.png')
     const runs = [...document.querySelectorAll('.real-book-page-run')].map((el) => el.textContent)
-    expect(runs).toContain('笔记')
-    expect(runs).toContain('这是一条批注')
-    expect(runs).toContain('#人物')
-    expect(runs).toContain('插图一')
+    expect(runs).toEqual(['插图一'])
     app.unmount()
   })
 
@@ -324,6 +327,51 @@ describe('RealBookWebGLStage', () => {
     expect(opens).toEqual([])
     stage.setPitch(-10)
     expect(pitches).toEqual([0])
+    app.unmount()
+  })
+
+  it('文本层里选中文字后松手会转发 select，划词工具条才有机会抬起', async () => {
+    const page: RealBookTexturePage = {
+      pageNumber: 1,
+      chapterTitle: '',
+      items: [{
+        kind: 'text',
+        text: '测试段落',
+        originalIndex: 0,
+        start: 0,
+        end: 4,
+        continued: false,
+        lines: [{ start: 0, end: 4 }],
+        highlights: [],
+        noteMarks: [],
+      }],
+    }
+    const selected: MouseEvent[] = []
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp({
+      render: () => h(RealBookWebGLStage, {
+        leftPage: page,
+        rightPage: null,
+        flipFrontPage: null,
+        flipBackPage: null,
+        onSelect: (event: MouseEvent) => selected.push(event),
+      }),
+    })
+    app.mount(host)
+    await nextTick()
+    const line = document.querySelector('.real-book-text-line')!
+    const text = line.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, 2)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    line.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    await nextTick()
+    // 事件必须被转发一次：文本层停冒泡拦住宿主的翻页判定，但 select 不能丢。
+    expect(selected).toHaveLength(1)
+    window.getSelection()!.removeAllRanges()
     app.unmount()
   })
 

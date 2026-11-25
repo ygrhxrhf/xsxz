@@ -6,6 +6,7 @@ import { clearRetriedAssistantSaveToken, describeAssistantStage, currentAssistan
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { splitIntoParagraphs } from './useTts'
+import { useInlineAsk } from './readerInlineAsk'
 
 /**
  * 阅读器的「AI 助手面板」域：前情/记忆/问答/笔记/输出五个 tab 的状态与行为。
@@ -36,6 +37,10 @@ export interface ReaderAssistantDeps {
   resumeCardWarning: Ref<string>
   showSelPopup: Ref<boolean>
   selectedExcerpt: Ref<string>
+  /** 选区在规范化正文里的区间；划词提问要用它把回答存回原文。 */
+  selectedRange: Ref<{ start: number; end: number; text: string } | null>
+  /** 当前浏览器选区换算成规范化正文区间（Reader 侧实现）。 */
+  selectionOffsets: () => { start: number; end: number; text: string } | null
   restoringChat: Ref<boolean>
   aiResult: Ref<string>
   aiResultTitle: Ref<string>
@@ -47,6 +52,7 @@ export function useReaderAssistant(deps: ReaderAssistantDeps) {
     book, currentChapter, chapterBody, paras, chapters, contentRef, fontSize, readingMode, message,
     loadBook, openChapter, pendingScrollPara,
     resumeCardView, resumeCardLoading, resumeCardWarning, showSelPopup, selectedExcerpt,
+    selectedRange, selectionOffsets,
     restoringChat, aiResult, aiResultTitle, closeSelectionTools,
   } = deps
 
@@ -120,7 +126,10 @@ const otherChapterNotes = computed(() => chapterNotes.value.filter((note) => not
 const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
+const chatMode = ref<'agent' | 'evidence'>('agent')
 const chatMessages = ref<AiEvidenceChatMessage[]>([])
+/** 对话模式下模型正在调的本地工具，界面上显示成一行小字而不是空白转圈。 */
+const agentToolActivity = ref('')
 const chatInput = ref('')
 const chatLoading = ref(false)
 const chatStarting = ref(false)
@@ -901,11 +910,15 @@ async function sendChat() {
     // 主进程只读 role/content，且 IPC 走 structured clone：Vue 的响应式数组/对象是 Proxy，
     // 原样传过去会直接抛「An object could not be cloned」，问答永远起不来。这里发一份纯快照。
     const history: AiChatMessage[] = chatMessages.value.map((m) => ({ role: m.role, content: m.content }))
-    const res = await window.api.ai.chatStream(book.value.id, currentChapter.value.id, history)
+    // 对话模式走 pi agent（模型自己决定查目录/读原文/检索/看记忆），证据模式仍是单轮严格引用。
+    const res = chatMode.value === 'agent'
+      ? await window.api.ai.agentChat(book.value.id, currentChapter.value.id, history)
+      : await window.api.ai.chatStream(book.value.id, currentChapter.value.id, history)
     if (!res.ok) {
       chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
       return
     }
+    agentToolActivity.value = ''
     chatJobId.value = res.jobId
     chatLoading.value = true
     chatMessages.value.push({ role: 'assistant', content: '' })
@@ -923,6 +936,71 @@ function stopChat() {
   if (chatJobId.value) void window.api.ai.cancel(chatJobId.value)
 }
 
+/**
+ * 选区的段落上下文：生僻字词脱离原句没意义，必须带着前后句一起问。
+ * 只取命中段的前后各一段并夹住长度，不把整章塞进提示词。
+ */
+function selectionContext(range: { start: number; end: number } | null, excerpt: string): string {
+  const list = paras.value
+  if (!list.length) return ''
+  let index = -1
+  if (range && Number.isSafeInteger(range.start)) {
+    // 规范化正文是段落以空行连接，回推段落下标要用同样两字的分隔符。
+    let cursor = 0
+    for (let i = 0; i < list.length; i += 1) {
+      const start = cursor
+      const end = start + list[i]!.length
+      if (range.start >= start && range.start <= end) { index = i; break }
+      cursor = end + 2
+    }
+  }
+  if (index < 0) {
+    const probe = excerpt.trim().slice(0, 30)
+    if (probe) index = list.findIndex((paragraph) => paragraph.includes(probe))
+  }
+  if (index < 0) return ''
+  return [list[index - 1], list[index], list[index + 1]]
+    .filter((paragraph): paragraph is string => Boolean(paragraph))
+    .join('\n')
+    .slice(0, 600)
+}
+
+/**
+ * 划词后的「解释字词」：读者单纯询问这一个字或词本身的意思，
+ * 与文章内容无关、不需要和书籍联系在一起，直接走纯字词释义卡片。
+ */
+async function explainSelection(_kind: 'word' | 'sentence' = 'word') {
+  await inlineAsk.explainWord()
+  if (inlineAsk.open.value) showSelPopup.value = false
+}
+
+/** 划词菜单里的「继续追问」：不预设问法，只把选区和出处放进对话，等读者自己写。 */
+async function askSelectionInAgent(question?: string) {
+  if (!book.value || !currentChapter.value) return
+  const excerpt = selectedExcerpt.value || getSelectedText()
+  chatMode.value = 'agent'
+  aiAssistantTab.value = 'qa'
+  showAiAssistant.value = true
+  if (question) {
+    chatInput.value = question
+    closeSelectionTools()
+    await sendChat()
+    return
+  }
+  const target = selectedRange.value ?? selectionOffsets()
+  const context = [
+    currentChapter.value ? `本章：《${currentChapter.value.title}》` : '',
+    selectionContext(target, excerpt),
+  ].filter(Boolean).join('\n')
+  chatInput.value = excerpt ? `关于「${excerpt.slice(0, 200)}」\n${context}\n` : ''
+  showSelPopup.value = false
+}
+
+/** 主进程把工具进度搭在 ai.stage 的 detail 上，界面只负责显示成一句人话。 */
+function setAgentToolActivity(label: string) {
+  agentToolActivity.value = label
+}
+
 async function clearChat() {
   if (!book.value || chatLoading.value || assistantSaveRetrying.value) return
   const res = await window.api.ai.clearChat(book.value.id)
@@ -934,6 +1012,45 @@ async function clearChat() {
     message.error(res.message)
   }
 }
+
+/**
+ * 划词行内卡片：
+ * - 「询问 AI」必须与书籍联系在一起（附带书名、当前章、所在段落上下文，走书籍 agentChat）；
+ * - 「解释字词」只问字词本身的意思（不带任何文章或书籍上下文，走 explainText）。
+ */
+const inlineAsk = useInlineAsk({
+  canAsk: () => Boolean(book.value && currentChapter.value),
+  excerpt: () => selectedExcerpt.value || getSelectedText(),
+  context: () => {
+    const target = selectedRange.value ?? selectionOffsets()
+    const excerpt = selectedExcerpt.value || getSelectedText()
+    const paragraphContext = selectionContext(target, excerpt)
+    return [
+      book.value ? `书籍：《${book.value.title}》` : '',
+      currentChapter.value ? `本章：《${currentChapter.value.title}》` : '',
+      paragraphContext ? `原文段落上下文：\n${paragraphContext}` : '',
+    ].filter(Boolean).join('\n')
+  },
+  ask: async (prompt) => {
+    if (!book.value || !currentChapter.value) return { ok: false, message: '还没有可提问的章节' }
+    chatMode.value = 'agent'
+    return window.api.ai.agentChat(book.value.id, currentChapter.value.id, [{ role: 'user', content: prompt }])
+  },
+  explainWord: async (word) => {
+    return window.api.ai.explainText(word, book.value?.id)
+  },
+  handOff: (turns) => {
+    // 整段对话原样进侧栏：卡片里的问题与回答变成侧栏的前几轮，之后接着追问。
+    chatMode.value = 'agent'
+    aiAssistantTab.value = 'qa'
+    chatMessages.value = [...chatMessages.value, ...turns.flatMap((turn) => [
+      { role: 'user' as const, content: turn.question },
+      { role: 'assistant' as const, content: turn.answer },
+    ])]
+    showAiAssistant.value = true
+  },
+  message,
+})
 
   return {
     showAiAssistant,
@@ -990,6 +1107,9 @@ async function clearChat() {
     translateJobId,
     translateLoading,
     chatMessages,
+    chatMode,
+    agentToolActivity,
+    setAgentToolActivity,
     chatInput,
     chatLoading,
     chatStarting,
@@ -1073,6 +1193,11 @@ async function clearChat() {
     getSelectedText,
     translateSelectedText,
     stopTranslate,
+    explainSelection,
+    askSelectionInAgent,
+    /** 划词工具栏第一个按钮：就地弹卡片问一句（Sider 的「询问AI」）。 */
+    openInlineAsk: () => inlineAsk.show(),
+    inlineAsk,
     QUICK_READING_QUESTIONS,
     prepareQuickQuestion,
     sendChat,

@@ -65,6 +65,7 @@ function installApi(fixture: Fixture) {
           paragraphCount: 20, batchCount: 1, range: '第一章' },
       }),
       chatStream: async () => { fixture.chatStarts += 1; return { ok: true, jobId: 'qa-1' } },
+      agentChat: async () => { fixture.chatStarts += 1; return { ok: true, jobId: 'qa-1' } },
     },
   } })
 }

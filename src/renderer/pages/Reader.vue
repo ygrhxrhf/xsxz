@@ -891,7 +891,165 @@ const {
   openDirectNote,
   saveDirectNote,
   addHighlight,
+  SELECTION_ACTIONS,
+  pinnedActions,
+  isPinned,
+  togglePinned,
 } = selection
+
+/** 工具栏与菜单的图标：一条 path 数据就能画出来的线性图标，免得模板里堆大段 SVG。 */
+const SEL_ACTION_ICON: Record<import('./readerSelection').SelectionActionId, string> = {
+  ask: 'M12 4.5c-4.2 0-7.5 2.6-7.5 6.1 0 2.2 1.2 4 3.2 5.1l-.6 3.3 3.3-1.6c.5.1 1.1.1 1.6.1 4.2 0 7.5-2.6 7.5-6.1S16.2 4.5 12 4.5Z',
+  copy: 'M9 9h10v10H9z M15 6.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h.5',
+  highlight: 'm14.5 4.5 5 5L10 19H5v-5Z M13 6l5 5',
+  note: 'M5 4h14v13l-4 3H5Z M8.5 9h7M8.5 12.5h4',
+  read: 'M4 10v4a1 1 0 0 0 1 1h2.5l3.6 3V6L7.5 9H5a1 1 0 0 0-1 1Z M15.5 9.2a4 4 0 0 1 0 5.6M18 6.8a7.4 7.4 0 0 1 0 10.4',
+  explainWord: 'M6 4h9l3 3v13H6z M9 9h6M9 12.5h6M9 16h3.5',
+  'explain-text': 'M12 4.5c-4.2 0-7.5 2.6-7.5 6.1 0 2.2 1.2 4 3.2 5.1l-.6 3.3 3.3-1.6c.5.1 1.1.1 1.6.1 4.2 0 7.5-2.6 7.5-6.1S16.2 4.5 12 4.5Z',
+  translate: 'M4 6h9M8.5 4v2c0 4-1.6 7.2-4.5 9M6 9.5c0 2.6 2 5.1 5 6.2 M13 20l4-9 4 9M14.6 17h4.8',
+  who: 'M12 5.2a3.3 3.3 0 1 1 0 6.6 3.3 3.3 0 0 1 0-6.6Z M5.5 20c0-3.4 2.9-5.6 6.5-5.6s6.5 2.2 6.5 5.6',
+  backstory: 'M4 12a8 8 0 1 0 2.6-5.9 M4 4.5V10h5.5',
+  chat: 'M3.5 7.5a3 3 0 0 1 3-3h11a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H8l-4.5 3.5Z',
+}
+
+/** 需要品牌色标记的 AI 动作；文档类动作保持单色。 */
+const SEL_AI_ACTIONS = new Set<import('./readerSelection').SelectionActionId>([
+  'ask', 'explainWord', 'explain-text', 'translate', 'who', 'backstory', 'chat',
+])
+
+/** 工具栏只渲染钉住的动作，顺序按钉住顺序（就是用户点图钉的先后）。 */
+const pinnedBarActions = computed(() => {
+  const byId = new Map(SELECTION_ACTIONS.map((action) => [action.id, action]))
+  return pinnedActions.value.map((id) => byId.get(id)).filter((action): action is (typeof SELECTION_ACTIONS)[number] => Boolean(action))
+})
+
+/** 菜单里从第几项开始插分隔线：文稿类在前，AI 类在后。 */
+const SEL_MENU_DIVIDER_AT = 5
+
+/**
+ * 划词菜单底部的模型选择器。
+ * 真源是 Settings.model（与设置页同一个字段），这里只做快捷切换，
+ * 提示词、端点、Key 仍由设置页负责。
+ */
+const showModelMenu = ref(false)
+const aiModelValue = ref('')
+const aiModelOptions = ref<Array<{ label: string; value: string }>>([])
+const aiModelLabel = computed(() => aiModelValue.value || '未配置模型')
+
+async function loadAiModelOptions() {
+  try {
+    const current = await window.api.settings.get()
+    aiModelValue.value = current.model || ''
+    // 内置候选 + 当前已配置的模型（自定义端点可能用任何名字，也必须能选到）。
+    const builtin = ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner']
+    const values = [...new Set([...builtin, current.model].filter((value): value is string => Boolean(value)))]
+    aiModelOptions.value = values.map((value) => ({ value, label: value }))
+  } catch {
+    aiModelOptions.value = []
+  }
+}
+
+async function applyAiModel(value: string) {
+  showModelMenu.value = false
+  if (value === aiModelValue.value) return
+  const previous = aiModelValue.value
+  aiModelValue.value = value
+  try {
+    const saved = await window.api.settings.set({ model: value })
+    aiModelValue.value = saved.model || value
+    message.success(`已切换到 ${aiModelValue.value}`)
+  } catch {
+    aiModelValue.value = previous
+    message.error('切换模型失败，已恢复原模型')
+  }
+}
+
+function onTogglePin(id: import('./readerSelection').SelectionActionId) {
+  if (!togglePinned(id)) {
+    message.warning('至少保留一个工具栏按钮；可以先把别的项钉上再取消这一项')
+  }
+}
+
+/** 菜单与工具栏共用同一个入口：点图钉只切钉住，点项体才执行动作。 */
+function runSelectionAction(id: import('./readerSelection').SelectionActionId) {
+  showSelMenu.value = false
+  switch (id) {
+    case 'ask': openInlineAsk(); return
+    case 'copy': copySelectedText(); return
+    case 'highlight': void addHighlight(); return
+    case 'note': openDirectNote(); return
+    case 'read': readSelectionAloud(); return
+    case 'explainWord': void explainSelection('word'); return
+    case 'explain-text': void askSelectedText('explain'); return
+    case 'translate': void translateSelectedText(); return
+    case 'who': void askSelectedText('person'); return
+    case 'backstory': void askSelectedText('backstory'); return
+    case 'chat': void askSelectionInAgent(); return
+  }
+}
+
+/**
+ * 划词工具栏默认是紧凑图标条（复制/翻译/朗读/更多/关闭），点「⋯」才展开竖向菜单。
+ * 菜单向下挂在工具条下沿，容器底边不够时翻到上方，避免被窗口裁掉。
+ */
+const showSelMenu = ref(false)
+const SEL_MENU_HEIGHT = 372
+const SEL_MENU_WIDTH = 268
+
+/**
+ * 划词行内问答卡的尺寸与位置：挂在所选文字下方，下方放不下就翻到上方。
+ * 卡片比工具条宽，所以要按自己的尺寸单独算，不能复用它那套 191×30。
+ */
+const INLINE_ASK_SIZE = { width: 380, height: 260 }
+
+const inlineAskStyle = computed(() => {
+  const { width, height } = INLINE_ASK_SIZE
+  const gap = 8
+  const margin = 8
+  const rect = selection.lastSelRect?.value ?? { top: 0, bottom: 0, left: 0, width: 0 }
+  const below = rect.bottom + gap + height + margin <= window.innerHeight
+  const top = below ? rect.bottom + gap : Math.max(margin, rect.top - gap - height)
+  const centered = rect.left + rect.width / 2 - width / 2
+  const left = Math.min(Math.max(margin, centered), Math.max(margin, window.innerWidth - width - margin))
+  return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${width}px` }
+})
+
+async function copyInlineAnswer() {
+  const text = inlineAsk.answer.value
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('已复制回答')
+  } catch {
+    message.error('复制失败，请重试')
+  }
+}
+
+function stopInlineAsk() {
+  if (inlineAsk.jobId.value) void window.api.ai.cancel(inlineAsk.jobId.value)
+}
+
+const selMenuStyle = computed(() => {
+  const gap = 6
+  const below = selPopupY.value + gap
+  const roomBelow = window.innerHeight - below
+  const top = roomBelow >= SEL_MENU_HEIGHT ? below : Math.max(8, selPopupY.value - SEL_MENU_HEIGHT - gap)
+  const left = Math.min(selPopupX.value, Math.max(8, window.innerWidth - SEL_MENU_WIDTH - 8))
+  return { left: `${left}px`, top: `${top}px` }
+})
+
+watch(showSelPopup, (open) => {
+  if (!open) {
+    showSelMenu.value = false
+    showModelMenu.value = false
+    return
+  }
+  // 只在工具条真正出现时读一次设置，不在每次渲染时读盘。
+  void loadAiModelOptions()
+})
+
+// 菜单展开时它可能盖住工具条，所以把模型选择器也一并刷新。
+watch(showSelMenu, (open) => { if (open) void loadAiModelOptions() })
 
 /** 当前章各段的渲染切片：叠加搜索命中与划线 */
 const plainDecoratedParas = computed(() => paras.value.map((text) => decorateText(text, '', [])))
@@ -1688,6 +1846,34 @@ function startTtsFromParagraph(index: number) {
   closeSelectionTools()
   ttsStart(index)
   revealTools(immersiveMode.value === 'locked')
+}
+
+/**
+ * 划词工具栏的「朗读」：从选区所在的那一段开始读。
+ * 选区不跨段时就是该段；找不到对应段就退回当前正在读的段，不静默无反应。
+ */
+function readSelectionAloud() {
+  if (!ttsSupported) {
+    message.warning('当前环境不支持朗读')
+    return
+  }
+  const range = selectedRange.value ?? selectionOffsets()
+  const excerpt = selectedExcerpt.value || getSelectedText()
+  let index = -1
+  if (range) {
+    let cursor = 0
+    for (let i = 0; i < paras.value.length; i += 1) {
+      const start = cursor
+      const end = start + paras.value[i]!.length
+      if (range.start >= start && range.start <= end) { index = i; break }
+      cursor = end + 2
+    }
+  }
+  if (index < 0 && excerpt) {
+    const probe = excerpt.trim().slice(0, 30)
+    if (probe) index = paras.value.findIndex((paragraph) => paragraph.includes(probe))
+  }
+  startTtsFromParagraph(Math.max(0, index))
 }
 
 function syncVisualPage() {
@@ -3114,6 +3300,8 @@ const assistant = useReaderAssistant({
   resumeCardWarning,
   showSelPopup,
   selectedExcerpt,
+  selectedRange,
+  selectionOffsets,
   restoringChat,
   aiResult,
   aiResultTitle,
@@ -3174,6 +3362,9 @@ const {
   translateJobId,
   translateLoading,
   chatMessages,
+  chatMode,
+  agentToolActivity,
+  setAgentToolActivity,
   chatInput,
   chatLoading,
   chatStarting,
@@ -3256,6 +3447,10 @@ const {
   openChapterFromNote,
   getSelectedText,
   translateSelectedText,
+  explainSelection,
+  askSelectionInAgent,
+  openInlineAsk,
+  inlineAsk,
   stopTranslate,
   QUICK_READING_QUESTIONS,
   prepareQuickQuestion,
@@ -3361,6 +3556,8 @@ onMounted(async () => {
       const assistant = chatMessages.value[chatAssistantIndex.value]
       if (assistant) assistant.content += delta
     }
+    // 划词行内卡片自己那一轮：只有它开着且 jobId 对得上时才追加。
+    if (inlineAsk.open.value) inlineAsk.appendDelta(jobId, delta)
   })
   unsubAiStage = window.api.ai.onStage((event) => {
     const detail = event.detail?.trim()
@@ -3375,11 +3572,19 @@ onMounted(async () => {
         if (event.uptoChapterId) assistant.uptoChapterId = event.uptoChapterId
       }
     }
+    // 对话模式下 events.detail 是模型正在调的工具名（查目录/读原文/检索…）。
+    if (event.jobId === chatJobId.value && chatMode.value === 'agent') {
+      setAgentToolActivity(detail ?? '')
+    }
   })
   unsubAiBudget = window.api.ai.onBudget(({ task, budget }) => {
     assistantBudgets.value = { ...assistantBudgets.value, [task]: budget }
   })
   unsubAiDone = window.api.ai.onDone((event) => {
+    // 行内卡片先接手自己的终态：它和侧栏的 jobId 不同源，不该落进下面那些分支。
+    if (inlineAsk.open.value && event.jobId === inlineAsk.jobId.value) {
+      inlineAsk.finish(event)
+    }
     if (event.ok && event.usage) void loadAssistantMaterial()
     const assistantKind = assistantKindForJob(event.jobId, assistantJobIds.value)
     if (assistantKind) {
@@ -3432,6 +3637,7 @@ onMounted(async () => {
       chatJobId.value = ''
       chatAssistantIndex.value = -1
       chatLoading.value = false
+      setAgentToolActivity('')
       return
     }
     if (event.jobId === memoryJobId.value) {
@@ -4145,31 +4351,49 @@ onUnmounted(() => {
             <div>旧版只记录到当前章节的进度。确认后，将它之前的章节与本章已到位置纳入 AI 已读范围；不确认时只使用新版实际记录的位置。</div>
             <n-button size="small" @click="confirmLegacyFrontier">确认旧进度为已读</n-button>
           </div>
-          <div class="ai-assistant-heading">
-            <strong>{{ book?.title }}</strong>
-            <span v-if="aiServiceOrigin">模型服务：{{ aiServiceOrigin }}</span>
-            <span v-else class="ai-heading-missing">
-              模型服务：未配置
-              <n-button size="tiny" text type="primary" @click="emit('go-settings')">去设置</n-button>
-            </span>
-            <span>当前任务：{{ aiAssistantTaskLabel }}</span>
-            <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
-            <span>仅包含当前阅读进度以内的内容，不发送未读章节。</span>
-          </div>
-          <div v-if="currentAssistantBudget" class="ai-budget-status">
-            <strong>本次发送范围</strong>
-            <div>预计发送：{{ currentAssistantBudget.chapterCount }} 章 / {{ currentAssistantBudget.paragraphCount }} 段，约 {{ currentAssistantBudget.sentCharacters }} 字 / {{ currentAssistantBudget.estimatedTokens }} tokens（估算）</div>
-            <div>{{ currentAssistantBudget.range }}</div>
-          </div>
+
+          <!--
+            运行信息默认收起：模型端点、当前任务、已读截止、取材边界这些是调试与核对用的，
+            平时占据侧栏顶部只会淹没对话。保留原文案，只是移到折叠区里。
+          -->
+          <details class="ai-runtime-info">
+            <summary>
+              <span>{{ book?.title }}</span>
+              <span v-if="!aiServiceOrigin" class="ai-heading-missing">未配置模型服务</span>
+              <span v-else class="subtle">运行信息</span>
+            </summary>
+            <div class="ai-assistant-heading">
+              <strong>{{ book?.title }}</strong>
+              <span v-if="aiServiceOrigin">模型服务：{{ aiServiceOrigin }}</span>
+              <span v-else class="ai-heading-missing">
+                模型服务：未配置
+                <n-button size="tiny" text type="primary" @click="emit('go-settings')">去设置</n-button>
+              </span>
+              <span>当前任务：{{ aiAssistantTaskLabel }}</span>
+              <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
+              <span>仅包含当前阅读进度以内的内容，不发送未读章节。</span>
+            </div>
+            <div v-if="currentAssistantBudget" class="ai-budget-status">
+              <strong>本次发送范围</strong>
+              <div>预计发送：{{ currentAssistantBudget.chapterCount }} 章 / {{ currentAssistantBudget.paragraphCount }} 段，约 {{ currentAssistantBudget.sentCharacters }} 字 / {{ currentAssistantBudget.estimatedTokens }} tokens（估算）</div>
+              <div>{{ currentAssistantBudget.range }}</div>
+            </div>
+            <div v-if="assistantCompleted" class="ai-assistant-status">
+              <template v-if="lastAssistantUsage && (lastAssistantUsage.inputTokens !== undefined || lastAssistantUsage.outputTokens !== undefined)">
+                最近一次：输入 {{ lastAssistantUsage.inputTokens ?? 0 }} / 输出 {{ lastAssistantUsage.outputTokens ?? 0 }} tokens
+                <span v-if="lastAssistantUsage.cacheHitTokens !== undefined"> · 缓存命中 {{ lastAssistantUsage.cacheHitTokens }} tokens</span>
+              </template>
+              <template v-else>服务未返回 token 用量。</template>
+              <div class="subtle">实际费用以模型服务商的计费规则为准。</div>
+            </div>
+            <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens。</div>
+            <div v-if="autoBudget" class="subtle">
+              本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens；达到上限会暂停自动任务。
+            </div>
+          </details>
+
+          <!-- 只在真需要告知时浮出来：生成中、被截断、保存失败。 -->
           <div v-if="assistantStageText" class="ai-assistant-status">{{ assistantStageText }}</div>
-          <div v-if="assistantCompleted" class="ai-assistant-status">
-            <template v-if="lastAssistantUsage && (lastAssistantUsage.inputTokens !== undefined || lastAssistantUsage.outputTokens !== undefined)">
-              最近一次：输入 {{ lastAssistantUsage.inputTokens ?? 0 }} / 输出 {{ lastAssistantUsage.outputTokens ?? 0 }} tokens
-              <span v-if="lastAssistantUsage.cacheHitTokens !== undefined"> · 缓存命中 {{ lastAssistantUsage.cacheHitTokens }} tokens</span>
-            </template>
-            <template v-else>服务未返回 token 用量。</template>
-            <div class="subtle">实际费用以模型服务商的计费规则为准。</div>
-          </div>
           <n-tag v-if="lastAssistantTruncated" type="warning">回答可能因输出上限而截断。</n-tag>
           <div v-if="assistantSaveState.token" class="ai-save-warning">
             结果已生成，但未能保存到书库。
@@ -4202,11 +4426,9 @@ onUnmounted(() => {
                 <n-radio-button value="standard">标准 · 约 500 字</n-radio-button>
                 <n-radio-button value="detailed">详细 · 约 1000 字</n-radio-button>
               </n-radio-group>
-              <p class="subtle">前情只根据已经生成的本章摘要和小说记忆整理。</p>
-              <div v-if="materialCoverage" class="ai-budget-status">
-                材料覆盖到：{{ materialCoverage.uptoChapterTitle }}（{{ materialCoverage.summarizedChapters }}/{{ materialCoverage.readyChapters }} 章已有摘要）
-                <div v-if="materialCoverage.missing.length">缺摘要：{{ materialCoverage.missing.slice(0, 8).map((chapter) => chapter.title).join('、') }}<span v-if="materialCoverage.missing.length > 8"> 等 {{ materialCoverage.missing.length }} 章</span></div>
-                <div v-else>已读范围内的就绪章节都已有摘要。</div>
+              <p class="subtle">前情只根据已生成的本章摘要和小说记忆整理，不重读正文。</p>
+              <div v-if="materialCoverage" class="subtle">
+                材料覆盖到{{ materialCoverage.uptoChapterTitle }}（{{ materialCoverage.summarizedChapters }}/{{ materialCoverage.readyChapters }} 章有摘要）<span v-if="materialCoverage.missing.length">，缺摘要 {{ materialCoverage.missing.length }} 章</span>。
               </div>
               <div class="ai-result">{{ recapText || '还没有前情提要。' }}</div>
               <n-space>
@@ -4242,9 +4464,7 @@ onUnmounted(() => {
                 </n-space>
                 <div v-if="memoryData?.uptoChapterId" class="subtle">
                   已更新到：{{ book?.chapters.find((chapter) => chapter.id === memoryData?.uptoChapterId)?.title || memoryData.uptoChapterId }}
-                </div>
-                <div v-if="materialCoverage" class="subtle">
-                  摘要覆盖到 {{ materialCoverage.uptoChapterTitle }}，缺 {{ materialCoverage.missing.length }} 章摘要。
+                  <span v-if="materialCoverage">· 摘要覆盖到 {{ materialCoverage.uptoChapterTitle }}{{ materialCoverage.missing.length ? `，缺 ${materialCoverage.missing.length} 章` : '' }}</span>
                 </div>
                 <n-input
                   v-if="memoryData"
@@ -4316,24 +4536,30 @@ onUnmounted(() => {
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="qa" tab="问答">
-              <section class="ai-budget-status">
-                <strong>找回情节</strong>
-                <div class="subtle">先找已读原文，再决定是否让模型回答。启用语义索引后，新读内容会自动发送到你配置的向量服务。</div>
-                <div v-if="semanticState" class="subtle">{{ semanticState.message }} · 已索引 {{ semanticState.indexed }} / {{ semanticState.total }} 段</div>
-                <n-button size="tiny" @click="toggleSemanticIndex">{{ semanticState?.enabled ? '关闭自动语义索引' : '为本书开启语义索引' }}</n-button>
-                <n-input v-model:value="sceneQuestion" placeholder="例如：那封信是谁交给他的？" @keyup.enter="searchScenes" />
-                <n-space><n-button size="small" :loading="sceneSearching" @click="searchScenes">找原文</n-button><n-button v-if="sceneHits.length" size="small" @click="askFromScene">用这个问题问 AI</n-button></n-space>
-                <div v-if="sceneMessage" class="subtle">{{ sceneMessage }}</div>
-                <button v-for="hit in sceneHits" :key="hit.id" class="memory-source" type="button" @click="jumpToMemorySource(hit)">{{ hit.chapterTitle }} · 第 {{ hit.paragraphIndex + 1 }} 段：{{ hit.excerpt }} · 查看原文</button>
-              </section>
-              <div class="ai-quick-questions">
-                <strong>常用问题</strong>
-                <span class="subtle">点一下只会填入输入框，确认发送后才调用模型。</span>
-                <div>
-                  <n-button v-for="question in QUICK_READING_QUESTIONS" :key="question" size="tiny" @click="prepareQuickQuestion(question)">{{ question }}</n-button>
-                </div>
-              </div>
               <div class="chat-messages">
+                <!-- 欢迎态：Sider 的新会话不铺表单，先给问候与可点的问题卡片。 -->
+                <div v-if="chatMessages.length === 0 && !chatLoading" class="sider-welcome">
+                  <div class="sider-welcome-logo" aria-hidden="true">✦</div>
+                  <h3>你好，想从哪里聊起？</h3>
+                  <p>我已读到「{{ currentChapter?.title || '当前章' }}」。问剧情、问人物、问生僻字词都行，需要原文时我自己去翻已读章节。</p>
+                  <span class="subtle">下面点一下只会填入输入框，确认发送后才调用模型。</span>
+                  <div class="sider-welcome-grid">
+                    <button
+                      v-for="question in QUICK_READING_QUESTIONS"
+                      :key="question"
+                      type="button"
+                      class="sider-welcome-card"
+                      @click="prepareQuickQuestion(question)"
+                    >{{ question }}</button>
+                  </div>
+                  <div class="sider-welcome-find">
+                    <n-input v-model:value="sceneQuestion" size="small" placeholder="找回情节：那封信是谁交给他的？" @keyup.enter="searchScenes" />
+                    <button class="chat-chip" type="button" :disabled="!sceneQuestion.trim() || sceneSearching" @click="searchScenes">找原文</button>
+                  </div>
+                  <div v-if="sceneMessage" class="subtle">{{ sceneMessage }}</div>
+                  <button v-for="hit in sceneHits" :key="hit.id" class="memory-source" type="button" @click="jumpToMemorySource(hit)">{{ hit.chapterTitle }} · 第 {{ hit.paragraphIndex + 1 }} 段：{{ hit.excerpt }} · 查看原文</button>
+                </div>
+                <div v-if="chatLoading && agentToolActivity" class="chat-tool-activity">{{ agentToolActivity }}…</div>
                 <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
                   <div class="chat-bubble">{{ msg.content }}</div>
                   <template v-if="msg.role === 'assistant'">
@@ -4358,20 +4584,32 @@ onUnmounted(() => {
                     >存为这段的批注</n-button>
                   </template>
                 </div>
-                <div v-if="chatMessages.length === 0 && !chatLoading" class="chat-empty">
-                  可询问已读内容，回答会附上可回到原文的依据。
-                </div>
+              </div>
+              <div v-if="chatMessages.length > 0" class="chat-topbar">
+                <span class="chat-topbar-count">{{ chatMessages.length }} 条消息 · 只读已读内容</span>
+                <button class="chat-topbar-btn" type="button" :disabled="chatLoading || assistantSaveRetrying" @click="clearChat">清空聊天</button>
               </div>
               <div class="chat-input-row">
-                <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="clearChat">
-                  确定清空这本书的全部 AI 问答记录吗？此操作无法撤销。
-                  <template #trigger>
-                    <n-button :disabled="chatLoading || assistantSaveRetrying || chatMessages.length === 0">清空聊天</n-button>
-                  </template>
-                </n-popconfirm>
-                <n-input v-model:value="chatInput" type="textarea" :rows="2" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
-                <n-button v-if="chatLoading" type="warning" @click="stopChat">停止生成</n-button>
-                <n-button v-else type="primary" :disabled="!chatInput.trim() || assistantBusyByKind.qa || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
+                <div class="sider-composer">
+                  <n-input v-model:value="chatInput" type="textarea" :rows="2" :autosize="{ minRows: 2, maxRows: 6 }" placeholder="有问题，随时问。也可以追问、让我读原文核对…" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
+                  <div class="sider-composer-bar">
+                    <div class="sider-composer-chips">
+                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'agent' }" title="模型自己决定查目录、读原文、检索、看记忆" @click="chatMode = 'agent'">对话</button>
+                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'evidence' }" title="单轮严格引用，每条结论绑定已读段落" @click="chatMode = 'evidence'">证据</button>
+                      <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="clearChat">
+                        确定清空这本书的全部 AI 问答记录吗？此操作无法撤销。
+                        <template #trigger>
+                          <button class="chat-chip" type="button" :disabled="chatLoading || assistantSaveRetrying || chatMessages.length === 0">清空</button>
+                        </template>
+                      </n-popconfirm>
+                    </div>
+                    <div class="sider-composer-send">
+                      <span class="sider-composer-task">{{ aiAssistantTaskLabel }}</span>
+                      <n-button v-if="chatLoading" type="warning" size="small" @click="stopChat">停止生成</n-button>
+                      <n-button v-else type="primary" size="small" :disabled="!chatInput.trim() || assistantBusyByKind.qa || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </n-tab-pane>
             <n-tab-pane name="notes" tab="笔记">
@@ -4512,22 +4750,181 @@ onUnmounted(() => {
         </n-drawer-content>
       </n-drawer>
 
-      <!-- Selection popup -->
+      <!-- 划词行内问答卡：
+           - 「询问 AI」：结合本书已读内容提问，支持「在侧边栏中继续」；
+           - 「解释字词」：单纯解释字词本身的读音与意思，不与书籍或文章内容挂钩。 -->
+      <Transition name="popup-scale">
+        <div
+          v-if="inlineAsk.open.value"
+          class="inline-ask"
+          role="dialog"
+          :aria-label="inlineAsk.mode.value === 'word' ? '解释字词' : '询问 AI'"
+          :style="inlineAskStyle"
+          @mousedown.stop
+          @mouseup.stop
+        >
+          <div class="inline-ask-head">
+            <strong class="inline-ask-title">{{ inlineAsk.mode.value === 'word' ? '解释字词' : '询问 AI' }}</strong>
+            <span class="inline-ask-subject">{{ inlineAsk.subject.value }}</span>
+            <button class="inline-ask-icon" type="button" title="关闭" aria-label="关闭询问" @click="inlineAsk.close()">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" /></svg>
+            </button>
+          </div>
+
+          <div class="inline-ask-input">
+            <n-input
+              v-model:value="inlineAsk.question.value"
+              type="textarea"
+              :rows="1"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              :placeholder="inlineAsk.mode.value === 'word' ? '继续追问该字词的读音、释义或用法（不关联书籍）…' : '结合本书已读内容，向 AI 询问上述内容…'"
+              :disabled="inlineAsk.busy.value"
+              @keydown.stop
+              @keyup.ctrl.enter="inlineAsk.submit()"
+            />
+            <button
+              class="inline-ask-send"
+              type="button"
+              title="发送（Ctrl+Enter）"
+              aria-label="发送"
+              :disabled="!inlineAsk.canSubmit.value"
+              @click="inlineAsk.submit()"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 16-8-5.5 16-3-6.5-7.5-1.5Z" /></svg>
+            </button>
+          </div>
+
+          <div v-if="inlineAsk.errorText.value" class="inline-ask-error">{{ inlineAsk.errorText.value }}</div>
+
+          <div v-if="inlineAsk.answer.value || inlineAsk.busy.value" class="inline-ask-body">
+            <div class="inline-ask-answer">{{ inlineAsk.answer.value }}<span v-if="inlineAsk.busy.value" class="inline-ask-caret">▍</span></div>
+          </div>
+
+          <div v-if="inlineAsk.status.value === 'ready' || inlineAsk.busy.value" class="inline-ask-foot">
+            <button class="inline-ask-continue" type="button" :disabled="!inlineAsk.turns.value.length" @click="inlineAsk.continueInSidebar()">
+              <span class="inline-ask-dot" aria-hidden="true">✦</span>在侧边栏中继续
+            </button>
+            <div class="inline-ask-tools">
+              <button class="inline-ask-icon" type="button" title="复制回答" aria-label="复制回答" @click="copyInlineAnswer">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="10" height="10" rx="2.2" /><path d="M15 6.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h.5" /></svg>
+              </button>
+              <button v-if="inlineAsk.busy.value" class="inline-ask-icon" type="button" title="停止生成" aria-label="停止生成" @click="stopInlineAsk">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2" /></svg>
+              </button>
+              <button v-else class="inline-ask-icon" type="button" title="重新问一次" aria-label="重新问一次" @click="inlineAsk.submit()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.6-5.9" /><path d="M4 4.5V10h5.5" /></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+
       <Transition name="popup-scale">
         <div
           v-if="showSelPopup"
-          class="sel-popup"
+          class="sel-bar sel-popup"
+          role="toolbar"
+          aria-label="划词操作"
           :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }"
+          @mousedown.prevent
         >
-          <n-button size="tiny" @click="copySelectedText">复制</n-button>
-          <n-button size="tiny" type="primary" @click="addHighlight">划线</n-button>
-          <n-button size="tiny" @click="openDirectNote">批注</n-button>
-          <n-button size="tiny" @click="translateSelectedText">翻译</n-button>
-          <n-button size="tiny" @click="askSelectedText('explain')">问 AI · 解释这段</n-button>
-          <n-button size="tiny" @click="askSelectedText('person')">这个人物是谁</n-button>
-          <n-button size="tiny" @click="askSelectedText('backstory')">这件事之前发生了什么</n-button>
+          <button
+            v-for="action in pinnedBarActions"
+            :key="action.id"
+            class="sel-bar-btn"
+            :class="{ 'sel-bar-btn-ai': SEL_AI_ACTIONS.has(action.id) }"
+            type="button"
+            :title="action.label"
+            :aria-label="action.aria"
+            :data-action="action.id"
+            @click="runSelectionAction(action.id)"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-bar-glyph"><path :d="SEL_ACTION_ICON[action.id]" /></svg>
+            <svg v-if="action.id === 'translate'" viewBox="0 0 24 24" aria-hidden="true" class="sel-bar-caret"><path d="m6 9 6 6 6-6" /></svg>
+          </button>
+          <button
+            class="sel-bar-btn"
+            type="button"
+            title="更多操作"
+            aria-label="更多操作"
+            :aria-expanded="showSelMenu"
+            @click="showSelMenu = !showSelMenu"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-bar-glyph">
+              <circle cx="12" cy="6" r="1.6" fill="currentColor" stroke="none" />
+              <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+              <circle cx="12" cy="18" r="1.6" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+          <span class="sel-bar-sep" />
+          <button class="sel-bar-btn" type="button" title="关闭" aria-label="关闭" @click="closeSelectionTools()">
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-bar-glyph"><path d="M7 7l10 10M17 7 7 17" /></svg>
+          </button>
         </div>
       </Transition>
+
+      <!--「⋯」展开的完整菜单：每项右侧图钉可钉住/取消，底部一条模型选择行。-->
+      <Transition name="popup-scale">
+        <div
+          v-if="showSelPopup && showSelMenu"
+          class="sel-menu"
+          role="menu"
+          aria-label="划词更多操作"
+          :style="selMenuStyle"
+          @mousedown.prevent
+        >
+          <button
+            v-for="(action, index) in SELECTION_ACTIONS"
+            :key="action.id"
+            class="sel-menu-item"
+            :class="{ 'sel-menu-item-pinned': isPinned(action.id), 'sel-menu-item-first-ai': index === SEL_MENU_DIVIDER_AT }"
+            type="button"
+            role="menuitem"
+            :data-action="action.id"
+            @click="runSelectionAction(action.id)"
+          >
+            <svg class="sel-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path :d="SEL_ACTION_ICON[action.id]" /></svg>
+            <span class="sel-menu-label">{{ action.label }}</span>
+            <span
+              class="sel-menu-pin"
+              :class="{ 'sel-menu-pin-on': isPinned(action.id) }"
+              role="button"
+              tabindex="0"
+              :title="isPinned(action.id) ? '取消钉住' : '钉住到工具栏'"
+              :aria-label="isPinned(action.id) ? `从工具栏移除${action.label}` : `钉住${action.label}`"
+              :aria-pressed="isPinned(action.id)"
+              @click.stop="onTogglePin(action.id)"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 5 3.5 3.5-4.5 1.5-3 3V21h-1v-5l-3-3L13 9 9 3Z" /></svg>
+            </span>
+          </button>
+
+          <div class="sel-menu-footer">
+            <div class="sel-model-picker" role="button" tabindex="0" :aria-expanded="showModelMenu" @click.stop="showModelMenu = !showModelMenu">
+              <span class="sel-model-dot" aria-hidden="true">✦</span>
+              <span class="sel-model-name">{{ aiModelLabel }}</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-model-caret"><path d="m6 9 6 6 6-6" /></svg>
+            </div>
+            <button class="sel-menu-gear" type="button" title="模型与提示词设置" aria-label="模型设置" @click.stop="emit('go-settings')">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </button>
+          </div>
+
+          <div v-if="showModelMenu" class="sel-model-menu" role="menu" aria-label="选择模型">
+            <button
+              v-for="option in aiModelOptions"
+              :key="option.value"
+              class="sel-model-option"
+              :class="{ 'sel-model-option-on': option.value === aiModelValue }"
+              type="button"
+              role="menuitem"
+              @click.stop="applyAiModel(option.value)"
+            >{{ option.label }}</button>
+            <div class="sel-model-hint">模型与提示词在设置里改；这里只能切换到已配置好的那几个。</div>
+          </div>
+        </div>
+      </Transition>
+
 
       <div v-if="showDirectNote" class="direct-note-editor" :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }">
         <strong>添加批注</strong>
@@ -4853,18 +5250,365 @@ onUnmounted(() => {
 :deep(mark.hl-mark.hl-red) { background: var(--hl-red-bg); }
 :deep(mark.hl-mark.hl-purple) { background: var(--hl-purple-bg); }
 
-.sel-popup {
+/*
+ * 划词工具条：按 Sider 扩展注入的真实 DOM 规格复刻。
+ * 实测取自 sider.ai 页面内 `[aria-label="询问AI"]` 所在的工具条：
+ *   外层：absolute rounded-xl（圆角 12px），实测 191×30，text-sm
+ *   内层：flex-center gap-1 p-[2px] overflow-hidden rounded-lg shadow-black-middle
+ *         → gap 4px、padding 2px、圆角 8px
+ *   按钮：p-0 rounded-lg，26×26；图标 viewBox 0 0 14 14，渲染 14×14px
+ * 因此图标比截图目测的小，这是 Sider 的真实尺寸，不再按图片估。
+ */
+.sel-bar {
   position: fixed;
   z-index: 1000;
   display: flex;
-  flex-wrap: wrap;
-  width: min(360px, calc(100vw - 16px));
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
   background: var(--popover-bg);
-  border: 1px solid var(--r-line);
-  border-radius: var(--radius-overlay);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(13, 15, 12, 0.12), 0 1px 2px rgba(13, 15, 12, 0.08);
+}
+
+.sel-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #2f3330;
+  cursor: pointer;
+}
+
+.sel-bar-btn:hover { background: rgba(13, 15, 12, 0.06); }
+
+.sel-bar-glyph {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 翻译项的下拉箭头：与 Sider 一样贴着图标右侧，比主图标小一号。 */
+.sel-bar-caret {
+  width: 8px;
+  height: 8px;
+  margin-left: -1px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.7;
+}
+
+/* AI 项用品牌色，与其余单色图标区分开。 */
+.sel-bar-btn-ai { color: #7c5cff; }
+
+.sel-bar-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 1px;
+  background: rgba(13, 15, 12, 0.1);
+}
+
+/* 点「⋯」后展开的竖向菜单：分组列表 + 底部说明。 */
+.sel-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  width: 268px;
+  background: var(--popover-bg);
+  border: 1px solid rgba(13, 15, 12, 0.08);
+  border-radius: 14px;
+  padding: 6px;
+  box-shadow: 0 8px 28px rgba(13, 15, 12, 0.14), 0 2px 6px rgba(13, 15, 12, 0.06);
+}
+
+.sel-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--r-text);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sel-menu-item:hover { background: var(--popover-hover, rgba(127, 127, 127, 0.12)); }
+.sel-menu-item:disabled { opacity: 0.45; cursor: default; }
+/* 文稿类与 AI 类之间用上边框分段，不额外插一条元素。 */
+.sel-menu-item-first-ai { margin-top: 5px; border-top: 1px solid rgba(13, 15, 12, 0.08); border-radius: 0 0 9px 9px; padding-top: 10px; }
+.sel-menu-item-pinned .sel-menu-label { font-weight: 500; }
+.sel-menu-icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; opacity: 0.72; }
+.sel-menu-icon-fill { fill: #7c5cff; stroke: none; opacity: 1; }
+.sel-menu-label { flex: 1; }
+.sel-menu-hint { color: var(--r-text-dim, rgba(127, 127, 127, 0.9)); font-size: 12px; }
+/* 图钉：未钉住灰色描边，钉住填品牌紫，一眼能分辨。 */
+.sel-menu-pin {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-left: 4px;
+  border-radius: 6px;
+  color: rgba(13, 15, 12, 0.35);
+  cursor: pointer;
+}
+.sel-menu-pin:hover { background: rgba(13, 15, 12, 0.06); color: rgba(13, 15, 12, 0.6); }
+.sel-menu-pin svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.sel-menu-pin-on { color: #7c5cff; }
+.sel-menu-pin-on svg { fill: currentColor; stroke: none; }
+.sel-menu-divider { height: 1px; margin: 4px 6px; background: var(--r-line); }
+
+/* 底部模型行：左侧模型选择器（可展开），右侧设置入口。 */
+.sel-menu-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(13, 15, 12, 0.08);
+}
+
+.sel-model-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--surface-3, rgba(127, 127, 127, 0.1));
+  color: var(--r-text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.sel-model-picker:hover { background: var(--surface-2, rgba(127, 127, 127, 0.14)); }
+.sel-model-dot { color: #7c5cff; font-size: 13px; line-height: 1; }
+.sel-model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+.sel-model-caret { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0.6; }
+
+.sel-menu-gear {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--r-muted);
+  cursor: pointer;
+}
+.sel-menu-gear:hover { background: rgba(13, 15, 12, 0.06); color: var(--r-text); }
+.sel-menu-gear svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* 模型下拉：向上展开，避免被屏幕底边裁掉。 */
+.sel-model-menu {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 44px;
+  padding: 5px;
+  border: 1px solid rgba(13, 15, 12, 0.08);
+  border-radius: 10px;
+  background: var(--popover-bg);
+  box-shadow: 0 8px 24px rgba(13, 15, 12, 0.16);
+}
+.sel-model-option {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--r-text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.sel-model-option:hover { background: rgba(13, 15, 12, 0.06); }
+.sel-model-option-on { color: #7c5cff; font-weight: 600; }
+.sel-model-hint { padding: 6px 9px 2px; color: var(--r-muted); font-size: 11px; line-height: 1.5; }
+.sel-menu-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
   padding: 6px 8px;
-  box-shadow: var(--shadow-overlay), var(--popover-ring);
+  border-top: 1px solid var(--r-line);
+  color: var(--r-text-dim, rgba(127, 127, 127, 0.9));
+  font-size: 12px;
+}
+
+/* 运行信息：默认折叠的一行，展开才是模型端点/已读截止/用量这类核对信息。 */
+.ai-runtime-info {
+  margin-bottom: 8px;
+  border: 1px solid var(--r-line);
+  border-radius: 8px;
+  background: var(--surface-3, rgba(127, 127, 127, 0.06));
+}
+
+.ai-runtime-info > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: var(--r-muted);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ai-runtime-info > summary::-webkit-details-marker { display: none; }
+.ai-runtime-info > summary::after { content: '⌄'; margin-left: auto; opacity: 0.6; }
+.ai-runtime-info[open] > summary::after { content: '⌃'; }
+.ai-runtime-info > summary > span:first-child { color: var(--r-text); font-weight: 500; }
+.ai-runtime-info .ai-assistant-heading { padding: 0 10px 8px; }
+.ai-runtime-info .ai-budget-status,
+.ai-runtime-info .ai-assistant-status,
+.ai-runtime-info .subtle { margin: 0 10px 8px; }
+
+/* 划词行内问答卡：挂在选区下方的小窗，比侧栏轻，一问一答不占屏幕。 */
+.inline-ask {
+  position: fixed;
+  z-index: 1002;
+  display: flex;
+  flex-direction: column;
+  max-height: min(60vh, 520px);
+  border: 1px solid rgba(13, 15, 12, 0.1);
+  border-radius: 14px;
+  background: var(--popover-bg);
+  box-shadow: 0 12px 32px rgba(13, 15, 12, 0.18), 0 2px 8px rgba(13, 15, 12, 0.08);
+  overflow: hidden;
+}
+
+.inline-ask-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 6px;
+}
+
+.inline-ask-title { font-size: 13px; font-weight: 600; }
+.inline-ask-subject {
+  flex: 1;
+  min-width: 0;
+  color: var(--r-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inline-ask-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--r-muted);
+  cursor: pointer;
+}
+.inline-ask-icon:hover { background: rgba(13, 15, 12, 0.06); color: var(--r-text); }
+.inline-ask-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+.inline-ask-input {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin: 0 8px;
+  padding: 4px 4px 4px 8px;
+  border: 1px solid var(--r-line);
+  border-radius: 10px;
+  background: var(--card);
+}
+.inline-ask-input :deep(.n-input),
+.inline-ask-input :deep(.n-input .n-input__border),
+.inline-ask-input :deep(.n-input .n-input__state-border) { border: 0 !important; box-shadow: none !important; background: transparent !important; }
+
+.inline-ask-send {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #7c5cff;
+  cursor: pointer;
+}
+.inline-ask-send:hover:not(:disabled) { background: rgba(124, 92, 255, 0.1); }
+.inline-ask-send:disabled { opacity: 0.4; cursor: default; }
+.inline-ask-send svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+.inline-ask-error { margin: 6px 10px 0; color: var(--danger); font-size: 12px; }
+
+.inline-ask-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 8px 10px 0;
+}
+.inline-ask-answer { color: var(--r-text); font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
+.inline-ask-caret { color: #7c5cff; }
+
+.inline-ask-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid rgba(13, 15, 12, 0.06);
+}
+
+/* 「在侧边栏中继续」：品牌色胶囊，与 Sider 那个入口同位置同分量。 */
+.inline-ask-continue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(124, 92, 255, 0.12);
+  color: #6b4ce8;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.inline-ask-continue:hover:not(:disabled) { background: rgba(124, 92, 255, 0.18); }
+.inline-ask-continue:disabled { opacity: 0.5; cursor: default; }
+.inline-ask-dot { font-size: 12px; }
+.inline-ask-tools { display: flex; align-items: center; gap: 2px; }
+
+.chat-tool-activity {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--r-text-dim, rgba(127, 127, 127, 0.9));
+  font-size: 12px;
 }
 
 .popup-scale-enter-active,
@@ -5464,6 +6208,156 @@ onUnmounted(() => {
   padding: 40px 20px;
   font-size: 13px;
 }
+
+/* ── Sider 式问答界面：欢迎态 + 大圆角输入卡片 ───────────────────── */
+
+.sider-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 8px 8px;
+  text-align: center;
+}
+
+.sider-welcome-logo {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #7c5cff, #b06bff 55%, #ff9ecd);
+  color: #fff;
+  font-size: 20px;
+  box-shadow: 0 6px 18px rgba(124, 92, 255, 0.28);
+}
+
+.sider-welcome h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.sider-welcome p { margin: 0; max-width: 300px; color: var(--r-muted); font-size: 12px; line-height: 1.6; }
+
+.sider-welcome-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.sider-welcome-card {
+  padding: 10px;
+  border: 1px solid var(--r-line);
+  border-radius: 12px;
+  background: var(--surface-3, rgba(127, 127, 127, 0.06));
+  color: var(--r-text);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.sider-welcome-card:hover {
+  border-color: var(--active-chapter);
+  background: var(--surface-2, rgba(127, 127, 127, 0.1));
+}
+
+.sider-welcome-find {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  align-items: center;
+}
+
+.chat-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--r-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--r-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chat-chip:hover:not(:disabled) { color: var(--r-text); border-color: var(--active-chapter); }
+.chat-chip:disabled { opacity: 0.45; cursor: default; }
+.chat-chip-on {
+  color: var(--active-chapter);
+  border-color: var(--active-chapter);
+  background: color-mix(in srgb, var(--active-chapter) 12%, transparent);
+}
+
+.sider-composer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border: 1px solid var(--r-line);
+  border-radius: 16px;
+  background: var(--card);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.sider-composer :deep(.n-input),
+.sider-composer :deep(.n-input .n-input__textarea),
+.sider-composer :deep(.n-input .n-input__border),
+.sider-composer :deep(.n-input .n-input__state-border) {
+  border: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
+.sider-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 8px;
+}
+
+.sider-composer-chips { display: flex; align-items: center; gap: 6px; }
+.sider-composer-send { display: flex; align-items: center; gap: 8px; }
+.sider-composer-task { color: var(--r-muted); font-size: 12px; }
+
+:deep(.n-drawer-header__main)::before {
+  content: '✦';
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #7c5cff, #b06bff 55%, #ff9ecd);
+  color: #fff;
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+/* 会话主体铺满抽屉：Sider 的对话区就是整块面板，不留多余留白。 */
+:deep(.n-drawer-body-content-wrapper) { padding-top: 4px; }
+
+.chat-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px 8px;
+  border-bottom: 1px solid var(--r-line);
+}
+
+.chat-topbar-btn {
+  border: 0;
+  background: transparent;
+  color: var(--r-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.chat-topbar-btn:hover:not(:disabled) { color: var(--r-text); background: var(--surface-3, rgba(127, 127, 127, 0.1)); }
+.chat-topbar-btn:disabled { opacity: 0.45; cursor: default; }
+.chat-topbar-count { color: var(--r-muted); font-size: 11px; }
 
 .chat-input-row {
   display: flex;

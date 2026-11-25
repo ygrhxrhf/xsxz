@@ -1656,6 +1656,27 @@ const SPECS: readonly CapabilitySpec[] = [
     coreToolset: true,
   },
   {
+    channel: 'ai.agentChat',
+    title: '与阅读搭子对话',
+    tier: 'write',
+    confirm: 'dry-run',
+    deps: ['key', 'disk'],
+    params: obj({
+      bookId: str('书籍 ID'),
+      chapterId: str('当前章节 ID'),
+      messages: {
+        type: 'array',
+        description: '对话消息；最后一条 user 消息即本轮问题，之前的作为多轮上下文',
+        items: { type: 'object', description: 'AiChatMessage', additionalProperties: true },
+        required: true,
+      },
+    }),
+    result: 'AiJobStart',
+    description:
+      '多轮对话 agent（pi 内核）：模型自主调用工具查看章节目录、读已读章节、检索已读原文、查记忆与笔记，适合追问与跨章综合；与只读已读前沿一致，未读正文不会发送。回答文本与引用经 job_wait/job_status 取。',
+    coreToolset: true,
+  },
+  {
     channel: 'ai.getChat',
     title: '读取问答历史',
     tier: 'read',

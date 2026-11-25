@@ -11,7 +11,7 @@
  */
 import * as THREE from 'three'
 import { drawPageTexture, type PageTexturePlan, type RealBookTextureStyle } from './realBookTexture'
-import { collectFontFaces, selectFontFaces, type FontFaceSpec } from './realBookFontFaces'
+import { collectFontFaces, type FontFaceSpec } from './realBookFontFaces'
 
 interface RenderJob {
   key: string
@@ -36,22 +36,12 @@ type WorkerResponse =
   | { t: 'done'; id: number; bitmap: ImageBitmap }
   | { t: 'fail'; id: number; error: string }
 
-function collectPageText(plan: PageTexturePlan): string {
-  let text = `${plan.header}${plan.footer}${plan.chapterTitle}`
-  for (const line of plan.lines) text += line.text
-  for (const box of plan.notes) {
-    text += box.note.text
-    if (box.note.tags?.length) text += box.note.tags.join('')
-  }
-  for (const image of plan.images) text += image.caption
-  return text
-}
-
 export class RealBookTextureRasterizer {
   private readonly onReady: (key: string) => void
   private readonly limit: number
   private readonly maxAnisotropy: number
-  private readonly faces: FontFaceSpec[]
+  private faces: FontFaceSpec[]
+  private readonly sentFontUrls = new Set<string>()
   private readonly cache = new Map<string, RenderJob>()
   private readonly jobsById = new Map<number, RenderJob>()
   private worker: Worker | null = null
@@ -119,7 +109,12 @@ export class RealBookTextureRasterizer {
     const id = this.nextId++
     try {
       const images = await this.collectImages(job)
-      const fonts = selectFontFaces(this.faces, collectPageText(job.plan))
+      if (!this.faces.length) this.faces = collectFontFaces()
+      // Chromium Worker 的 OffscreenCanvas 在首次使用某字号绘制某字体族后会锁定当时的分片表，
+      // 翻页后再增量 self.fonts.add 新分片不会刷新同字号缓存，未在首帧前就绪的字会回退到系统宋体。
+      // 因此在首帧绘制前把尚未发给 Worker 的全部字体分片一次性带过去加载。
+      const fonts = this.faces.filter((face) => !this.sentFontUrls.has(face.url))
+      for (const face of fonts) this.sentFontUrls.add(face.url)
       this.jobsById.set(id, job)
       // style 里的 images（Map）不传：图片单独走 ImageBitmap 记录。
       const style = { ...job.style, images: undefined } as RealBookTextureStyle

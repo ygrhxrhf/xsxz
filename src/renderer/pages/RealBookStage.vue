@@ -58,6 +58,8 @@ import {
   type RealBookEndpaper,
 } from './realBookWebGLModel'
 import { localOfMerged, windowIndexOf, type RealBookWindow, type RealBookWindowChapter } from './realBookWindow'
+import { readerWheelIntent } from './realBookViewGestures'
+import { canPageFrom, pageKeyDirection } from './realBookReaderKeyboard'
 
 interface HighlightSpan {
   /** 段落下标（原始下标，与经典模式一致） */
@@ -1149,22 +1151,19 @@ function clampZoom(value: number): number {
 }
 
 function onWheel(e: WheelEvent): void {
-  // WebGL 复刻沿用参考站：滚轮缩放，翻页交给按钮/方向键/拖页。
-  if (effectiveRenderer.value) {
-    const delta = Math.max(-120, Math.min(120, e.deltaY))
-    zoom.value = clampZoom(zoom.value * Math.exp(-delta * 0.001))
+  const host = hostRef.value
+  if (!host) return
+  const viewport = { clientWidth: host.clientWidth, clientHeight: host.clientHeight }
+  const intent = readerWheelIntent(e, viewport)
+  if (intent.kind === 'zoom') {
+    zoom.value = clampZoom(zoom.value * intent.factor)
     e.preventDefault()
     return
   }
-  if (e.ctrlKey) {
-    // CSS 3D 回退：双指捏合在桌面端会带 ctrlKey；这是缩放，不翻页。
-    zoom.value = clampZoom(zoom.value - e.deltaY * 0.002)
-    e.preventDefault()
-    return
-  }
-  if (Math.abs(e.deltaY) < 8) return
+  // pan: on desktop, wheel without modifier pans (turns pages)
+  if (Math.abs(intent.y) < 8) return
   e.preventDefault()
-  if (e.deltaY > 0) nextPage()
+  if (intent.y > 0) nextPage()
   else prevPage()
 }
 
@@ -1535,10 +1534,11 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
   const page = pages.value[index]
   if (!page) return null
   if (page.special) {
-    return { pageNumber: index + 1, chapterTitle: '', header: '', special: page.special, label: '', items: [] }
+    return { pageNumber: index + 1, chapterTitle: '', header: '', special: page.special, label: '', items: [], source: page.source }
   }
   if (!page.items.length) return null
   const items: Array<RealBookTexturePage['items'][number]> = []
+  const sourceMarks: Array<{ start: number; end: number; color: string }> = []
   for (const item of page.items) {
     if (item.kind === 'image') {
       items.push({
@@ -1553,7 +1553,18 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
     }
     if (item.kind === 'note') {
       const note = props.notes.find((candidate) => candidate.id === item.noteId)
-      if (note) items.push({ kind: 'note', note, height: item.height })
+      // 便签片段数据（lines/continued/continues/textColor）原样透传，纹理层交给上游 renderPage 内联绘制。
+      if (note) {
+        items.push({
+          kind: 'note',
+          note,
+          height: item.height,
+          continued: item.continued,
+          continues: item.continues,
+          lines: item.lines,
+          textColor: item.textColor,
+        })
+      }
       continue
     }
     const paragraphText = props.paragraphs[item.paragraph] ?? ''
@@ -1575,6 +1586,10 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
       .filter((highlight) => highlight.index === original)
       .map((highlight) => ({ start: highlight.start, end: highlight.end, color: highlight.color }))
     const noteMarks = (noteMarksByParagraph.value.get(original) ?? []).map((mark) => mark.offset)
+    const base = page.paragraphStarts?.get(item.paragraph)
+    if (base !== undefined) {
+      for (const highlight of highlights) sourceMarks.push({ start: base + highlight.start, end: base + highlight.end, color: highlight.color })
+    }
     items.push({
       kind: 'text',
       text: props.paragraphs[item.paragraph] ?? '',
@@ -1593,6 +1608,8 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
     header,
     label: page.label,
     items,
+    source: page.source,
+    sourceMarks,
   }
 }
 
@@ -2098,6 +2115,23 @@ onMounted(() => {
     retry(0)
   }
   document.fonts?.addEventListener?.('loadingdone', fontListener)
+
+  // Keyboard navigation (ArrowLeft/Right, PageUp/Down, Space)
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (!canPageFrom(e.target, e.key)) return
+    const dir = pageKeyDirection(e.key, e.shiftKey)
+    if (dir === 1) {
+      e.preventDefault()
+      nextPage()
+    } else if (dir === -1) {
+      e.preventDefault()
+      prevPage()
+    }
+  }
+  window.addEventListener('keydown', onKeyDown)
+  ;(hostRef.value as HTMLElement | null)?.addEventListener('keydown', onKeyDown)
+  // Store cleanup
+  ;(window as unknown as { __rbKeydown?: typeof onKeyDown }).__rbKeydown = onKeyDown
 })
 
 onBeforeUnmount(() => {
@@ -2109,6 +2143,11 @@ onBeforeUnmount(() => {
   fontReloadTimer = 0
   stopFlipAnimation()
   for (const id of [...runTimers.keys()]) clearRunTimer(id)
+  const kd = (window as unknown as { __rbKeydown?: (e: KeyboardEvent) => void }).__rbKeydown
+  if (kd) {
+    window.removeEventListener('keydown', kd)
+    ;(hostRef.value as HTMLElement | null)?.removeEventListener('keydown', kd)
+  }
 })
 
 /** 已读上界：右页最后一段的末尾（段落下标 + 段内偏移），与经典模式同构。 */
@@ -2294,6 +2333,7 @@ defineExpose({
         @peel-end="onPeelEnd"
         @edit-note="emit('edit-note', $event)"
         @select-range="emit('select-range', $event)"
+        @select="onStageMouseup"
         @cross-turn="onWebglCrossTurn"
         @unsupported="handleWebglUnsupported"
       />

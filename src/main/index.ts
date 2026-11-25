@@ -150,6 +150,8 @@ import {
   parseFollowSetPayload,
 } from './aiFollowIpcValidation'
 import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
+import { runReaderAgent, buildReaderAgentSystemPrompt, formatMemoryDigest } from './aiAgent'
+import { renderedParagraphs } from '../shared/aiText'
 import { indexingText, queueWaitingText } from './aiStageCopy'
 import { BookOverviewService } from './bookOverview'
 import { confirmLegacyReadRange, getReadFrontier, isFullyRead, markReadFrontier, readClippedChapter, readableCitations, visibleMemory } from './readFrontier'
@@ -2033,6 +2035,134 @@ function registerIpc(): void {
   ipcMain.handle('ai.cancel', (_e, payload?: { jobId?: string }) => {
     aiQueue.cancel(payload?.jobId)
     return { ok: true }
+  })
+
+  /**
+   * AI 对话：pi 驱动的多轮 agent，模型自己决定查目录、读原文、检索、看记忆。
+   * 与证据问答并存而不是替换它——证据问答每条结论强制绑引用，适合「核对剧情」；
+   * 这里适合「聊着读」，追问和跨章综合不会被单轮流水线卡住。
+   */
+  ipcMain.handle('ai.agentChat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
+    try {
+      const book = await getBook(args.bookId)
+      const frontier = await getReadFrontier(args.bookId)
+      const progressChapterId = book.progress?.chapterId
+      if (!progressChapterId) return { ok: false, message: '还没有阅读进度，先阅读一章再和 AI 聊。' }
+      if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) return { ok: false, message: '章节不存在' }
+      const question = [...args.messages].reverse().find((message) => message.role === 'user')?.content.trim() ?? ''
+      if (!question) return { ok: false, message: '请输入问题' }
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const config = trustedAiConfig(settings, apiKey)
+      const ordered = [...book.chapters].sort((left, right) => left.index - right.index)
+      const progressPosition = ordered.findIndex((chapter) => chapter.id === progressChapterId)
+      if (progressPosition < 0) return { ok: false, message: '还没有阅读进度，先阅读一章再和 AI 聊。' }
+      const readable = new Set(ordered.slice(0, progressPosition + 1)
+        .filter((chapter) => chapter.status === 'ready' && Boolean(frontier.chapters[chapter.id]))
+        .map((chapter) => chapter.id))
+      const history = args.messages.slice(0, -1).filter((message): message is { role: 'user' | 'assistant'; content: string } => message.role !== 'system')
+
+      return aiStart({
+        lane: 'interactive', cls: 'qa', bookId: args.bookId,
+        dedupeKey: `agent:${args.bookId}:${args.chapterId}:${question}`,
+      }, async (jobId, signal) => {
+        let partial = ''
+        const citations: AiCitation[] = []
+        try {
+          const result = await runReaderAgent({
+            config: { baseUrl: config.baseUrl, model: config.model, apiKey: config.apiKey },
+            systemPrompt: buildReaderAgentSystemPrompt(book.title, ordered[progressPosition]!.title),
+            history,
+            question,
+            signal,
+            onDelta: (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
+            onTool: (event) => sendAiStage(jobId, event.phase === 'start' ? 'indexing' : 'requesting', event.label),
+            onCitations: (items) => sendAiEvidence(jobId, items, progressChapterId),
+            toolkit: {
+              listChapters: async () => Promise.all(ordered.map(async (chapter) => {
+                const body = await readChapter(args.bookId, chapter.id).catch(() => null)
+                const clipped = frontier.chapters[chapter.id]
+                const paragraphs = renderedParagraphs(body?.body ?? '')
+                const readRatio = !clipped || !paragraphs.length
+                  ? 0
+                  : isFullyRead(body?.body ?? '', clipped)
+                    ? 1
+                    : Math.min(0.99, (clipped.paragraphIndex + clipped.characterOffset / Math.max(1, paragraphs[clipped.paragraphIndex]?.length ?? 1)) / paragraphs.length)
+                return { id: chapter.id, index: chapter.index, title: chapter.title, readRatio }
+              })),
+              readChapter: async (chapterId) => {
+                const chapter = ordered.find((item) => item.id === chapterId)
+                if (!chapter) throw new Error('章节不存在')
+                // 未读章一律不给：正文进模型就等于把没读的内容送出去。
+                if (!readable.has(chapterId)) {
+                  throw new Error(`《${chapter.title}》读者还没读到，无法引用；请只使用已读章节。`)
+                }
+                const clipped = (await readClippedChapter(args.bookId, chapterId, frontier)).body
+                if (clipped.length > 12000) {
+                  return { title: chapter.title, body: `${clipped.slice(0, 12000)}\n\n（本章过长，已截断前 12000 字；需要细节请用 search_read_text）`, full: false }
+                }
+                return { title: chapter.title, body: clipped, full: isFullyRead((await readChapter(args.bookId, chapterId)).body, frontier.chapters[chapterId]) }
+              },
+              searchReadText: async (query) => {
+                const { citations: hits } = await retrieveLocalEvidence({
+                  bookId: args.bookId,
+                  chapters: ordered,
+                  query: { originalQuestion: query },
+                  options: {
+                    requestedUptoChapterId: progressChapterId,
+                    progressChapterId,
+                    currentChapterId: args.chapterId,
+                  },
+                  readBody: async (chapterId) => ({
+                    body: (await readClippedChapter(args.bookId, chapterId, frontier)).body,
+                    status: (await readChapter(args.bookId, chapterId)).status,
+                  }),
+                  stopped: () => signal.aborted,
+                })
+                return hits
+              },
+              memoryDigest: async () => {
+                const memory = await visibleMemory(args.bookId, await readAiMemory(args.bookId), frontier)
+                return memory ? formatMemoryDigest(memory) : ''
+              },
+              chapterNotesDigest: async (chapterId) => {
+                const notes = await listChapterNotes(args.bookId)
+                const visibleNotes = notes.filter((note) => !chapterId || note.chapterId === chapterId)
+                return visibleNotes.slice(-8).map((note) =>
+                  `《${ordered.find((chapter) => chapter.id === note.chapterId)?.title ?? note.chapterId}》\n${note.text}`).join('\n\n')
+              },
+            },
+          })
+          citations.push(...result.citations)
+          const stopped = result.stopReason === 'stopped'
+          const answerMessages: import('../shared/types').AiEvidenceChatMessage[] = [
+            { role: 'user', content: question },
+            { role: 'assistant', content: result.text, citations: result.citations, uptoChapterId: progressChapterId, ...(stopped ? { stopped: true } : {}) },
+          ]
+          const existing = await readChat(args.bookId)
+          await saveAiDone(jobId, {
+            jobId, ok: true, text: result.text, citations: result.citations, uptoChapterId: progressChapterId,
+            ...(stopped ? { stopped: true } : {}),
+          }, () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { version: existing.version }), {
+            retrySave: () => writeChat(args.bookId, [...existing.messages, ...answerMessages]),
+          })
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
+            return
+          }
+          mainWindow?.webContents.send('ai.done', {
+            jobId, ok: false, message: e instanceof Error ? e.message : String(e),
+          })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   ipcMain.handle('ai.storySoFar', async (_e, unsafePayload?: unknown) => {

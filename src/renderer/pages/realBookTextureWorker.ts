@@ -26,19 +26,32 @@ interface WorkerScope {
 const scope = self as unknown as WorkerScope
 const loadedFonts = new Set<string>()
 const failedFonts = new Set<string>()
+const loadingFonts = new Map<string, Promise<void>>()
 
 async function ensureFonts(fonts: readonly FontFaceSpec[]): Promise<void> {
-  await Promise.all(fonts.map(async (font) => {
-    if (loadedFonts.has(font.url) || failedFonts.has(font.url)) return
-    try {
-      const face = new FontFace(font.family, `url(${font.url})`, { style: font.style, weight: font.weight })
-      scope.fonts.add(await face.load())
-      loadedFonts.add(font.url)
-    } catch {
-      // 单个子集失败不拖垮整页：缺的字会落到系统回退字体。
-      failedFonts.add(font.url)
-    }
-  }))
+  for (const font of fonts) {
+    if (loadedFonts.has(font.url) || failedFonts.has(font.url) || loadingFonts.has(font.url)) continue
+    const pending = (async () => {
+      try {
+        const face = new FontFace(font.family, `url(${font.url})`, {
+          style: font.style,
+          weight: font.weight,
+          ...(font.range ? { unicodeRange: font.range } : {}),
+        })
+        scope.fonts.add(await face.load())
+        loadedFonts.add(font.url)
+      } catch {
+        // 单个子集失败不拖垮整页：缺的字会落到系统回退字体。
+        failedFonts.add(font.url)
+      } finally {
+        loadingFonts.delete(font.url)
+      }
+    })()
+    loadingFonts.set(font.url, pending)
+  }
+  if (loadingFonts.size > 0) {
+    await Promise.all([...loadingFonts.values()])
+  }
 }
 
 scope.onmessage = async (event) => {

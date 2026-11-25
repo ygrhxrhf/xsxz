@@ -9,7 +9,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { PAGE_TEXTURE_HEIGHT, PAGE_TEXTURE_WIDTH, buildPageTexturePlan, wrapTextureText, type PageTextureLine, type PageTexturePlan, type RealBookTexturePage, type RealBookTextureStyle } from './realBookTexture'
-import { imageBlockLayout, noteBlockLayout, type PageImageLayout, type PageNoteLayout, type PageTextRun } from './realBookBlocks'
+import { imageBlockLayout, type PageImageLayout, type PageTextRun } from './realBookBlocks'
 import type { RealBookSceneFlip, RealBookWebGLScene } from './realBookWebGLScene'
 import { quadToMatrix3d, highlightRects, noteDots, type PageScreenQuad, type PageMarkRect, type PageNoteDot } from './realBookTextLayer'
 import { flyerFacePages, flyerPieceMatrix, splitFlyerLine, type FlyerTextPiece } from './realBookFlyerText'
@@ -23,6 +23,8 @@ import {
 import { BOOK_WIDTH, DEFAULT_ZOOM, type RealBookDesk, type RealBookEndpaper } from './realBookWebGLModel'
 import { curlReach } from './realBookLeafSim'
 import { clampPitch, DEFAULT_TILT_DEG, MAX_TILT_DEG, TILT_SENSITIVITY } from './realBookPitch'
+import { readerWheelIntent } from './realBookViewGestures'
+import { canPageFrom, pageKeyDirection } from './realBookReaderKeyboard'
 
 const props = withDefaults(defineProps<{
   leftPage: RealBookTexturePage | null
@@ -116,6 +118,8 @@ const emit = defineEmits<{
   (event: 'edit-note', id: string): void
   /** 跨页选择完成：两端坐标 + 松手位置。 */
   (event: 'select-range', range: CrossSelectionRange): void
+  /** 文本层里选完字松手：交给 Reader 抬起划词工具条（停冒泡后由这里转发）。 */
+  (event: 'select', event: MouseEvent): void
   /** 跨页选择请求翻页：只允许本章内翻页，不能触发续章。 */
   (event: 'cross-turn', direction: 1 | -1): void
   (event: 'unsupported'): void
@@ -364,12 +368,6 @@ const blockTools = {
   wrap: (text: string, fontSize: number, maxWidth: number): string[] => wrapTextAt(fontSize, text, maxWidth),
 }
 const blockStyle = computed(() => ({ fontSize: props.fontSize, lineHeight: textLineHeight.value }))
-const leftNoteBlocks = computed<PageNoteLayout[]>(() => (leftPlan.value
-  ? leftPlan.value.notes.map((box) => noteBlockLayout(box, blockStyle.value, blockTools))
-  : []))
-const rightNoteBlocks = computed<PageNoteLayout[]>(() => (rightPlan.value
-  ? rightPlan.value.notes.map((box) => noteBlockLayout(box, blockStyle.value, blockTools))
-  : []))
 const leftImageBlocks = computed<PageImageLayout[]>(() => (leftPlan.value
   ? leftPlan.value.images.map((box) => imageBlockLayout(box, blockStyle.value, blockTools))
   : []))
@@ -377,15 +375,14 @@ const rightImageBlocks = computed<PageImageLayout[]>(() => (rightPlan.value
   ? rightPlan.value.images.map((box) => imageBlockLayout(box, blockStyle.value, blockTools))
   : []))
 
-/** 批注卡与图注的所有文字行，按页面坐标逐行绝对定位。 */
-function allRuns(notes: PageNoteLayout[], images: PageImageLayout[]): PageTextRun[] {
+/** 图注的文字行，按页面坐标逐行绝对定位；便签改由纹理内联墨迹绘制，不再有 DOM 卡片。 */
+function allRuns(images: PageImageLayout[]): PageTextRun[] {
   const runs: PageTextRun[] = []
-  for (const note of notes) runs.push(...note.runs)
   for (const image of images) if (image.captionRun) runs.push(image.captionRun)
   return runs
 }
-const leftPageRuns = computed(() => allRuns(leftNoteBlocks.value, leftImageBlocks.value))
-const rightPageRuns = computed(() => allRuns(rightNoteBlocks.value, rightImageBlocks.value))
+const leftPageRuns = computed(() => allRuns(leftImageBlocks.value))
+const rightPageRuns = computed(() => allRuns(rightImageBlocks.value))
 
 /** 一行页内文字的行盒：基线换算成 top，行高留 1.35 倍字号。 */
 function runBox(run: PageTextRun): { top: number; height: number } {
@@ -402,22 +399,13 @@ function runStyle(run: PageTextRun): Record<string, string> {
     height: `${box.height}px`,
     lineHeight: `${box.height}px`,
     fontSize: `${run.fontSize}px`,
-    color: run.role === 'note-body' ? props.ink : props.muted,
+    color: props.muted,
   }
 }
 
 function bookImageSrc(file: string): string {
   if (!props.bookId) return ''
   return `spbf-image://i/${encodeURIComponent(props.bookId)}/${encodeURIComponent(file)}`
-}
-
-function noteBoxStyle(note: PageNoteLayout): Record<string, string> {
-  return {
-    left: `${note.x}px`,
-    top: `${note.y}px`,
-    width: `${note.width}px`,
-    height: `${note.height}px`,
-  }
 }
 
 function imageBoxStyle(image: PageImageLayout): Record<string, string> {
@@ -872,7 +860,7 @@ function rebuildFlyerText(signature: string, layer: HTMLElement): void {
       y: box.top,
       width: measureTextAt(run.fontSize, run.text),
       height: box.height,
-    }, face, plan, run.fontSize, run.role === 'note-body' ? props.ink : props.muted)
+    }, face, plan, run.fontSize, props.muted)
   }
   const appendHighlight = (rect: PageMarkRect, face: 1 | -1, plan: PageTexturePlan): void => {
     const el = document.createElement('div')
@@ -968,26 +956,6 @@ function rebuildFlyerText(signature: string, layer: HTMLElement): void {
       appendBox(figure, image, entry.face, plan)
       if (image.captionRun) appendRun(image.captionRun, entry.face, plan)
     }
-    // 注卡：底纹 + 左竖线是一整块，标签/正文/#tag 逐行贴在它上面。
-    for (const box of plan.notes) {
-      const note = noteBlockLayout(box, blockStyle.value, blockTools)
-      const card = document.createElement('div')
-      card.className = 'real-book-flip-note'
-      card.dataset.face = entry.face === 1 ? 'front' : 'back'
-      card.style.position = 'absolute'
-      card.style.left = '0'
-      card.style.top = '0'
-      card.style.width = `${note.width}px`
-      card.style.height = `${note.height}px`
-      card.style.transformOrigin = '0 0'
-      card.style.display = 'none'
-      card.style.boxSizing = 'border-box'
-      card.style.background = 'rgba(83, 67, 42, 0.055)'
-      card.style.borderLeft = '1.5px solid rgba(120, 82, 47, 0.55)'
-      layer.appendChild(card)
-      appendBox(card, note, entry.face, plan)
-      for (const run of note.runs) appendRun(run, entry.face, plan)
-    }
     // 「注」点最后画，压在正文与注卡之上。
     for (const dot of noteDots(plan.lines, props.fontSize, measureTextWidth)) appendNoteDot(dot, entry.face, plan)
   }
@@ -1078,8 +1046,15 @@ function updateTextLayer(): void {
   if (rightTextRef.value) rightTextRef.value.style.transform = quadToMatrix3d(textPageQuad.value, right)
 }
 
+/** 正文行/图块上的 mouseup：拖选产生选区时按住不往下传——
+ *  松手落到桌面/翻页区会让宿主把这一按当成翻页或收工具条，工具条就被自己关掉了。 */
 function onTextMouseup(event: MouseEvent): void {
-  if (window.getSelection()?.toString()) event.stopPropagation()
+  if (!window.getSelection()?.toString()) return
+  // 选完字松手这一下要交给 Reader 抬起划词工具条。停冒泡只拦住宿主三分区把这次
+  // 松手当成翻页/收工具条，但必须自己转发出 select——否则链条断在文本层，
+  // 工具条永远不出现（原生选区已经建立、却没人读它）。
+  event.stopPropagation()
+  emit('select', event)
 }
 
 function syncScene(): void {
@@ -1285,6 +1260,24 @@ function onPointerLeave(): void {
   if (!crossSel.value) cancelCrossHold()
 }
 
+/** Wheel handler using upstream readerWheelIntent: zoom on Ctrl/Meta (or macOS), pan (turn pages) otherwise. */
+function onWheel(e: WheelEvent): void {
+  const host = hostRef.value
+  if (!host) return
+  const viewport = { clientWidth: host.clientWidth, clientHeight: host.clientHeight }
+  const intent = readerWheelIntent(e, viewport)
+  if (intent.kind === 'zoom') {
+    emit('update:zoom', intent.factor)
+    e.preventDefault()
+    return
+  }
+  // pan: turn pages
+  if (Math.abs(intent.y) < 8) return
+  e.preventDefault()
+  if (intent.y > 0) nextPage()
+  else prevPage()
+}
+
 function onPointerUp(event: PointerEvent): void {
   scene?.noteInteraction()
   if (crossSel.value) {
@@ -1466,6 +1459,23 @@ onMounted(async () => {
     // 让控制台保留真实原因；UI 只负责回退，不吞掉诊断信息。
     console.error('[realbook-webgl] init failed', error)
   }
+
+  // Keyboard navigation (ArrowLeft/Right, PageUp/Down, Space)
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (!canPageFrom(e.target, e.key)) return
+    const dir = pageKeyDirection(e.key, e.shiftKey)
+    if (dir === 1) {
+      e.preventDefault()
+      nextPage()
+    } else if (dir === -1) {
+      e.preventDefault()
+      prevPage()
+    }
+  }
+  window.addEventListener('keydown', onKeyDown)
+  ;(hostRef.value as HTMLElement | null)?.addEventListener('keydown', onKeyDown)
+  // Store cleanup
+  ;(window as unknown as { __rbKeydown?: typeof onKeyDown }).__rbKeydown = onKeyDown
 })
 
 watch(pages, syncScene, { deep: true })
@@ -1505,6 +1515,11 @@ onBeforeUnmount(() => {
   resizeObserver = null
   scene?.dispose()
   scene = null
+  const kd = (window as unknown as { __rbKeydown?: (e: KeyboardEvent) => void }).__rbKeydown
+  if (kd) {
+    window.removeEventListener('keydown', kd)
+    ;(hostRef.value as HTMLElement | null)?.removeEventListener('keydown', kd)
+  }
 })
 </script>
 
@@ -1520,6 +1535,7 @@ onBeforeUnmount(() => {
     @pointerleave="onPointerLeave"
     @mouseup="onMouseUp"
     @contextmenu="onContextMenu"
+    @wheel="onWheel"
   >
     <div ref="hitRef" class="real-book-webgl-hit" aria-hidden="true">
       <div v-show="showTextLayer" class="real-book-webgl-text-layer">
@@ -1543,21 +1559,6 @@ onBeforeUnmount(() => {
             class="real-book-mark"
             :style="{ left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.width}px`, height: `${rect.height}px`, background: rect.color }"
             aria-hidden="true"
-          ></div>
-          <div
-            v-for="note in leftNoteBlocks"
-            :key="`left-note-${note.id}`"
-            class="real-book-note-card"
-            :style="noteBoxStyle(note)"
-            role="button"
-            tabindex="0"
-            :title="note.note.text"
-            :aria-label="`查看批注：${note.note.text.slice(0, 16)}`"
-            @click.stop="emit('edit-note', note.id)"
-            @pointerdown.stop
-            @mouseup.stop
-            @keydown.enter.stop.prevent="emit('edit-note', note.id)"
-            @keydown.space.stop.prevent="emit('edit-note', note.id)"
           ></div>
           <figure
             v-for="image in leftImageBlocks"
@@ -1635,21 +1636,6 @@ onBeforeUnmount(() => {
             class="real-book-mark"
             :style="{ left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.width}px`, height: `${rect.height}px`, background: rect.color }"
             aria-hidden="true"
-          ></div>
-          <div
-            v-for="note in rightNoteBlocks"
-            :key="`right-note-${note.id}`"
-            class="real-book-note-card"
-            :style="noteBoxStyle(note)"
-            role="button"
-            tabindex="0"
-            :title="note.note.text"
-            :aria-label="`查看批注：${note.note.text.slice(0, 16)}`"
-            @click.stop="emit('edit-note', note.id)"
-            @pointerdown.stop
-            @mouseup.stop
-            @keydown.enter.stop.prevent="emit('edit-note', note.id)"
-            @keydown.space.stop.prevent="emit('edit-note', note.id)"
           ></div>
           <figure
             v-for="image in rightImageBlocks"
@@ -1740,7 +1726,6 @@ onBeforeUnmount(() => {
 }
 
 .real-book-webgl-text-layer :deep(.real-book-webgl-image),
-.real-book-webgl-text-layer :deep(.real-book-note-card),
 .real-book-webgl-text-layer :deep(.real-book-mark),
 .real-book-webgl-text-layer :deep(.real-book-note-dot),
 .real-book-webgl-text-layer :deep(.real-book-note-tab) {
@@ -1889,19 +1874,6 @@ onBeforeUnmount(() => {
   font-weight: 500;
   text-align: center;
   pointer-events: none;
-}
-
-/* 页内注卡：与纹理同一套浅底 + 左侧竖线；卡片可点开对应批注。 */
-.real-book-note-card {
-  position: absolute;
-  box-sizing: border-box;
-  background: rgba(83, 67, 42, 0.055);
-  border-left: 1.5px solid rgba(120, 82, 47, 0.55);
-  cursor: pointer;
-}
-
-.real-book-note-card:hover {
-  background: rgba(83, 67, 42, 0.09);
 }
 
 /* 页内图片：DOM 里按 contain 装进版心块，图注由单独的 run 贴在下方。 */

@@ -43,7 +43,9 @@ await writeFile(join(bookDir, 'book.json'), JSON.stringify({
   sourceUrl: 'https://example.com/rbsel/', sourceHost: 'example.com',
   importType: 'download', createdAt: now, updatedAt: now, status: 'ready',
   chapters: [{ id: 'c0001', index: 1, title: '第一章 俯仰', url: 'https://example.com/rbsel/1.html', file: '0001.json', status: 'ready' }],
-  progress: { chapterId: 'c0001', scrollRatio: 0, rest: undefined },
+  // 不能带 progress：App 启动时看到有进度的书会直接进阅读页，右侧主导航（含「书库」）
+  // 随之隐藏，本脚本「进书库 → 点书卡」这一步就点不到任何东西，书卡检查也必然超时。
+  progress: null,
 }, null, 2), 'utf-8')
 // readChapter 用 meta.file 直接拼在书目录下，不加 chapters/ 前缀。
 await writeFile(join(bookDir, '0001.json'), JSON.stringify({
