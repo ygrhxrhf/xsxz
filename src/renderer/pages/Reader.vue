@@ -137,6 +137,8 @@ import { selectionRangeOffsets } from './selectionOffsets'
 import type { Annotation, BookSearchHit } from '@shared/types'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import ReaderMindmap from '../components/ReaderMindmap.vue'
+import MemoryGraph from '../components/MemoryGraph.vue'
+import { buildMemoryGraph } from './memoryGraph'
 import BookMapPage from './BookMapPage.vue'
 import AtlasDock from './atlas/AtlasDock.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
@@ -1442,6 +1444,15 @@ const visibleMemoryCount = computed(() => visibleMemoryCharacters.value.length
   + visibleMemoryRelations.value.length
   + visibleMemoryForeshadows.value.length
   + visibleMemoryEvents.value.length)
+/**
+ * 关系图折叠标题上的数字和图里真正画出来的规模保持一致（都经过 24 人 / 80 条上限截断），
+ * 否则读者会以为图漏了人；没有关系时返回 0/0，由 v-if 决定整块不渲染。
+ */
+const memoryGraphCounts = computed(() => {
+  if (!memoryData.value?.relations?.length) return { people: 0, edges: 0 }
+  const graph = buildMemoryGraph(memoryData.value)
+  return { people: graph.nodes.length, edges: graph.edges.length }
+})
 
 async function jumpToAnnotation(a: Annotation) {
   if (!book.value) return
@@ -4523,6 +4534,15 @@ onUnmounted(() => {
             </n-tab-pane>
             <n-tab-pane name="memory" tab="记忆">
               <n-space vertical>
+                <!--
+                  关系图默认收起：记忆页一进来先看到的是「更新记忆」和搜索框，
+                  图放在这里只是第二个入口，不该让每次进记忆页都要滚过一张画。
+                  只有真的有 relations 才渲染，空记忆不该占一个折叠标题。
+                -->
+                <details v-if="memoryData?.relations?.length" class="memory-graph-panel">
+                  <summary class="memory-graph-panel-summary">人物关系图 · {{ memoryGraphCounts.people }} 人 / {{ memoryGraphCounts.edges }} 条关系</summary>
+                  <MemoryGraph :memory="memoryData" @jump="jumpToMemorySource" />
+                </details>
                 <section class="ai-budget-status">
                   <strong>人物与伏笔时间线</strong>
                   <div class="subtle">按已读章节显示出现、变化与当前状态。未读完的章节不会写入时间线。</div>
@@ -6159,6 +6179,24 @@ onUnmounted(() => {
   min-height: 28px;
   white-space: normal;
   text-align: left;
+}
+
+/* 关系图是记忆页的第二个出口，视觉上跟着现有的记忆区块走，不另开一套体系。 */
+.memory-graph-panel {
+  padding: 10px;
+  border: 1px solid var(--r-line);
+  border-radius: 8px;
+}
+
+.memory-graph-panel-summary {
+  cursor: pointer;
+  color: inherit;
+  font-size: 13px;
+}
+
+.memory-graph-panel-summary:focus-visible {
+  outline: 2px solid var(--active-chapter);
+  outline-offset: 2px;
 }
 
 .memory-section h3 {
