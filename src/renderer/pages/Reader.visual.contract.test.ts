@@ -65,7 +65,12 @@ describe('Reader visual surface contract', () => {
     expect(source).toContain('placement="left"')
     expect(source).toContain(':width="drawerTab === \'mindmap\' ? 560 : 320"')
     expect(source).not.toContain('v-model:show="showAiResult"')
-    expect(source).toContain('v-model:show="showAiAssistant" placement="right" :width="420"')
+    // AI 侧栏改成可拖宽（360–720，默认 420），比批注栏的 340 宽这一层级关系不变。
+    expect(source).toContain('v-model:show="showAiAssistant"')
+    expect(source).toContain('resizable')
+    expect(source).toContain(':default-width="aiDrawerWidth"')
+    expect(source).toContain(':min-width="360"')
+    expect(source).toContain(':max-width="720"')
     expect(source).toContain('v-model:show="showMarks"')
     expect(source).toContain(':width="340"')
     expect(source).toContain('v-model:show="showSearch" placement="right" :width="420"')

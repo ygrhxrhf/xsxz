@@ -14,7 +14,8 @@ async function readReaderSurface(): Promise<string> {
 describe('Reader unified AI assistant shell', () => {
   it('has one AI assistant drawer with the five fixed tabs', async () => {
     const source = await readReaderSurface()
-    expect(source.match(/<n-drawer v-model:show="showAiAssistant"/g)).toHaveLength(1)
+    // 侧栏可拖宽后属性分行写，匹配要允许换行；约束仍是「有且只有一个 AI 抽屉」。
+    expect(source.match(/<n-drawer\s+v-model:show="showAiAssistant"/g)).toHaveLength(1)
     expect(source).not.toContain('v-model:show="showChat"')
     expect(source).not.toContain('v-model:show="showRecap"')
     // 一次性结果并入「输出」tab，不再开第二个 AI 抽屉。
@@ -116,7 +117,8 @@ describe('Reader unified AI assistant shell', () => {
     expect(source).toContain('const QUICK_READING_QUESTIONS = [')
     expect(source).toContain('有哪些已经出现但尚未回收的伏笔？')
     const start = source.indexOf('function prepareQuickQuestion')
-    const block = source.slice(start, source.indexOf('async function sendChat', start))
+    // 真正发请求的是 startChatFrom：快捷问题这一段必须在它之前就结束，否则会把请求代码算进来。
+    const block = source.slice(start, source.indexOf('async function startChatFrom', start))
     expect(block).toContain("aiAssistantTab.value = 'qa'")
     expect(block).toContain('chatInput.value = question')
     expect(block).not.toContain('window.api')

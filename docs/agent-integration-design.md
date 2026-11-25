@@ -407,7 +407,7 @@ export interface AgentCapability {
 | `proxy.refreshSubscription` | `proxy_refresh_subscription` | 网 | — | 无 | 立刻重拉一次订阅，不切换当前节点 |
 | `proxy.speedTest` | `proxy_speed_test` | 网 | — | 无 | 并发探测各节点延迟，返回最快节点序号 |
 
-### 4.12 AI 与 OCR（35 = 34 个 `ai.*` + `ocr.status`）
+### 4.12 AI 与 OCR（36 = 35 个 `ai.*` + `ocr.status`）
 
 | 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
 |---|---|---|---|---|---|
@@ -423,6 +423,7 @@ export interface AgentCapability {
 | `ai.agentChat` | `ai_agent_chat` | 费 | dry | key | pi 内核多轮 agent；工具只读已读前沿以内的正文 |
 | `ai.getChat` | `ai_get_chat` | 读 | — | disk | 兼容 v1/v2 |
 | `ai.clearChat` | `ai_clear_chat` | 破 | tok | disk | 清空该书问答历史 |
+| `ai.replaceChat` | `ai_replace_chat` | 破 | tok | disk | 整段覆盖该书问答历史（不是追加）；重问 / 编辑重发 / 删除某一轮靠它 |
 | `ai.translateStream` | `ai_translate_stream` | 费 | — | key | 传 `bookId` 时计入每书用量 |
 | `ai.explainSelection` | `ai_explain_selection` | 费 | — | key | preload 里叫 `explainText`，频道名仍是 `ai.explainSelection` |
 | `ai.getMemory` | `ai_get_memory` | 读 | — | disk | 可兼容返回旧 `characters.json` |

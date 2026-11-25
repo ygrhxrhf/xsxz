@@ -142,6 +142,7 @@ import AtlasDock from './atlas/AtlasDock.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
+import { claimCitationLines } from './readerChatMessage'
 import { displayAiServiceOrigin } from './aiAssistantTransparency'
 import {
   assistantKindForJob,
@@ -3279,6 +3280,68 @@ async function restoreCleanedBody() {
   }
 }
 
+/**
+ * 侧栏宽度是纯界面偏好（不写 settings.json，不动主进程），拖宽后下次打开还是这个宽度。
+ * 历史脏数据/隐私模式下 localStorage 读不出来一律回退默认值：宽度错了只是难看，不该拦住侧栏。
+ */
+const AI_DRAWER_WIDTH_DEFAULT = 420
+const AI_DRAWER_WIDTH_MIN = 360
+const AI_DRAWER_WIDTH_MAX = 720
+const AI_DRAWER_WIDTH_KEY = 'spbf.aiDrawerWidth'
+function clampAiDrawerWidth(width: number): number {
+  return Math.min(AI_DRAWER_WIDTH_MAX, Math.max(AI_DRAWER_WIDTH_MIN, Math.round(width)))
+}
+function readStoredAiDrawerWidth(): number {
+  try {
+    const raw = localStorage.getItem(AI_DRAWER_WIDTH_KEY)
+    const parsed = raw === null ? Number.NaN : Number.parseFloat(raw)
+    return Number.isFinite(parsed) ? clampAiDrawerWidth(parsed) : AI_DRAWER_WIDTH_DEFAULT
+  } catch {
+    return AI_DRAWER_WIDTH_DEFAULT
+  }
+}
+const aiDrawerWidth = ref(readStoredAiDrawerWidth())
+function setAiDrawerWidth(width: number): void {
+  // 拖动时 naive-ui 每帧都会回报一次宽度：先夹住再落库，避免把越界值写进下一次启动。
+  const clamped = clampAiDrawerWidth(width)
+  aiDrawerWidth.value = clamped
+  try {
+    localStorage.setItem(AI_DRAWER_WIDTH_KEY, String(clamped))
+  } catch {
+    /* 忽略存储失败：只影响下次的默认宽度 */
+  }
+}
+
+/**
+ * 从引用角标跳回原文后闪一下目标段落：同章内跳转页码可能没变，不闪读者不知道自己落在哪。
+ * 真实书籍 WebGL 模式没有 [data-p] 段落元素，找不到就静默返回（允许不闪）。
+ */
+let paraFlashEl: HTMLElement | null = null
+let paraFlashTimer: ReturnType<typeof setTimeout> | null = null
+function flashParagraph(paragraphIndex: number): void {
+  // 连续点两个角标时，上一个定时器要撤掉，否则它会把新段落的 class 一起抹掉。
+  if (paraFlashTimer !== null) {
+    clearTimeout(paraFlashTimer)
+    paraFlashTimer = null
+  }
+  if (paraFlashEl) {
+    paraFlashEl.classList.remove('para-flash')
+    paraFlashEl = null
+  }
+  // 换章后的 DOM 要等这一轮渲染落地；下一帧仍找不到就是窗口外/无段落坐标，直接放弃。
+  void nextTick(() => {
+    const el = contentRef.value?.querySelector<HTMLElement>(`[data-p="${paragraphIndex}"]`)
+    if (!el) return
+    el.classList.add('para-flash')
+    paraFlashEl = el
+    paraFlashTimer = setTimeout(() => {
+      el.classList.remove('para-flash')
+      if (paraFlashEl === el) paraFlashEl = null
+      paraFlashTimer = null
+    }, 1200)
+  })
+}
+
 // AI 助手面板：整块（状态 + 行为）在 readerAssistant.ts，这里只接线（名字保持原样，模板不用改）。
 // 必须放在所有依赖声明之后（paras/chapters/contentRef/fontSize/readingMode/loadBook/openChapter…），
 // 否则 setup 里会 TDZ；onMounted 里的回调是懒执行，放在它前面即可。
@@ -3306,6 +3369,7 @@ const assistant = useReaderAssistant({
   aiResult,
   aiResultTitle,
   closeSelectionTools,
+  flashParagraph,
 })
 const {
   showAiAssistant,
@@ -3457,6 +3521,12 @@ const {
   sendChat,
   stopChat,
   clearChat,
+  // 问答历史的就地修改（复制 / 重问 / 编辑 / 删一轮）：状态在 readerAssistant.ts，这里只接按钮。
+  chatActionsDisabled,
+  copyChatAnswer,
+  reAskChatAnswer,
+  editChatQuestion,
+  deleteChatRound,
 } = assistant
 
 /**
@@ -3634,10 +3704,13 @@ onMounted(async () => {
       } else if (assistant) {
         assistant.content = `错误：${event.message}`
       }
+      // 空 label 只收尾不加步：成功的收尾把还在跑的那步标成 done，失败必须传 error，
+      // 否则一次没跑通的调用会在思考链里停在「进行中」，看起来像还在等。
+      // 必须在清 chatAssistantIndex 之前调：它是靠下标找那条消息的，清完就找不到还在跑的那一步。
+      setAgentToolActivity('', event.ok ? 'done' : 'error')
       chatJobId.value = ''
       chatAssistantIndex.value = -1
       chatLoading.value = false
-      setAgentToolActivity('')
       return
     }
     if (event.jobId === memoryJobId.value) {
@@ -4344,7 +4417,16 @@ onUnmounted(() => {
         @cancel="cancelFollowBudget"
       />
 
-      <n-drawer v-model:show="showAiAssistant" placement="right" :width="420">
+      <!-- 侧栏宽度可拖：长回答与引用列表在 420 下要反复横向看，拖宽比缩放正文更省事。-->
+      <n-drawer
+        v-model:show="showAiAssistant"
+        placement="right"
+        resizable
+        :default-width="aiDrawerWidth"
+        :min-width="360"
+        :max-width="720"
+        @update:width="setAiDrawerWidth"
+      >
         <n-drawer-content title="AI 助手" closable>
           <div v-if="legacyReadProposal" class="ai-budget-status">
             <strong>旧书已读范围待确认</strong>
@@ -4561,20 +4643,60 @@ onUnmounted(() => {
                 </div>
                 <div v-if="chatLoading && agentToolActivity" class="chat-tool-activity">{{ agentToolActivity }}…</div>
                 <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
-                  <div class="chat-bubble">{{ msg.content }}</div>
+                  <!-- 思考链在气泡上方：只有想知道「它去查了什么」时才展开，默认只露步数。 -->
+                  <details
+                    v-if="msg.steps?.length"
+                    class="chat-steps"
+                    :open="chatLoading && i === chatMessages.length - 1"
+                  >
+                    <summary>思考过程 · {{ msg.steps.length }} 步</summary>
+                    <ol>
+                      <li v-for="(step, si) in msg.steps" :key="si" :class="'is-' + step.state">{{ step.label }}</li>
+                    </ol>
+                  </details>
+                  <!-- 有 claims 的回答按句渲染，句尾挂该句自己的角标；没有 claims 的旧回答保持整段原文。 -->
+                  <div class="chat-bubble">
+                    <template v-if="msg.claims?.length">
+                      <p v-for="(line, li) in claimCitationLines(msg)" :key="li" class="chat-claim">{{ line.text }}<button v-for="badge in line.badges" :key="badge.label" class="chat-cite" type="button" :disabled="memorySourceJumping" :title="`跳到依据 ${badge.label} 的原文`" @click="jumpToMemorySource(badge.citation)">[{{ badge.label }}]</button></p>
+                    </template>
+                    <template v-else>{{ msg.content }}</template>
+                  </div>
                   <template v-if="msg.role === 'assistant'">
                     <n-tag v-if="msg.stopped" size="small" type="warning">已停止，以下为停止前生成的部分回答。</n-tag>
-                    <div v-if="msg.claims?.length" class="chat-evidence">
-                      <section v-for="(claim, claimIndex) in msg.claims" :key="claimIndex">
-                        <strong>结论 {{ claimIndex + 1 }}：{{ claim.text }}</strong>
-                        <button v-for="citation in msg.citations?.filter((item) => claim.citationIds.includes(item.id)) || []" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
-                      </section>
-                      <small>引用位置已校验；请自行核对原文是否支持每条结论。</small>
+                    <!-- 一行操作：复制只拿正文；重问/编辑/删除都以「一问一答」为单位，没有上一句提问时不露。 -->
+                    <div class="chat-actions">
+                      <button class="chat-chip" type="button" :disabled="chatActionsDisabled" @click="copyChatAnswer(i)">复制</button>
+                      <template v-if="chatMessages[i - 1]?.role === 'user'">
+                        <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="reAskChatAnswer(i)">
+                          会删掉这条回答并重新生成，历史里只留新的这一轮。
+                          <template #trigger>
+                            <button class="chat-chip" type="button" :disabled="chatActionsDisabled">重问</button>
+                          </template>
+                        </n-popconfirm>
+                        <button class="chat-chip" type="button" :disabled="chatActionsDisabled" @click="editChatQuestion(i)">编辑</button>
+                        <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="deleteChatRound(i)">
+                          删除这一轮问答，不会调用模型。
+                          <template #trigger>
+                            <button class="chat-chip" type="button" :disabled="chatActionsDisabled">删除</button>
+                          </template>
+                        </n-popconfirm>
+                      </template>
                     </div>
-                    <div v-else-if="msg.citations?.length" class="chat-evidence">
-                      <strong>依据（旧版回答，未逐条对应）</strong>
-                      <button v-for="citation in msg.citations" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
-                    </div>
+                    <!-- 依据默认收起：角标回答按结论分组，旧回答保留「未逐条对应」的平铺列表。 -->
+                    <details v-if="msg.claims?.length || msg.citations?.length" class="chat-evidence">
+                      <summary>依据 · {{ (msg.citations ?? []).length }} 条</summary>
+                      <template v-if="msg.claims?.length">
+                        <section v-for="(claim, claimIndex) in msg.claims" :key="claimIndex">
+                          <strong>结论 {{ claimIndex + 1 }}：{{ claim.text }}</strong>
+                          <button v-for="citation in msg.citations?.filter((item) => claim.citationIds.includes(item.id)) || []" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
+                        </section>
+                        <small>引用位置已校验；请自行核对原文是否支持每条结论。</small>
+                      </template>
+                      <template v-else>
+                        <strong>依据（旧版回答，未逐条对应）</strong>
+                        <button v-for="citation in msg.citations" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
+                      </template>
+                    </details>
                     <div v-else-if="msg.citations === undefined && !msg.content.startsWith('错误：')" class="chat-legacy">旧版回答，无来源</div>
                     <n-button
                       v-if="canSaveSelectionNote(msg, i)"
@@ -5230,6 +5352,18 @@ onUnmounted(() => {
 }
 
 .para-unfocused { opacity: 0.4; }
+
+/* 从引用角标跳回原文时闪一下目标段落：只动背景色，不碰高度/内边距/边框，
+   否则正文会在闪烁的那 1.2 秒里跳动；不透明度收到透明就结束，不残留底色。 */
+.para-flash {
+  animation: para-flash 1.2s ease-out both;
+  border-radius: 4px;
+}
+@keyframes para-flash {
+  0% { background-color: color-mix(in srgb, var(--hit-bg) 55%, transparent); }
+  70% { background-color: color-mix(in srgb, var(--hit-bg) 22%, transparent); }
+  100% { background-color: transparent; }
+}
 
 :deep(mark.search-hit) {
   background: var(--hit-bg);
@@ -6175,6 +6309,24 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
+/* 依据默认收起：回答先读结论，需要核对时再展开引用列表（与运行信息同一个折叠箭头语汇）。 */
+.chat-evidence > summary,
+.chat-steps > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  list-style: none;
+  cursor: pointer;
+}
+.chat-evidence > summary::-webkit-details-marker,
+.chat-steps > summary::-webkit-details-marker { display: none; }
+.chat-evidence > summary::after,
+.chat-steps > summary::after { content: '⌄'; opacity: 0.6; }
+.chat-evidence[open] > summary::after,
+.chat-steps[open] > summary::after { content: '⌃'; }
+.chat-evidence > summary:hover,
+.chat-steps > summary:hover { color: var(--r-text); }
+
 .chat-legacy {
   color: var(--r-muted);
   font-size: 12px;
@@ -6201,6 +6353,51 @@ onUnmounted(() => {
   color: var(--bubble-ai-text);
   border-bottom-left-radius: 4px;
 }
+
+/* 逐句结论：一句一行，句尾跟自己的角标；不是引用块，所以只留行距不留边框。 */
+.chat-claim { margin: 0 0 4px; }
+.chat-claim:last-child { margin-bottom: 0; }
+
+/* 行内角标：上标小字，序号与展开后的「依据」列表对得上，点一下跳原文那一段。 */
+.chat-cite {
+  margin-left: 2px;
+  padding: 0 1px;
+  border: 0;
+  background: transparent;
+  color: var(--active-chapter);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  vertical-align: super;
+  cursor: pointer;
+}
+.chat-cite:hover:not(:disabled) { text-decoration: underline; }
+.chat-cite:disabled { opacity: 0.5; cursor: default; }
+
+/* 操作条：平时低对比，鼠标在这条气泡上（或键盘进来）才提亮。
+   始终占位而不是 hover 才插入 DOM，否则鼠标移过去行高会变，气泡跟着跳。 */
+.chat-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+.chat-msg.assistant:hover .chat-actions,
+.chat-actions:focus-within { opacity: 1; }
+.chat-actions .chat-chip { padding: 2px 8px; font-size: 11px; }
+
+/* 思考链：本轮正在调/调过的本地工具。running 用主体色提一下，error 用警示色。 */
+.chat-steps {
+  width: 85%;
+  color: var(--r-muted);
+  font-size: 12px;
+}
+.chat-steps ol { margin: 4px 0 0; padding-left: 18px; }
+.chat-steps li { line-height: 1.6; }
+.chat-steps li.is-running { color: var(--active-chapter); }
+.chat-steps li.is-done { opacity: 0.65; }
+.chat-steps li.is-error { color: var(--warning); }
 
 .chat-empty {
   text-align: center;

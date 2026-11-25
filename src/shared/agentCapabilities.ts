@@ -1699,6 +1699,26 @@ const SPECS: readonly CapabilitySpec[] = [
     coreToolset: false,
   },
   {
+    channel: 'ai.replaceChat',
+    title: '重写问答历史',
+    tier: 'destructive',
+    confirm: 'token',
+    deps: ['disk'],
+    params: obj({
+      bookId: str('书籍 ID'),
+      messages: {
+        type: 'array',
+        description: '整段问答历史；传什么就覆盖成什么，不是追加',
+        items: { type: 'object', description: 'AiEvidenceChatMessage', additionalProperties: true },
+        required: true,
+      },
+    }),
+    result: '{ ok: true } 或 { ok: false, message }',
+    description:
+      '覆盖一本书的问答历史，不可恢复，必须持 dryRun 令牌。用于重问、编辑重发、删除某一轮；单次最多 200 条，每条正文最多 20000 字。',
+    coreToolset: false,
+  },
+  {
     channel: 'ai.translateStream',
     title: '翻译选中文本',
     tier: 'write',

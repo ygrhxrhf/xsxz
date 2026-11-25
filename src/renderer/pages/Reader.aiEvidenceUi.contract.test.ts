@@ -14,7 +14,8 @@ async function readReaderSurface(): Promise<string> {
 describe('Reader evidence QA UI contract', () => {
   it('keeps v2 evidence metadata in memory when the matching job completes', async () => {
     const source = await readReaderSurface()
-    expect(source).toContain('const chatMessages = ref<AiEvidenceChatMessage[]>([])')
+    // 消息类型换成扩展类型（多一条界面用的思考链），持久化字段仍是 v2 证据消息。
+    expect(source).toContain('const chatMessages = ref<ReaderChatMessage[]>([])')
     expect(source.match(/normalizeEvidenceChatHistory\([^)]*\.messages\)/g)).toHaveLength(2)
     expect(source).toContain('assistant.citations = event.citations')
     expect(source).toContain('assistant.uptoChapterId = event.uptoChapterId')

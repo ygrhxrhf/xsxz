@@ -4,6 +4,7 @@ import type { Book, ChapterMeta, ReaderReadingMode, AiChatMessage, AiResumeCardV
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { clearRetriedAssistantSaveToken, describeAssistantStage, currentAssistantStage as resolveAssistantStage, type AssistantJobKind, type AssistantPanelTab, type AssistantSaveTokenState, type AssistantStageState } from './aiAssistantStatus'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
+import { appendChatStep, type ChatStep, type ReaderChatMessage } from './readerChatMessage'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { splitIntoParagraphs } from './useTts'
 import { useInlineAsk } from './readerInlineAsk'
@@ -45,6 +46,8 @@ export interface ReaderAssistantDeps {
   aiResult: Ref<string>
   aiResultTitle: Ref<string>
   closeSelectionTools: (clearBrowserSelection?: boolean) => void
+  /** 跳回原文后给目标段落闪一下（Reader.vue 实现）；省略时只保证滚动到段落。 */
+  flashParagraph?: (paragraphIndex: number) => void
 }
 
 export function useReaderAssistant(deps: ReaderAssistantDeps) {
@@ -53,7 +56,7 @@ export function useReaderAssistant(deps: ReaderAssistantDeps) {
     loadBook, openChapter, pendingScrollPara,
     resumeCardView, resumeCardLoading, resumeCardWarning, showSelPopup, selectedExcerpt,
     selectedRange, selectionOffsets,
-    restoringChat, aiResult, aiResultTitle, closeSelectionTools,
+    restoringChat, aiResult, aiResultTitle, closeSelectionTools, flashParagraph,
   } = deps
 
 const showAiAssistant = ref(false)
@@ -127,7 +130,7 @@ const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
 const chatMode = ref<'agent' | 'evidence'>('agent')
-const chatMessages = ref<AiEvidenceChatMessage[]>([])
+const chatMessages = ref<ReaderChatMessage[]>([])
 /** 对话模式下模型正在调的本地工具，界面上显示成一行小字而不是空白转圈。 */
 const agentToolActivity = ref('')
 const chatInput = ref('')
@@ -527,6 +530,9 @@ async function jumpToMemorySource(source: AiCitation) {
     }
     if (location.mode === 'fallback') {
       message.warning('原段落已变化，已跳到该章开头。')
+    } else {
+      // 同一章里从引用角标跳过来时页码可能没变，闪一下才知道落在哪一段。
+      flashParagraph?.(location.paragraphIndex)
     }
   } catch {
     pendingScrollPara.set(-1)
@@ -895,25 +901,33 @@ function prepareQuickQuestion(question: string) {
   chatInput.value = question
 }
 
-async function sendChat() {
-  if (!book.value || !currentChapter.value || !chatInput.value.trim()) return
+/**
+ * 真正发起一轮问答：发问、重问、编辑重发都走这里。
+ *
+ * `history` 是本轮问题之前的历史（不含新问题）。先把历史拍成纯快照再往 `chatMessages`
+ * 里塞用户消息：两处引用同一个响应式数组时，后塞的那条会被算进历史，问题就发了两遍。
+ */
+async function startChatFrom(history: readonly AiEvidenceChatMessage[], question: string) {
+  const target = book.value
+  const chapter = currentChapter.value
+  const userMsg = question.trim()
+  if (!target || !chapter || !userMsg) return
   if (assistantBusyByKind.value.qa || assistantSaveRetrying.value) {
     message.warning('请先停止当前生成')
     return
   }
-  const userMsg = chatInput.value.trim()
+  // 主进程只读 role/content，且 IPC 走 structured clone：Vue 的响应式数组/对象是 Proxy，
+  // 原样传过去会直接抛「An object could not be cloned」，问答永远起不来。这里发一份纯快照。
+  const payload: AiChatMessage[] = [...history, { role: 'user' as const, content: userMsg }]
+    .map((m) => ({ role: m.role, content: m.content }))
   selectionNoteTarget.value = null
   chatMessages.value.push({ role: 'user', content: userMsg })
-  chatInput.value = ''
   chatStarting.value = true
   try {
-    // 主进程只读 role/content，且 IPC 走 structured clone：Vue 的响应式数组/对象是 Proxy，
-    // 原样传过去会直接抛「An object could not be cloned」，问答永远起不来。这里发一份纯快照。
-    const history: AiChatMessage[] = chatMessages.value.map((m) => ({ role: m.role, content: m.content }))
     // 对话模式走 pi agent（模型自己决定查目录/读原文/检索/看记忆），证据模式仍是单轮严格引用。
     const res = chatMode.value === 'agent'
-      ? await window.api.ai.agentChat(book.value.id, currentChapter.value.id, history)
-      : await window.api.ai.chatStream(book.value.id, currentChapter.value.id, history)
+      ? await window.api.ai.agentChat(target.id, chapter.id, payload)
+      : await window.api.ai.chatStream(target.id, chapter.id, payload)
     if (!res.ok) {
       chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
       return
@@ -930,6 +944,17 @@ async function sendChat() {
   } finally {
     chatStarting.value = false
   }
+}
+
+async function sendChat() {
+  const question = chatInput.value.trim()
+  if (!book.value || !currentChapter.value || !question) return
+  if (assistantBusyByKind.value.qa || assistantSaveRetrying.value) {
+    message.warning('请先停止当前生成')
+    return
+  }
+  chatInput.value = ''
+  await startChatFrom(chatMessages.value, question)
 }
 
 function stopChat() {
@@ -996,9 +1021,99 @@ async function askSelectionInAgent(question?: string) {
   showSelPopup.value = false
 }
 
-/** 主进程把工具进度搭在 ai.stage 的 detail 上，界面只负责显示成一句人话。 */
-function setAgentToolActivity(label: string) {
+/**
+ * 主进程把工具进度搭在 ai.stage 的 detail 上：既更新那行全局小字，也把它存进当前这条
+ * 流式助手消息的思考链。`settle` 只在收尾时有意义（ab.done）：失败把还在跑的那步标成 error。
+ */
+function setAgentToolActivity(label: string, settle: ChatStep['state'] = 'done') {
   agentToolActivity.value = label
+  const index = chatAssistantIndex.value
+  if (index < 0) return
+  const assistant = chatMessages.value[index]
+  if (!assistant || assistant.role !== 'assistant') return
+  assistant.steps = appendChatStep(assistant.steps, label, settle)
+}
+
+/** 生成中或等补写时不动历史：否则会把流式追加和覆盖写进同一个下标。 */
+const chatActionsDisabled = computed(() => chatLoading.value || assistantSaveRetrying.value)
+
+/** 界面上的「一轮」= 助手回答 + 紧挨着它前面的用户提问。 */
+interface ChatRound {
+  questionIndex: number
+  answerIndex: number
+  question: string
+}
+
+function chatRoundAt(answerIndex: number): ChatRound | null {
+  const answer = chatMessages.value[answerIndex]
+  if (!answer || answer.role !== 'assistant') return null
+  const question = chatMessages.value[answerIndex - 1]
+  if (!question || question.role !== 'user') return null
+  return { questionIndex: answerIndex - 1, answerIndex, question: question.content }
+}
+
+/**
+ * 结构性修改（删一轮、改历史）后必须整段覆盖磁盘：
+ * 主进程的问答只会往后追加，不覆盖的话被删的那一轮会被下一次回答带回来。
+ */
+async function persistChatSnapshot() {
+  const target = book.value
+  if (!target) return
+  // 传 IPC 的必须是纯对象：Vue 的响应式对象是 Proxy，structured clone 会直接抛。
+  // steps 是界面上的思考链，不写进书库。
+  const snapshot: AiEvidenceChatMessage[] = chatMessages.value.map((message) => ({
+    role: message.role,
+    content: message.content,
+    ...(message.citations ? { citations: message.citations.map((citation) => ({ ...citation })) } : {}),
+    ...(message.claims ? { claims: message.claims.map((claim) => ({ text: claim.text, citationIds: [...claim.citationIds] })) } : {}),
+    ...(message.uptoChapterId ? { uptoChapterId: message.uptoChapterId } : {}),
+    ...(message.stopped ? { stopped: true } : {}),
+  }))
+  try {
+    const res = await window.api.ai.replaceChat(target.id, snapshot)
+    if (!res.ok) message.error(`已修改本地记录，未能写入书库：${res.message}`)
+  } catch {
+    message.error('已修改本地记录，未能写入书库：写盘请求没有送达')
+  }
+}
+
+/** 复制只拿正文：角标与依据列表是界面上的东西，粘到别处只会变成噪声。 */
+async function copyChatAnswer(index: number) {
+  const content = chatMessages.value[index]?.content ?? ''
+  if (!content) return
+  try {
+    await navigator.clipboard.writeText(content)
+    message.success('已复制')
+  } catch {
+    message.error('复制失败，请手动选中文字')
+  }
+}
+
+/** 重问：把同一句话用截断后的历史重发一次，避免历史里堆出两轮一样的问答。 */
+async function reAskChatAnswer(index: number) {
+  const round = chatRoundAt(index)
+  if (!round || chatActionsDisabled.value) return
+  const history = chatMessages.value.slice(0, round.questionIndex)
+  chatMessages.value.splice(round.questionIndex, 2)
+  await persistChatSnapshot()
+  await startChatFrom(history, round.question)
+}
+
+/** 编辑：只把上一句放回输入框并删掉这一轮，改完由读者自己发。 */
+async function editChatQuestion(index: number) {
+  const round = chatRoundAt(index)
+  if (!round || chatActionsDisabled.value) return
+  chatMessages.value.splice(round.questionIndex, 2)
+  chatInput.value = round.question
+  await persistChatSnapshot()
+}
+
+/** 删除：同样只删这一轮，不调模型、不花钱。 */
+async function deleteChatRound(index: number) {
+  const round = chatRoundAt(index)
+  if (!round || chatActionsDisabled.value) return
+  chatMessages.value.splice(round.questionIndex, 2)
+  await persistChatSnapshot()
 }
 
 async function clearChat() {
@@ -1203,5 +1318,10 @@ const inlineAsk = useInlineAsk({
     sendChat,
     stopChat,
     clearChat,
+    chatActionsDisabled,
+    copyChatAnswer,
+    reAskChatAnswer,
+    editChatQuestion,
+    deleteChatRound,
   }
 }

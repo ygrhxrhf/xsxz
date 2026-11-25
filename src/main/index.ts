@@ -169,6 +169,7 @@ import {
   parseMemoryRunPayload,
   parseMemorySummaryPayload,
 } from './aiMemoryIpcValidation'
+import { parseReplaceChatPayload } from './aiReplaceChat'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -1634,6 +1635,23 @@ function registerIpc(): void {
   ipcMain.handle('ai.clearChat', async (_e, { bookId }: { bookId: string }) => {
     try {
       await writeChat(bookId, [])
+      return { ok: true }
+    } catch {
+      return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
+    }
+  })
+
+  // 整段覆盖问答历史：重问、编辑重发、删除某一轮都靠它，
+  // 否则 chatStream/agentChat 只会往后追加，被删的那一轮会被下一次问答带回来。
+  ipcMain.handle('ai.replaceChat', async (_e, payload: unknown) => {
+    let parsed: ReturnType<typeof parseReplaceChatPayload>
+    try {
+      parsed = parseReplaceChatPayload(payload)
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : '问答历史格式无效，无法覆盖' }
+    }
+    try {
+      await writeChat(parsed.bookId, parsed.messages)
       return { ok: true }
     } catch {
       return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }

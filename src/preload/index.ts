@@ -12,6 +12,7 @@ import type {
   AiDoneEvent,
   AiFollowCoverage,
   AiFollowMode,
+  AiEvidenceChatMessage,
   AiFollowStart,
   AiGetChatResult,
   AiJobStart,
@@ -455,6 +456,9 @@ const api = {
       >,
     getChat: (bookId: string) => ipcRenderer.invoke('ai.getChat', { bookId }) as Promise<AiGetChatResult>,
     clearChat: (bookId: string) => ipcRenderer.invoke('ai.clearChat', { bookId }) as Promise<{ ok: true } | { ok: false; message: string }>,
+    /** 整段覆盖问答历史：重问 / 编辑重发 / 删除某一轮都用它，避免重复轮次堆积。 */
+    replaceChat: (bookId: string, messages: AiEvidenceChatMessage[]) =>
+      ipcRenderer.invoke('ai.replaceChat', { bookId, messages }) as Promise<{ ok: true } | { ok: false; message: string }>,
     test: (opts?: {
       baseUrl?: string
       model?: string
