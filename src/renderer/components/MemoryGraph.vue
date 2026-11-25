@@ -5,6 +5,9 @@
  * 只消费 `memoryGraph.ts` 的纯模型：不读 IPC、不调模型、不写 v-html。
  * 交互只做三件事——hover/点节点时把别人调暗、点击在下方给出小详情块、
  * 详情块里的「最早出处」把引用交给外层（Reader 复用 jumpToMemorySource）。
+ *
+ * 传了 chapters + uptoChapterIndex 就只画「读到这一章为止」的关系（防剧透），
+ * 这两个 prop 都是可选的，不传时行为与之前完全一样。
  */
 import { computed, ref, watch } from 'vue'
 import type { AiCitation, AiMemoryFile } from '@shared/types'
@@ -12,13 +15,22 @@ import {
   buildMemoryGraph,
   layoutMemoryGraph,
   neighborhoodOf,
+  sliceMemoryGraph,
   statusPaintSlot,
+  type MemoryGraphChapterRef,
   type MemoryLayoutEdge,
   type MemoryLayoutNode,
 } from '../pages/memoryGraph'
 
 const props = withDefaults(defineProps<{
   memory: AiMemoryFile | null
+  /**
+   * 书籍章节表（只要有 id / index / title）。
+   * 不传：画全量关系（与旧行为一致）；传了才能按阅读进度切片。
+   */
+  chapters?: MemoryGraphChapterRef[] | null
+  /** 阅读进度上限：只画 index <= uptoChapterIndex 的章节里成立的关系。 */
+  uptoChapterIndex?: number
   /** viewBox 的逻辑尺寸；CSS 宽度始终 100%，所以图上按容器宽自适应缩放。 */
   width?: number
   height?: number
@@ -31,7 +43,25 @@ const emit = defineEmits<{
   (event: 'jump', citation: AiCitation): void
 }>()
 
-const graph = computed(() => buildMemoryGraph(props.memory))
+/**
+ * 全量图：不管有没有接进度，记忆本身变了都要重算，顺便给切片当输入。
+ *
+ * 切片接在 build 之后而不是之前：关系成立的章节是边的属性，
+ * 得先把 relation.sources 压成 edge.firstSource（buildMemoryGraph 干的活）才判得出来。
+ */
+const fullGraph = computed(() => buildMemoryGraph(props.memory))
+const graph = computed(() => {
+  // 没传章节表或进度就是原来的全量行为；sliceMemoryGraph 自己也会退化，这里只省一次计算。
+  if (!props.chapters?.length || props.uptoChapterIndex === undefined) return fullGraph.value
+  return sliceMemoryGraph(fullGraph.value, props.chapters, props.uptoChapterIndex)
+})
+/** 是否处在「按进度切片」状态：空图文案要分清「切片后还没关系」与「本来就没关系」。 */
+const slicing = computed(() => Boolean(props.chapters?.length)
+  && props.uptoChapterIndex !== undefined
+  && Number.isFinite(props.uptoChapterIndex))
+const emptyText = computed(() => (slicing.value
+  ? '读到这一章为止，还没有人物关系'
+  : '还没有人物关系，先更新一次记忆'))
 const layout = computed(() => layoutMemoryGraph(graph.value, {
   width: props.width,
   height: props.height,
@@ -74,17 +104,42 @@ function jump(citation: AiCitation | undefined): void {
 }
 
 /**
- * 名字长度上限随人数收紧：一圈 24 个人时每个点横向只有不到 31px，
- * 6 个字的标签会互相盖住，所以人越多标签越短；完整名字在详情块与 aria-label 里。
+ * 人多时不挂标签：切片后节点超过 12 个，就只给度数最高的 6 个挂名字。
+ *
+ * 为什么不是继续缩字数：以前的做法是人越多名字越短（24 人时只剩 2 个字），
+ * 但 24 个人均分一圈本来就只有不到 31px 的横向空间，2 个字照样叠在一起，
+ * 读者看到的是一圈看不清的字。改为「少数人挂标签」：
+ * 真正需要一眼认出来的是社交中心，其余人的名字 hover/选中时出现，
+ * 完整名字还一直在 aria-label 和详情块里。
+ * 切片后人数通常已经变少了，所以现在只在仍然拥挤时才取舍。
+ */
+const DENSE_NODE_THRESHOLD = 12
+const DENSE_LABEL_COUNT = 6
+const labeledIds = computed(() => {
+  const nodes = graph.value.nodes
+  // graph.nodes 恒为 degree 降序（buildMemoryGraph 与 sliceMemoryGraph 都排过），
+  // 直接取前 N 就是「度数前 6」，不用在这里重算一遍排序。
+  const kept = nodes.length > DENSE_NODE_THRESHOLD ? nodes.slice(0, DENSE_LABEL_COUNT) : nodes
+  return new Set(kept.map((node) => node.id))
+})
+/** 没在名单里的人，名字只在悬停/选中（activeId）时出现。 */
+function labelShown(node: MemoryLayoutNode): boolean {
+  return labeledIds.value.has(node.id) || node.id === activeId.value
+}
+
+/**
+ * 名字长度上限按「实际挂出来的标签数」收紧：
+ * 十多个人各自一个标签时，6 个字会互相压，收成 4 个字；
+ * 密集模式最多挂 6 个标签，位置充足，不必再把名字砍成 2 个字。
+ * 完整名字始终在详情块与 aria-label 里。
  */
 function labelLimit(count: number): number {
   if (count <= 10) return 6
-  if (count <= 18) return 4
-  return 2
+  return 4
 }
 
 function displayName(node: MemoryLayoutNode): string {
-  const limit = labelLimit(layout.value.nodes.length)
+  const limit = labelLimit(labeledIds.value.size)
   return node.name.length > limit ? `${node.name.slice(0, limit - 1)}…` : node.name
 }
 
@@ -109,7 +164,7 @@ const labeledEdges = computed(() => {
 
 <template>
   <section class="memory-graph" aria-label="人物关系图">
-    <p v-if="!layout.nodes.length" class="subtle memory-graph-empty">还没有人物关系，先更新一次记忆</p>
+    <p v-if="!layout.nodes.length" class="subtle memory-graph-empty">{{ emptyText }}</p>
     <template v-else>
       <svg
         class="memory-graph-svg"
@@ -158,6 +213,7 @@ const labeledEdges = computed(() => {
           class="memory-graph-node"
           :class="{ 'is-dim': !nodeLit(node.id), 'is-selected': node.id === activeId }"
           :data-node-id="node.id"
+          :data-label="labelShown(node) ? 'visible' : 'hidden'"
           role="button"
           tabindex="0"
           :aria-label="`人物：${node.name}`"
@@ -178,9 +234,17 @@ const labeledEdges = computed(() => {
               { 'is-uncertain': node.accuracy !== 'normal', 'is-unknown': !node.known },
             ]"
           />
-          <text class="memory-graph-name" :x="node.x" :y="node.y + node.radius + 12" text-anchor="middle">
-            {{ displayName(node) }}
-          </text>
+          <!--
+            不挂标签的节点不是「没办法访问」：名字仍在 aria-label 里，
+            鼠标悬停/键盘聚焦时也会把标签画出来（labelShown 看 activeId）。
+          -->
+          <text
+            v-if="labelShown(node)"
+            class="memory-graph-name"
+            :x="node.x"
+            :y="node.y + node.radius + 12"
+            text-anchor="middle"
+          >{{ displayName(node) }}</text>
         </g>
       </svg>
 

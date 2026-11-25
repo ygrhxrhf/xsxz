@@ -100,7 +100,14 @@ export function evidenceVerificationLabel(
     return `已核验：删除了 ${dropped} 条无原文支持的结论`
   }
   if (message.verification === 'not_run') {
+    // 这是「本该核验却没跑成」：请求失败、judge 回了非法格式。不能用「已关闭」的说法，
+    // 否则读者会以为是自己关的开关，于是反复重试而不去看真正的原因。
     return '未运行校验：模型未给出引文或校验请求失败，请自行核对原文'
+  }
+  if (message.verification === 'disabled') {
+    // 这是「读者自己关掉了」：文案必须说清是设置造成的，并说清现在少了哪一步判断，
+    // 不能写成「校验失败」——那会把一个省钱选择渲染成一个故障。
+    return '已关闭原文核验：结论有逐字引文，但未做支持性判断'
   }
   return ''
 }

@@ -298,6 +298,8 @@ const tencentMapKey = ref('')
 const tencentMapSaving = ref(false)
 const provider = ref<AiProvider>('deepseek')
 const thinkingEnabled = ref(true)
+/** 回答后核对原文：默认开，关掉能省一次请求但回答只能标「未做支持性判断」。 */
+const verifyEvidenceAnswers = ref(DEFAULT_AI_PREFS.verifyEvidenceAnswers)
 const autoBookOverview = ref(true)
 const overviewModel = ref('')
 const autoReadingFollow = ref(false)
@@ -454,6 +456,8 @@ async function load() {
     const ai = settings.value.ai ?? DEFAULT_AI_PREFS
     provider.value = inferAiProvider(settings.value.baseUrl, ai.provider)
     thinkingEnabled.value = ai.thinkingEnabled
+    // 老设置文件没有这个键，主进程已经补成 true，这里直接信任下发值。
+    verifyEvidenceAnswers.value = ai.verifyEvidenceAnswers
     autoBookOverview.value = ai.autoBookOverview
     overviewModel.value = ai.overviewModel ?? ''
     autoReadingFollow.value = ai.autoReadingFollow
@@ -741,6 +745,7 @@ async function saveAi(): Promise<boolean> {
       ai: {
         provider: provider.value,
         thinkingEnabled: thinkingEnabled.value,
+        verifyEvidenceAnswers: verifyEvidenceAnswers.value,
         autoBookOverview: autoBookOverview.value,
         overviewModel: overviewModel.value.trim(),
         autoReadingFollow: autoReadingFollow.value,
@@ -1511,6 +1516,14 @@ onMounted(async () => {
             <div class="field-help">人物、前情和证据问答使用思考模式；翻译、清正文和摘要使用快速模式。</div>
           </div>
           <n-switch v-model:value="thinkingEnabled" />
+        </div>
+        <div class="switch-row">
+          <div>
+            <div class="field-label">回答后核对原文</div>
+            <!-- 文案必须把代价说在前面：这是省钱的开关，不能让读者以为关掉之后质量不变。 -->
+            <div class="field-help">每条结论会用一次小请求确认原文是否支持；关掉可省一次调用，但回答只标「未给出逐字原文」，不会标成已核验。</div>
+          </div>
+          <n-switch v-model:value="verifyEvidenceAnswers" aria-label="回答后核对原文" />
         </div>
         <div class="switch-row">
           <div>

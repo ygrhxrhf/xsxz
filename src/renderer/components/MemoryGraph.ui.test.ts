@@ -45,13 +45,16 @@ function memory(): AiMemoryFile {
   }
 }
 
-async function mountGraph(payload: AiMemoryFile | null) {
+type GraphProps = { chapters?: Array<{ id: string; index: number; title: string }>; uptoChapterIndex?: number }
+
+async function mountGraph(payload: AiMemoryFile | null, props: GraphProps = {}) {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const jumps: AiCitation[] = []
   const app = createApp({
     render: () => h(MemoryGraph, {
       memory: payload,
+      ...props,
       'onJump': (jump: AiCitation) => jumps.push(jump),
     }),
   })
@@ -139,5 +142,98 @@ describe('MemoryGraph（人物关系图）', () => {
       app.unmount()
       document.body.innerHTML = ''
     }
+  })
+})
+
+/** 三章的书；图里的关系分别在第2章、第3章成立，自环那条没有来源（= 成立时间未知）。 */
+const CHAPTERS = [
+  { id: 'c1', index: 1, title: '第1章' },
+  { id: 'c2', index: 2, title: '第2章' },
+  { id: 'c3', index: 3, title: '第3章' },
+]
+
+/** 16 个人：人0 和其余每人一条关系，其余人之间不相连（degree 都是 1）。 */
+function crowdMemory(): AiMemoryFile {
+  const file = memory()
+  return {
+    ...file,
+    characters: Array.from({ length: 16 }, (_, index) => ({
+      id: `p${index}`, name: `人${index}`, aliases: [], role: '', status: '龙套', summary: '',
+      sources: [citation('第1章')], accuracy: 'normal' as const, updatedAt: '',
+    })),
+    relations: Array.from({ length: 15 }, (_, index) => ({
+      id: `cr${index}`, from: '人0', to: `人${index + 1}`, relation: '同门', status: '稳定', summary: '',
+      sources: [citation('第1章')], accuracy: 'normal' as const, updatedAt: '',
+    })),
+  }
+}
+
+const CROWD_CHAPTERS = [{ id: 'c1', index: 1, title: '第1章' }]
+
+describe('MemoryGraph（按阅读进度切片）', () => {
+  it('传 uptoChapterIndex 后节点与边都变少，没来源的关系也不显示', async () => {
+    const full = await mountGraph(memory())
+    expect(document.querySelectorAll('[data-node-id]')).toHaveLength(3)
+    expect(document.querySelectorAll('.memory-graph-edges line')).toHaveLength(2)
+    full.app.unmount()
+    document.body.innerHTML = ''
+
+    // 读到第2章：只剩 甲—乙（第2章成立）。乙—丙 是第3章，自环没有来源，都不能出现。
+    const { app } = await mountGraph(memory(), { chapters: CHAPTERS, uptoChapterIndex: 2 })
+    expect(document.querySelectorAll('[data-node-id]')).toHaveLength(2)
+    expect(node('丙')).toBeNull()
+    expect(document.querySelectorAll('.memory-graph-edges line')).toHaveLength(1)
+    expect(document.querySelectorAll('.memory-graph-selfloop')).toHaveLength(0)
+    app.unmount()
+  })
+
+  it('切片后没有关系时提示「读到这一章为止」，与「记忆里本来就没关系」分开', async () => {
+    const { app } = await mountGraph(memory(), { chapters: CHAPTERS, uptoChapterIndex: 1 })
+    expect(document.querySelector('[data-node-id]')).toBeNull()
+    expect(document.querySelector('.memory-graph-empty')?.textContent).toBe('读到这一章为止，还没有人物关系')
+    app.unmount()
+    document.body.innerHTML = ''
+
+    // 不传进度时还是那句「先更新一次记忆」：这里记忆本身是空的。
+    const plain = await mountGraph({ ...memory(), relations: [] })
+    expect(document.querySelector('.memory-graph-empty')?.textContent).toBe('还没有人物关系，先更新一次记忆')
+    plain.app.unmount()
+  })
+
+  it('切片进度拉满时与全量图一致', async () => {
+    const { app } = await mountGraph(memory(), { chapters: CHAPTERS, uptoChapterIndex: 3 })
+    // 第3章为止两条关系都成立，但没有来源的自环依然隐藏（宁缺勿漏）。
+    expect(document.querySelectorAll('.memory-graph-edges line')).toHaveLength(2)
+    expect(document.querySelectorAll('.memory-graph-selfloop')).toHaveLength(0)
+    app.unmount()
+  })
+})
+
+describe('MemoryGraph（人多时的标签策略）', () => {
+  it('12 人以内标签全显示', async () => {
+    const { app } = await mountGraph(memory(), { chapters: CHAPTERS, uptoChapterIndex: 3 })
+    expect(document.querySelectorAll('.memory-graph-name')).toHaveLength(3)
+    expect(document.querySelectorAll('[data-label="hidden"]')).toHaveLength(0)
+    app.unmount()
+  })
+
+  it('超过 12 人时只给度数前 6 个挂标签，其余靠 hover 出现', async () => {
+    const { app } = await mountGraph(crowdMemory(), { chapters: CROWD_CHAPTERS, uptoChapterIndex: 1 })
+    expect(document.querySelectorAll('[data-node-id]')).toHaveLength(16)
+    expect(document.querySelectorAll('.memory-graph-name')).toHaveLength(6)
+    expect(document.querySelectorAll('[data-label="visible"]')).toHaveLength(6)
+    expect(document.querySelectorAll('[data-label="hidden"]')).toHaveLength(10)
+    // 度数最高的 人0 必须在挂出来的 6 个里。
+    expect(node('人0')?.getAttribute('data-label')).toBe('visible')
+    // 不挂标签的节点仍然可访问：名字一直在 aria-label 里。
+    expect(node('人15')?.getAttribute('aria-label')).toBe('人物：人15')
+    expect(node('人15')?.getAttribute('data-label')).toBe('hidden')
+
+    // hover 到没标签的人身上，他的名字就出现。
+    node('人15')?.dispatchEvent(new MouseEvent('mouseenter'))
+    await nextTick()
+    expect(node('人15')?.getAttribute('data-label')).toBe('visible')
+    expect(document.querySelectorAll('.memory-graph-name')).toHaveLength(7)
+    app.unmount()
   })
 })

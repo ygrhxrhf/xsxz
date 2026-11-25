@@ -1029,7 +1029,10 @@ function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | 
   // 不读这段，重开侧栏后每条回答都会退化成「旧版回答，未逐条对应」，徽标也一并丢失。
   const claims = parseChatClaims(value.claims)
   if (claims) message.claims = claims
-  if (value.verification === 'verified' || value.verification === 'partial' || value.verification === 'not_run') {
+  // 与 aiReplaceChat 的白名单保持一致：少了 disabled，读者关掉核验后存下的回答，
+  // 重开侧栏就会丢掉徽标，界面只能显示成「未校验」。
+  if (value.verification === 'verified' || value.verification === 'partial'
+    || value.verification === 'not_run' || value.verification === 'disabled') {
     message.verification = value.verification
   }
   if (typeof value.droppedClaims === 'number' && Number.isSafeInteger(value.droppedClaims) && value.droppedClaims >= 0) {

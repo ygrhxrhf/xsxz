@@ -138,7 +138,7 @@ import type { Annotation, BookSearchHit } from '@shared/types'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import ReaderMindmap from '../components/ReaderMindmap.vue'
 import MemoryGraph from '../components/MemoryGraph.vue'
-import { buildMemoryGraph } from './memoryGraph'
+import { buildMemoryGraph, sliceMemoryGraph } from './memoryGraph'
 import BookMapPage from './BookMapPage.vue'
 import AtlasDock from './atlas/AtlasDock.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
@@ -1445,13 +1445,34 @@ const visibleMemoryCount = computed(() => visibleMemoryCharacters.value.length
   + visibleMemoryForeshadows.value.length
   + visibleMemoryEvents.value.length)
 /**
- * 关系图折叠标题上的数字和图里真正画出来的规模保持一致（都经过 24 人 / 80 条上限截断），
- * 否则读者会以为图漏了人；没有关系时返回 0/0，由 v-if 决定整块不渲染。
+ * 关系图切片上限：默认停在「当前读到的章」。
+ *
+ * 不默认全量的理由：全量图里有一半关系是读者还没读到的地方才成立的，
+ * 对小说读者来说那就是剧透。滑块只在当前章以内取值，读者也不能往前拉。
+ */
+const memoryGraphUpto = ref(1)
+/**
+ * 当前章在 book.chapters 里的 index（滑块上界与默认值）。
+ *
+ * 用 find 找而不是拿 chapters 的下标：章节表不保证按 index 排序（补章、重导都会打乱），
+ * 下标当章节号会在那些书上直接错位，连带把切片切错。
+ */
+const memoryGraphCurrentIndex = computed(() => {
+  const current = currentChapter.value
+  if (!current) return 1
+  const found = book.value?.chapters?.find((chapter) => chapter.id === current.id)
+  return found?.index ?? current.index
+})
+/**
+ * 关系图折叠标题上的数字和图里真正画出来的规模保持一致（都经过 24 人 / 80 条上限截断，
+ * 以及当前的进度切片），否则读者会以为图漏了人；没有关系时返回 0/0，由 v-if 决定整块不渲染。
  */
 const memoryGraphCounts = computed(() => {
   if (!memoryData.value?.relations?.length) return { people: 0, edges: 0 }
   const graph = buildMemoryGraph(memoryData.value)
-  return { people: graph.nodes.length, edges: graph.edges.length }
+  // 标题跟着画面走：别出现「20 人」的标题配 3 个点的图。
+  const shown = sliceMemoryGraph(graph, book.value?.chapters, memoryGraphUpto.value)
+  return { people: shown.nodes.length, edges: shown.edges.length }
 })
 
 async function jumpToAnnotation(a: Annotation) {
@@ -3595,6 +3616,9 @@ watch(() => props.bookId, (id) => { if (id) void loadBook(id) })
 watch(() => currentChapter.value?.id, () => {
   selectionNoteTarget.value = null
   inlineNoteEditor.value = null
+  // 换章（含换书、续读）就把关系图拉回新章的进度：
+  // 否则上一本/上一章拖到的位置会带到新章，那正好会造成它本想避免的剧透。
+  memoryGraphUpto.value = memoryGraphCurrentIndex.value
 })
 watch([aiAssistantTab, currentChapter], ([tab]) => {
   if (tab === 'notes') void loadChapterNotes()
@@ -4544,7 +4568,30 @@ onUnmounted(() => {
                 -->
                 <details v-if="memoryData?.relations?.length" class="memory-graph-panel">
                   <summary class="memory-graph-panel-summary">人物关系图 · {{ memoryGraphCounts.people }} 人 / {{ memoryGraphCounts.edges }} 条关系</summary>
-                  <MemoryGraph :memory="memoryData" @jump="jumpToMemorySource" />
+                  <!--
+                    进度控制：默认停在当前章，图里只有读者已经读到的关系。
+                    滑块上界就是当前章，读者也不能把自己往前拨（那就又是剧透）。
+                    右侧小字是当前章标题，告诉读者这个上界到底是哪一章。
+                  -->
+                  <div class="memory-graph-progress">
+                    <label class="memory-graph-progress-label" for="memory-graph-upto">只看读到第 {{ memoryGraphUpto }} 章为止</label>
+                    <input
+                      id="memory-graph-upto"
+                      v-model.number="memoryGraphUpto"
+                      class="memory-graph-range"
+                      type="range"
+                      :min="1"
+                      :max="memoryGraphCurrentIndex"
+                      aria-label="关系图显示到第几章"
+                    />
+                    <span class="memory-graph-progress-title" :title="currentChapter?.title">{{ currentChapter?.title }}</span>
+                  </div>
+                  <MemoryGraph
+                    :memory="memoryData"
+                    :chapters="book?.chapters"
+                    :upto-chapter-index="memoryGraphUpto"
+                    @jump="jumpToMemorySource"
+                  />
                 </details>
                 <section class="ai-budget-status">
                   <strong>人物与伏笔时间线</strong>
@@ -6207,6 +6254,35 @@ onUnmounted(() => {
   outline: 2px solid var(--active-chapter);
   outline-offset: 2px;
 }
+/** 一行进度控制：沿用记忆区块的小字风格，滑块只有 14px 高，不当大控件占位。 */
+.memory-graph-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  color: var(--r-muted);
+  font-size: 12px;
+}
+.memory-graph-progress-label {
+  white-space: nowrap;
+}
+/* 不撑满整行：滑块是给关系图用的旋钮，不是主体。 */
+.memory-graph-range {
+  flex: 0 0 120px;
+  width: 120px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--active-chapter);
+}
+.memory-graph-progress-title {
+  flex: 1 1 60px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 
 .memory-section h3 {
   margin: 12px 0 6px;
@@ -6364,6 +6440,9 @@ onUnmounted(() => {
 .chat-verify.is-verified { color: var(--active-chapter); }
 .chat-verify.is-partial { color: var(--r-text); }
 .chat-verify.is-not_run { color: var(--r-muted); }
+/* disabled = 读者主动关掉的核验：它不是故障，所以不报警色，跟着 muted 走；
+   跟 not_run 同色也说明两者都“没核过”，真正的差别靠文案说清。 */
+.chat-verify.is-disabled { color: var(--r-muted); }
 .chat-evidence {
   width: 85%;
   padding: 8px 10px;

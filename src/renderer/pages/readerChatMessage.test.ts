@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AiCitation } from '@shared/types'
-import { appendChatStep, claimCitationLines } from './readerChatMessage'
+import { appendChatStep, claimCitationLines, evidenceVerificationLabel } from './readerChatMessage'
 
 function citation(id: string): AiCitation {
   return { id, chapterId: 'c1', chapterTitle: '第一章', paragraphIndex: 0, excerpt: `第 ${id} 段` }
@@ -88,5 +88,30 @@ describe('内联引用角标（claimCitationLines）', () => {
       claims: [{ text: '结论', citationIds: ['missing', 'a', 'a'] }],
     })
     expect(lines[0]!.badges).toEqual([{ label: 1, citation: citation('a') }])
+  })
+})
+
+/**
+ * 徽标文案是可信度的唯一出口：说错一个词，读者就会把模型的推测当成原文背过的书。
+ * 重点盯住「没核」的两种原因不能混——disabled 是读者自己关的（省钱选择），
+ * not_run 是核验没跑成（故障）。
+ */
+describe('可信度徽标（evidenceVerificationLabel）', () => {
+  it('disabled 写「已关闭原文核验」，不能用故障性的 not_run 那套说法', () => {
+    const label = evidenceVerificationLabel({ verification: 'disabled', claims: [{ text: '结论', citationIds: ['a'] }] })
+    expect(label).toContain('已关闭原文核验')
+    expect(label).not.toContain('未运行校验')
+    expect(label).not.toContain('校验请求失败')
+  })
+
+  it('not_run 仍是「未运行校验」，不能说成已关闭或已核验', () => {
+    const label = evidenceVerificationLabel({ verification: 'not_run', claims: [{ text: '结论', citationIds: ['a'] }] })
+    expect(label).toContain('未运行校验')
+    expect(label).not.toContain('已关闭')
+    expect(label).not.toContain('已核验')
+  })
+
+  it('旧记录没有 verification 时返回空串：界面不显示任何徽标', () => {
+    expect(evidenceVerificationLabel({ claims: [{ text: '结论', citationIds: ['a'] }] })).toBe('')
   })
 })

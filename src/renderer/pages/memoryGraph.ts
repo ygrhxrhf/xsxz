@@ -49,8 +49,19 @@ export interface MemoryGraphEdge {
 }
 
 export interface MemoryGraph {
+  /** 恒为 degree 降序；切片后由 sliceMemoryGraph 重新排序，保持这条不变量可用。 */
   nodes: MemoryGraphNode[]
   edges: MemoryGraphEdge[]
+}
+
+/**
+ * 切片只需要章节表的这三列（ChapterMeta 结构兼容），所以不 import 主进程的 ChapterMeta：
+ * 纯数据层不该为了一个 index 把整条进程边界拖进来，测试里三行就能造一本书。
+ */
+export interface MemoryGraphChapterRef {
+  id: string
+  index: number
+  title: string
 }
 
 /** 大书动辄上百个人物、上千条关系，全画出来是一团毛线；按关联度砍到可读规模。 */
@@ -214,6 +225,130 @@ export function buildMemoryGraph(memory: AiMemoryFile | null | undefined): Memor
 
   return { nodes, edges }
 }
+
+/**
+ * 章节标题比较用的归一形式：去掉所有空白，
+ * 因为「第 3 章」「第3章」「第03章」在记忆和章节表里往往写得不一样，
+ * 但它们指的是同一章，按字面比较会把所有边都判成未知章节。
+ */
+function normalizeChapterTitle(title: string): string {
+  return title.replace(/\s+/gu, '').trim()
+}
+
+/**
+ * 一条边「最早成立」的章节 index，未知是 Infinity。
+ *
+ * 先认 chapterId（唯一可靠），再退一步按标题比（老记忆里的引用可能没写 chapterId，
+ * 或者书籍重新导入后章节 id 变了，标题却还是那个标题），都认不出来就是 Infinity。
+ */
+function chapterIndexOfSource(
+  source: AiCitation | undefined,
+  byId: ReadonlyMap<string, number>,
+  byTitle: ReadonlyMap<string, number>,
+  chapters: readonly MemoryGraphChapterRef[],
+): number {
+  if (!source) return Infinity
+  const bySourceId = source.chapterId ? byId.get(source.chapterId) : undefined
+  if (bySourceId !== undefined) return bySourceId
+
+  const title = normalizeChapterTitle(source.chapterTitle ?? '')
+  if (!title) return Infinity
+  const exact = byTitle.get(title)
+  if (exact !== undefined) return exact
+
+  // 还认不出来就做两次模糊比较，都只取最靠前的那一章，同一序号命中多条时结果也不变：
+  // 1. 数字段按数值相等：「第3章」= 「第03章」；
+  // 2. 互相包含：「第5章 剑气」↔ 「第5章」。
+  // 两条规则都要求标题至少 2 个字：太短的标题（比如「序」）互相包含的概率太高，
+  // 一旦误认成早期章节，本该隐藏的边就会提前画出来，所以宁可当未知（Infinity）。
+  if (title.length < 2) return Infinity
+  let matched = Infinity
+  for (const chapter of chapters) {
+    const candidate = normalizeChapterTitle(chapter.title)
+    if (candidate.length < 2) continue
+    const same = naturalCompare(candidate, title) === 0
+    const partial = !same && (candidate.includes(title) || title.includes(candidate))
+    if (!same && !partial) continue
+    if (chapter.index < matched) matched = chapter.index
+  }
+  return matched
+}
+
+/**
+ * 每条边最早成立的章节序号（Map：边 id → 章节 index）。
+ *
+ * 用 Map 而不是数组：MemoryGraphEdge.id 才是边的权威键，
+ * 调用方已经可能把边复制并重新编号（sliceMemoryGraph 就这么干），按下标对位迟早错位。
+ *
+ * 返回 Infinity 的边就是「不知道它什么时候成立」的边。这种边在切片时一律不显示：
+ * 关系图是给读者看到当前进度为止的信息，猜错一个等于提前抖出一个设定。
+ */
+export function memoryGraphChapterIndex(
+  edges: readonly MemoryGraphEdge[],
+  chapters: readonly MemoryGraphChapterRef[] | null | undefined,
+): Map<number, number> {
+  const byId = new Map<string, number>()
+  const byTitle = new Map<string, number>()
+  for (const chapter of chapters ?? []) {
+    // 同一个 id / 标题重复出现时只认第一个：章节表里重复本身就是脏数据，
+    // 取哪一个都不影响切片正确性，固定取第一个才能可测。
+    if (chapter.id && !byId.has(chapter.id)) byId.set(chapter.id, chapter.index)
+    const title = normalizeChapterTitle(chapter.title)
+    if (title && !byTitle.has(title)) byTitle.set(title, chapter.index)
+  }
+
+  const result = new Map<number, number>()
+  for (const edge of edges) {
+    result.set(edge.id, chapterIndexOfSource(edge.firstSource, byId, byTitle, chapters ?? []))
+  }
+  return result
+}
+
+/**
+ * 按阅读进度切片：只留 uptoIndex 之前（含）成立的边，再按剩下的边重算 degree。
+ *
+ * 为什么不直接改 buildMemoryGraph：切片是「视图」问题，跟记忆本身无关。
+ * 记忆永远是全量的（纠错、搜索、时间线都要全量），只是这张图一次只看一段。
+ *
+ * 纯函数：不改入参，节点/边都是新对象，调用方可以拿着全量图反复切不同进度。
+ */
+export function sliceMemoryGraph(
+  graph: MemoryGraph,
+  chapters: readonly MemoryGraphChapterRef[] | null | undefined,
+  uptoIndex: number,
+): MemoryGraph {
+  // 没有章节表或进度非法时不切片，原图返回：
+  // 宁可多显示，也不能因为缺数据把整张图抹成空白（那看起来就像记忆坏了）。
+  if (!chapters?.length || !Number.isFinite(uptoIndex)) return graph
+
+  const edgeChapter = memoryGraphChapterIndex(graph.edges, chapters)
+  const edges: MemoryGraphEdge[] = []
+  for (const edge of graph.edges) {
+    const at = edgeChapter.get(edge.id) ?? Infinity
+    if (at > uptoIndex) continue
+    // id 必须是新数组的下标：neighborhoodOf 返回的是下标，组件又拿 edge.id 去比，
+    // 过滤后不重编号，点一个人就不会高亮任何线。
+    edges.push({ ...edge, id: edges.length })
+  }
+
+  // 自环只算一条关联，与 buildMemoryGraph 的口径一致。
+  const degree = new Map<string, number>()
+  for (const edge of edges) {
+    degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1)
+    if (edge.to !== edge.from) degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1)
+  }
+
+  const nodes = graph.nodes
+    // 边被切掉的人不该以孤点形式留在图上：孤点没有信息，只占位置。
+    // 自环节点这里自然会被保住（自环自身算一条关联），不会误删。
+    .filter((node) => (degree.get(node.id) ?? 0) > 0)
+    .map((node) => ({ ...node, degree: degree.get(node.id) ?? 0 }))
+    // 还原「degree 降序」不变量：切完度数会变，圆环布局与标签取舍都靠这个顺序。
+    .sort(byDegreeThenName)
+
+  return { nodes, edges }
+}
+
 
 /** 保留一位小数，顺便把 -0 归一成 0：-0 会让深比较和快照对不上。 */
 function round1(value: number): number {

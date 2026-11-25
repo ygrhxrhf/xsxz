@@ -861,6 +861,12 @@ export interface TierSensePrefs {
 export interface AiPrefs {
   provider: AiProvider
   thinkingEnabled: boolean
+  /**
+   * 回答后核对原文：每条结论额外发一次小请求，让模型判断原文是否真的支持它。
+   * 默认开启——关掉只省一次调用，但回答的可信度就只能如实说「未做支持性判断」。
+   * 字段缺失（老设置文件）时必须按开启处理：核验是这功能的安全网，不能因为没写过这个键就静默退化。
+   */
+  verifyEvidenceAnswers: boolean
   recapLength: 'short' | 'standard' | 'detailed'
   /** 单次预计输入达到此 token 数时，联网前提醒确认。 */
   budgetWarningTokens: number
@@ -1362,10 +1368,13 @@ export interface AiEvidenceClaim {
  * 一条回答的可信度结论，只由后端判定，界面不自己推：
  * - `verified`：所有结论都给出了逐字引文，且批量 judge 认为原文支持它们（一条都没删）；
  * - `partial`：judge 跑成了，但有结论被删掉（引文对不上或原文不支持）；
- * - `not_run`：校验没跑成（请求失败、模型整体没给引文），结论原样留下，但不代表可信。
+ * - `not_run`：本该核验却没跑成（请求失败、judge 返回非法格式），结论原样留下，但不代表可信；
+ * - `disabled`：读者在设置里主动关掉了「回答后核对原文」，这一轮压根没发核验请求。
+ *   `not_run` 是「出故障」，`disabled` 是「你自己选的」——两者文案绝不能混，
+ *   否则关掉开关的人会以为核验坏了，跑去反复重试。
  * 缺省（旧记录）表示不知道——界面不显示任何「已核验」字样。
  */
-export type AiEvidenceVerification = 'verified' | 'partial' | 'not_run'
+export type AiEvidenceVerification = 'verified' | 'partial' | 'not_run' | 'disabled'
 
 export interface AiEvidenceChatMessage {
   role: 'user' | 'assistant'
@@ -1557,6 +1566,8 @@ export const DEFAULT_TIER_SENSE_PREFS: TierSensePrefs = {
 export const DEFAULT_AI_PREFS: AiPrefs = {
   provider: 'deepseek',
   thinkingEnabled: true,
+  // 核验默认开启：多花一次小请求换「结论有没有被原文支持」，这是证据问答可信度的下限。
+  verifyEvidenceAnswers: true,
   recapLength: 'standard',
   budgetWarningTokens: 8000,
   trustedCustomOrigins: [],

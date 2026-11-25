@@ -17,8 +17,14 @@ export const REPLACE_CHAT_MAX_CLAIMS = 50
 export const REPLACE_CHAT_MAX_CLAIM_TEXT = 1000
 /** 与证据流水线的解析上限一致：超过它就不是逐字引文，而是一段重写的正文。 */
 export const REPLACE_CHAT_MAX_QUOTE = 500
-/** 可信度标签的三个合法取值：渲染层算不出来，也不能让它写入未知值。 */
-export const REPLACE_CHAT_VERIFICATIONS: readonly AiEvidenceVerification[] = ['verified', 'partial', 'not_run']
+/**
+ * 可信度标签的合法取值：渲染层算不出来，也不能让它写入未知值。
+ * `disabled` 是「读者自己关掉了原文核验」，跟故障性的 `not_run` 是两回事，必须都能存回去——
+ * 漏了它，重开面板后一轮已关闭核验的回答会被拒写，或者悄悄退化成「校验失败」。
+ */
+export const REPLACE_CHAT_VERIFICATIONS: readonly AiEvidenceVerification[] = [
+  'verified', 'partial', 'not_run', 'disabled',
+]
 
 export interface ReplaceChatPayload {
   bookId: string

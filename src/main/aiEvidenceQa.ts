@@ -169,6 +169,14 @@ export interface EvidenceQaPipelineOptions {
    * 校验是加分项，不能因为它挂了把已经生成好、引用也合规的回答整段丢掉。
    */
   verify?: (messages: ReturnType<typeof buildEvidenceVerifyMessages>) => Promise<AiCompletionResult>
+  /**
+   * 读者在设置里关掉了「回答后核对原文」：这一轮不发核验请求（即使递了 verify 也不调），
+   * 但结论带引文时必须如实标成 `disabled`，不能跟「本该核验却没跑成」的 `not_run` 混为一谈——
+   * 后者是故障，前者是用户的选择。
+   * 单独一个字段而不是靠「verify 缺省」推断：缺省也可能是调用方本来就不提供核验，
+   * 那种情况属于「没跑成」，据为已有会把所有不发核验的调用方都说成用户主动关的。
+   */
+  verifyDisabled?: boolean
 }
 
 /** 至少这么多段可核验依据才谈得上「够回答」。 */
@@ -247,10 +255,11 @@ export async function executeEvidenceQaPipeline(options: EvidenceQaPipelineOptio
   let claims = quoteCheck.claims
   let droppedClaims = quoteCheck.dropped
   // 第二道闸：批量 judge。只判「带引文且还剩引用」的结论；没引文的本来就没法判。
+  // verifyDisabled 在这里也挡一道：即使调用方顺手递了回调，读者关掉的开关也必须真的省下这次请求。
   const judged = claims.some((claim) => claim.quote?.trim() && claim.citationIds.length)
   let verificationRun = false
   let verifyUsage: AiUsage | undefined
-  if (judged && options.verify) {
+  if (judged && options.verify && !options.verifyDisabled) {
     options.onStage('verifying')
     const outcome = await verifyEvidenceClaims({ request: options.verify }, claims, selected.citations)
     verifyUsage = outcome.usage
@@ -275,7 +284,7 @@ export async function executeEvidenceQaPipeline(options: EvidenceQaPipelineOptio
   const citations = selected.citations.filter((citation) => survivingIds.has(citation.id))
   return {
     kind: 'answer', text, citations, claims,
-    verification: resolveVerification(verificationRun, droppedClaims, claims),
+    verification: resolveVerification(verificationRun, droppedClaims, claims, options.verifyDisabled === true),
     droppedClaims,
     uptoChapterId: selected.uptoChapterId,
     usage, truncated: result.truncated,
@@ -286,13 +295,22 @@ export async function executeEvidenceQaPipeline(options: EvidenceQaPipelineOptio
  * 可信度标签。为何不是「没删就算 verified」：
  * 一条结论根本没给引文时，两道闸都没碰过它，说它「有原文支持」就是替模型背书。
  * 所以 verified 要求每条幸存结论都带引文，且 judge 真跑过。
+ *
+ * 「没核」分两种，文案不能混：
+ * - disabled：读者自己关掉了核验（压根没发请求），只有带引文的结论才配上这标签；
+ * - not_run：本该核验却没出结果（judge 抛错、返回非法格式），这是故障，得说成「未运行」。
+ * 没引文的老格式即使开关关掉也还是 not_run：它连引文都没有，关掉核验并没让它变差，
+ * 说成 disabled 反而像在暗示「本来能核」。
  */
 function resolveVerification(
   verificationRun: boolean,
   droppedClaims: number,
   claims: readonly AiEvidenceClaim[],
+  verifyDisabled: boolean,
 ): AiEvidenceVerification {
-  if (!verificationRun) return 'not_run'
+  if (!verificationRun) {
+    return verifyDisabled && claims.some((claim) => Boolean(claim.quote?.trim())) ? 'disabled' : 'not_run'
+  }
   if (droppedClaims > 0) return 'partial'
   return claims.every((claim) => Boolean(claim.quote?.trim())) ? 'verified' : 'partial'
 }

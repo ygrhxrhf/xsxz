@@ -347,4 +347,52 @@ describe('evidence QA verification', () => {
     expect(result.droppedClaims).toBe(0)
     expect(result.verification).toBe('not_run')
   })
+
+  /**
+   * 读者关掉「回答后核对原文」时的两条底线：
+   * 一、真的不再发那个核验请求（这是关它的唯一理由）；
+   * 二、结果必须标成 disabled，不能伪装成 not_run（故障）或 partial（核过但删了结论）。
+   */
+  it('设置里关掉核验时不发 verify 请求，结论带引文的结果标成 disabled', async () => {
+    const verify = vi.fn(async () => completion({
+      verdicts: [{ index: 0, supported: true }, { index: 1, supported: true }],
+    }))
+    const stages: string[] = []
+    const result = answerResult(await executeEvidenceQaPipeline({
+      ...baseOptions,
+      onStage: (stage) => stages.push(stage),
+      // 故意把 verify 也递进去：读者关掉的开关必须比调用方的传参优先，
+      // 否则“关掉核验却还在花钱”这种最难察觉的回归就没人拦。
+      verify,
+      verifyDisabled: true,
+    }))
+    expect(verify).not.toHaveBeenCalled()
+    expect(stages).not.toContain('verifying')
+    expect(result.verification).toBe('disabled')
+    // 关掉核验不等于删结论：引文本地已经对上了，结论必须原样留下
+    expect(result.claims).toHaveLength(2)
+    expect(result.droppedClaims).toBe(0)
+    expect(result.text).toBe(quotedAnswer.answer)
+  })
+
+  it('关掉核验但模型没给引文时仍标 not_run：连引文都没有，说成「已关闭核验」是在替它开脱', async () => {
+    const result = answerResult(await executeEvidenceQaPipeline({
+      ...baseOptions,
+      verifyDisabled: true,
+      answer: async () => completion({
+        answer: '顾清找到了账册。',
+        claims: [{ text: '顾清找到了账册。', citationIds: [dock.id] }],
+      }),
+    }))
+    expect(result.verification).toBe('not_run')
+  })
+
+  it('开着核验时 verifyDisabled 缺省不影响原有判定', async () => {
+    const verify = vi.fn(async () => completion({
+      verdicts: [{ index: 0, supported: true }, { index: 1, supported: true }],
+    }))
+    const result = answerResult(await executeEvidenceQaPipeline({ ...baseOptions, verify }))
+    expect(verify).toHaveBeenCalledTimes(1)
+    expect(result.verification).toBe('verified')
+  })
 })

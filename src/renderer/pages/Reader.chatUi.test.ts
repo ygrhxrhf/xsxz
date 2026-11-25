@@ -309,6 +309,26 @@ describe('Reader 问答可信度徽标', () => {
     } finally { app.unmount() }
   })
 
+  /**
+   * disabled 是「读者自己关掉核验」：文案必须说成已关闭，不能说成未运行/失败——
+   * 否则读者会以为核验坏了，把开关重新打开后反复重试。
+   */
+  it('disabled 写「已关闭原文核验」，不能说成校验失败或去跑过核验', async () => {
+    const { app } = await mountWithVerification({ ...answerWithClaims, verification: 'disabled' })
+    try {
+      const badge = await vi.waitFor(() => {
+        const node = document.querySelector<HTMLElement>('.chat-verify')
+        expect(node, '读者关掉核验也得说明一下').toBeTruthy()
+        return node!
+      })
+      expect(badge.className).toContain('is-disabled')
+      expect(badge.textContent).toContain('已关闭原文核验')
+      // 不能跟故障性的 not_run 用同一套说法
+      expect(badge.textContent).not.toContain('未运行校验')
+      expect(badge.textContent).not.toContain('已核验')
+    } finally { app.unmount() }
+  })
+
   it('旧记录没有 verification 时一个徽标都不渲染', async () => {
     const { app } = await mountWithVerification(answerWithClaims)
     try {

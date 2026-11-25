@@ -142,6 +142,8 @@ import {
   buildEvidenceAnswerMessages, buildEvidenceQueryRewriteMessages, executeEvidenceQaPipeline,
   planEvidenceChapterReads, selectReaderAnnotations, type EvidenceAnswerNote,
 } from './aiEvidenceQa'
+// 只借类型：核验回调的可选形参在流水线里已经推到闭包外的条件 spread，不标注就成了隐式 any。
+import type { buildEvidenceVerifyMessages } from './aiEvidenceVerify'
 import { aiBudgetWarning, promptBudget } from './aiBudget'
 import { AiReadingFollowService } from './aiReadingFollow'
 import {
@@ -2721,6 +2723,10 @@ function registerIpc(): void {
               if (uiDetail) sendAiStage(jobId, 'preparing', uiDetail)
             },
           )
+          // 读者可以关掉「回答后核对原文」：关掉时连 verify 回调都不传，流水线自然不发那个请求，
+          // 但仍要把 verifyDisabled 递进去，否则界面上「你自己关的」会被写成「校验失败」。
+          // 缺字段按开启（老设置文件没这个键，不能当作已关闭）。
+          const verifyEvidence = settings.ai?.verifyEvidenceAnswers !== false
           const result = await executeEvidenceQaPipeline({
             question,
             taskInstruction,
@@ -2731,6 +2737,11 @@ function registerIpc(): void {
               [messages.map((message) => message.content)], [], 0,
               '仅发送查询改写；正在检索本地已读内容',
             )),
+            ...(verifyEvidence ? { verify: async (messages: ReturnType<typeof buildEvidenceVerifyMessages>) => {
+              const completion = await runAiTaskCompletion(config, messages, { task: 'evidenceVerify', signal })
+              await persistAiUsage(args.bookId, completion.usage)
+              return completion
+            } } : { verifyDisabled: true }),
             rewrite: async (messages) => {
               const completion = await runAiTaskCompletion(config, messages, { task: 'queryRewrite', signal })
               await persistAiUsage(args.bookId, completion.usage)
@@ -2809,12 +2820,6 @@ function registerIpc(): void {
               const completion = await runAiTaskCompletion(config, messages, {
                 task: 'evidenceQa', stream: true, signal, onDelta: sink, advisor,
               })
-              await persistAiUsage(args.bookId, completion.usage)
-              return completion
-            },
-            // 核验只回收一个布尔数组，不流式输出也不落正文；失败由流水线降级成「未校验」，这里不抛。
-            verify: async (messages) => {
-              const completion = await runAiTaskCompletion(config, messages, { task: 'evidenceVerify', signal })
               await persistAiUsage(args.bookId, completion.usage)
               return completion
             },

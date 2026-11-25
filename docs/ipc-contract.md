@@ -136,6 +136,8 @@
 
 `Settings.ai.autoBookOverview` 缺省为 `true`，用户可在设置页关闭。开启后只处理「加入书架时登记过」的书：下载确认与导入各登记一本，成功生成后全部从盘读，不因章节变化重新生成；失败要等 `bookOverview.retry`。存量旧书不会被自动排进生成队列（启动只续做带 `requested` 标记但未完成的书）。无 API Key 或自定义服务地址未获信任时等待。概览使用全书正文，可能包含未读剧情与结局；各次 AI 调用计入该书用量。
 
+`Settings.ai.verifyEvidenceAnswers` 缺省为 `true`：证据问答在生成结论后，会用一次小请求核对「引用的原文是否支持这条结论」。缺字段或非布尔一律按 `true` 处理；用户关掉后不再发起核对请求，回答的可信度标记为 `disabled`（与 `not_run` 区分：后者是本该核验却没跑成）。
+
 `Settings.ai.autoReadingFollow` 缺省为 `false`，同样只能由用户显式开启。`Settings.ai.followMaxChaptersPerRun` 缺省 `12`，是增量记忆与自动追剧单次运行最多处理的章节数（记忆仍按每 5 章一批送模型），主进程只接受 `1..50` 的安全整数，其它值回退缺省。两者都由 `normalizeAiPrefs` 白名单补齐；设置页保存时省略这两个键表示保持磁盘上的原值，不得当成 `false` / 缺省清零。
 
 `library.import` 的路径由主进程 `dialog.showOpenDialog` 选出后传入，或设置页先选文件再 invoke。只接受 `.txt` / `.epub`（大小写不敏感）；其它后缀或不带后缀返回 `{ ok: false, message }`（中文，说明不支持的类型）。不得把 `.docx` 等当 txt 硬读。

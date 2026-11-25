@@ -203,6 +203,18 @@ describe('ai.replaceChat 入参校验', () => {
     }).messages[0]!.verification).toBe(verification)
   })
 
+  /**
+   * disabled 必须能写回去：读者关掉核验后产生的回答跟 verified/not_run 一样是合法记录，
+   * 拒绕它会让一次删除或重问直接报错；而它跟 not_run 是两个意思，也不能被归并成同一个值。
+   */
+  it('已关闭核验的 disabled 能写回，且不会被归并成 not_run', () => {
+    expect(parseReplaceChatPayload({
+      bookId, messages: [{ role: 'assistant', content: '答案', verification: 'disabled' }],
+    }).messages[0]!.verification).toBe('disabled')
+    expect(REPLACE_CHAT_VERIFICATIONS).toContain('disabled')
+    expect(REPLACE_CHAT_VERIFICATIONS).toContain('not_run')
+  })
+
   it.each(['verified ', ' ok', 'VERIFIED', '', 1, null, true])('非枚举的可信度标记一律拒绝：%j', (verification) => {
     expect(() => parseReplaceChatPayload({
       bookId, messages: [{ role: 'assistant', content: '答案', verification }],
