@@ -17,8 +17,8 @@ const api = {
   ai: {
     getChat: vi.fn(), getSummaries: vi.fn(), getMemory: vi.fn(), getTimeline: vi.fn(),
     timeline: vi.fn(), chapterNotes: vi.fn(), resumeCard: vi.fn(), getMaterialCoverage: vi.fn(),
-    getUsage: vi.fn(), chatStream: vi.fn(), storySoFar: vi.fn(), summarizeChapter: vi.fn(),
-    semanticIndexStatus: vi.fn(),
+    getUsage: vi.fn(), chatStream: vi.fn(), agentChat: vi.fn(), replaceChat: vi.fn(),
+    storySoFar: vi.fn(), summarizeChapter: vi.fn(), semanticIndexStatus: vi.fn(),
   },
 }
 
@@ -95,3 +95,51 @@ describe('useReaderAssistant（助手面板域）', () => {
     expect(assistant.assistantBusyByKind.value.notes).toBe(false)
   })
 })
+
+  it('对话模式把参考范围附在问题后面，payload 与聊天记录一致', async () => {
+    const assistant = makeAssistant()
+    assistant.qaContextChips.value = { chapter: true, memory: false, notes: false }
+    assistant.chatInput.value = '玉印去了哪里？'
+    await assistant.sendChat()
+
+    expect(api.ai.agentChat).toHaveBeenCalledTimes(1)
+    const payload = api.ai.agentChat.mock.calls[0]![2] as { role: string; content: string }[]
+    expect(payload.at(-1)!.content).toBe('玉印去了哪里？\n\n【参考：本章原文】')
+    // 主进程会原样落盘：界面上的聊天记录必须和 payload 是同一句
+    // 主进程会原样落盘：界面上的聊天记录必须和 payload 是同一句（最后一条是刚占位的助手气泡）
+    expect(assistant.chatMessages.value.at(-2)!.content).toBe(payload.at(-1)!.content)
+  })
+
+  it('证据模式不拼参考范围，只把问题原样发出去', async () => {
+    const assistant = makeAssistant()
+    assistant.qaContextChips.value = { chapter: true, memory: true, notes: true }
+    assistant.chatMode.value = 'evidence'
+    assistant.chatInput.value = '玉印去了哪里？'
+    await assistant.sendChat()
+
+    expect(api.ai.chatStream).toHaveBeenCalledTimes(1)
+    const payload = api.ai.chatStream.mock.calls[0]![2] as { role: string; content: string }[]
+    expect(payload.at(-1)!.content).toBe('玉印去了哪里？')
+  })
+
+  it('重问拿旧句子再发时不把参考范围叠成两行', async () => {
+    const assistant = makeAssistant()
+    assistant.qaContextChips.value = { chapter: false, memory: false, notes: true }
+    // 旧一轮的问题里已经带着上次那行标记：重问会把这句话原样再发一遍
+    assistant.chatMessages.value = [
+      { role: 'user' as const, content: '玉印去了哪里？\n\n【参考：本章原文】' },
+      { role: 'assistant' as const, content: '她把玉印交了出去。' },
+    ]
+    await assistant.reAskChatAnswer(1)
+
+    const payload = api.ai.agentChat.mock.calls[0]![2] as { role: string; content: string }[]
+    // 旧标记先剥掉，再按当前开关拼——否则会变成两行「【参考：…】」
+    expect(payload.at(-1)!.content).toBe('玉印去了哪里？\n\n【参考：我的批注】')
+  })
+
+  it('证据模式下点开关不改变状态', async () => {
+    const assistant = makeAssistant()
+    assistant.chatMode.value = 'evidence'
+    assistant.toggleQaContextChip('chapter')
+    expect(assistant.qaContextChips.value.chapter).toBe(false)
+  })

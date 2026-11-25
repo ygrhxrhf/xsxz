@@ -51,11 +51,14 @@ type Handlers = {
   done?: (event: AiDoneEvent) => void
 }
 type ReplaceCall = { bookId: string; messages: AiEvidenceChatMessage[] }
+/** 一次真实发出去的问答：记下模式与 payload，好断言「附没附参考范围那行」。 */
+type ChatCall = { mode: 'agent' | 'evidence'; messages: AiEvidenceChatMessage[] }
 
 async function mountReader(options: {
   messages?: AiEvidenceChatMessage[]
   handlers?: Handlers
   replaceCalls?: ReplaceCall[]
+  chatCalls?: ChatCall[]
 } = {}) {
   const book = {
     id: 'book1', title: '问答书', author: '', tags: [], importType: 'txt', status: 'ready',
@@ -90,8 +93,16 @@ async function mountReader(options: {
       onStage: (fn: (event: AiStageEvent) => void) => { handlers.stage = fn; return () => { handlers.stage = undefined } },
       onBudget: () => () => {},
       onDone: (fn: (event: AiDoneEvent) => void) => { handlers.done = fn; return () => { handlers.done = undefined } },
-      agentChat: async () => { starts.count += 1; return { ok: true, jobId: 'qa-1' } },
-      chatStream: async () => { starts.count += 1; return { ok: true, jobId: 'qa-1' } },
+      agentChat: async (_bookId: string, _chapterId: string, messages: AiEvidenceChatMessage[]) => {
+        starts.count += 1
+        options.chatCalls?.push({ mode: 'agent', messages })
+        return { ok: true, jobId: 'qa-1' }
+      },
+      chatStream: async (_bookId: string, _chapterId: string, messages: AiEvidenceChatMessage[]) => {
+        starts.count += 1
+        options.chatCalls?.push({ mode: 'evidence', messages })
+        return { ok: true, jobId: 'qa-1' }
+      },
       getChat: async () => ({ ok: true, version: 2, messages: options.messages ?? [] }),
       replaceChat: async (bookId: string, messages: AiEvidenceChatMessage[]) => {
         options.replaceCalls?.push({ bookId, messages })
@@ -152,6 +163,28 @@ async function confirmPopover(): Promise<void> {
   })
   positive.click()
   await nextTick()
+}
+
+/** 输入框下面那排 chip：对话 / 证据 / 本章 / 记忆 / 批注 / 清空。 */
+function composerChips(): HTMLButtonElement[] {
+  return [...document.querySelectorAll<HTMLButtonElement>('.sider-composer-chips .chat-chip')]
+}
+
+function composerChip(label: string): HTMLButtonElement {
+  const button = composerChips().find((item) => item.textContent?.trim() === label)
+  if (!button) throw new Error(`输入框下面没有「${label}」chip`)
+  return button
+}
+
+/** 打字再点「发送问题」：只有走界面才能验到模板里的开关接线。 */
+async function typeAndSend(question: string): Promise<void> {
+  const field = document.querySelector<HTMLTextAreaElement>('.chat-input-row textarea')!
+  field.value = question
+  field.dispatchEvent(new Event('input', { bubbles: true }))
+  const send = [...document.querySelectorAll<HTMLButtonElement>('.chat-input-row button')]
+    .find((item) => item.textContent?.includes('发送问题'))!
+  await vi.waitFor(() => expect(send.disabled).toBe(false))
+  send.click()
 }
 
 afterEach(() => { document.body.innerHTML = ''; localStorage.clear(); vi.unstubAllGlobals() })
@@ -419,6 +452,75 @@ describe('Reader 思考链', () => {
           .map((item) => item.className)).toEqual(['is-error'])
       })
       expect(assistantBubbles()[0]!.textContent).toBe('错误：API Key 无效或无权限，请到设置页核对')
+    } finally { app.unmount() }
+  })
+})
+
+/**
+ * 参考范围开关：读者告诉模型先看什么。指令只附在对话模式的问题末尾；
+ * 证据模式只吃检索结果，拼上去会让读者误以为能改变检索范围，所以连开关一起禁用。
+ */
+describe('Reader 问答参考范围', () => {
+  it('三个 chip 都在、默认都不选中，没开开关时不显示提示', async () => {
+    const { app } = await mountReader()
+    try {
+      // 顺序照模板：对话 / 证据 / 本章 / 记忆 / 批注 / 清空（后四个是新加的三个 + 既有清空）
+      expect(composerChips().map((item) => item.textContent?.trim()))
+        .toEqual(['对话', '证据', '本章', '记忆', '批注', '清空'])
+      for (const label of ['本章', '记忆', '批注']) {
+        expect(composerChip(label).classList.contains('chat-chip-on'), `${label} 默认不该选中`).toBe(false)
+      }
+      expect(document.querySelector('.sider-composer-hint')).toBeNull()
+    } finally { app.unmount() }
+  })
+
+  it('点「本章」后发送：payload 的最后一句用户内容末尾带【参考：本章原文】', async () => {
+    const chatCalls: ChatCall[] = []
+    const { app } = await mountReader({ chatCalls })
+    try {
+      composerChip('本章').click()
+      await nextTick()
+      expect(composerChip('本章').classList.contains('chat-chip-on')).toBe(true)
+      // 开了开关才提示会附一行，平时不占地方
+      expect(document.querySelector('.sider-composer-hint')?.textContent)
+        .toContain('发送时会附一行参考范围')
+
+      await typeAndSend(QUESTION)
+      await vi.waitFor(() => expect(chatCalls).toHaveLength(1))
+      expect(chatCalls[0]!.mode).toBe('agent')
+      const last = chatCalls[0]!.messages.at(-1)!
+      expect(last.role).toBe('user')
+      expect(last.content.startsWith(QUESTION), '问题本身不能被标记挤掉').toBe(true)
+      expect(last.content.endsWith('【参考：本章原文】')).toBe(true)
+      // 聊天记录与 payload 一致：主进程会原样落盘，下次重开才对得上
+      await vi.waitFor(() => {
+        expect(document.querySelector('.chat-msg.user .chat-bubble')?.textContent?.trim()
+          .endsWith('【参考：本章原文】')).toBe(true)
+      })
+    } finally { app.unmount() }
+  })
+
+  it('证据模式下三个 chip 禁用，发送内容不含【参考：', async () => {
+    const chatCalls: ChatCall[] = []
+    const { app } = await mountReader({ chatCalls })
+    try {
+      // 先在对话模式打开一个开关，再切证据模式：开关不消失，但不该生效
+      composerChip('本章').click()
+      await nextTick()
+      composerChip('证据').click()
+      await nextTick()
+      for (const label of ['本章', '记忆', '批注']) {
+        const button = composerChip(label)
+        expect(button.disabled, `${label} 在证据模式下应禁用`).toBe(true)
+        expect(button.getAttribute('title')).toBe('证据模式只回答检索到的已读段落')
+      }
+
+      await typeAndSend(QUESTION)
+      await vi.waitFor(() => expect(chatCalls).toHaveLength(1))
+      expect(chatCalls[0]!.mode).toBe('evidence')
+      const last = chatCalls[0]!.messages.at(-1)!
+      expect(last.content).toBe(QUESTION)
+      expect(last.content.includes('【参考：')).toBe(false)
     } finally { app.unmount() }
   })
 })

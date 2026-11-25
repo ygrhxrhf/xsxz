@@ -8,6 +8,7 @@ import { appendChatStep, type ChatStep, type ReaderChatMessage } from './readerC
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { splitIntoParagraphs } from './useTts'
 import { useInlineAsk } from './readerInlineAsk'
+import { hasQaContext, qaContextDirective, readQaContextChips, stripQaContextDirective, writeQaContextChips, type QaContextChips } from './readerQaContext'
 
 /**
  * 阅读器的「AI 助手面板」域：前情/记忆/问答/笔记/输出五个 tab 的状态与行为。
@@ -130,6 +131,22 @@ const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
 const chatMode = ref<'agent' | 'evidence'>('agent')
+/**
+ * 参考范围开关（本章 / 记忆 / 批注）：读者显式告诉模型先看什么，省掉每轮靠模型猜。
+ * 只影响发送时附上的那一行指令，不新增 IPC、不额外调用模型。
+ * 状态存 localStorage：这是读者「我通常想怎么看」的偏好，不该每开一次面板就重设。
+ */
+const qaContextChips = ref<QaContextChips>(readQaContextChips())
+const qaContextActive = computed(() => hasQaContext(qaContextChips.value))
+/**
+ * 证据模式只吃检索到的已读段落，附这行指令属于误导（读者会以为能改变检索范围），
+ * 所以界面把开关禁用掉，这里再兜一层：状态再怎么变都不会拼进去。
+ */
+function toggleQaContextChip(key: keyof QaContextChips) {
+  if (chatMode.value === 'evidence') return
+  qaContextChips.value = { ...qaContextChips.value, [key]: !qaContextChips.value[key] }
+  writeQaContextChips(qaContextChips.value)
+}
 const chatMessages = ref<ReaderChatMessage[]>([])
 /** 对话模式下模型正在调的本地工具，界面上显示成一行小字而不是空白转圈。 */
 const agentToolActivity = ref('')
@@ -906,22 +923,30 @@ function prepareQuickQuestion(question: string) {
  *
  * `history` 是本轮问题之前的历史（不含新问题）。先把历史拍成纯快照再往 `chatMessages`
  * 里塞用户消息：两处引用同一个响应式数组时，后塞的那条会被算进历史，问题就发了两遍。
+ *
+ * 参考范围只在这里拼：三个入口共用这一处，重问/编辑重发就自然带上读者当前的开关状态。
  */
 async function startChatFrom(history: readonly AiEvidenceChatMessage[], question: string) {
   const target = book.value
   const chapter = currentChapter.value
-  const userMsg = question.trim()
+  // 旧句子末尾可能已经带着上次那行标记（重问/编辑重发就是拿聊天记录里的句子再发一遍），
+  // 先剥掉再按当前开关拼，否则同一行会叠成两行。
+  const userMsg = stripQaContextDirective(question.trim())
   if (!target || !chapter || !userMsg) return
   if (assistantBusyByKind.value.qa || assistantSaveRetrying.value) {
     message.warning('请先停止当前生成')
     return
   }
+  // 证据模式不拼：它只吃检索结果，附上这行会让读者误以为能改变检索范围。
+  const directive = chatMode.value === 'agent' ? qaContextDirective(qaContextChips.value) : ''
+  // 拼好的整句同时进 payload 和聊天记录：主进程会原样落盘，两处不一致下次重开就对不上。
+  const userContent = directive ? `${userMsg}\n\n${directive}` : userMsg
   // 主进程只读 role/content，且 IPC 走 structured clone：Vue 的响应式数组/对象是 Proxy，
   // 原样传过去会直接抛「An object could not be cloned」，问答永远起不来。这里发一份纯快照。
-  const payload: AiChatMessage[] = [...history, { role: 'user' as const, content: userMsg }]
+  const payload: AiChatMessage[] = [...history, { role: 'user' as const, content: userContent }]
     .map((m) => ({ role: m.role, content: m.content }))
   selectionNoteTarget.value = null
-  chatMessages.value.push({ role: 'user', content: userMsg })
+  chatMessages.value.push({ role: 'user', content: userContent })
   chatStarting.value = true
   try {
     // 对话模式走 pi agent（模型自己决定查目录/读原文/检索/看记忆），证据模式仍是单轮严格引用。
@@ -1103,12 +1128,15 @@ async function reAskChatAnswer(index: number) {
   await startChatFrom(history, round.question)
 }
 
-/** 编辑：只把上一句放回输入框并删掉这一轮，改完由读者自己发。 */
+/**
+ * 编辑：把上一句放回输入框并删掉这一轮，改完由读者自己发。
+ * 先剥掉参考范围那行：读者改的是自己的问题，不是机器标记；发送时再按当时开关拼回去。
+ */
 async function editChatQuestion(index: number) {
   const round = chatRoundAt(index)
   if (!round || chatActionsDisabled.value) return
   chatMessages.value.splice(round.questionIndex, 2)
-  chatInput.value = round.question
+  chatInput.value = stripQaContextDirective(round.question)
   await persistChatSnapshot()
 }
 
@@ -1227,6 +1255,9 @@ const inlineAsk = useInlineAsk({
     translateLoading,
     chatMessages,
     chatMode,
+    qaContextChips,
+    qaContextActive,
+    toggleQaContextChip,
     agentToolActivity,
     setAgentToolActivity,
     chatInput,

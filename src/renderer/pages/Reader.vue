@@ -3438,6 +3438,9 @@ const {
   translateLoading,
   chatMessages,
   chatMode,
+  qaContextChips,
+  qaContextActive,
+  toggleQaContextChip,
   agentToolActivity,
   setAgentToolActivity,
   chatInput,
@@ -4740,10 +4743,16 @@ onUnmounted(() => {
               <div class="chat-input-row">
                 <div class="sider-composer">
                   <n-input v-model:value="chatInput" type="textarea" :rows="2" :autosize="{ minRows: 2, maxRows: 6 }" placeholder="有问题，随时问。也可以追问、让我读原文核对…" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
+                  <!-- 参考范围提示：只在读者开了开关时出现，不占常驻空间 -->
+                  <div v-if="qaContextActive" class="subtle sider-composer-hint">发送时会附一行参考范围，模型据此决定先看什么。</div>
                   <div class="sider-composer-bar">
                     <div class="sider-composer-chips">
                       <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'agent' }" title="模型自己决定查目录、读原文、检索、看记忆" @click="chatMode = 'agent'">对话</button>
                       <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'evidence' }" title="单轮严格引用，每条结论绑定已读段落" @click="chatMode = 'evidence'">证据</button>
+                      <!-- 参考范围：读者显式告诉模型先看什么；证据模式不拼接，所以这里也一并禁用 -->
+                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': qaContextChips.chapter }" :disabled="chatMode === 'evidence'" :title="chatMode === 'evidence' ? '证据模式只回答检索到的已读段落' : '让模型先读本章原文'" @click="toggleQaContextChip('chapter')">本章</button>
+                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': qaContextChips.memory }" :disabled="chatMode === 'evidence'" :title="chatMode === 'evidence' ? '证据模式只回答检索到的已读段落' : '参考已整理的人物、关系与伏笔'" @click="toggleQaContextChip('memory')">记忆</button>
+                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': qaContextChips.notes }" :disabled="chatMode === 'evidence'" :title="chatMode === 'evidence' ? '证据模式只回答检索到的已读段落' : '参考我在已读章节里的划线批注'" @click="toggleQaContextChip('notes')">批注</button>
                       <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="clearChat">
                         确定清空这本书的全部 AI 问答记录吗？此操作无法撤销。
                         <template #trigger>
@@ -6570,6 +6579,8 @@ onUnmounted(() => {
 .sider-composer-chips { display: flex; align-items: center; gap: 6px; }
 .sider-composer-send { display: flex; align-items: center; gap: 8px; }
 .sider-composer-task { color: var(--r-muted); font-size: 12px; }
+/* 参考范围提示：极小一行，只在开了开关时才占位，不动输入框高度 */
+.sider-composer-hint { padding: 0 10px 2px; font-size: 11px; line-height: 1.5; }
 
 :deep(.n-drawer-header__main)::before {
   content: '✦';
