@@ -2204,6 +2204,8 @@ function registerIpc(): void {
         aiTaskInstruction(settings, 'recap'),
         recapLength,
         materials,
+        // 记忆只用来给旧章节选挑「还活着的线索」，不会把记忆原文写进提示词。
+        memory,
       )
       const confirmOverBudget = unsafePayload && typeof unsafePayload === 'object' &&
         'confirmOverBudget' in unsafePayload &&
