@@ -10,6 +10,7 @@ import type {
   AiChatFile,
   AiChatFileV2,
   AiEvidenceChatMessage,
+  AiEvidenceClaim,
   AiMemoryBase,
   AiMemoryCharacter,
   AiMemoryFile,
@@ -997,6 +998,26 @@ function isChatCitation(value: unknown): boolean {
     Number(value.paragraphIndex) >= 0 && typeof value.excerpt === 'string' && value.excerpt.length > 0
 }
 
+/**
+ * 逐条结论的宽容读取。
+ *
+ * 为什么宽容：`readChat` 只要有一条消息解析失败就整份历史作废，而这些是附加信息——
+ * 字段形状对不上时把结论丢掉、正文与引用照旧读出，比让读者一下子看不到全部问答历史好得多。
+ */
+function parseChatClaims(value: unknown): AiEvidenceClaim[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const claims = value.flatMap((item): AiEvidenceClaim[] => {
+    if (!isRecord(item) || typeof item.text !== 'string' || !Array.isArray(item.citationIds)) return []
+    if (item.citationIds.some((id) => typeof id !== 'string')) return []
+    return [{
+      text: item.text,
+      citationIds: item.citationIds as string[],
+      ...(typeof item.quote === 'string' && item.quote.trim() ? { quote: item.quote } : {}),
+    }]
+  })
+  return claims.length ? claims : undefined
+}
+
 function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | null {
   if (!isRecord(value) || (value.role !== 'user' && value.role !== 'assistant') || typeof value.content !== 'string') return null
   const message: AiEvidenceChatMessage = { role: value.role, content: value.content }
@@ -1004,6 +1025,15 @@ function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | 
   if ('citations' in value) {
     if (!Array.isArray(value.citations) || !value.citations.every(isChatCitation)) return null
     message.citations = value.citations
+  }
+  // 不读这段，重开侧栏后每条回答都会退化成「旧版回答，未逐条对应」，徽标也一并丢失。
+  const claims = parseChatClaims(value.claims)
+  if (claims) message.claims = claims
+  if (value.verification === 'verified' || value.verification === 'partial' || value.verification === 'not_run') {
+    message.verification = value.verification
+  }
+  if (typeof value.droppedClaims === 'number' && Number.isSafeInteger(value.droppedClaims) && value.droppedClaims >= 0) {
+    message.droppedClaims = value.droppedClaims
   }
   if ('uptoChapterId' in value) {
     if (typeof value.uptoChapterId !== 'string') return null

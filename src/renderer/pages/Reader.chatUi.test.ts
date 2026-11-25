@@ -211,6 +211,80 @@ describe('Reader 问答气泡：角标与依据', () => {
   })
 })
 
+/** 徽标文案是后端算的，界面只负责照猫画虎：不许在这里把 partial/not_run 说成「已核验」。 */
+describe('Reader 问答可信度徽标', () => {
+  async function mountWithVerification(message: AiEvidenceChatMessage) {
+    const mounted = await mountReader({ messages: [{ role: 'user', content: QUESTION }, message] })
+    await vi.waitFor(() => expect(assistantBubbles()).toHaveLength(1))
+    return mounted
+  }
+
+  it('verified 说清几条结论都有原文支持', async () => {
+    const { app } = await mountWithVerification({ ...answerWithClaims, verification: 'verified' })
+    try {
+      const badge = await vi.waitFor(() => {
+        const node = document.querySelector<HTMLElement>('.chat-verify')
+        expect(node, '已核验就该挂徽标').toBeTruthy()
+        return node!
+      })
+      expect(badge.className).toContain('is-verified')
+      expect(badge.textContent).toContain('已核验')
+      // 条数取幸存结论数：读者能拿它和下面的逐条结论对得上
+      expect(badge.textContent).toContain('条结论均有原文支持')
+      expect(badge.textContent).toContain('2')
+    } finally { app.unmount() }
+  })
+
+  it('partial 删过结论时说清删了几条', async () => {
+    const { app } = await mountWithVerification({ ...answerWithClaims, verification: 'partial', droppedClaims: 2 })
+    try {
+      const badge = await vi.waitFor(() => {
+        const node = document.querySelector<HTMLElement>('.chat-verify')
+        expect(node).toBeTruthy()
+        return node!
+      })
+      expect(badge.className).toContain('is-partial')
+      expect(badge.textContent).toContain('删除了 2 条无原文支持的结论')
+    } finally { app.unmount() }
+  })
+
+  it('partial 但一条没删时说明有结论没给逐字原文', async () => {
+    const { app } = await mountWithVerification({ ...answerWithClaims, verification: 'partial', droppedClaims: 0 })
+    try {
+      const badge = await vi.waitFor(() => {
+        const node = document.querySelector<HTMLElement>('.chat-verify')
+        expect(node).toBeTruthy()
+        return node!
+      })
+      // dropped 为 0 不是「全都核过了」：只是有结论没给引文，judge 没得判
+      expect(badge.textContent).toContain('未给出逐字原文')
+      expect(badge.textContent).not.toContain('删除了')
+    } finally { app.unmount() }
+  })
+
+  it('not_run 必须直接写「未运行校验」，不能让读者以为校验过了', async () => {
+    const { app } = await mountWithVerification({ ...answerWithClaims, verification: 'not_run' })
+    try {
+      const badge = await vi.waitFor(() => {
+        const node = document.querySelector<HTMLElement>('.chat-verify')
+        expect(node, '校验没跑成也得说一句').toBeTruthy()
+        return node!
+      })
+      expect(badge.className).toContain('is-not_run')
+      expect(badge.textContent).toContain('未运行校验')
+      expect(badge.textContent).not.toContain('已核验')
+    } finally { app.unmount() }
+  })
+
+  it('旧记录没有 verification 时一个徽标都不渲染', async () => {
+    const { app } = await mountWithVerification(answerWithClaims)
+    try {
+      // 缺省就是不知道：不默认说它被核过，也不编一个「未校验」出来
+      expect(document.querySelector('.chat-verify')).toBeNull()
+    } finally { app.unmount() }
+  })
+})
+
 describe('Reader 问答操作条', () => {
   it('一轮问答下面有复制/重问/编辑/删除，生成中一起变灰', async () => {
     const { app } = await mountReader({ messages: [{ role: 'user', content: QUESTION }, answerWithClaims] })

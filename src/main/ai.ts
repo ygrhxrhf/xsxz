@@ -37,6 +37,9 @@ export type AiTaskKind =
   | 'memory'
   | 'places'
   | 'evidenceQa'
+  // 结论核验（judge）：只回收一个布尔数组，输出短、请求小，所以走 fast + 普通超时，
+  // 不跟着 evidenceQa 共用 5 分钟深度超时——一次批判卡那么久只会拖住整轮问答。
+  | 'evidenceVerify'
 
 export interface AiTaskPolicy {
   timeoutMs: number
@@ -244,6 +247,10 @@ export function getAiTaskPolicy(
       return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 3_000, mode: 'fast', structured: false }
     case 'evidenceQa':
       return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 2_000, mode: 'high', structured: true }
+    case 'evidenceVerify':
+      // 输出只有 {"verdicts":[{"index":0,"supported":true}]}：800 足够盖住几十条结论。
+      // structured 兜底 response_format，避免模型在 JSON 前后加解释导致整批判定作废。
+      return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: 800, mode: 'fast', structured: true }
     default:
       return { timeoutMs: AI_REQUEST_TIMEOUT_MS, mode: 'fast', structured: false }
   }

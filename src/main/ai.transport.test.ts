@@ -41,6 +41,8 @@ describe('AI task policy matrix', () => {
     ['recap', AI_DEEP_REQUEST_TIMEOUT_MS, 900, 'high', false],
     ['memory', AI_DEEP_REQUEST_TIMEOUT_MS, 3_000, 'high', true],
     ['evidenceQa', AI_DEEP_REQUEST_TIMEOUT_MS, 2_000, 'high', true],
+    // judge 只回收一个布尔数组：800 token 够盖住几十条结论，用不着深思超时
+    ['evidenceVerify', AI_REQUEST_TIMEOUT_MS, 800, 'fast', true],
   ])('applies %s timeout/max_tokens/mode/JSON policy', (task, timeoutMs, maxTokens, mode, structured) => {
     expect(getAiTaskPolicy(task, { inputTokenEstimate: 1_000 })).toEqual({
       timeoutMs,

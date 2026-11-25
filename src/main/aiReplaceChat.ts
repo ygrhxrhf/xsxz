@@ -1,4 +1,4 @@
-import type { AiEvidenceChatMessage } from '../shared/types'
+import type { AiEvidenceChatMessage, AiEvidenceClaim, AiEvidenceVerification } from '../shared/types'
 
 /**
  * `ai.replaceChat` 的入参校验。
@@ -15,6 +15,10 @@ export const REPLACE_CHAT_MAX_CONTENT = 20000
 export const REPLACE_CHAT_MAX_CITATIONS = 50
 export const REPLACE_CHAT_MAX_CLAIMS = 50
 export const REPLACE_CHAT_MAX_CLAIM_TEXT = 1000
+/** 与证据流水线的解析上限一致：超过它就不是逐字引文，而是一段重写的正文。 */
+export const REPLACE_CHAT_MAX_QUOTE = 500
+/** 可信度标签的三个合法取值：渲染层算不出来，也不能让它写入未知值。 */
+export const REPLACE_CHAT_VERIFICATIONS: readonly AiEvidenceVerification[] = ['verified', 'partial', 'not_run']
 
 export interface ReplaceChatPayload {
   bookId: string
@@ -49,7 +53,7 @@ function parseCitation(value: unknown, at: string) {
   }
 }
 
-function parseClaims(value: unknown, at: string): Array<{ text: string; citationIds: string[] }> {
+function parseClaims(value: unknown, at: string): AiEvidenceClaim[] {
   if (!Array.isArray(value)) throw new Error(`${at}的结论列表格式无效`)
   if (value.length > REPLACE_CHAT_MAX_CLAIMS) throw new Error(`${at}的结论超过 ${REPLACE_CHAT_MAX_CLAIMS} 条`)
   return value.map((claim, index) => {
@@ -62,7 +66,16 @@ function parseClaims(value: unknown, at: string): Array<{ text: string; citation
     if (!Array.isArray(claim.citationIds) || claim.citationIds.some((id) => typeof id !== 'string')) {
       throw new Error(`${where}的引用 id 列表格式无效`)
     }
-    return { text: claim.text, citationIds: [...(claim.citationIds as string[])] }
+    const parsed: AiEvidenceClaim = { text: claim.text, citationIds: [...(claim.citationIds as string[])] }
+    // quote 是可选字段：旧记录没有它，校验也不过它；有就必须是字符串且不超长。
+    if (claim.quote !== undefined) {
+      if (typeof claim.quote !== 'string') throw new Error(`${where}的引文必须是文本`)
+      if (claim.quote.length > REPLACE_CHAT_MAX_QUOTE) {
+        throw new Error(`${where}的引文超过 ${REPLACE_CHAT_MAX_QUOTE} 字`)
+      }
+      if (claim.quote.trim()) parsed.quote = claim.quote
+    }
+    return parsed
   })
 }
 
@@ -85,6 +98,20 @@ function parseMessage(value: unknown, index: number): AiEvidenceChatMessage {
     message.citations = value.citations.map((citation) => parseCitation(citation, at))
   }
   if (value.claims !== undefined) message.claims = parseClaims(value.claims, at)
+  // 可信度标签跟结论一起走：丢掉它，重开面板后一条「已删除不支持的结论」的回答
+  // 会被当成全新未校验的回答，界面要么不显示状态，要么显示错的状态。
+  if (value.verification !== undefined) {
+    if (!REPLACE_CHAT_VERIFICATIONS.includes(value.verification as AiEvidenceVerification)) {
+      throw new Error(`${at}的可信度标记无效`)
+    }
+    message.verification = value.verification as AiEvidenceVerification
+  }
+  if (value.droppedClaims !== undefined) {
+    if (!Number.isSafeInteger(value.droppedClaims) || (value.droppedClaims as number) < 0) {
+      throw new Error(`${at}的已删除结论数无效`)
+    }
+    message.droppedClaims = value.droppedClaims as number
+  }
   // 已读截止与「已停止」也要跟着走，否则删一轮之后旧回答就会被当成完整回答。
   if (value.uptoChapterId !== undefined) {
     if (typeof value.uptoChapterId !== 'string') throw new Error(`${at}的已读截止格式无效`)

@@ -1321,11 +1321,12 @@ export interface AiBudgetEstimate {
 }
 
 /**
- * `queued` / `indexing` 只携带 `detail` 文案，不改变终态：旧监听方按未知阶段忽略即可，
- * 界面拿它们解释「为什么还没开始出字」，不拿它们推断成败。
+ * `queued` / `indexing` / `verifying` 只携带 `detail` 文案，不改变终态：旧监听方按未知阶段忽略即可，
+ * 界面拿它们解释「为什么还没开始出字」或「字出完了为什么还没结束」，不拿它们推断成败。
+ * `verifying` 在正文流完之后才开始：结论逐条跟原文比对，读者看到它在收尾，而不是卡住。
  */
 export type AiRequestStage =
-  | 'preparing' | 'queued' | 'indexing' | 'rewriting' | 'searching' | 'requesting' | 'saving'
+  | 'preparing' | 'queued' | 'indexing' | 'rewriting' | 'searching' | 'requesting' | 'verifying' | 'saving'
 
 export interface AiStageEvent {
   jobId: string
@@ -1344,11 +1345,36 @@ export interface AiBudgetEvent {
   budget: AiBudgetEstimate
 }
 
+/**
+ * 一条结论与它引用的原文。
+ *
+ * `quote` 是「从 citationIds 指向的 excerpt 里逐字抄下来的那一句」：它让界面外的东西
+ * （引文校验、批量 judge）能真的核一遍，而不是只听模型说「我引用了第 3 段」。
+ * 旧模型可能完全不返回 quote，所以它是可选的——缺省表示这条结论没有逐字引文。
+ */
+export interface AiEvidenceClaim {
+  text: string
+  citationIds: string[]
+  quote?: string
+}
+
+/**
+ * 一条回答的可信度结论，只由后端判定，界面不自己推：
+ * - `verified`：所有结论都给出了逐字引文，且批量 judge 认为原文支持它们（一条都没删）；
+ * - `partial`：judge 跑成了，但有结论被删掉（引文对不上或原文不支持）；
+ * - `not_run`：校验没跑成（请求失败、模型整体没给引文），结论原样留下，但不代表可信。
+ * 缺省（旧记录）表示不知道——界面不显示任何「已核验」字样。
+ */
+export type AiEvidenceVerification = 'verified' | 'partial' | 'not_run'
+
 export interface AiEvidenceChatMessage {
   role: 'user' | 'assistant'
   content: string
   citations?: AiCitation[]
-  claims?: Array<{ text: string; citationIds: string[] }>
+  claims?: AiEvidenceClaim[]
+  verification?: AiEvidenceVerification
+  /** 本轮因引文对不上或 judge 判不支持而删掉的结论条数；界面用它解释 partial。 */
+  droppedClaims?: number
   uptoChapterId?: string
   stopped?: boolean
 }
@@ -1423,7 +1449,11 @@ export type AiDoneEvent =
       stopped?: boolean
       /** 证据问答终态的白名单引用；保存失败时也必须保留。 */
       citations?: AiCitation[]
-      claims?: Array<{ text: string; citationIds: string[] }>
+      claims?: AiEvidenceClaim[]
+      /** 结论的可信度结论（验证/部分/未校验），与 claims 同时下发。 */
+      verification?: AiEvidenceVerification
+      /** 已删除的结论条数；旧监听方忽略即可。 */
+      droppedClaims?: number
       /** 本次回答严格夹紧的已读截止。 */
       uptoChapterId?: string
       /** 记忆更新/重建的结构化结果与处理统计。 */

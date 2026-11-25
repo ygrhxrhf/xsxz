@@ -2810,6 +2810,12 @@ function registerIpc(): void {
               await persistAiUsage(args.bookId, completion.usage)
               return completion
             },
+            // 核验只回收一个布尔数组，不流式输出也不落正文；失败由流水线降级成「未校验」，这里不抛。
+            verify: async (messages) => {
+              const completion = await runAiTaskCompletion(config, messages, { task: 'evidenceVerify', signal })
+              await persistAiUsage(args.bookId, completion.usage)
+              return completion
+            },
           })
           if (result.kind === 'stopped') {
             await finishStopped()
@@ -2818,13 +2824,17 @@ function registerIpc(): void {
           if (result.kind === 'answer' && (await readableCitations(args.bookId, result.citations)).length !== result.citations.length) {
             throw new Error('正文或已读范围已变化，请重新提问')
           }
+          // 可信度三件套只随 answer 一起存：noEvidence / unsupported 的回答没有结论可核验。
+          const evidenceMeta = result.kind === 'answer'
+            ? { claims: result.claims, verification: result.verification, droppedClaims: result.droppedClaims }
+            : {}
           const completedMessages: import('../shared/types').AiEvidenceChatMessage[] = [
             ...persistedMessages,
             {
               role: 'assistant',
               content: result.text,
               citations: result.citations,
-              ...(result.kind === 'answer' ? { claims: result.claims } : {}),
+              ...evidenceMeta,
               uptoChapterId: result.uptoChapterId,
             },
           ]
@@ -2832,7 +2842,7 @@ function registerIpc(): void {
             ...persistedMessages,
             {
               role: 'assistant', content: result.text, citations: result.citations,
-              ...(result.kind === 'answer' ? { claims: result.claims } : {}),
+              ...evidenceMeta,
               uptoChapterId: result.uptoChapterId, stopped: true,
             },
           ]
@@ -2840,7 +2850,7 @@ function registerIpc(): void {
           await saveAiDone(jobId, {
             jobId, ok: true, text: result.text, usage: result.usage,
             citations: result.citations, uptoChapterId: result.uptoChapterId,
-            ...(result.kind === 'answer' ? { claims: result.claims } : {}),
+            ...evidenceMeta,
             truncated: result.kind === 'answer' ? result.truncated : false,
           }, () => writeChat(args.bookId, completedMessages, { signal }), {
             signal,

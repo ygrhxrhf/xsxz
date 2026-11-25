@@ -6,6 +6,8 @@ import {
   REPLACE_CHAT_MAX_CONTENT,
   REPLACE_CHAT_MAX_CITATIONS,
   REPLACE_CHAT_MAX_MESSAGES,
+  REPLACE_CHAT_MAX_QUOTE,
+  REPLACE_CHAT_VERIFICATIONS,
 } from './aiReplaceChat'
 
 const bookId = 'd_0123456789abcdef'
@@ -146,5 +148,80 @@ describe('ai.replaceChat 入参校验', () => {
       .toThrow('停止标记格式无效')
     expect(() => parseReplaceChatPayload({ bookId, messages: [{ role: 'assistant', content: '答案', uptoChapterId: 3 }] }))
       .toThrow('已读截止格式无效')
+  })
+
+  it('claim 的 quote 可选：合法引文原样保留，全空白的按没给处理', () => {
+    const parsed = parseReplaceChatPayload({
+      bookId,
+      messages: [{
+        role: 'assistant', content: '答案',
+        claims: [{ text: '结论', citationIds: [citation.id], quote: '她把玉印交了出去' }],
+      }],
+    })
+    expect(parsed.messages[0]!.claims).toEqual([
+      { text: '结论', citationIds: [citation.id], quote: '她把玉印交了出去' },
+    ])
+    // 边界值仍然收下：上限是「不超过」，与证据流水线的解析上限一致
+    const edge = '顾'.repeat(REPLACE_CHAT_MAX_QUOTE)
+    expect(parseReplaceChatPayload({
+      bookId,
+      messages: [{
+        role: 'assistant', content: '答案',
+        claims: [{ text: '结论', citationIds: [], quote: edge }],
+      }],
+    }).messages[0]!.claims![0]!.quote).toBe(edge)
+    // 全空白等于没给：写进记录只会让界面以为这条真带过逐字引文
+    expect(parseReplaceChatPayload({
+      bookId,
+      messages: [{
+        role: 'assistant', content: '答案',
+        claims: [{ text: '结论', citationIds: [], quote: '   ' }],
+      }],
+    }).messages[0]!.claims![0]).not.toHaveProperty('quote')
+  })
+
+  it.each([12, null, true, { text: '顾清' }, ['顾清']])('quote 不是字符串就拒绕：%j', (quote) => {
+    expect(() => parseReplaceChatPayload({
+      bookId,
+      messages: [{ role: 'assistant', content: '答案', claims: [{ text: '结论', citationIds: [], quote }] }],
+    })).toThrow('引文必须是文本')
+  })
+
+  it('quote 超过 500 字就拒绕：那不是逐字引文，是一段重写的正文', () => {
+    expect(() => parseReplaceChatPayload({
+      bookId,
+      messages: [{
+        role: 'assistant', content: '答案',
+        claims: [{ text: '结论', citationIds: [], quote: '顾'.repeat(REPLACE_CHAT_MAX_QUOTE + 1) }],
+      }],
+    })).toThrow(`引文超过 ${REPLACE_CHAT_MAX_QUOTE} 字`)
+  })
+
+  it.each(REPLACE_CHAT_VERIFICATIONS)('可信度标记 %s 可以写回记录', (verification) => {
+    expect(parseReplaceChatPayload({
+      bookId, messages: [{ role: 'assistant', content: '答案', verification }],
+    }).messages[0]!.verification).toBe(verification)
+  })
+
+  it.each(['verified ', ' ok', 'VERIFIED', '', 1, null, true])('非枚举的可信度标记一律拒绝：%j', (verification) => {
+    expect(() => parseReplaceChatPayload({
+      bookId, messages: [{ role: 'assistant', content: '答案', verification }],
+    })).toThrow('可信度标记无效')
+  })
+
+  it('droppedClaims 只接受非负整数', () => {
+    expect(parseReplaceChatPayload({
+      bookId, messages: [{ role: 'assistant', content: '答案', droppedClaims: 0 }],
+    }).messages[0]!.droppedClaims).toBe(0)
+    // 0 也必须写回：它表示「judge 跑了、一条没删」，与缺省是不同的意思
+    expect(parseReplaceChatPayload({
+      bookId, messages: [{ role: 'assistant', content: '答案', droppedClaims: 3 }],
+    }).messages[0]!.droppedClaims).toBe(3)
+  })
+
+  it.each([-1, -0.5, 1.5, '2', null, true, NaN])('droppedClaims 非法直接拒绝：%j', (droppedClaims) => {
+    expect(() => parseReplaceChatPayload({
+      bookId, messages: [{ role: 'assistant', content: '答案', droppedClaims }],
+    })).toThrow('已删除结论数无效')
   })
 })

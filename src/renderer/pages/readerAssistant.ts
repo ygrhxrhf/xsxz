@@ -1065,7 +1065,11 @@ async function persistChatSnapshot() {
     role: message.role,
     content: message.content,
     ...(message.citations ? { citations: message.citations.map((citation) => ({ ...citation })) } : {}),
-    ...(message.claims ? { claims: message.claims.map((claim) => ({ text: claim.text, citationIds: [...claim.citationIds] })) } : {}),
+    // quote 也要跟着走：它是引文校验的依据，丢了下次就只能说「没核过」。
+    ...(message.claims ? { claims: message.claims.map((claim) => ({ text: claim.text, citationIds: [...claim.citationIds], ...(claim.quote ? { quote: claim.quote } : {}) })) } : {}),
+    // 可信度标签不是界面临时算的，重开面板后要能原样复现，所以一起写回。
+    ...(message.verification ? { verification: message.verification } : {}),
+    ...(message.droppedClaims !== undefined ? { droppedClaims: message.droppedClaims } : {}),
     ...(message.uptoChapterId ? { uptoChapterId: message.uptoChapterId } : {}),
     ...(message.stopped ? { stopped: true } : {}),
   }))

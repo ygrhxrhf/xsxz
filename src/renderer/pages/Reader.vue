@@ -142,7 +142,7 @@ import AtlasDock from './atlas/AtlasDock.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
-import { claimCitationLines } from './readerChatMessage'
+import { claimCitationLines, evidenceVerificationLabel } from './readerChatMessage'
 import { displayAiServiceOrigin } from './aiAssistantTransparency'
 import {
   assistantKindForJob,
@@ -3697,6 +3697,9 @@ onMounted(async () => {
           assistant.content = event.text
           assistant.citations = event.citations
           assistant.claims = event.claims
+          // 可信度三件套一起落地：少了它们，界面会把一轮「删过结论」的回答当成普通回答展示。
+          assistant.verification = event.verification
+          assistant.droppedClaims = event.droppedClaims
           assistant.uptoChapterId = event.uptoChapterId
           assistant.stopped = event.stopped === true
         }
@@ -4682,6 +4685,8 @@ onUnmounted(() => {
                         </n-popconfirm>
                       </template>
                     </div>
+                    <!-- 可信度徽标：结论到底核过没有，一行说清；旧记录没有这个字段就不显示，不默认说它被核过。 -->
+                    <div v-if="msg.claims?.length && evidenceVerificationLabel(msg)" :class="['chat-verify', `is-${msg.verification}`]">{{ evidenceVerificationLabel(msg) }}</div>
                     <!-- 依据默认收起：角标回答按结论分组，旧回答保留「未逐条对应」的平铺列表。 -->
                     <details v-if="msg.claims?.length || msg.citations?.length" class="chat-evidence">
                       <summary>依据 · {{ (msg.citations ?? []).length }} 条</summary>
@@ -4690,7 +4695,8 @@ onUnmounted(() => {
                           <strong>结论 {{ claimIndex + 1 }}：{{ claim.text }}</strong>
                           <button v-for="citation in msg.citations?.filter((item) => claim.citationIds.includes(item.id)) || []" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
                         </section>
-                        <small>引用位置已校验；请自行核对原文是否支持每条结论。</small>
+                        <!-- 这里只说「引文来自已读正文」，不说「已校验」：真正的核验结论在上面的徽标里。 -->
+                        <small>引文取自已读正文，可点开原文核对。</small>
                       </template>
                       <template v-else>
                         <strong>依据（旧版回答，未逐条对应）</strong>
@@ -6300,7 +6306,17 @@ onUnmounted(() => {
   justify-content: flex-start;
   gap: 6px;
 }
-
+/* 可信度徽标：紧跟正文、压在「依据」上方一行小字。颜色只区分「核过」与「没核」，
+   真正的差别靠文案说——小屏幕上颜色未必看得清。 */
+.chat-verify {
+  width: 85%;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--r-muted);
+}
+.chat-verify.is-verified { color: var(--active-chapter); }
+.chat-verify.is-partial { color: var(--r-text); }
+.chat-verify.is-not_run { color: var(--r-muted); }
 .chat-evidence {
   width: 85%;
   padding: 8px 10px;
