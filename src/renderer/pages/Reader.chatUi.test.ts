@@ -546,67 +546,30 @@ describe('Reader 思考链', () => {
  * 参考范围开关：读者告诉模型先看什么。指令只附在对话模式的问题末尾；
  * 证据模式只吃检索结果，拼上去会让读者误以为能改变检索范围，所以连开关一起禁用。
  */
-describe('Reader 问答参考范围', () => {
-  it('三个 chip 都在、默认都不选中，没开开关时不显示提示', async () => {
+describe('Reader 问答模式切换（精简输入栏）', () => {
+  it('输入框下方只保留「对话 / 证据」两档胶囊，去掉本章/记忆/批注/清空冗余开关与灰字提示', async () => {
     const { app } = await mountReader()
     try {
-      // 顺序照模板：对话 / 证据 / 本章 / 记忆 / 批注 / 清空（后四个是新加的三个 + 既有清空）
       expect(composerChips().map((item) => item.textContent?.trim()))
-        .toEqual(['对话', '证据', '本章', '记忆', '批注', '清空'])
-      for (const label of ['本章', '记忆', '批注']) {
-        expect(composerChip(label).classList.contains('chat-chip-on'), `${label} 默认不该选中`).toBe(false)
-      }
+        .toEqual(['对话', '证据'])
+      expect(composerChip('对话').classList.contains('chat-chip-on')).toBe(true)
+      expect(composerChip('证据').classList.contains('chat-chip-on')).toBe(false)
       expect(document.querySelector('.sider-composer-hint')).toBeNull()
     } finally { app.unmount() }
   })
 
-  it('点「本章」后发送：payload 的最后一句用户内容末尾带【参考：本章原文】', async () => {
+  it('切到「证据」模式后发送走 evidence 通道，切回「对话」走 agent 通道', async () => {
     const chatCalls: ChatCall[] = []
     const { app } = await mountReader({ chatCalls })
     try {
-      composerChip('本章').click()
-      await nextTick()
-      expect(composerChip('本章').classList.contains('chat-chip-on')).toBe(true)
-      // 开了开关才提示会附一行，平时不占地方
-      expect(document.querySelector('.sider-composer-hint')?.textContent)
-        .toContain('发送时会附一行参考范围')
-
-      await typeAndSend(QUESTION)
-      await vi.waitFor(() => expect(chatCalls).toHaveLength(1))
-      expect(chatCalls[0]!.mode).toBe('agent')
-      const last = chatCalls[0]!.messages.at(-1)!
-      expect(last.role).toBe('user')
-      expect(last.content.startsWith(QUESTION), '问题本身不能被标记挤掉').toBe(true)
-      expect(last.content.endsWith('【参考：本章原文】')).toBe(true)
-      // 聊天记录与 payload 一致：主进程会原样落盘，下次重开才对得上
-      await vi.waitFor(() => {
-        expect(document.querySelector('.chat-msg.user .chat-bubble')?.textContent?.trim()
-          .endsWith('【参考：本章原文】')).toBe(true)
-      })
-    } finally { app.unmount() }
-  })
-
-  it('证据模式下三个 chip 禁用，发送内容不含【参考：', async () => {
-    const chatCalls: ChatCall[] = []
-    const { app } = await mountReader({ chatCalls })
-    try {
-      // 先在对话模式打开一个开关，再切证据模式：开关不消失，但不该生效
-      composerChip('本章').click()
-      await nextTick()
       composerChip('证据').click()
       await nextTick()
-      for (const label of ['本章', '记忆', '批注']) {
-        const button = composerChip(label)
-        expect(button.disabled, `${label} 在证据模式下应禁用`).toBe(true)
-        expect(button.getAttribute('title')).toBe('证据模式只回答检索到的已读段落')
-      }
+      expect(composerChip('证据').classList.contains('chat-chip-on')).toBe(true)
 
       await typeAndSend(QUESTION)
       await vi.waitFor(() => expect(chatCalls).toHaveLength(1))
       expect(chatCalls[0]!.mode).toBe('evidence')
-      const last = chatCalls[0]!.messages.at(-1)!
-      expect(last.content).toBe(QUESTION)
-      expect(last.content.includes('【参考：')).toBe(false)
+      expect(chatCalls[0]!.messages.at(-1)!.content).toBe(QUESTION)
     } finally { app.unmount() }
   })
 })

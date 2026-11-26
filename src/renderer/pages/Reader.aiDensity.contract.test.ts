@@ -47,7 +47,7 @@ describe('AI 侧栏的信息层级', () => {
     const source = await readerSource()
     // 常驻只留一行状态条；这些核对信息必须还在，但只在面板展开时出现。
     expect(source).toContain('class="ai-status-bar"')
-    const panelStart = source.indexOf('<div v-if="aiRuntimeOpen" class="ai-runtime-panel">')
+    const panelStart = source.indexOf('<div v-show="aiRuntimeOpen" class="ai-runtime-panel">')
     expect(panelStart, '缺少运行信息面板').toBeGreaterThan(0)
     // 面板一直包到「本次发送范围 / 用量」之后，下一条注释是它的收口边界。
     const panelEnd = source.indexOf('<!-- 只在真需要告知时浮出来', panelStart)
@@ -57,33 +57,34 @@ describe('AI 侧栏的信息层级', () => {
     expect(runtimeBlock).toContain('已读截止：')
     expect(runtimeBlock).toContain('仅包含当前阅读进度以内的内容，不发送未读章节。')
     expect(runtimeBlock).toContain('本书累计')
+    expect(runtimeBlock).toContain('材料覆盖到')
+    expect(runtimeBlock).toContain('读完一章后整理')
 
-    // 默认收起：面板由 v-if 控制，初值 false。
+    // 默认收起：面板由 aiRuntimeOpen 控制，初值 false。
     expect(source).toContain('const aiRuntimeOpen = ref(false)')
 
-    // 面板之外不应再有第二份同样的常驻说明。
+    // 面板之外不应再有第二份同样的常驻说明或底部重复折叠栏。
     const outside = source.slice(0, panelStart) + source.slice(panelEnd)
     expect(outside).not.toContain('仅包含当前阅读进度以内的内容，不发送未读章节。')
+    expect(outside).not.toContain('class="ai-follow-panel"')
   })
 
   it('问答 tab 只有一处空状态提示，不再叠一层 .chat-empty', async () => {
     const source = await readerSource()
-    // 骨架换成两层开关后，按稳定的 data-ai-pane 取这段内容。
     const qaStart = source.indexOf('data-ai-pane="qa"')
     const qaEnd = source.indexOf('data-ai-pane="notes"')
     const qaBlock = source.slice(qaStart, qaEnd)
-    // 欢迎态自己承担空状态，旧的 chat-empty 必须删掉。
     expect(qaBlock).toContain('sider-welcome')
     expect(qaBlock).not.toContain('class="chat-empty"')
   })
 
-  it('前情 tab 的取材覆盖只有一行，不再是大面板', async () => {
+  it('前情 tab 去掉字数单选与材料覆盖冗余提示，直接聚焦前情内容', async () => {
     const source = await readerSource()
     const recapStart = source.indexOf('data-ai-pane="recap"')
     const recapEnd = source.indexOf('data-ai-pane="memory"')
     const recapBlock = source.slice(recapStart, recapEnd)
-    expect(recapBlock).toContain('缺摘要')
-    // 覆盖信息用一行 subtle，不再套 ai-budget-status 卡片。
-    expect(recapBlock).not.toMatch(/materialCoverage[^]*?class="ai-budget-status"/)
+    expect(recapBlock).toContain('刷新前情')
+    expect(recapBlock).not.toContain('materialCoverage')
+    expect(recapBlock).not.toContain('recapLength')
   })
 })

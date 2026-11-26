@@ -3609,18 +3609,6 @@ const {
 watch(showAiAssistant, (open) => {
   if (open) void loadAiModelOptions()
 })
-/**
- * 顶层两档：问答 / 阅读资料。
- * 只留 aiAssistantTab 一份真源，顶层档位用可写 computed 推出来——
- * 多存一个 ref 迟早出现「顶层停在问答、内容却是记忆」的错位。
- */
-const assistantTopTab = computed<'chat' | 'read'>({
-  get: () => (aiAssistantTab.value === 'qa' ? 'chat' : 'read'),
-  set: (value) => {
-    if (value === 'chat') aiAssistantTab.value = 'qa'
-    else if (aiAssistantTab.value === 'qa') aiAssistantTab.value = 'recap'
-  },
-})
 
 /** 运行信息面板默认收起：模型与已读边界已经在状态条上，其余按需展开。 */
 const aiRuntimeOpen = ref(false)
@@ -4554,9 +4542,46 @@ onUnmounted(() => {
             <span class="ai-status-model">{{ aiServiceOrigin ? aiModelLabel : '未配置模型服务' }}</span>
             <span class="ai-status-sep" aria-hidden="true">·</span>
             <span class="ai-status-read">已读至 {{ readUptoTitle }}</span>
-            <span class="ai-status-toggle">{{ aiRuntimeOpen ? '收起' : '运行信息' }}</span>
+            <span class="ai-status-toggle">{{ aiRuntimeOpen ? '收起 ▴' : '设置与状态 ▾' }}</span>
           </button>
-          <div v-if="aiRuntimeOpen" class="ai-runtime-panel">
+          <div v-show="aiRuntimeOpen" class="ai-runtime-panel">
+            <div class="ai-model-row">
+              <span class="ai-runtime-label">模型</span>
+              <n-select size="tiny" :value="aiModelValue" :options="aiModelOptions" @update:value="applyAiModel" />
+            </div>
+            <div class="ai-clean-actions">
+              <span class="ai-runtime-label">工具</span>
+              <n-button size="tiny" quaternary :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button>
+              <n-button v-if="cleanRunning" size="tiny" type="warning" @click="stopCleanBody">停止清正文</n-button>
+              <n-button v-if="hasBodyRaw" size="tiny" quaternary @click="restoreCleanedBody">撤销清正文</n-button>
+              <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="clearChat">
+                确定清空这本书的全部 AI 问答记录吗？此操作无法撤销。
+                <template #trigger>
+                  <n-button size="tiny" quaternary :disabled="chatLoading || assistantSaveRetrying || chatMessages.length === 0">清空问答</n-button>
+                </template>
+              </n-popconfirm>
+            </div>
+            <div class="ai-budget-status ai-follow-box">
+              <div class="ai-follow-head">
+                <strong>读完一章后整理</strong>
+                <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
+                  <n-radio-button value="manual">手动</n-radio-button>
+                  <n-radio-button value="ask">提醒我</n-radio-button>
+                  <n-radio-button value="auto">自动</n-radio-button>
+                </n-radio-group>
+              </div>
+              <div v-if="follow" class="subtle">
+                <span v-if="follow.queuedChapters">待整理 {{ follow.queuedChapters }} 章。</span>
+                <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章<span v-if="follow.uptoChapterTitle">，到「{{ follow.uptoChapterTitle }}」</span>。</span>
+                <span v-if="follow.running">正在整理，跑完当前章节才让路。</span>
+                <span v-else-if="follow.paused">已暂停：{{ follow.pauseReason || '达到单次章数上限' }}。</span>
+                <span v-if="follow.failed">上次失败：{{ follow.failed.message }}。</span>
+              </div>
+              <n-space v-if="follow && (follow.queuedChapters || follow.mode !== 'manual')">
+                <n-button size="tiny" :disabled="!follow?.queuedChapters" @click="runFollowNow">{{ follow?.paused ? '继续整理' : '现在整理' }}</n-button>
+                <n-button v-if="follow && follow.mode !== 'manual'" size="tiny" @click="stopFollowAuto">停止自动</n-button>
+              </n-space>
+            </div>
             <div class="ai-assistant-heading">
               <strong>{{ book?.title }}</strong>
               <span v-if="aiServiceOrigin">模型服务：{{ aiServiceOrigin }}</span>
@@ -4567,15 +4592,7 @@ onUnmounted(() => {
               <span>当前任务：{{ aiAssistantTaskLabel }}</span>
               <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
               <span>仅包含当前阅读进度以内的内容，不发送未读章节。</span>
-            </div>
-            <div class="ai-model-row">
-              <span class="subtle">模型</span>
-              <n-select size="tiny" :value="aiModelValue" :options="aiModelOptions" @update:value="applyAiModel" />
-            </div>
-            <div v-if="currentAssistantBudget" class="ai-budget-status">
-              <strong>本次发送范围</strong>
-              <div>预计发送：{{ currentAssistantBudget.chapterCount }} 章 / {{ currentAssistantBudget.paragraphCount }} 段，约 {{ currentAssistantBudget.sentCharacters }} 字 / {{ currentAssistantBudget.estimatedTokens }} tokens（估算）</div>
-              <div>{{ currentAssistantBudget.range }}</div>
+              <span v-if="materialCoverage">材料覆盖到{{ materialCoverage.uptoChapterTitle }}（{{ materialCoverage.summarizedChapters }}/{{ materialCoverage.readyChapters }} 章有摘要）<span v-if="materialCoverage.missing.length">，缺摘要 {{ materialCoverage.missing.length }} 章</span>。</span>
             </div>
             <div v-if="assistantCompleted" class="ai-assistant-status">
               <template v-if="lastAssistantUsage && (lastAssistantUsage.inputTokens !== undefined || lastAssistantUsage.outputTokens !== undefined)">
@@ -4583,11 +4600,11 @@ onUnmounted(() => {
                 <span v-if="lastAssistantUsage.cacheHitTokens !== undefined"> · 缓存命中 {{ lastAssistantUsage.cacheHitTokens }} tokens</span>
               </template>
               <template v-else>服务未返回 token 用量。</template>
-              <div class="subtle">实际费用以模型服务商的计费规则为准。</div>
             </div>
             <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens。</div>
+            <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
             <div v-if="autoBudget" class="subtle">
-              本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens；达到上限会暂停自动任务。
+              本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens。
             </div>
           </div>
 
@@ -4598,36 +4615,30 @@ onUnmounted(() => {
             结果已生成，但未能保存到书库。
             <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantSaveBusy" @click="retryAssistantSave">重试保存</n-button>
           </div>
-          <!--
-            顶层只留两种意图：问答，和翻阅读资料。前情/记忆/笔记/结果退成阅读资料内部的一段，
-            不再和问答抢同一排页签——读者第一眼只需要决定「问」还是「翻」。
-          -->
+          <!-- 单层四色鎏光页签：问答 · 前情 · 记忆 · 笔记（有一次性结果时浮出「结果」），点一下直达 -->
           <div class="ai-top-bar">
             <div class="ai-top-switch" role="tablist" aria-label="AI 助手模式">
-              <button role="tab" :aria-selected="assistantTopTab === 'chat'" :class="{ 'is-on': assistantTopTab === 'chat' }" type="button" @click="assistantTopTab = 'chat'">问答</button>
-              <button role="tab" :aria-selected="assistantTopTab === 'read'" :class="{ 'is-on': assistantTopTab === 'read' }" type="button" @click="assistantTopTab = 'read'">阅读资料</button>
-            </div>
-            <div class="ai-clean-actions">
-              <n-button size="tiny" quaternary :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button>
-              <n-button v-if="cleanRunning" size="tiny" type="warning" @click="stopCleanBody">停止清正文</n-button>
-              <n-button v-if="hasBodyRaw" size="tiny" quaternary @click="restoreCleanedBody">撤销清正文</n-button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'qa'" :class="['ai-tab-btn', 'is-qa', { 'is-on': aiAssistantTab === 'qa' }]" type="button" @click="aiAssistantTab = 'qa'">问答</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'recap'" :class="['ai-tab-btn', 'is-recap', { 'is-on': aiAssistantTab === 'recap' }]" type="button" @click="aiAssistantTab = 'recap'">前情</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'memory'" :class="['ai-tab-btn', 'is-memory', { 'is-on': aiAssistantTab === 'memory' }]" type="button" @click="aiAssistantTab = 'memory'">记忆</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'notes'" :class="['ai-tab-btn', 'is-notes', { 'is-on': aiAssistantTab === 'notes' }]" type="button" @click="aiAssistantTab = 'notes'">笔记</button>
+              <button v-if="aiResult" role="tab" :aria-selected="aiAssistantTab === 'output'" :class="['ai-tab-btn', 'is-output', { 'is-on': aiAssistantTab === 'output' }]" type="button" @click="aiAssistantTab = 'output'">结果</button>
             </div>
           </div>
-          <!-- 阅读资料内部的分段：只换内容，不换层级 -->
-          <div v-show="assistantTopTab === 'read'" class="ai-read-switch" role="tablist" aria-label="阅读资料分类">
-            <button role="tab" :aria-selected="aiAssistantTab === 'recap'" :class="{ 'is-on': aiAssistantTab === 'recap' }" type="button" @click="aiAssistantTab = 'recap'">前情</button>
-            <button role="tab" :aria-selected="aiAssistantTab === 'memory'" :class="{ 'is-on': aiAssistantTab === 'memory' }" type="button" @click="aiAssistantTab = 'memory'">记忆</button>
-            <button role="tab" :aria-selected="aiAssistantTab === 'notes'" :class="{ 'is-on': aiAssistantTab === 'notes' }" type="button" @click="aiAssistantTab = 'notes'">笔记</button>
-            <button v-if="aiResult" role="tab" :aria-selected="aiAssistantTab === 'output'" :class="{ 'is-on': aiAssistantTab === 'output' }" type="button" @click="aiAssistantTab = 'output'">结果</button>
-          </div>
-          <div v-show="assistantTopTab === 'read' && aiAssistantTab === 'recap'" data-ai-pane="recap">
-              <section v-if="resumeCardView?.available" class="ai-budget-status">
-                <strong>断点续读卡</strong>
-                <div class="subtle">上次会话附近最多 10 个读完的章节；只在你点击生成时调用模型。</div>
+          <div v-show="aiAssistantTab === 'recap'" data-ai-pane="recap">
+              <div class="ai-pane-toolbar is-recap-bar">
+                <n-button size="small" :disabled="!book?.progress?.chapterId || assistantBusyByKind.recap || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
+                <n-button size="small" :disabled="!chapterReady || assistantBusyByKind.recap || assistantSaveRetrying" @click="startRecap('chapter')">生成本章摘要</n-button>
+              </div>
+              <section v-if="resumeCardView?.available" class="ai-budget-status resume-card-panel">
+                <div class="resume-card-head">
+                  <strong>断点续读卡</strong>
+                  <n-button size="tiny" :loading="resumeCardLoading" @click="generateResumeCard(false)">{{ resumeCardView.card ? '重新生成续读卡' : '生成续读卡' }}</n-button>
+                </div>
                 <div v-if="resumeCardView.reason" class="subtle">{{ resumeCardView.reason }}</div>
                 <template v-if="resumeCardView.card">
-                  <div v-for="group in ([['关键变化', resumeCardView.card.changes], ['当前冲突', resumeCardView.card.conflicts], ['待解疑问', resumeCardView.card.questions]] as const)" :key="group[0]">
-                    <strong>{{ group[0] }}</strong>
+                  <div v-for="(group, gi) in ([['关键变化', resumeCardView.card.changes], ['当前冲突', resumeCardView.card.conflicts], ['待解疑问', resumeCardView.card.questions]] as const)" :key="group[0]" :class="['resume-group', `is-group-${gi}`]">
+                    <strong class="resume-group-title">{{ group[0] }}</strong>
                     <div v-for="(item, index) in group[1]" :key="index" class="memory-item">
                       <p>{{ item.text }}</p>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</button>
@@ -4635,28 +4646,10 @@ onUnmounted(() => {
                   </div>
                 </template>
                 <div v-if="resumeCardWarning">{{ resumeCardWarning }} <n-button size="tiny" @click="generateResumeCard(true)">确认生成</n-button></div>
-                <n-button size="small" :loading="resumeCardLoading" @click="generateResumeCard(false)">{{ resumeCardView.card ? '重新生成续读卡' : '生成续读卡' }}</n-button>
               </section>
-              <div v-if="chapterSummaryBudget" class="ai-budget-status">
-                预计发送：{{ chapterSummaryBudget.chapterCount }} 章 / {{ chapterSummaryBudget.paragraphCount }} 段，约
-                {{ chapterSummaryBudget.sentCharacters }} 字 / {{ chapterSummaryBudget.estimatedTokens }} tokens（估算）
-              </div>
-              <n-radio-group :value="recapLength" size="small" @update:value="setRecapLength">
-                <n-radio-button value="short">简短 · 约 200 字</n-radio-button>
-                <n-radio-button value="standard">标准 · 约 500 字</n-radio-button>
-                <n-radio-button value="detailed">详细 · 约 1000 字</n-radio-button>
-              </n-radio-group>
-              <p class="subtle">前情只根据已生成的本章摘要和小说记忆整理，不重读正文。</p>
-              <div v-if="materialCoverage" class="subtle">
-                材料覆盖到{{ materialCoverage.uptoChapterTitle }}（{{ materialCoverage.summarizedChapters }}/{{ materialCoverage.readyChapters }} 章有摘要）<span v-if="materialCoverage.missing.length">，缺摘要 {{ materialCoverage.missing.length }} 章</span>。
-              </div>
-              <div class="ai-result">{{ recapText || '还没有前情提要。' }}</div>
-              <n-space>
-                <n-button :disabled="!book?.progress?.chapterId || assistantBusyByKind.recap || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
-                <n-button :disabled="!chapterReady || assistantBusyByKind.recap || assistantSaveRetrying" @click="startRecap('chapter')">生成本章摘要</n-button>
-              </n-space>
+              <div class="ai-result recap-story-card">{{ recapText || '还没有前情提要。' }}</div>
           </div>
-          <div v-show="assistantTopTab === 'read' && aiAssistantTab === 'memory'" data-ai-pane="memory">
+          <div v-show="aiAssistantTab === 'memory'" data-ai-pane="memory">
               <n-space vertical>
                 <!--
                   关系图默认收起：记忆页一进来先看到的是「更新记忆」和搜索框，
@@ -4690,9 +4683,28 @@ onUnmounted(() => {
                     @jump="jumpToMemorySource"
                   />
                 </details>
+                <div class="ai-pane-toolbar is-memory-bar">
+                  <n-input
+                    v-if="memoryData"
+                    v-model:value="memoryQuery"
+                    size="small"
+                    clearable
+                    placeholder="搜索人物、别名、关系、伏笔或事件"
+                    aria-label="搜索小说记忆"
+                  />
+                  <n-button type="primary" size="small" :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying" @click="startMemoryJob('update')">更新记忆</n-button>
+                  <n-popconfirm
+                    positive-text="继续重建"
+                    negative-text="取消"
+                    @positive-click="startMemoryJob('rebuild')"
+                  >
+                    全部重建会删除现有 AI 记忆，并重新分析第一章到当前已读章节。旧记忆会在新结果完整保存后替换。确定继续吗？
+                    <template #trigger><n-button size="small" :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying">全部重建</n-button></template>
+                  </n-popconfirm>
+                  <n-button v-if="memoryJobId" size="small" type="warning" :disabled="memoryStopping" @click="stopMemoryJob">{{ memoryStopping ? '正在停止…' : '停止生成' }}</n-button>
+                </div>
                 <details class="ai-budget-status memory-timeline">
                   <summary><strong>人物与伏笔时间线</strong><span class="subtle"> · 按已读章节显示变化</span></summary>
-                  <div class="subtle">按已读章节显示出现、变化与当前状态。未读完的章节不会写入时间线。</div>
                   <div v-if="timelineData?.message" class="subtle">{{ timelineData.message }}</div>
                   <div v-for="entry in timelineData?.entries || []" :key="entry.id" class="memory-item">
                     <strong>{{ entry.source.chapterTitle }} · {{ entry.name }} · {{ entry.phase }}</strong>
@@ -4702,30 +4714,6 @@ onUnmounted(() => {
                     <button class="memory-source" type="button" @click="jumpToMemorySource(entry.source)">{{ entry.source.excerpt }} · 查看原文</button>
                   </div>
                 </details>
-                <n-space>
-                  <n-button type="primary" :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying" @click="startMemoryJob('update')">更新记忆</n-button>
-                  <n-popconfirm
-                    positive-text="继续重建"
-                    negative-text="取消"
-                    @positive-click="startMemoryJob('rebuild')"
-                  >
-                    全部重建会删除现有 AI 记忆，并重新分析第一章到当前已读章节。旧记忆会在新结果完整保存后替换。确定继续吗？
-                    <template #trigger><n-button :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying">全部重建</n-button></template>
-                  </n-popconfirm>
-                  <n-button v-if="memoryJobId" type="warning" :disabled="memoryStopping" @click="stopMemoryJob">{{ memoryStopping ? '正在停止…' : '停止生成' }}</n-button>
-                </n-space>
-                <div v-if="memoryData?.uptoChapterId" class="subtle">
-                  已更新到：{{ book?.chapters.find((chapter) => chapter.id === memoryData?.uptoChapterId)?.title || memoryData.uptoChapterId }}
-                  <span v-if="materialCoverage">· 摘要覆盖到 {{ materialCoverage.uptoChapterTitle }}{{ materialCoverage.missing.length ? `，缺 ${materialCoverage.missing.length} 章` : '' }}</span>
-                </div>
-                <n-input
-                  v-if="memoryData"
-                  v-model:value="memoryQuery"
-                  clearable
-                  placeholder="搜索人物、别名、关系、伏笔或事件"
-                  aria-label="搜索小说记忆"
-                />
-                <p v-if="memoryData && memoryQuery" class="subtle">找到 {{ visibleMemoryCount }} 条；搜索只读取本地记忆，不调用模型。</p>
                 <n-empty
                   v-if="!memoryData || !(memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length)"
                   description="还没有人物与剧情记忆。"
@@ -4733,7 +4721,7 @@ onUnmounted(() => {
                   <template #extra>更新记忆后，可按人物、关系、伏笔和关键事件查看已读剧情。</template>
                 </n-empty>
                 <template v-else>
-                  <section v-if="visibleMemoryCharacters.length" class="memory-section">
+                  <section v-if="visibleMemoryCharacters.length" class="memory-section is-characters">
                     <h3>人物</h3>
                     <details v-for="item in visibleMemoryCharacters" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.name }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
@@ -4754,7 +4742,7 @@ onUnmounted(() => {
                       </div>
                     </details>
                   </section>
-                  <section v-if="visibleMemoryRelations.length" class="memory-section">
+                  <section v-if="visibleMemoryRelations.length" class="memory-section is-relations">
                     <h3>关系</h3>
                     <details v-for="item in visibleMemoryRelations" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
@@ -4773,7 +4761,7 @@ onUnmounted(() => {
                       </div>
                     </details>
                   </section>
-                  <section v-if="visibleMemoryForeshadows.length" class="memory-section">
+                  <section v-if="visibleMemoryForeshadows.length" class="memory-section is-foreshadows">
                     <h3>伏笔</h3>
                     <details v-for="item in visibleMemoryForeshadows" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.desc }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
@@ -4792,7 +4780,7 @@ onUnmounted(() => {
                       </div>
                     </details>
                   </section>
-                  <section v-if="visibleMemoryEvents.length" class="memory-section">
+                  <section v-if="visibleMemoryEvents.length" class="memory-section is-events">
                     <h3>关键事件</h3>
                     <details v-for="item in visibleMemoryEvents" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.title }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
@@ -4815,7 +4803,7 @@ onUnmounted(() => {
                 </template>
               </n-space>
           </div>
-          <div v-show="assistantTopTab === 'chat'" data-ai-pane="qa">
+          <div v-show="aiAssistantTab === 'qa'" data-ai-pane="qa">
               <!--
                 会话栏：一本书可以有多条互不污染的问答会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。
                 视觉跟下面的 .chat-topbar 一套（小字号、低对比），不再开另一种风格。
@@ -4861,8 +4849,7 @@ onUnmounted(() => {
                 <div v-if="chatMessages.length === 0 && !chatLoading" class="sider-welcome">
                   <div class="sider-welcome-logo" aria-hidden="true">✦</div>
                   <h3>你好，想从哪里聊起？</h3>
-                  <p>我已读到「{{ currentChapter?.title || '当前章' }}」。问剧情、问人物、问生僻字词都行，需要原文时我自己去翻已读章节。</p>
-                  <span class="subtle">下面点一下只会填入输入框，确认发送后才调用模型。</span>
+                  <p>已读到「{{ currentChapter?.title || '当前章' }}」· 问剧情、人物或字词都行</p>
                   <div class="sider-welcome-grid">
                     <button
                       v-for="question in QUICK_READING_QUESTIONS"
@@ -4872,20 +4859,6 @@ onUnmounted(() => {
                       @click="prepareQuickQuestion(question)"
                     >{{ question }}</button>
                   </div>
-                  <!-- 阅读资料的入口只在欢迎态给一行文字，不再常驻一整套卡片。 -->
-                  <div class="sider-welcome-links">
-                    <button type="button" @click="aiAssistantTab = 'recap'">看前情</button>
-                    <span aria-hidden="true">·</span>
-                    <button type="button" @click="aiAssistantTab = 'memory'">翻人物</button>
-                    <span aria-hidden="true">·</span>
-                    <button type="button" @click="aiAssistantTab = 'notes'">写笔记</button>
-                  </div>
-                  <div class="sider-welcome-find">
-                    <n-input v-model:value="sceneQuestion" size="small" placeholder="找回情节：那封信是谁交给他的？" @keyup.enter="searchScenes" />
-                    <button class="chat-chip" type="button" :disabled="!sceneQuestion.trim() || sceneSearching" @click="searchScenes">找原文</button>
-                  </div>
-                  <div v-if="sceneMessage" class="subtle">{{ sceneMessage }}</div>
-                  <button v-for="hit in sceneHits" :key="hit.id" class="memory-source" type="button" @click="jumpToMemorySource(hit)">{{ hit.chapterTitle }} · 第 {{ hit.paragraphIndex + 1 }} 段：{{ hit.excerpt }} · 查看原文</button>
                 </div>
                 <div v-if="chatLoading && agentToolActivity" class="chat-tool-activity">{{ agentToolActivity }}…</div>
                 <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
@@ -4951,32 +4924,15 @@ onUnmounted(() => {
                   </template>
                 </div>
               </div>
-              <div v-if="chatMessages.length > 0" class="chat-topbar">
-                <span class="chat-topbar-count">{{ chatMessages.length }} 条消息 · 只读已读内容</span>
-                <button class="chat-topbar-btn" type="button" :disabled="chatLoading || assistantSaveRetrying" @click="clearChat">清空聊天</button>
-              </div>
               <div class="chat-input-row">
                 <div class="sider-composer">
-                  <n-input v-model:value="chatInput" type="textarea" :rows="2" :autosize="{ minRows: 2, maxRows: 6 }" placeholder="有问题，随时问。也可以追问、让我读原文核对…" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
-                  <!-- 参考范围提示：只在读者开了开关时出现，不占常驻空间 -->
-                  <div v-if="qaContextActive" class="subtle sider-composer-hint">发送时会附一行参考范围，模型据此决定先看什么。</div>
+                  <n-input v-model:value="chatInput" type="textarea" :rows="2" :autosize="{ minRows: 2, maxRows: 6 }" placeholder="问剧情、人物或字词（Ctrl+Enter 发送）…" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
                   <div class="sider-composer-bar">
                     <div class="sider-composer-chips">
                       <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'agent' }" title="模型自己决定查目录、读原文、检索、看记忆" @click="chatMode = 'agent'">对话</button>
                       <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'evidence' }" title="单轮严格引用，每条结论绑定已读段落" @click="chatMode = 'evidence'">证据</button>
-                      <!-- 参考范围：读者显式告诉模型先看什么；证据模式不拼接，所以这里也一并禁用 -->
-                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': qaContextChips.chapter }" :disabled="chatMode === 'evidence'" :title="chatMode === 'evidence' ? '证据模式只回答检索到的已读段落' : '让模型先读本章原文'" @click="toggleQaContextChip('chapter')">本章</button>
-                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': qaContextChips.memory }" :disabled="chatMode === 'evidence'" :title="chatMode === 'evidence' ? '证据模式只回答检索到的已读段落' : '参考已整理的人物、关系与伏笔'" @click="toggleQaContextChip('memory')">记忆</button>
-                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': qaContextChips.notes }" :disabled="chatMode === 'evidence'" :title="chatMode === 'evidence' ? '证据模式只回答检索到的已读段落' : '参考我在已读章节里的划线批注'" @click="toggleQaContextChip('notes')">批注</button>
-                      <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="clearChat">
-                        确定清空这本书的全部 AI 问答记录吗？此操作无法撤销。
-                        <template #trigger>
-                          <button class="chat-chip" type="button" :disabled="chatLoading || assistantSaveRetrying || chatMessages.length === 0">清空</button>
-                        </template>
-                      </n-popconfirm>
                     </div>
                     <div class="sider-composer-send">
-                      <span class="sider-composer-task">{{ aiAssistantTaskLabel }}</span>
                       <n-button v-if="chatLoading" type="warning" size="small" @click="stopChat">停止生成</n-button>
                       <n-button v-else type="primary" size="small" :disabled="!chatInput.trim() || assistantBusyByKind.qa || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
                     </div>
@@ -4984,13 +4940,12 @@ onUnmounted(() => {
                 </div>
               </div>
           </div>
-          <div v-show="assistantTopTab === 'read' && aiAssistantTab === 'notes'" data-ai-pane="notes">
+          <div v-show="aiAssistantTab === 'notes'" data-ai-pane="notes">
               <n-space vertical>
-                <p class="subtle">只发送本章正文和本章的划线批注来生成读书笔记，不发送未读章节。</p>
                 <n-tag v-if="currentChapterNote?.stale" size="small" type="warning">正文已变，建议重新生成</n-tag>
                 <n-tag v-if="chapterNoteStopped" size="small" type="warning">已停止，以下为停止前生成的部分笔记。</n-tag>
-                <MarkdownBlock v-if="chapterNoteView" class="ai-result" :source="chapterNoteView" />
-                <div v-else class="ai-result">还没有本章笔记。</div>
+                <MarkdownBlock v-if="chapterNoteView" class="ai-result notes-result-card" :source="chapterNoteView" />
+                <div v-else class="ai-result notes-result-card">还没有本章笔记。</div>
                 <n-input
                   v-model:value="chapterNoteDraft"
                   type="textarea"
@@ -5028,8 +4983,7 @@ onUnmounted(() => {
                 </div>
                 <div class="wordbook">
                   <strong>划线与释义</strong>
-                  <p class="subtle">这里只汇总你自己的划线与批注（含 AI 解释），不另外存一份。</p>
-                  <details v-if="wordbookTerms.length" class="notes-archive-item" open>
+                  <details v-if="wordbookTerms.length" class="notes-archive-item is-wordbook-card" open>
                     <summary>划线 {{ wordbookTerms.length }} 处{{ wordbookTrimmed ? '（只显示最近 60 处）' : '' }}</summary>
                     <ul class="wordbook-list">
                       <li v-for="term in wordbookTerms" :key="term.id">
@@ -5045,16 +4999,16 @@ onUnmounted(() => {
                 </div>
               </n-space>
           </div>
-          <div v-show="assistantTopTab === 'read' && aiAssistantTab === 'output'" data-ai-pane="output">
+          <div v-show="aiAssistantTab === 'output'" data-ai-pane="output">
               <n-space vertical>
-                <div class="ai-budget-status">
+                <div class="ai-budget-status is-output-head">
                   <strong>{{ aiResultTitle || '输出' }}</strong>
                   <div v-if="aiResultTitle === '清正文' && lastCleanBudget">
                     预计发送：{{ lastCleanBudget.chapterCount }} 章 / {{ lastCleanBudget.paragraphCount }} 段，约 {{ lastCleanBudget.sentCharacters }} 字 / {{ lastCleanBudget.estimatedTokens }} tokens（估算）
                   </div>
                   <div v-else-if="!aiResult" class="subtle">清正文、翻译这类一次性结果会显示在这里。</div>
                 </div>
-                <div v-if="aiResult" class="ai-result">{{ aiResult }}</div>
+                <div v-if="aiResult" class="ai-result output-result-card">{{ aiResult }}</div>
                 <n-space v-if="aiResultTitle === '清正文'">
                   <n-button type="primary" size="small" :disabled="!aiResult" @click="applyCleanedBody">应用到正文</n-button>
                   <n-button v-if="aiResult" size="small" @click="copyAiResult">复制结果</n-button>
@@ -5066,43 +5020,6 @@ onUnmounted(() => {
                 </n-space>
               </n-space>
           </div>
-
-          <!--
-            任务入口只在问答欢迎态出现一次；自动整理、配额、用量这类「偶尔要看」的东西收进一条折叠，
-            它们不再是任务，只是设置性质的状态。
-          -->
-          <details class="ai-follow-panel">
-            <summary>自动整理与用量</summary>
-          <div class="ai-budget-status">
-            <strong>读完一章后整理</strong>
-            <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
-              <n-radio-button value="manual">手动</n-radio-button>
-              <n-radio-button value="ask">提醒我</n-radio-button>
-              <n-radio-button value="auto">自动</n-radio-button>
-            </n-radio-group>
-            <div class="subtle">读到章节末尾再换章时上报排队；本章不足一屏、翻页即到底的短章同样算读完。自动模式会调用模型并消耗你的 API 额度，关窗、切书后主进程接着跑。</div>
-            <div v-if="follow" class="subtle">
-              <span v-if="follow.queuedChapters">待整理 {{ follow.queuedChapters }} 章。</span>
-              <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章<span v-if="follow.uptoChapterTitle">，到「{{ follow.uptoChapterTitle }}」</span>。</span>
-              <span v-if="follow.running">正在整理，跑完当前章节才让路。</span>
-              <span v-else-if="follow.paused">已暂停：{{ follow.pauseReason || '达到单次章数上限' }}。</span>
-              <span v-if="follow.failed">上次失败：{{ follow.failed.message }}。</span>
-              <span>本轮累计 {{ follow.calls }} 次调用、约 {{ follow.estimatedTokens }} tokens（估算，不计算金额）。</span>
-            </div>
-            <div v-if="follow?.mode === 'auto' && !autoFollowEnabled" class="subtle">
-              设置页的「读完一章自动整理」总开关是关的，所以不会自己跑；点「现在整理」可以手动跑一轮。
-            </div>
-            <n-space>
-              <n-button size="small" :disabled="!follow?.queuedChapters" @click="runFollowNow">{{ follow?.paused ? '继续整理' : '现在整理' }}</n-button>
-              <n-button v-if="follow && follow.mode !== 'manual'" size="small" @click="stopFollowAuto">停止自动</n-button>
-            </n-space>
-            <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens；未报告的用量不计入 token 总数。不计算金额。</div>
-            <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
-          </div>
-          <div v-if="autoBudget" class="subtle">
-            本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens（已含排队预留 {{ autoBudget.reservedTokens }}）；达到上限会暂停自动任务，实际费用以服务商账单为准。
-          </div>
-          </details>
           <template #footer>
             <n-button v-if="recapLoading && aiAssistantTab === 'recap'" type="warning" @click="stopRecap">停止生成</n-button>
           </template>
@@ -5831,138 +5748,202 @@ onUnmounted(() => {
 
 /* 运行信息：默认折叠的一行，展开才是模型端点/已读截止/用量这类核对信息。 */
 /* 状态条：一行就够。模型 + 已读边界常驻，其余收进面板。 */
+/* 状态条：流光毛玻璃胶囊，模型名与已读进度各带色彩层次。 */
 .ai-status-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
-  padding: 6px 2px 8px;
-  border: 0;
-  border-bottom: 1px solid var(--r-line);
-  background: transparent;
-  color: var(--r-muted);
+  padding: 8px 12px;
+  border: 1px solid rgba(124, 92, 255, 0.24);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.13), rgba(14, 165, 233, 0.09) 52%, rgba(236, 72, 153, 0.08));
+  box-shadow: 0 4px 16px rgba(124, 92, 255, 0.08);
+  color: var(--r-text);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
 }
-.ai-status-bar:hover { color: var(--r-text); }
+.ai-status-bar:hover {
+  border-color: rgba(124, 92, 255, 0.45);
+  box-shadow: 0 6px 20px rgba(124, 92, 255, 0.15);
+}
 .ai-status-dot {
   flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--success);
+  background: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.22);
 }
-.ai-status-dot.is-off { background: var(--warning); }
+.ai-status-dot.is-off {
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.22);
+}
 .ai-status-model {
-  max-width: 46%;
+  max-width: 44%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(124, 92, 255, 0.16);
+  color: #6d4aff;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--r-text);
+  font-weight: 600;
+}
+.ai-status-sep { opacity: 0.45; }
+.ai-status-read {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0284c7;
   font-weight: 500;
 }
-.ai-status-sep { opacity: 0.5; }
-.ai-status-read { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-status-toggle { flex: 0 0 auto; margin-left: auto; }
-
-/* 运行信息面板：只有点开状态条才存在，不占默认视线的任何高度。 */
-.ai-runtime-panel {
-  margin: 8px 0;
-  padding: 2px 10px 8px;
-  border: 1px solid var(--r-line);
-  border-radius: 8px;
-  background: var(--surface-3, rgba(127, 127, 127, 0.06));
+.ai-status-toggle {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.12);
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 600;
 }
-.ai-runtime-panel .ai-assistant-heading { padding: 6px 0 8px; }
+
+/* 运行信息与设置抽屉：点开状态条展开，带柔和极光渐变底。 */
+.ai-runtime-panel {
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid rgba(124, 92, 255, 0.22);
+  border-radius: 14px;
+  background: linear-gradient(155deg, rgba(124, 92, 255, 0.09), rgba(14, 165, 233, 0.06) 55%, rgba(245, 158, 11, 0.05));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.ai-runtime-label {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(124, 92, 255, 0.14);
+  color: #6d4aff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.ai-follow-box {
+  margin: 8px 0;
+  border: 1px solid rgba(16, 185, 129, 0.24);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(14, 165, 233, 0.06));
+}
+.ai-follow-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ai-runtime-panel .ai-assistant-heading { padding: 6px 0 4px; font-size: 12px; }
 .ai-runtime-panel .ai-budget-status,
 .ai-runtime-panel .ai-assistant-status,
-.ai-runtime-panel .subtle { margin: 0 0 8px; }
+.ai-runtime-panel .subtle { margin: 0 0 6px; }
 
-/* 顶层两档：用按钮做页签，省掉一层 tabs 容器；选中态一条下划线 + 文字加深。 */
+/* 单层四色鎏光页签：每个页签拥有专属宝石色点与渐变激活态。 */
 .ai-top-switch {
   display: flex;
-  gap: 2px;
-  margin-top: 2px;
-  border-bottom: 1px solid var(--r-line);
+  gap: 6px;
+  padding: 5px;
+  margin: 10px 0;
+  border: 1px solid rgba(124, 92, 255, 0.18);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.09), rgba(14, 165, 233, 0.07) 50%, rgba(245, 158, 11, 0.07));
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 .ai-top-switch button {
   position: relative;
-  padding: 7px 12px 6px;
-  border: 0;
-  background: transparent;
-  color: var(--r-muted);
-  font-size: 13px;
-  cursor: pointer;
-}
-.ai-top-switch button:hover { color: var(--r-text); }
-.ai-top-switch button.is-on { color: var(--r-text); font-weight: 600; }
-.ai-top-switch button.is-on::after {
-  content: '';
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: -1px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--active-chapter);
-}
-
-/* 阅读资料分段：比顶层轻一档，不做下划线，选中态用底色块。 */
-.ai-read-switch { display: flex; gap: 4px; padding: 8px 0 6px; }
-.ai-read-switch button {
-  padding: 3px 10px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--r-muted);
-  font-size: 12px;
-  cursor: pointer;
-}
-.ai-read-switch button:hover { color: var(--r-text); }
-.ai-read-switch button.is-on {
-  color: var(--r-text);
-  border-color: var(--r-line);
-  background: var(--surface-3, rgba(127, 127, 127, 0.1));
-}
-
-/* 自动整理与用量：折叠的一行设置项，不再是任务入口。 */
-.ai-follow-panel { margin-top: 10px; border-top: 1px solid var(--r-line); }
-.ai-follow-panel > summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 2px 4px;
-  color: var(--r-muted);
-  font-size: 12px;
-  cursor: pointer;
-  list-style: none;
-}
-.ai-follow-panel > summary::-webkit-details-marker { display: none; }
-.ai-follow-panel > summary::after { content: '⌄'; margin-left: auto; opacity: 0.6; }
-.ai-follow-panel[open] > summary::after { content: '⌃'; }
-.ai-follow-panel .ai-budget-status { margin-top: 6px; }
-
-/* 欢迎态的阅读资料入口：一行文字，不占卡片。 */
-.sider-welcome-links {
-  display: flex;
+  flex: 1 1 0;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  color: var(--r-muted);
-  font-size: 12px;
-}
-.sider-welcome-links button {
-  padding: 2px 4px;
-  border: 0;
-  border-radius: 6px;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
   background: transparent;
-  color: var(--r-muted);
-  font-size: 12px;
+  color: var(--r-text);
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
-.sider-welcome-links button:hover { color: var(--r-text); background: var(--surface-3, rgba(127, 127, 127, 0.1)); }
+.ai-top-switch button::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+.ai-top-switch button.is-qa::before { background: #8b5cf6; box-shadow: 0 0 6px rgba(139, 92, 246, 0.6); }
+.ai-top-switch button.is-recap::before { background: #0ea5e9; box-shadow: 0 0 6px rgba(14, 165, 233, 0.6); }
+.ai-top-switch button.is-memory::before { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.6); }
+.ai-top-switch button.is-notes::before { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.6); }
+.ai-top-switch button.is-output::before { background: #ec4899; box-shadow: 0 0 6px rgba(236, 72, 153, 0.6); }
 
+.ai-top-switch button:hover:not(.is-on) {
+  background: rgba(255, 255, 255, 0.45);
+  border-color: rgba(124, 92, 255, 0.2);
+}
+.ai-top-switch button.is-on {
+  color: #ffffff;
+  font-weight: 600;
+}
+.ai-top-switch button.is-on::before {
+  background: #ffffff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.9);
+  transform: scale(1.15);
+}
+.ai-top-switch button.is-qa.is-on {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6 55%, #ec4899);
+  box-shadow: 0 4px 14px rgba(124, 92, 255, 0.34);
+}
+.ai-top-switch button.is-recap.is-on {
+  background: linear-gradient(135deg, #0284c7, #0ea5e9 55%, #38bdf8);
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.32);
+}
+.ai-top-switch button.is-memory.is-on {
+  background: linear-gradient(135deg, #059669, #10b981 55%, #14b8a6);
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.32);
+}
+.ai-top-switch button.is-notes.is-on {
+  background: linear-gradient(135deg, #d97706, #f59e0b 55%, #f97316);
+  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.32);
+}
+.ai-top-switch button.is-output.is-on {
+  background: linear-gradient(135deg, #e11d48, #ec4899 55%, #a855f7);
+  box-shadow: 0 4px 14px rgba(236, 72, 153, 0.32);
+}
+
+/* 各页签顶部工具栏：带对应主题色彩微光 */
+.ai-pane-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+}
+.ai-pane-toolbar.is-recap-bar {
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(99, 102, 241, 0.07));
+}
+.ai-pane-toolbar.is-memory-bar {
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(14, 165, 233, 0.07));
+}
+.ai-pane-toolbar.is-memory-bar :deep(.n-input) {
+  flex: 1 1 160px;
+}
 /* 划词行内问答卡：挂在选区下方的小窗，比侧栏轻，一问一答不占屏幕。 */
 .inline-ask {
   position: fixed;
@@ -6389,18 +6370,58 @@ onUnmounted(() => {
 
 .ai-budget-status {
   margin-bottom: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--panel-soft, rgba(127, 127, 127, 0.1));
+  padding: 12px 14px;
+  border: 1px solid rgba(124, 92, 255, 0.2);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(124, 92, 255, 0.08), rgba(14, 165, 233, 0.05));
   font-size: 12px;
   line-height: 1.6;
 }
+
+.resume-card-panel {
+  border-color: rgba(14, 165, 233, 0.28);
+  background: linear-gradient(150deg, rgba(14, 165, 233, 0.11), rgba(124, 92, 255, 0.07) 55%, rgba(245, 158, 11, 0.05));
+}
+.resume-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.resume-group {
+  margin-top: 8px;
+  padding-left: 8px;
+  border-left: 3px solid #0ea5e9;
+}
+.resume-group.is-group-0 { border-left-color: #0ea5e9; }
+.resume-group.is-group-0 .resume-group-title { color: #0284c7; }
+.resume-group.is-group-1 { border-left-color: #f43f5e; }
+.resume-group.is-group-1 .resume-group-title { color: #e11d48; }
+.resume-group.is-group-2 { border-left-color: #f59e0b; }
+.resume-group.is-group-2 .resume-group-title { color: #d97706; }
 
 .ai-result {
   white-space: pre-wrap;
   line-height: 1.8;
   font-size: 14px;
-  padding: 0 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+.recap-story-card {
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  background: linear-gradient(160deg, rgba(14, 165, 233, 0.1), rgba(124, 92, 255, 0.06) 52%, rgba(236, 72, 153, 0.04));
+  box-shadow: 0 6px 18px rgba(14, 165, 233, 0.07);
+}
+.notes-result-card {
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  background: linear-gradient(160deg, rgba(245, 158, 11, 0.11), rgba(249, 115, 22, 0.06) 52%, rgba(236, 72, 153, 0.04));
+  box-shadow: 0 6px 18px rgba(245, 158, 11, 0.07);
+}
+.output-result-card,
+.is-output-head {
+  border: 1px solid rgba(236, 72, 153, 0.26);
+  background: linear-gradient(160deg, rgba(236, 72, 153, 0.1), rgba(124, 92, 255, 0.06));
 }
 
 .ai-assistant-heading {
@@ -6414,10 +6435,11 @@ onUnmounted(() => {
 .ai-assistant-status,
 .ai-save-warning {
   margin-bottom: 8px;
-  padding: 8px;
-  border-radius: 8px;
-  background: var(--r-panel-bg);
-  color: var(--r-muted);
+  padding: 8px 12px;
+  border: 1px solid rgba(124, 92, 255, 0.24);
+  border-radius: 10px;
+  background: linear-gradient(90deg, rgba(124, 92, 255, 0.12), rgba(14, 165, 233, 0.08));
+  color: var(--r-text);
   font-size: 12px;
 }
 
@@ -6426,46 +6448,30 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  border-color: rgba(245, 158, 11, 0.35);
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.14), rgba(244, 63, 94, 0.08));
 }
 
-.ai-quick-questions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-
-.ai-quick-questions > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.ai-quick-questions .n-button {
-  height: auto;
-  min-height: 28px;
-  white-space: normal;
-  text-align: left;
-}
-
-/* 关系图是记忆页的第二个出口，视觉上跟着现有的记忆区块走，不另开一套体系。 */
+/* 关系图与时间线：双色流光折叠卡片 */
 .memory-graph-panel {
-  padding: 10px;
-  border: 1px solid var(--r-line);
-  border-radius: 8px;
+  padding: 12px;
+  border: 1px solid rgba(14, 165, 233, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(14, 165, 233, 0.11), rgba(99, 102, 241, 0.07));
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.06);
 }
 
 .memory-graph-panel-summary {
   cursor: pointer;
-  color: inherit;
+  color: #0284c7;
   font-size: 13px;
+  font-weight: 600;
 }
 
 .memory-graph-panel-summary:focus-visible {
   outline: 2px solid var(--active-chapter);
   outline-offset: 2px;
 }
-/** 一行进度控制：沿用记忆区块的小字风格，滑块只有 14px 高，不当大控件占位。 */
 .memory-graph-progress {
   display: flex;
   flex-wrap: wrap;
@@ -6478,13 +6484,12 @@ onUnmounted(() => {
 .memory-graph-progress-label {
   white-space: nowrap;
 }
-/* 不撑满整行：滑块是给关系图用的旋钮，不是主体。 */
 .memory-graph-range {
   flex: 0 0 120px;
   width: 120px;
   height: 14px;
   margin: 0;
-  accent-color: var(--active-chapter);
+  accent-color: #0ea5e9;
 }
 .memory-graph-progress-title {
   flex: 1 1 60px;
@@ -6495,19 +6500,83 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 
+.memory-timeline {
+  border-color: rgba(168, 85, 247, 0.28);
+  background: linear-gradient(145deg, rgba(168, 85, 247, 0.11), rgba(236, 72, 153, 0.06));
+}
+.memory-timeline > summary strong {
+  color: #7c3aed;
+}
+
+/* 四类记忆专属宝石色彩：人物（星光紫）、关系（翡翠青）、伏笔（琥珀金）、事件（珊瑚粉） */
+.memory-section {
+  --mem-accent: #7c5cff;
+  --mem-bg-start: rgba(124, 92, 255, 0.1);
+  --mem-bg-end: rgba(168, 85, 247, 0.04);
+  --mem-border: rgba(124, 92, 255, 0.25);
+}
+.memory-section.is-characters {
+  --mem-accent: #7c5cff;
+  --mem-bg-start: rgba(124, 92, 255, 0.11);
+  --mem-bg-end: rgba(99, 102, 241, 0.04);
+  --mem-border: rgba(124, 92, 255, 0.26);
+}
+.memory-section.is-relations {
+  --mem-accent: #0d9488;
+  --mem-bg-start: rgba(16, 185, 129, 0.11);
+  --mem-bg-end: rgba(14, 165, 233, 0.04);
+  --mem-border: rgba(16, 185, 129, 0.26);
+}
+.memory-section.is-foreshadows {
+  --mem-accent: #d97706;
+  --mem-bg-start: rgba(245, 158, 11, 0.12);
+  --mem-bg-end: rgba(249, 115, 22, 0.04);
+  --mem-border: rgba(245, 158, 11, 0.28);
+}
+.memory-section.is-events {
+  --mem-accent: #e11d48;
+  --mem-bg-start: rgba(236, 72, 153, 0.11);
+  --mem-bg-end: rgba(244, 63, 94, 0.04);
+  --mem-border: rgba(236, 72, 153, 0.26);
+}
+
 .memory-section h3 {
-  margin: 12px 0 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--mem-bg-start);
+  color: var(--mem-accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.memory-section h3::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mem-accent);
 }
 
 .memory-item {
-  padding: 10px;
+  padding: 10px 12px;
   margin-bottom: 8px;
-  border: 1px solid var(--r-line);
-  border-radius: 8px;
+  border: 1px solid var(--mem-border, rgba(124, 92, 255, 0.22));
+  border-left: 3px solid var(--mem-accent, #7c5cff);
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--mem-bg-start, rgba(124, 92, 255, 0.08)), var(--mem-bg-end, rgba(14, 165, 233, 0.03)));
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.memory-item:hover {
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.07);
 }
 
 .memory-item summary {
   cursor: pointer;
+  font-weight: 600;
 }
 
 .memory-item summary:focus-visible {
@@ -6516,19 +6585,32 @@ onUnmounted(() => {
 }
 
 .notes-archive strong {
-  display: block;
+  display: inline-block;
   margin: 12px 0 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+  font-size: 12px;
 }
 
 .notes-archive-item {
-  padding: 10px;
+  padding: 10px 12px;
   margin-bottom: 8px;
-  border: 1px solid var(--r-line);
-  border-radius: 8px;
+  border: 1px solid rgba(14, 165, 233, 0.24);
+  border-left: 3px solid #0ea5e9;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.09), rgba(124, 92, 255, 0.04));
+}
+.notes-archive-item.is-wordbook-card {
+  border-color: rgba(236, 72, 153, 0.25);
+  border-left-color: #ec4899;
+  background: linear-gradient(135deg, rgba(236, 72, 153, 0.09), rgba(245, 158, 11, 0.05));
 }
 
 .notes-archive-item summary {
   cursor: pointer;
+  font-weight: 600;
 }
 
 .notes-archive-item summary:focus-visible {
@@ -6542,8 +6624,13 @@ onUnmounted(() => {
 }
 
 .wordbook > strong {
-  display: block;
+  display: inline-block;
   margin: 12px 0 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(236, 72, 153, 0.12);
+  color: #db2777;
+  font-size: 12px;
 }
 
 .wordbook-list {
@@ -6553,7 +6640,7 @@ onUnmounted(() => {
 }
 
 .wordbook-list li {
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .wordbook-list p {
@@ -6562,18 +6649,21 @@ onUnmounted(() => {
 }
 
 .wordbook-term {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--active-chapter);
+  margin-right: 6px;
+  padding: 2px 8px;
+  border: 1px solid rgba(236, 72, 153, 0.28);
+  border-radius: 6px;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(236, 72, 153, 0.14));
+  color: #be185d;
   font: inherit;
+  font-weight: 600;
   text-align: left;
   white-space: pre-wrap;
   cursor: pointer;
 }
 
 .wordbook-term:hover {
-  text-decoration: underline;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.26), rgba(236, 72, 153, 0.22));
 }
 
 .wordbook-term:focus-visible {
@@ -6584,12 +6674,12 @@ onUnmounted(() => {
 .memory-accuracy-tag {
   display: inline-block;
   margin-left: 6px;
-  padding: 1px 7px;
+  padding: 1px 8px;
   border-radius: 999px;
-  background: var(--warning-surface);
-  color: var(--warning);
-  font-size: 12px;
-  font-weight: 500;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(244, 63, 94, 0.14));
+  color: #d97706;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .memory-item p {
@@ -6601,19 +6691,24 @@ onUnmounted(() => {
   display: block;
   width: 100%;
   margin: 6px 0;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--r-muted);
+  padding: 7px 10px;
+  border: 1px solid rgba(124, 92, 255, 0.18);
+  border-left: 3px solid #7c5cff;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(124, 92, 255, 0.1), rgba(14, 165, 233, 0.05));
+  color: var(--r-text);
   font: inherit;
   font-size: 12px;
   line-height: 1.5;
   text-align: left;
   white-space: pre-wrap;
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
-.memory-source:hover { background: var(--surface-3); }
+.memory-source:hover {
+  border-color: rgba(124, 92, 255, 0.4);
+  background: linear-gradient(90deg, rgba(124, 92, 255, 0.18), rgba(14, 165, 233, 0.1));
+}
 .memory-source:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
 
 .chat-messages {
@@ -6622,12 +6717,12 @@ onUnmounted(() => {
   padding: 12px 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .chat-msg {
   display: flex;
-  padding: 0 12px;
+  padding: 0 8px;
 }
 
 .chat-msg.user {
@@ -6640,45 +6735,62 @@ onUnmounted(() => {
   justify-content: flex-start;
   gap: 6px;
 }
-/* 可信度徽标：紧跟正文、压在「依据」上方一行小字。颜色只区分「核过」与「没核」，
-   真正的差别靠文案说——小屏幕上颜色未必看得清。 */
+/* 可信度徽标：带翡翠绿与琥珀金色彩胶囊 */
 .chat-verify {
-  width: 85%;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
   line-height: 1.4;
   color: var(--r-muted);
+  background: rgba(127, 127, 127, 0.1);
 }
-.chat-verify.is-verified { color: var(--active-chapter); }
-.chat-verify.is-partial { color: var(--r-text); }
-.chat-verify.is-not_run { color: var(--r-muted); }
-/* disabled = 读者主动关掉的核验：它不是故障，所以不报警色，跟着 muted 走；
-   跟 not_run 同色也说明两者都“没核过”，真正的差别靠文案说清。 */
-.chat-verify.is-disabled { color: var(--r-muted); }
-.chat-evidence {
-  width: 85%;
-  padding: 8px 10px;
-  border-left: 2px solid var(--active-chapter);
+.chat-verify.is-verified {
+  color: #059669;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.16), rgba(14, 165, 233, 0.1));
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.chat-verify.is-partial {
+  color: #d97706;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(249, 115, 22, 0.1));
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.chat-verify.is-not_run,
+.chat-verify.is-disabled {
   color: var(--r-muted);
+}
+.chat-evidence {
+  width: 90%;
+  padding: 8px 12px;
+  border: 1px solid rgba(14, 165, 233, 0.24);
+  border-left: 3px solid #0ea5e9;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.1), rgba(16, 185, 129, 0.05));
+  color: var(--r-text);
   font-size: 12px;
 }
 
-/* 依据默认收起：回答先读结论，需要核对时再展开引用列表（与运行信息同一个折叠箭头语汇）。 */
 .chat-evidence > summary,
 .chat-steps > summary {
   display: flex;
   align-items: center;
   gap: 4px;
+  font-weight: 600;
   list-style: none;
   cursor: pointer;
 }
+.chat-evidence > summary { color: #0284c7; }
+.chat-steps > summary { color: #7c3aed; }
 .chat-evidence > summary::-webkit-details-marker,
 .chat-steps > summary::-webkit-details-marker { display: none; }
 .chat-evidence > summary::after,
-.chat-steps > summary::after { content: '⌄'; opacity: 0.6; }
+.chat-steps > summary::after { content: '⌄'; margin-left: auto; opacity: 0.7; }
 .chat-evidence[open] > summary::after,
 .chat-steps[open] > summary::after { content: '⌃'; }
 .chat-evidence > summary:hover,
-.chat-steps > summary:hover { color: var(--r-text); }
+.chat-steps > summary:hover { opacity: 0.85; }
 
 .chat-legacy {
   color: var(--r-muted);
@@ -6686,167 +6798,206 @@ onUnmounted(() => {
 }
 
 .chat-bubble {
-  max-width: 85%;
-  padding: 8px 12px;
-  border-radius: 14px;
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 16px;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.65;
   white-space: pre-wrap;
 }
 
 .chat-msg.user .chat-bubble {
-  background: var(--bubble-user-bg);
-  color: var(--bubble-user-text);
+  background: linear-gradient(135deg, #5b54f5, #7c5cff 55%, #c026d3);
+  color: #ffffff;
   border-bottom-right-radius: 4px;
+  box-shadow: 0 6px 18px rgba(124, 92, 255, 0.28);
 }
 
 .chat-msg.assistant .chat-bubble {
-  background: var(--bubble-ai-bg);
-  border: 1px solid var(--bubble-ai-border);
+  background: linear-gradient(160deg, rgba(124, 92, 255, 0.09), rgba(14, 165, 233, 0.05) 48%, var(--bubble-ai-bg, rgba(255, 255, 255, 0.9)));
+  border: 1px solid rgba(124, 92, 255, 0.24);
   color: var(--bubble-ai-text);
   border-bottom-left-radius: 4px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
 }
 
-/* 逐句结论：一句一行，句尾跟自己的角标；不是引用块，所以只留行距不留边框。 */
-.chat-claim { margin: 0 0 4px; }
+.chat-claim { margin: 0 0 5px; }
 .chat-claim:last-child { margin-bottom: 0; }
 
-/* 行内角标：上标小字，序号与展开后的「依据」列表对得上，点一下跳原文那一段。 */
+/* 行内角标：精致宝石紫小胶囊 */
 .chat-cite {
-  margin-left: 2px;
-  padding: 0 1px;
-  border: 0;
-  background: transparent;
-  color: var(--active-chapter);
+  margin-left: 3px;
+  padding: 1px 5px;
+  border: 1px solid rgba(124, 92, 255, 0.28);
+  border-radius: 6px;
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.16), rgba(14, 165, 233, 0.12));
+  color: #6d4aff;
   font: inherit;
   font-size: 10px;
-  line-height: 1;
+  font-weight: 600;
+  line-height: 1.2;
   vertical-align: super;
   cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
 }
-.chat-cite:hover:not(:disabled) { text-decoration: underline; }
+.chat-cite:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(14, 165, 233, 0.22));
+}
 .chat-cite:disabled { opacity: 0.5; cursor: default; }
 
-/* 操作条：平时低对比，鼠标在这条气泡上（或键盘进来）才提亮。
-   始终占位而不是 hover 才插入 DOM，否则鼠标移过去行高会变，气泡跟着跳。 */
 .chat-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  opacity: 0.55;
+  opacity: 0.72;
   transition: opacity 0.15s ease;
 }
 .chat-msg.assistant:hover .chat-actions,
 .chat-actions:focus-within { opacity: 1; }
-.chat-actions .chat-chip { padding: 2px 8px; font-size: 11px; }
+.chat-actions .chat-chip { padding: 2px 9px; font-size: 11px; }
 
-/* 思考链：本轮正在调/调过的本地工具。running 用主体色提一下，error 用警示色。 */
 .chat-steps {
-  width: 85%;
-  color: var(--r-muted);
+  width: 90%;
+  padding: 6px 10px;
+  border: 1px solid rgba(139, 92, 246, 0.24);
+  border-left: 3px solid #8b5cf6;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.11), rgba(14, 165, 233, 0.05));
+  color: var(--r-text);
   font-size: 12px;
 }
 .chat-steps ol { margin: 4px 0 0; padding-left: 18px; }
 .chat-steps li { line-height: 1.6; }
-.chat-steps li.is-running { color: var(--active-chapter); }
-.chat-steps li.is-done { opacity: 0.65; }
-.chat-steps li.is-error { color: var(--warning); }
+.chat-steps li.is-running { color: #7c3aed; font-weight: 600; }
+.chat-steps li.is-done { opacity: 0.72; }
+.chat-steps li.is-error { color: #e11d48; font-weight: 600; }
 
-.chat-empty {
-  text-align: center;
-  color: var(--r-muted);
-  padding: 40px 20px;
-  font-size: 13px;
-}
-
-/* ── Sider 式问答界面：欢迎态 + 大圆角输入卡片 ───────────────────── */
+/* ── 流光极光欢迎态 + 四色快捷提问卡 + 悬浮输入舱 ───────────────────── */
 
 .sider-welcome {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  padding: 28px 8px 8px;
+  margin: 6px 4px;
+  padding: 24px 14px 18px;
+  border: 1px solid rgba(124, 92, 255, 0.22);
+  border-radius: 18px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(124, 92, 255, 0.18), rgba(14, 165, 233, 0.09) 55%, rgba(236, 72, 153, 0.06) 85%, transparent 100%),
+    var(--surface-3, rgba(127, 127, 127, 0.04));
+  box-shadow: 0 10px 28px rgba(124, 92, 255, 0.09);
   text-align: center;
 }
 
 .sider-welcome-logo {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #7c5cff, #b06bff 55%, #ff9ecd);
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6 42%, #ec4899 78%, #f97316);
   color: #fff;
-  font-size: 20px;
-  box-shadow: 0 6px 18px rgba(124, 92, 255, 0.28);
+  font-size: 22px;
+  box-shadow: 0 8px 22px rgba(124, 92, 255, 0.36), 0 0 0 4px rgba(124, 92, 255, 0.14);
 }
 
-.sider-welcome h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.sider-welcome h3 {
+  margin: 2px 0 0;
+  font-size: 17px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6 45%, #ec4899);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 .sider-welcome p { margin: 0; max-width: 300px; color: var(--r-muted); font-size: 12px; line-height: 1.6; }
 
 .sider-welcome-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 
 .sider-welcome-card {
-  padding: 10px;
-  border: 1px solid var(--r-line);
+  position: relative;
+  padding: 11px 12px;
+  border: 1px solid rgba(124, 92, 255, 0.26);
+  border-left: 3px solid #7c5cff;
   border-radius: 12px;
-  background: var(--surface-3, rgba(127, 127, 127, 0.06));
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.13), rgba(168, 85, 247, 0.05));
   color: var(--r-text);
   font-size: 12px;
+  font-weight: 500;
   line-height: 1.5;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+.sider-welcome-card:nth-child(2) {
+  border-color: rgba(14, 165, 233, 0.28);
+  border-left-color: #0ea5e9;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.13), rgba(6, 182, 212, 0.05));
+}
+.sider-welcome-card:nth-child(3) {
+  border-color: rgba(245, 158, 11, 0.3);
+  border-left-color: #f59e0b;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.14), rgba(249, 115, 22, 0.05));
+}
+.sider-welcome-card:nth-child(4) {
+  border-color: rgba(236, 72, 153, 0.28);
+  border-left-color: #ec4899;
+  background: linear-gradient(135deg, rgba(236, 72, 153, 0.13), rgba(244, 63, 94, 0.05));
 }
 
 .sider-welcome-card:hover {
-  border-color: var(--active-chapter);
-  background: var(--surface-2, rgba(127, 127, 127, 0.1));
-}
-
-.sider-welcome-find {
-  display: flex;
-  gap: 6px;
-  width: 100%;
-  align-items: center;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(124, 92, 255, 0.16);
 }
 
 .chat-chip {
-  padding: 3px 10px;
-  border: 1px solid var(--r-line);
+  padding: 3px 11px;
+  border: 1px solid rgba(124, 92, 255, 0.22);
   border-radius: 999px;
-  background: transparent;
+  background: rgba(124, 92, 255, 0.06);
   color: var(--r-muted);
   font-size: 12px;
+  font-weight: 500;
   line-height: 1.5;
   white-space: nowrap;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.chat-chip:hover:not(:disabled) { color: var(--r-text); border-color: var(--active-chapter); }
+.chat-chip:hover:not(:disabled) {
+  color: #6d4aff;
+  border-color: rgba(124, 92, 255, 0.45);
+  background: rgba(124, 92, 255, 0.12);
+}
 .chat-chip:disabled { opacity: 0.45; cursor: default; }
 .chat-chip-on {
-  color: var(--active-chapter);
-  border-color: var(--active-chapter);
-  background: color-mix(in srgb, var(--active-chapter) 12%, transparent);
+  color: #ffffff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6 60%, #ec4899);
+  box-shadow: 0 2px 10px rgba(124, 92, 255, 0.3);
 }
 
 .sider-composer {
   display: flex;
   flex-direction: column;
   width: 100%;
-  border: 1px solid var(--r-line);
+  border: 1px solid rgba(124, 92, 255, 0.28);
   border-radius: 16px;
-  background: var(--card);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  background: linear-gradient(180deg, rgba(124, 92, 255, 0.06), rgba(14, 165, 233, 0.03) 45%, var(--card, #ffffff));
+  box-shadow: 0 8px 24px rgba(124, 92, 255, 0.12), 0 2px 6px rgba(0, 0, 0, 0.04);
   overflow: hidden;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.sider-composer:focus-within {
+  border-color: rgba(124, 92, 255, 0.55);
+  box-shadow: 0 10px 28px rgba(124, 92, 255, 0.2);
 }
 
 .sider-composer :deep(.n-input),
@@ -6863,76 +7014,70 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 8px 8px;
+  padding: 4px 10px 10px;
 }
 
 .sider-composer-chips { display: flex; align-items: center; gap: 6px; }
 .sider-composer-send { display: flex; align-items: center; gap: 8px; }
-.sider-composer-task { color: var(--r-muted); font-size: 12px; }
-/* 参考范围提示：极小一行，只在开了开关时才占位，不动输入框高度 */
-.sider-composer-hint { padding: 0 10px 2px; font-size: 11px; line-height: 1.5; }
 
 :deep(.n-drawer-header__main)::before {
   content: '✦';
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   margin-right: 8px;
-  border-radius: 7px;
-  background: linear-gradient(135deg, #7c5cff, #b06bff 55%, #ff9ecd);
+  border-radius: 8px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6 50%, #ec4899);
+  box-shadow: 0 3px 10px rgba(124, 92, 255, 0.32);
   color: #fff;
-  font-size: 12px;
+  font-size: 13px;
   vertical-align: middle;
 }
 
-/* 会话主体铺满抽屉：Sider 的对话区就是整块面板，不留多余留白。 */
-:deep(.n-drawer-body-content-wrapper) { padding-top: 4px; }
-
-.chat-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 2px 8px;
-  border-bottom: 1px solid var(--r-line);
+:deep(.n-drawer-body-content-wrapper) {
+  padding-top: 6px;
+  background: radial-gradient(120% 220px at 15% 0%, rgba(124, 92, 255, 0.1), rgba(14, 165, 233, 0.06) 55%, transparent 100%);
 }
 
 .chat-topbar-btn {
-  border: 0;
-  background: transparent;
-  color: var(--r-muted);
+  border: 1px solid rgba(124, 92, 255, 0.22);
+  background: rgba(124, 92, 255, 0.08);
+  color: #6d4aff;
   font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 6px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  transition: all 0.15s ease;
 }
-.chat-topbar-btn:hover:not(:disabled) { color: var(--r-text); background: var(--surface-3, rgba(127, 127, 127, 0.1)); }
+.chat-topbar-btn:hover:not(:disabled) {
+  color: #ffffff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
 .chat-topbar-btn:disabled { opacity: 0.45; cursor: default; }
-.chat-topbar-count { color: var(--r-muted); font-size: 11px; }
 
-/* 会话栏：跟 .chat-topbar 同一套小字号低对比，只是多一个下拉框。
-   下拉框占满剩余宽度，删/建按钮保持文字宽，侧栏拖窄时不会被挤成两行。 */
 .chat-threads {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 2px 8px;
-  border-bottom: 1px solid var(--r-line);
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  border: 1px solid rgba(124, 92, 255, 0.18);
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(124, 92, 255, 0.08), rgba(14, 165, 233, 0.05));
 }
 .chat-threads-select { flex: 1 1 auto; min-width: 0; }
 
 .chat-input-row {
   display: flex;
   gap: 8px;
-  /* 抽屉内容比窗口高，输入框原来会被推到屏幕下方，用户点「聊书」后找不到在哪输入。
-     吸在抽屉底边，滑到哪都能直接提问。 */
   position: sticky;
   bottom: 0;
   z-index: 1;
-  padding: 8px 0;
+  padding: 8px 0 4px;
   background: var(--r-surface, var(--surface-2, #ffffff));
-  border-top: 1px solid var(--r-line);
 }
 
 
@@ -7779,25 +7924,21 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 
-/* 阅读资料里的两排切换粘在抽屉顶部：滚到几千像素时还能一键换页。 */
-.ai-top-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--r-surface, var(--surface-2, #ffffff)); }
-.ai-top-bar .ai-top-switch { flex: 1 1 auto; margin-bottom: 0; }
-.ai-clean-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+/* 单层导航粘在抽屉顶部：滚到几千像素时还能一键换页。 */
+.ai-top-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; background: var(--r-surface, var(--surface-2, #ffffff)); }
+.ai-top-bar .ai-top-switch { flex: 1 1 auto; margin: 4px 0 8px; }
+.ai-clean-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; }
 .memory-item-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.memory-edit-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--r-line); }
+.memory-edit-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(124, 92, 255, 0.25); }
 .memory-edit-buttons { display: flex; align-items: center; gap: 6px; }
-.ai-read-switch { position: sticky; top: 31px; z-index: 2; background: var(--r-surface, var(--surface-2, #ffffff)); }
 
-/* 输入区在窄抽屉里允许换行：8 个控件硬挤一行，发送按钮会被裁掉半个。 */
 .sider-composer-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .sider-composer-chips { flex-wrap: wrap; }
 .sider-composer-send { margin-left: auto; white-space: nowrap; }
 
-/* 模型选择行：只用一行，别再往运行信息里塞一块卡片。 */
 .ai-model-row { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
 .ai-model-row .n-select { flex: 1 1 auto; min-width: 0; }
 
-/* 记忆时间线默认收起：单章就能撑出几千像素，滚不到人物列表。 */
 .memory-timeline > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 4px; }
 .memory-timeline > summary::-webkit-details-marker { display: none; }
 .memory-timeline > summary::after { content: '⌄'; margin-left: auto; opacity: 0.6; }

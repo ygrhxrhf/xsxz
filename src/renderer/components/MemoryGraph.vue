@@ -282,11 +282,11 @@ const labeledEdges = computed(() => {
 
 <style scoped>
 .memory-graph {
-  /* 四个槽位全部取自现有主题 token，不新造颜色：status 是自由文本，只能哈希取色。 */
-  --mg-slot-0: var(--focus, #5f7f14);
-  --mg-slot-1: var(--note-accent, #4c6a0f);
-  --mg-slot-2: var(--warning, #8a6a1d);
-  --mg-slot-3: var(--success, #3b7f4a);
+  /* 四个槽位采用宝石四色（星光紫 / 流光青 / 琥珀金 / 翡翠绿），让人物关系图一眼区分阵营与状态。 */
+  --mg-slot-0: #7c5cff;
+  --mg-slot-1: #0ea5e9;
+  --mg-slot-2: #f59e0b;
+  --mg-slot-3: #10b981;
   display: block;
   color: inherit;
   font: inherit;
@@ -378,10 +378,12 @@ const labeledEdges = computed(() => {
 }
 
 .memory-graph-detail {
-  padding: 10px;
-  margin-top: 6px;
-  border: 1px solid var(--r-line, #dedfd5);
-  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 8px;
+  border: 1px solid rgba(124, 92, 255, 0.25);
+  border-left: 3px solid #7c5cff;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.1), rgba(14, 165, 233, 0.05));
 }
 
 .memory-graph-detail-head {

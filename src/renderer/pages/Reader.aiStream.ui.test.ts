@@ -152,11 +152,8 @@ async function mountAssistant(
     bodyText: () => document.body.textContent ?? '',
     bubbles: () => [...document.querySelectorAll('.chat-msg.assistant .chat-bubble')].map((el) => el.textContent ?? ''),
     async clickTab(label: string) {
-      // 两层开关：顶层问答/阅读资料，阅读资料内部再分段；隐藏的分段也能收到 click。
-      const tab = [
-        ...document.querySelectorAll<HTMLElement>('.ai-top-switch button'),
-        ...document.querySelectorAll<HTMLElement>('.ai-read-switch button'),
-      ].find((item) => item.textContent?.trim() === label)
+      const tab = [...document.querySelectorAll<HTMLElement>('.ai-top-switch button')]
+        .find((item) => item.textContent?.trim() === label)
       expect(tab, `抽屉里应有「${label}」开关`).toBeTruthy()
       tab!.click()
       await vi.waitFor(() => expect(getComputedStyle(readerNotesPane()).display).not.toBe('none'))

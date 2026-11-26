@@ -21,12 +21,10 @@ describe('Reader unified AI assistant shell', () => {
     // 一次性结果并入「输出」tab，不再开第二个 AI 抽屉。
     expect(source).not.toContain('v-model:show="showAiResult"')
     expect(source).toContain('<n-drawer-content title="AI 助手"')
-    // 骨架收敛成两层：顶层「问答 / 阅读资料」，阅读资料内部再分前情、记忆、笔记、结果。
+    // 骨架拍平为单层四色页签：问答 · 前情 · 记忆 · 笔记（有一次性输出时浮出「结果」）。
     expect(source).toContain('class="ai-top-switch"')
-    expect(source).toContain("assistantTopTab = 'chat'\">问答</button>")
-    expect(source).toContain("assistantTopTab = 'read'\">阅读资料</button>")
-    expect(source).toContain('class="ai-read-switch"')
-    for (const label of ['前情', '记忆', '笔记']) expect(source).toContain(`>${label}</button>`)
+    expect(source).not.toContain('class="ai-read-switch"')
+    for (const label of ['问答', '前情', '记忆', '笔记']) expect(source).toContain(`>${label}</button>`)
     // 「结果」只在真有一次性的清正文/翻译输出时才出现，不占常驻分段。
     expect(source).toContain('v-if="aiResult"')
     expect(source).not.toContain('<n-tab-pane')
@@ -65,7 +63,6 @@ describe('Reader unified AI assistant shell', () => {
     const source = await readReaderSurface()
     // 视图与接线仍在 Reader.vue
     expect(source).toContain('<strong>划线与释义</strong>')
-    expect(source).toContain('这里只汇总你自己的划线与批注（含 AI 解释），不另外存一份。')
     expect(source).toContain('@click="jumpToAnnotation(term)"')
     expect(source).toContain(`noteSource === 'ai'`)
 
@@ -110,11 +107,10 @@ describe('Reader unified AI assistant shell', () => {
     expect(helpers).toContain("if (opts.key.toLowerCase() === 'n') return 'open-note'")
   })
 
-  it('欢迎态给一行阅读资料入口，快捷问题只填草稿不直接计费', async () => {
+  it('欢迎态只留问候与四张彩色快捷问题卡，快捷问题只填草稿不直接计费', async () => {
     const source = await readReaderSurface()
-    // 四张入口卡换成一行文字：入口只在欢迎态出现，不再常驻侧栏底部。
-    expect(source).toContain('class="sider-welcome-links"')
-    for (const label of ['看前情', '翻人物', '写笔记']) expect(source).toContain(`>${label}</button>`)
+    expect(source).not.toContain('class="sider-welcome-links"')
+    expect(source).not.toContain('class="sider-welcome-find"')
     expect(source).toContain('const QUICK_READING_QUESTIONS = [')
     expect(source).toContain('有哪些已经出现但尚未回收的伏笔？')
     const start = source.indexOf('function prepareQuickQuestion')
@@ -124,7 +120,6 @@ describe('Reader unified AI assistant shell', () => {
     expect(block).toContain('chatInput.value = question')
     expect(block).not.toContain('window.api')
     expect(block).not.toContain('sendChat()')
-    expect(source).toContain('确认发送后才调用模型。')
   })
 
   it('人物关系搜索只过滤已加载的本地记忆', async () => {
@@ -136,7 +131,6 @@ describe('Reader unified AI assistant shell', () => {
     expect(block).toContain('visibleMemoryForeshadows')
     expect(block).toContain('visibleMemoryEvents')
     expect(block).not.toContain('window.api')
-    expect(source).toContain('搜索只读取本地记忆，不调用模型。')
     expect(source).toContain('description="本地记忆里没有匹配内容"')
   })
 })

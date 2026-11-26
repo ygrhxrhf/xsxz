@@ -12,16 +12,13 @@ async function readReaderSurface(): Promise<string> {
 }
 
 describe('Reader recap and memory UI contract', () => {
-  it('persists the three recap lengths and exposes their fixed labels', async () => {
+  it('persists the three recap lengths in assistant state while keeping the recap pane free of length radio clutter', async () => {
     const source = await readReaderSurface()
     expect(source).toContain("const recapLength = ref<'short' | 'standard' | 'detailed'>('standard')")
     expect(source).toContain("recapLength.value = s.ai?.recapLength ?? 'standard'")
     expect(source).toContain('window.api.settings.set({ ai: { recapLength: value } })')
     expect(source).toContain('recapLength.value = previous')
     expect(source).toContain('前情长度保存失败，已恢复原设置')
-    expect(source).toContain('简短 · 约 200 字')
-    expect(source).toContain('标准 · 约 500 字')
-    expect(source).toContain('详细 · 约 1000 字')
   })
 
   it('loads, updates, rebuilds, marks, and applies structured memory locally', async () => {

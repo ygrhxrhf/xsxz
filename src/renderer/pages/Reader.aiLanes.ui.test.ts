@@ -97,19 +97,14 @@ async function mountReader() {
       return item
     },
     async clickTab(label: '前情' | '记忆' | '问答' | '结果') {
-      // 两层开关：顶层问答/阅读资料，阅读资料内部再分段。v-show 的分段即使隐藏也能收到 click。
-      const tab = [
-        ...document.querySelectorAll<HTMLElement>('.ai-top-switch button'),
-        ...document.querySelectorAll<HTMLElement>('.ai-read-switch button'),
-      ].find((item) => item.textContent?.trim() === label)
+      const tab = [...document.querySelectorAll<HTMLElement>('.ai-top-switch button')]
+        .find((item) => item.textContent?.trim() === label)
       if (!tab) throw new Error(`找不到 tab「${label}」`)
       tab.click()
       await nextTick()
     },
     activeTab: () => {
-      const top = document.querySelector<HTMLElement>('.ai-top-switch button.is-on')?.textContent?.trim() ?? ''
-      if (top !== '阅读资料') return top
-      return document.querySelector<HTMLElement>('.ai-read-switch button.is-on')?.textContent?.trim() ?? ''
+      return document.querySelector<HTMLElement>('.ai-top-switch button.is-on')?.textContent?.trim() ?? ''
     },
     async closeToolPanel() {
       document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
@@ -185,7 +180,7 @@ describe('Reader AI 壳的分任务忙闲', () => {
       await vi.waitFor(() => expect(reader.bodyText()).not.toContain('读完一章后整理'))
 
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }))
-      await vi.waitFor(() => expect(reader.bodyText()).toContain('只发送本章正文和本章的划线批注'))
+      await vi.waitFor(() => expect(reader.bodyText()).toContain('划线与释义'))
       expect(reader.activeTab()).toBe('笔记')
     } finally { reader.app.unmount() }
   })

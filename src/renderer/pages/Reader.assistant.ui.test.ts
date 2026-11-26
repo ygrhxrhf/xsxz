@@ -83,14 +83,13 @@ async function openAssistant(): Promise<void> {
 }
 
 describe('Reader 助手面板（拆前安全网）', () => {
-  it('打开助手能看到五类 tab 与四张入口卡', async () => {
+  it('打开助手能看到单层四类常驻 tab', async () => {
     installReaderApi()
     const app = await mountReader()
     await openAssistant()
 
     const text = document.body.textContent ?? ''
-    for (const tab of ['问答', '阅读资料', '前情', '记忆', '笔记']) expect(text).toContain(tab)
-    for (const entry of ['看前情', '翻人物', '写笔记']) expect(text).toContain(entry)
+    for (const tab of ['问答', '前情', '记忆', '笔记']) expect(text).toContain(tab)
     app.unmount()
   })
 
