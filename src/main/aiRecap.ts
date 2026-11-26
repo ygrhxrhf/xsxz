@@ -383,10 +383,13 @@ export function planAiRecap(
 
 export function validateAiRecapOutput(text: string, length: AiRecapLength): string {
   const normalized = text.trim()
-  const characters = countTextCharacters(normalized)
   const rule = LENGTH_RULES[length]
-  if (characters < rule.min || characters > rule.max) {
-    throw new Error(`前情提要长度不符合 ${rule.min}–${rule.max} 字要求，原有前情未改变`)
+  // 偏短接受：模型已经按「只用已存摘要、不编造」的规则写完，字数少一点远比整段丢掉有用。
+  // 偏长才裁剪，而且裁在句子边界上——半句话比超标更糟。
+  if (countTextCharacters(normalized) <= rule.max) return normalized
+  const chars = Array.from(normalized)
+  for (let index = Math.min(chars.length, rule.max); index > rule.min; index -= 1) {
+    if ('。！？；…\n'.includes(chars[index - 1]!)) return chars.slice(0, index).join('').trim()
   }
-  return normalized
+  return chars.slice(0, rule.max).join('').trim()
 }

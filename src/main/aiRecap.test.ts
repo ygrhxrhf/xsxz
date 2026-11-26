@@ -158,8 +158,11 @@ describe('recap output validation', () => {
   ] as const)('accepts %s only within its Unicode bounds', (length, min, max) => {
     expect(validateAiRecapOutput('😀'.repeat(min), length)).toHaveLength(min * 2)
     expect(validateAiRecapOutput('甲'.repeat(max), length)).toHaveLength(max)
-    expect(() => validateAiRecapOutput('甲'.repeat(min - 1), length)).toThrow('原有前情未改变')
-    expect(() => validateAiRecapOutput('甲'.repeat(max + 1), length)).toThrow('原有前情未改变')
+    // 偏短接受（短一点也比整段丢掉有用），偏长按句子边界裁剪到上限内。
+    expect(validateAiRecapOutput('甲'.repeat(min - 1), length)).toHaveLength(min - 1)
+    const clipped = validateAiRecapOutput(`${'甲'.repeat(max - 1)}。${'乙'.repeat(50)}`, length)
+    expect(clipped.length).toBeLessThanOrEqual(max)
+    expect(clipped.endsWith('。')).toBe(true)
   })
 
   it('keeps produced memory schema valid in its fixture', () => {

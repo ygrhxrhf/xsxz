@@ -237,7 +237,9 @@ describe('local read-range evidence selection', () => {
       originalQuestion: '账房先生追问', corePhrase: '账房先生追问',
     }, { requestedUptoChapterId: 'c0001', progressChapterId: 'c0001', excerptCharacters: 80 })
     expect(result.citations[0]?.paragraphIndex).toBe(1)
-    expect(result.citations[0]?.excerpt).toContain('她把玉印收进袖中')
+    // 不能把上一段拼到开头：事后按 paragraphIndex 复核段首时会必然对不上，整轮问答作废。
+    expect(result.citations[0]?.excerpt.startsWith('账房先生追问了很久')).toBe(true)
+    expect(result.citations[0]?.excerpt).not.toContain('她把玉印收进袖中')
     expect(result.citations[0]?.excerpt).toContain('第二天码头开船')
   })
 

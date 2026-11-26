@@ -239,18 +239,20 @@ export function getAiTaskPolicy(
       const maxTokens = options.recapLength === 'short' ? 400 : options.recapLength === 'detailed' ? 1_600 : 900
       return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens, mode: 'high', structured: false }
     }
+    // 思考型模型的推理 token 也计入 max_tokens：3000 在长章节抽取时会被思考链吃光，
+    // 远端直接回「empty reply」并被包装成 502。给足输出额度，别让用户在最后一步看到“服务不可用”。
     case 'memory':
-      return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 3_000, mode: 'high', structured: true }
+      return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 8_000, mode: 'high', structured: true }
     case 'places':
       // 地名抽取只依赖提示词里的 JSON 约束：不强制 response_format/reasoning_effort，
       // 兼容不支持这些扩展参数的自定义模型；返回文本由 parseAiJsonObject 兜底解析。
       return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 3_000, mode: 'fast', structured: false }
     case 'evidenceQa':
-      return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 2_000, mode: 'high', structured: true }
+      return { timeoutMs: AI_DEEP_REQUEST_TIMEOUT_MS, maxTokens: 6_000, mode: 'high', structured: true }
     case 'evidenceVerify':
       // 输出只有 {"verdicts":[{"index":0,"supported":true}]}：800 足够盖住几十条结论。
       // structured 兜底 response_format，避免模型在 JSON 前后加解释导致整批判定作废。
-      return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: 800, mode: 'fast', structured: true }
+      return { timeoutMs: AI_REQUEST_TIMEOUT_MS, maxTokens: 2_000, mode: 'fast', structured: true }
     default:
       return { timeoutMs: AI_REQUEST_TIMEOUT_MS, mode: 'fast', structured: false }
   }

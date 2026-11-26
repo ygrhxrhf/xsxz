@@ -1357,9 +1357,11 @@ const inlineAsk = useInlineAsk({
     // 整段对话原样进侧栏：卡片里的问题与回答变成侧栏的前几轮，之后接着追问。
     chatMode.value = 'agent'
     aiAssistantTab.value = 'qa'
+    // 行内卡片本来就没有引用坐标，但也不能让它落进「旧版回答，无来源」的分支：
+    // 空数组是「有来源字段、只是这次没有引用」，与 undefined 的旧记录不是一回事。
     chatMessages.value = [...chatMessages.value, ...turns.flatMap((turn) => [
       { role: 'user' as const, content: turn.question },
-      { role: 'assistant' as const, content: turn.answer },
+      { role: 'assistant' as const, content: turn.answer, citations: [] },
     ])]
     showAiAssistant.value = true
   },

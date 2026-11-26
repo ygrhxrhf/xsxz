@@ -39,10 +39,11 @@ describe('AI task policy matrix', () => {
     ['chapterNote', AI_DEEP_REQUEST_TIMEOUT_MS, 1_200, 'high', false],
     ['queryRewrite', AI_REQUEST_TIMEOUT_MS, 200, 'fast', true],
     ['recap', AI_DEEP_REQUEST_TIMEOUT_MS, 900, 'high', false],
-    ['memory', AI_DEEP_REQUEST_TIMEOUT_MS, 3_000, 'high', true],
-    ['evidenceQa', AI_DEEP_REQUEST_TIMEOUT_MS, 2_000, 'high', true],
-    // judge 只回收一个布尔数组：800 token 够盖住几十条结论，用不着深思超时
-    ['evidenceVerify', AI_REQUEST_TIMEOUT_MS, 800, 'fast', true],
+    // 思考型模型的推理 token 也计入 max_tokens：额度要能盖住「思考 + 抽取结果」。
+    ['memory', AI_DEEP_REQUEST_TIMEOUT_MS, 8_000, 'high', true],
+    ['evidenceQa', AI_DEEP_REQUEST_TIMEOUT_MS, 6_000, 'high', true],
+    // judge 只回收一个布尔数组，但思考型模型会先花推理 token：给 2000 兜底。
+    ['evidenceVerify', AI_REQUEST_TIMEOUT_MS, 2_000, 'fast', true],
   ])('applies %s timeout/max_tokens/mode/JSON policy', (task, timeoutMs, maxTokens, mode, structured) => {
     expect(getAiTaskPolicy(task, { inputTokenEstimate: 1_000 })).toEqual({
       timeoutMs,
@@ -69,7 +70,7 @@ describe('task-aware request bodies', () => {
       expect(body).toMatchObject({
         model: 'deepseek-v4-flash',
         stream: false,
-        max_tokens: 3_000,
+        max_tokens: 8_000,
         reasoning_effort: 'high',
         response_format: { type: 'json_object' },
       })
@@ -143,7 +144,7 @@ describe('task-aware request bodies', () => {
   it('sends only OpenAI-compatible core fields to custom services', async () => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>
-      expect(body).toMatchObject({ model: 'custom-model', stream: false, max_tokens: 3_000 })
+      expect(body).toMatchObject({ model: 'custom-model', stream: false, max_tokens: 8_000 })
       expect(body).not.toHaveProperty('reasoning_effort')
       expect(body).not.toHaveProperty('response_format')
       expect(body).not.toHaveProperty('temperature')

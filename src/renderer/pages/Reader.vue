@@ -138,6 +138,7 @@ import type { Annotation, BookSearchHit } from '@shared/types'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import ReaderMindmap from '../components/ReaderMindmap.vue'
 import MemoryGraph from '../components/MemoryGraph.vue'
+import MarkdownBlock from '../components/MarkdownBlock.vue'
 import { buildMemoryGraph, sliceMemoryGraph } from './memoryGraph'
 import BookMapPage from './BookMapPage.vue'
 import AtlasDock from './atlas/AtlasDock.vue'
@@ -1003,7 +1004,7 @@ const SEL_MENU_WIDTH = 268
  * 划词行内问答卡的尺寸与位置：挂在所选文字下方，下方放不下就翻到上方。
  * 卡片比工具条宽，所以要按自己的尺寸单独算，不能复用它那套 191×30。
  */
-const INLINE_ASK_SIZE = { width: 380, height: 260 }
+const INLINE_ASK_SIZE = { width: 380, height: 420 }
 
 const inlineAskStyle = computed(() => {
   const { width, height } = INLINE_ASK_SIZE
@@ -1011,7 +1012,10 @@ const inlineAskStyle = computed(() => {
   const margin = 8
   const rect = selection.lastSelRect?.value ?? { top: 0, bottom: 0, left: 0, width: 0 }
   const below = rect.bottom + gap + height + margin <= window.innerHeight
-  const top = below ? rect.bottom + gap : Math.max(margin, rect.top - gap - height)
+  let top = below ? rect.bottom + gap : Math.max(margin, rect.top - gap - height)
+  // 卡片会随回答长高（CSS 上限 60vh）：再夹一次底边，别让「在侧边栏中继续」掉出屏幕。
+  const maxHeight = Math.min(window.innerHeight * 0.6, 520)
+  top = Math.min(top, Math.max(margin, window.innerHeight - margin - maxHeight))
   const centered = rect.left + rect.width / 2 - width / 2
   const left = Math.min(Math.max(margin, centered), Math.max(margin, window.innerWidth - width - margin))
   return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${width}px` }
@@ -1034,9 +1038,14 @@ function stopInlineAsk() {
 
 const selMenuStyle = computed(() => {
   const gap = 6
-  const below = selPopupY.value + gap
+  // 翻到上方时以「选区顶边」为锚，不是以工具条顶边：工具条只有 30px 高，
+  // 用它当锚会让整张菜单盖住刚选中的那段话。
+  const rect = selection.lastSelRect?.value
+  const anchorTop = rect?.top ?? selPopupY.value
+  const anchorBottom = Math.max(selPopupY.value, rect?.bottom ?? 0)
+  const below = anchorBottom + gap
   const roomBelow = window.innerHeight - below
-  const top = roomBelow >= SEL_MENU_HEIGHT ? below : Math.max(8, selPopupY.value - SEL_MENU_HEIGHT - gap)
+  const top = roomBelow >= SEL_MENU_HEIGHT ? below : Math.max(8, anchorTop - SEL_MENU_HEIGHT - gap)
   const left = Math.min(selPopupX.value, Math.max(8, window.innerWidth - SEL_MENU_WIDTH - 8))
   return { left: `${left}px`, top: `${top}px` }
 })
@@ -1053,6 +1062,7 @@ watch(showSelPopup, (open) => {
 
 // 菜单展开时它可能盖住工具条，所以把模型选择器也一并刷新。
 watch(showSelMenu, (open) => { if (open) void loadAiModelOptions() })
+
 
 /** 当前章各段的渲染切片：叠加搜索命中与划线 */
 const plainDecoratedParas = computed(() => paras.value.map((text) => decorateText(text, '', [])))
@@ -3575,6 +3585,14 @@ const {
 } = assistant
 
 /**
+ * 侧栏一打开就读一次模型配置：状态条上的模型名不能等到用户先划过词才出现。
+ * 顺带收掉顶栏那个「清正文 / AI 助手 / 聊书」的小面板——抽屉关了它还挂在正文上挡字。
+ */
+watch(showAiAssistant, (open) => {
+  if (open) void loadAiModelOptions()
+  else if (activeToolPanel.value === 'ai') activeToolPanel.value = ''
+})
+/**
  * 顶层两档：问答 / 阅读资料。
  * 只留 aiAssistantTab 一份真源，顶层档位用可写 computed 推出来——
  * 多存一个 ref 迟早出现「顶层停在问答、内容却是记忆」的错位。
@@ -4537,6 +4555,10 @@ onUnmounted(() => {
               <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
               <span>仅包含当前阅读进度以内的内容，不发送未读章节。</span>
             </div>
+            <div class="ai-model-row">
+              <span class="subtle">模型</span>
+              <n-select size="tiny" :value="aiModelValue" :options="aiModelOptions" @update:value="applyAiModel" />
+            </div>
             <div v-if="currentAssistantBudget" class="ai-budget-status">
               <strong>本次发送范围</strong>
               <div>预计发送：{{ currentAssistantBudget.chapterCount }} 章 / {{ currentAssistantBudget.paragraphCount }} 段，约 {{ currentAssistantBudget.sentCharacters }} 字 / {{ currentAssistantBudget.estimatedTokens }} tokens（估算）</div>
@@ -4648,8 +4670,8 @@ onUnmounted(() => {
                     @jump="jumpToMemorySource"
                   />
                 </details>
-                <section class="ai-budget-status">
-                  <strong>人物与伏笔时间线</strong>
+                <details class="ai-budget-status memory-timeline">
+                  <summary><strong>人物与伏笔时间线</strong><span class="subtle"> · 按已读章节显示变化</span></summary>
                   <div class="subtle">按已读章节显示出现、变化与当前状态。未读完的章节不会写入时间线。</div>
                   <div v-if="timelineData?.message" class="subtle">{{ timelineData.message }}</div>
                   <div v-for="entry in timelineData?.entries || []" :key="entry.id" class="memory-item">
@@ -4659,7 +4681,7 @@ onUnmounted(() => {
                     <p>{{ entry.text }}</p>
                     <button class="memory-source" type="button" @click="jumpToMemorySource(entry.source)">{{ entry.source.excerpt }} · 查看原文</button>
                   </div>
-                </section>
+                </details>
                 <n-space>
                   <n-button type="primary" :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying" @click="startMemoryJob('update')">更新记忆</n-button>
                   <n-popconfirm
@@ -4835,7 +4857,7 @@ onUnmounted(() => {
                     <template v-if="msg.claims?.length">
                       <p v-for="(line, li) in claimCitationLines(msg)" :key="li" class="chat-claim">{{ line.text }}<button v-for="badge in line.badges" :key="badge.label" class="chat-cite" type="button" :disabled="memorySourceJumping" :title="`跳到依据 ${badge.label} 的原文`" @click="jumpToMemorySource(badge.citation)">[{{ badge.label }}]</button></p>
                     </template>
-                    <template v-else>{{ msg.content }}</template>
+                    <MarkdownBlock v-else :source="msg.content" />
                   </div>
                   <template v-if="msg.role === 'assistant'">
                     <n-tag v-if="msg.stopped" size="small" type="warning">已停止，以下为停止前生成的部分回答。</n-tag>
@@ -4924,7 +4946,8 @@ onUnmounted(() => {
                 <p class="subtle">只发送本章正文和本章的划线批注来生成读书笔记，不发送未读章节。</p>
                 <n-tag v-if="currentChapterNote?.stale" size="small" type="warning">正文已变，建议重新生成</n-tag>
                 <n-tag v-if="chapterNoteStopped" size="small" type="warning">已停止，以下为停止前生成的部分笔记。</n-tag>
-                <div class="ai-result">{{ chapterNoteView || '还没有本章笔记。' }}</div>
+                <MarkdownBlock v-if="chapterNoteView" class="ai-result" :source="chapterNoteView" />
+                <div v-else class="ai-result">还没有本章笔记。</div>
                 <n-input
                   v-model:value="chapterNoteDraft"
                   type="textarea"
@@ -5096,7 +5119,7 @@ onUnmounted(() => {
           <div v-if="inlineAsk.errorText.value" class="inline-ask-error">{{ inlineAsk.errorText.value }}</div>
 
           <div v-if="inlineAsk.answer.value || inlineAsk.busy.value" class="inline-ask-body">
-            <div class="inline-ask-answer">{{ inlineAsk.answer.value }}<span v-if="inlineAsk.busy.value" class="inline-ask-caret">▍</span></div>
+            <MarkdownBlock class="inline-ask-answer" :source="inlineAsk.answer.value" /><span v-if="inlineAsk.busy.value" class="inline-ask-caret">▍</span>
           </div>
 
           <div v-if="inlineAsk.status.value === 'ready' || inlineAsk.busy.value" class="inline-ask-foot">
@@ -6871,7 +6894,8 @@ onUnmounted(() => {
   bottom: 0;
   z-index: 1;
   padding: 8px 0;
-  background: var(--card);
+  background: var(--r-surface, var(--surface-2, #ffffff));
+  border-top: 1px solid var(--r-line);
 }
 
 
@@ -7717,4 +7741,36 @@ onUnmounted(() => {
   outline: 2px solid var(--active-chapter);
   outline-offset: 2px;
 }
+
+/* 阅读资料里的两排切换粘在抽屉顶部：滚到几千像素时还能一键换页。 */
+.ai-top-switch { position: sticky; top: 0; z-index: 3; background: var(--r-surface, var(--surface-2, #ffffff)); }
+.ai-read-switch { position: sticky; top: 31px; z-index: 2; background: var(--r-surface, var(--surface-2, #ffffff)); }
+
+/* 输入区在窄抽屉里允许换行：8 个控件硬挤一行，发送按钮会被裁掉半个。 */
+.sider-composer-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sider-composer-chips { flex-wrap: wrap; }
+.sider-composer-send { margin-left: auto; white-space: nowrap; }
+
+/* 模型选择行：只用一行，别再往运行信息里塞一块卡片。 */
+.ai-model-row { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+.ai-model-row .n-select { flex: 1 1 auto; min-width: 0; }
+
+/* 记忆时间线默认收起：单章就能撑出几千像素，滚不到人物列表。 */
+.memory-timeline > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 4px; }
+.memory-timeline > summary::-webkit-details-marker { display: none; }
+.memory-timeline > summary::after { content: '⌄'; margin-left: auto; opacity: 0.6; }
+.memory-timeline[open] > summary::after { content: '⌃'; }
+
+/* 模型回答的 Markdown：只做排版，不加卡片，跟气泡同一套字号。 */
+.md-body p { margin: 0 0 6px; }
+.md-body p:last-child { margin-bottom: 0; }
+.md-body strong { font-weight: 600; }
+.md-body ul, .md-body ol { margin: 4px 0 6px; padding-left: 18px; }
+.md-body li { margin: 2px 0; }
+.md-body code { padding: 0 3px; border-radius: 4px; background: var(--surface-3, rgba(127, 127, 127, 0.12)); font-size: 12px; }
+.md-body pre { overflow-x: auto; padding: 8px; border-radius: 6px; background: var(--surface-3, rgba(127, 127, 127, 0.12)); }
+.md-body h3, .md-body h4, .md-body h5 { margin: 8px 0 4px; font-size: 13px; }
+.md-body blockquote { margin: 4px 0; padding-left: 8px; border-left: 2px solid var(--r-line); color: var(--r-muted); }
+.md-body table { border-collapse: collapse; font-size: 12px; }
+.md-body th, .md-body td { padding: 2px 6px; border: 1px solid var(--r-line); }
 </style>

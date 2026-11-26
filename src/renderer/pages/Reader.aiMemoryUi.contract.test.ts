@@ -57,7 +57,8 @@ describe('Reader recap and memory UI contract', () => {
     expect(memoryPane.match(/<details v-for=/g)).toHaveLength(4)
     // 条目默认收起：一进记忆页先看到标题行，而不是四组全部摊开的正文。
     expect(memoryPane.match(/:open="item\.accuracy/g)).toBeNull()
-    expect(memoryPane.match(/<summary>/g)).toHaveLength(4)
+    // 四类记忆各一个折叠标题，外加默认收起的时间线标题。
+    expect(memoryPane.match(/<summary>/g)).toHaveLength(5)
     expect(memoryPane.match(/class="memory-accuracy-tag"/g)).toHaveLength(4)
     expect(memoryPane).not.toMatch(/<summary>[^\n]*<n-tag/)
     expect(source).toContain('还没有人物与剧情记忆。')
