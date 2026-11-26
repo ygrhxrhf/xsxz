@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
-import { NButton, NConfigProvider, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPopconfirm, NRadioButton, NRadioGroup, NSelect, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, darkTheme, useMessage } from 'naive-ui'
+import { NButton, NConfigProvider, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NModal, NPopconfirm, NRadioButton, NRadioGroup, NSelect, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, darkTheme, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
 import { READER_THEME_COLORS } from '@shared/readerTheme'
 import type {
@@ -3251,6 +3251,8 @@ async function loadPrefs() {
   recapLength.value = s.ai?.recapLength ?? 'standard'
   autoFollowEnabled.value = s.ai?.autoReadingFollow ?? false
   aiServiceOrigin.value = displayAiServiceOrigin(s.baseUrl)
+  aiVerifyEvidence.value = s.ai?.verifyEvidenceAnswers !== false
+  aiApiKeyConfigured.value = Boolean(s.apiKeyConfigured)
 }
 
 // AI actions
@@ -3604,16 +3606,49 @@ const {
   deleteChatRound,
 } = assistant
 
+/** 侧栏独立设置弹窗：只包含 AI 助手自己的选项，不再跳去全局设置页。 */
+const aiSettingsOpen = ref(false)
+
 /**
  * 侧栏一打开就读一次模型配置：状态条上的模型名不能等到用户先划过词才出现。
  * 顺带收掉顶栏那个「清正文 / AI 助手 / 聊书」的小面板——抽屉关了它还挂在正文上挡字。
  */
 watch(showAiAssistant, (open) => {
   if (open) void loadAiModelOptions()
+  // 抽屉关掉时顺手收起独立设置弹窗，避免它孤零零留在正文上。
+  else aiSettingsOpen.value = false
 })
 
 /** 运行信息面板默认收起：模型与已读边界已经在状态条上，其余按需展开。 */
 const aiRuntimeOpen = ref(false)
+
+const aiVerifyEvidence = ref(true)
+const aiApiKeyConfigured = ref(false)
+const aiTesting = ref(false)
+async function setAiVerifyEvidence(value: boolean) {
+  const previous = aiVerifyEvidence.value
+  aiVerifyEvidence.value = value
+  try {
+    await window.api.settings.set({ ai: { verifyEvidenceAnswers: value } })
+    message.success(value ? '已开启：回答后核对原文（会多一次请求）' : '已关闭：回答不再核对原文')
+  } catch {
+    aiVerifyEvidence.value = previous
+    message.error('保存 AI 设置失败，已恢复原值')
+  }
+}
+async function testAiConnection() {
+  if (aiTesting.value) return
+  aiTesting.value = true
+  try {
+    const res = await window.api.ai.test()
+    if (res.ok) message.success('模型服务连接正常')
+    else message.error(res.message || '连接失败')
+  } catch (error) {
+    message.error(`连接失败：${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    aiTesting.value = false
+  }
+}
 
 /** 状态条上的「已读至」：没有进度就直说，别显示一个空章节名。 */
 const readUptoTitle = computed(() => {
@@ -4583,7 +4618,7 @@ onUnmounted(() => {
               <span v-if="aiServiceOrigin">模型服务：{{ aiServiceOrigin }}</span>
               <span v-else class="ai-heading-missing">
                 模型服务：未配置
-                <n-button size="tiny" text type="primary" @click="emit('go-settings')">去设置</n-button>
+                <n-button size="tiny" text type="primary" @click="aiSettingsOpen = true">打开 AI 设置</n-button>
               </span>
               <span>当前任务：{{ aiAssistantTaskLabel }}</span>
               <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
@@ -4821,10 +4856,6 @@ onUnmounted(() => {
                   </div>
                   <h3>提问任何剧情，或直接交办阅读任务</h3>
                   <p>在一个地方完成剧情问答、人物考据、前情梳理与笔记 · 已读到「{{ currentChapter?.title || '当前章' }}」</p>
-                  <div class="sider-welcome-banner">
-                    <div class="sider-banner-text"><strong>进度对齐：</strong>前情与记忆只到当前章；问答默认可聊全书，怕剧透可在「设置与状态」里锁回已读进度。</div>
-                    <span class="sider-banner-link" role="button" tabindex="0" @click="aiAssistantTab = 'recap'">查看前情 →</span>
-                  </div>
                   <div class="sider-welcome-grid">
                     <button
                       v-for="(item, qi) in ([
@@ -4926,15 +4957,15 @@ onUnmounted(() => {
                 <button
                   class="ai-status-bar"
                   type="button"
-                  :aria-expanded="aiRuntimeOpen"
+                  :aria-expanded="aiSettingsOpen"
                   aria-label="运行信息"
-                  @click="aiRuntimeOpen = !aiRuntimeOpen"
+                  @click="aiSettingsOpen = true"
                 >
                   <span class="ai-status-dot" :class="{ 'is-off': !aiServiceOrigin }" aria-hidden="true" />
                   <span class="ai-status-model">{{ aiServiceOrigin ? aiModelLabel : '未配置模型服务' }}</span>
                   <span class="ai-status-sep" aria-hidden="true">·</span>
                   <span class="ai-status-read">已读至 {{ readUptoTitle }}</span>
-                  <span class="ai-status-toggle">{{ aiRuntimeOpen ? '收起 ▴' : '设置与状态 ▾' }}</span>
+                  <span class="ai-status-toggle">AI 设置 ▾</span>
                 </button>
                 <div class="chat-threads">
                   <div class="sider-fusion-pill">
@@ -5105,11 +5136,11 @@ onUnmounted(() => {
             <div class="sider-rail-bottom">
               <div
                 class="sider-rail-tool"
-                :class="{ 'is-active': aiRuntimeOpen }"
+                :class="{ 'is-active': aiSettingsOpen }"
                 role="button"
                 tabindex="0"
-                title="运行信息与模型设置"
-                @click="aiRuntimeOpen = !aiRuntimeOpen"
+                title="AI 助手设置"
+                @click="aiSettingsOpen = true"
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19.5 7.8v8.4L12 20.5 4.5 16.2V7.8L12 3.5Z" /><circle cx="12" cy="12" r="2.8" /></svg>
               </div>
@@ -5125,6 +5156,64 @@ onUnmounted(() => {
           </div>
         </n-drawer-content>
       </n-drawer>
+
+      <!-- AI 助手自己的设置弹窗：只装侧栏相关选项，不跳去全局设置页。 -->
+      <n-modal v-model:show="aiSettingsOpen" preset="card" class="ai-settings-modal" title="AI 助手设置">
+        <div class="ai-settings-body">
+          <section class="ai-settings-section">
+            <div class="ai-settings-label">模型</div>
+            <n-select size="small" :value="aiModelValue" :options="aiModelOptions" @update:value="applyAiModel" />
+            <div class="ai-settings-hint">
+              服务：{{ aiServiceOrigin || '未配置' }} · {{ aiApiKeyConfigured ? 'API Key 已配置' : 'API Key 未配置' }}
+              <n-button size="tiny" text type="primary" :loading="aiTesting" @click="testAiConnection">测试连接</n-button>
+            </div>
+            <div class="ai-settings-hint">服务地址与密钥保存在本机总设置里；这里只调整侧栏自己的行为。</div>
+          </section>
+
+          <section class="ai-settings-section">
+            <div class="ai-settings-row">
+              <div>
+                <div class="ai-settings-label">问答可聊全书</div>
+                <div class="ai-settings-hint">打开：追问后续剧情会直接回答；关闭：只使用当前已读进度。</div>
+              </div>
+              <n-switch :value="chatRecallScope === 'book'" size="small" @update:value="setChatRecallScope" />
+            </div>
+            <div class="ai-settings-row">
+              <div>
+                <div class="ai-settings-label">回答后核对原文</div>
+                <div class="ai-settings-hint">多一次小请求，用来判断原文是否支持结论；关掉会在回答上标「未运行校验」。</div>
+              </div>
+              <n-switch :value="aiVerifyEvidence" size="small" @update:value="setAiVerifyEvidence" />
+            </div>
+          </section>
+
+          <section class="ai-settings-section">
+            <div class="ai-settings-label">读完一章后整理</div>
+            <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
+              <n-radio-button value="manual">手动</n-radio-button>
+              <n-radio-button value="ask">提醒我</n-radio-button>
+              <n-radio-button value="auto">自动</n-radio-button>
+            </n-radio-group>
+            <div v-if="follow" class="ai-settings-hint">
+              <span v-if="follow.queuedChapters">待整理 {{ follow.queuedChapters }} 章。</span>
+              <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章。</span>
+              <span v-if="follow.running">正在整理。</span>
+              <span v-else-if="follow.paused">已暂停：{{ follow.pauseReason || '达到单次章数上限' }}。</span>
+            </div>
+          </section>
+
+          <section class="ai-settings-section">
+            <div class="ai-settings-label">本书用量</div>
+            <div class="ai-settings-hint">
+              <span v-if="bookUsage">已调用 {{ bookUsage.calls }} 次 · 输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens</span>
+              <span v-else>还没有模型调用记录。</span>
+            </div>
+            <div v-if="autoBudget" class="ai-settings-hint">
+              {{ autoBudget.month }} 自动任务：{{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余 {{ autoBudget.remainingTokens }}。
+            </div>
+          </section>
+        </div>
+      </n-modal>
 
       <!-- 划词行内问答卡：
            - 「询问 AI」：结合本书已读内容提问，支持「在侧边栏中继续」；
@@ -7157,34 +7246,6 @@ onUnmounted(() => {
   line-height: 1.55;
 }
 
-.sider-welcome-banner {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 4px;
-  width: 100%;
-  max-width: 400px;
-  margin: 4px 0 6px;
-  padding: 13px 18px;
-  border-radius: 14px;
-  background: #230906;
-  color: #fff5f0;
-  font-size: 13px;
-  line-height: 1.5;
-  text-align: left;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.1);
-  box-sizing: border-box;
-}
-.sider-banner-link {
-  color: #f87171;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.sider-banner-link:hover {
-  text-decoration: underline;
-}
 
 .sider-welcome-grid {
   display: flex;
@@ -8320,4 +8381,16 @@ onUnmounted(() => {
 .md-body blockquote { margin: 4px 0; padding-left: 8px; border-left: 2px solid var(--r-line); color: var(--r-muted); }
 .md-body table { border-collapse: collapse; font-size: 12px; }
 .md-body th, .md-body td { padding: 2px 6px; border: 1px solid var(--r-line); }
+/* AI 助手独立设置弹窗（teleport 到 body，不能依赖 .sider-shell 内的变量） */
+.ai-settings-modal { width: min(520px, calc(100vw - 48px)); }
+.ai-settings-body { display: flex; flex-direction: column; gap: 16px; }
+.ai-settings-section { display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid rgba(15, 23, 42, 0.08); }
+.ai-settings-section:last-child { padding-bottom: 0; border-bottom: 0; }
+.ai-settings-label { font-size: 13px; font-weight: 600; color: #1f2329; }
+.ai-settings-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; line-height: 1.6; color: #646a73; }
+.ai-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.ai-settings-row .ai-settings-hint { margin-top: 3px; }
+:global(body[data-skin="dark"]) .ai-settings-label { color: #f1f5f9; }
+:global(body[data-skin="dark"]) .ai-settings-hint { color: #94a3b8; }
+:global(body[data-skin="dark"]) .ai-settings-section { border-bottom-color: rgba(255, 255, 255, 0.09); }
 </style>

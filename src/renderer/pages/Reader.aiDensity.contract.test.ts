@@ -97,4 +97,19 @@ describe('AI 侧栏的信息层级', () => {
     expect(source).toContain('--sider-bg: #f5f6f8;')
     expect(source).toContain('--sider-card-bg: #ffffff;')
   })
+
+  it('欢迎页不再摆深色横幅，AI 设置改为侧栏自己的弹窗而不是跳全局设置', async () => {
+    const source = await readerSource()
+    expect(source).not.toContain('sider-welcome-banner')
+    expect(source).not.toContain('sider-banner-link')
+    expect(source).toContain('AI 助手设置')
+    expect(source).toContain('aiSettingsOpen = true')
+    expect(source).toContain('setChatRecallScope')
+    expect(source).toContain('setAiVerifyEvidence')
+    // AI 抽屉内部不再导流到全局设置页。
+    const drawerStart = source.indexOf('<n-drawer\n        v-model:show="showAiAssistant"')
+    const drawerEnd = source.indexOf('<!-- 划词行内问答卡', drawerStart)
+    const drawerBlock = source.slice(drawerStart, drawerEnd)
+    expect(drawerBlock).not.toContain("emit('go-settings')")
+  })
 })
