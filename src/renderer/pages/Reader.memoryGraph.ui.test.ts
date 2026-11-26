@@ -115,8 +115,6 @@ async function openMemoryTab() {
   // 续读停在第2章：等它的正文渲染出来，currentChapter 才是确定的。
   await vi.waitFor(() => expect(document.querySelector('.reader-content')?.textContent).toContain('c2正文。'))
   document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
-  await vi.waitFor(() => expect(findButton('AI 助手')).toBeTruthy())
-  findButton('AI 助手')!.click()
   // 阅读资料内部的分段开关：直接点「记忆」，顶层会自动跟着切到阅读资料。
   await vi.waitFor(() => expect(document.querySelectorAll('.ai-read-switch button').length).toBeGreaterThan(0))
   const tab = [...document.querySelectorAll<HTMLElement>('.ai-read-switch button')]

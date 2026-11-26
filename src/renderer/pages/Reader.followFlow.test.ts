@@ -117,10 +117,6 @@ async function mountReader() {
     goNextChapter() { document.querySelector<HTMLButtonElement>('.chapter-end-card')?.click() },
     async openAssistant() {
       document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
-      await vi.waitFor(() => expect(document.body.textContent).toContain('AI 助手'))
-      const entry = findButton('AI 助手')
-      if (!entry) throw new Error('工具面板里的「AI 助手」入口没渲染')
-      entry.click()
       await vi.waitFor(() => expect(document.body.textContent).toContain('读完一章后整理'))
       await nextTick()
     },

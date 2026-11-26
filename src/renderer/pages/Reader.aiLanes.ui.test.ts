@@ -82,13 +82,12 @@ async function mountReader() {
   app.mount(host)
   await vi.waitFor(() => expect(document.querySelector('.reader-content')?.textContent).toContain('c1正文。'))
   document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
-  await vi.waitFor(() => expect(findButton('AI 助手')).toBeTruthy())
+  await vi.waitFor(() => expect(document.body.textContent).toContain('读完一章后整理'))
   return {
     app,
     bodyText: () => document.body.textContent ?? '',
     paneText: () => document.querySelector('.reader-content')?.textContent ?? '',
     async openAssistant() {
-      findButton('AI 助手')!.click()
       await vi.waitFor(() => expect(document.body.textContent).toContain('读完一章后整理'))
       await nextTick()
     },
@@ -114,7 +113,7 @@ async function mountReader() {
     },
     async closeToolPanel() {
       document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
-      await vi.waitFor(() => expect(document.querySelector('.tool-panel')).toBeNull())
+      await vi.waitFor(() => expect(document.body.textContent).not.toContain('读完一章后整理'))
     },
     chatField: () => document.querySelector<HTMLTextAreaElement>('.chat-input-row textarea'),
     sendButton: () => [...document.querySelectorAll<HTMLButtonElement>('.chat-input-row button')]

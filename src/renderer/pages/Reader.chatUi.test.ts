@@ -170,11 +170,6 @@ async function mountReader(options: {
   app.mount(host)
   await vi.waitFor(() => expect(document.querySelector('.reader-content')?.textContent).toContain(CHAPTER_BODY))
   document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
-  await nextTick()
-  const qaButton = [...document.querySelectorAll<HTMLButtonElement>('.tool-panel button')]
-    .find((item) => item.textContent?.includes('聊书'))
-  expect(qaButton, 'AI 面板里的「聊书」入口').toBeTruthy()
-  qaButton?.click()
   await vi.waitFor(() => expect(document.querySelector('.chat-input-row textarea')).toBeTruthy())
   return { app, handlers, starts, threadCalls }
 }
@@ -464,7 +459,7 @@ describe('Reader 问答操作条', () => {
     } finally { app.unmount() }
   })
 
-  it('重问确认后删掉旧的一轮再问一次', async () => {
+  it('重问直接删掉旧的一轮再问一次', async () => {
     const replaceCalls: ReplaceCall[] = []
     const { app, starts } = await mountReader({
       messages: [{ role: 'user', content: QUESTION }, answerWithClaims],
@@ -473,11 +468,7 @@ describe('Reader 问答操作条', () => {
     try {
       await vi.waitFor(() => expect(assistantBubbles()).toHaveLength(1))
       clickAction('重问')
-      await vi.waitFor(() => {
-        expect(document.body.textContent).toContain('会删掉这条回答并重新生成')
-      })
-      await confirmPopover()
-      // 历史先清空（覆盖写），再按截断后的历史重发同一句
+      // 重问免二次确认：历史先清空（覆盖写），再按截断后的历史重发同一句
       await vi.waitFor(() => expect(replaceCalls).toHaveLength(1))
       expect(replaceCalls[0]!.messages).toEqual([])
       await vi.waitFor(() => expect(document.querySelectorAll('.chat-msg')).toHaveLength(2))

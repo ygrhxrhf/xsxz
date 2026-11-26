@@ -281,7 +281,8 @@ const toolsVisible = ref(false)
 const chapterFadeIn = ref(false)
 const temporaryToolReveal = ref(false)
 const pointerInToolbar = ref(false)
-const activeToolPanel = ref<'tts' | 'ai' | 'shortcuts' | null>(null)
+const activeToolPanel = ref<'tts' | 'shortcuts' | null>(null)
+const editingMemoryId = ref('')
 const activeBottomPanel = ref<'catalog' | 'progress' | 'background' | 'font' | 'more' | null>(null)
 
 /**
@@ -655,7 +656,6 @@ const marks = useReaderMarks({
   currentChapterId: () => currentChapter.value?.id,
   normalizedBody: () => normalizedBody.value,
   chapterOrder: () => new Map(chapters.value.map((chapter, index) => [chapter.id, index])),
-  memoryCharacters: () => memoryData.value?.characters ?? [],
   notify: (kind, text) => {
     if (kind === 'error') message.error(text)
     else if (kind === 'info') message.info(text)
@@ -688,7 +688,6 @@ const {
   wordbookHighlights,
   wordbookTerms,
   wordbookTrimmed,
-  wordbookPeople,
   reload: reloadAnnotations,
   resolveCurrentChapter: resolveCurrentAnnotations,
   toggleBookmark,
@@ -1820,10 +1819,18 @@ function onReaderFocusIn() {
   revealTools(immersiveMode.value === 'locked')
 }
 
-function toggleToolPanel(panel: 'tts' | 'ai' | 'shortcuts') {
+function toggleToolPanel(panel: 'tts' | 'shortcuts') {
   activeToolPanel.value = activeToolPanel.value === panel ? null : panel
   if (activeToolPanel.value) activeBottomPanel.value = null
   revealTools(immersiveMode.value === 'locked')
+}
+
+/** 顶栏 AI 按钮一键开关侧栏，不再先弹一层小菜单。 */
+function toggleAiAssistant() {
+  activeToolPanel.value = null
+  activeBottomPanel.value = null
+  if (showAiAssistant.value) showAiAssistant.value = false
+  else void openAiAssistant('qa')
 }
 
 function toggleBottomPanel(panel: 'catalog' | 'progress' | 'background' | 'font' | 'more') {
@@ -3297,6 +3304,17 @@ async function stopCleanBody() {
   await window.api.ai.cancel()
 }
 
+async function copyAiResult() {
+  const text = aiResult.value.trim()
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('已复制结果')
+  } catch {
+    message.error('复制失败，请重试')
+  }
+}
+
 async function applyCleanedBody() {
   if (!book.value || !currentChapter.value || !aiResult.value) return
   await window.api.library.updateChapterBody(book.value.id, currentChapter.value.id, aiResult.value)
@@ -3590,7 +3608,6 @@ const {
  */
 watch(showAiAssistant, (open) => {
   if (open) void loadAiModelOptions()
-  else if (activeToolPanel.value === 'ai') activeToolPanel.value = ''
 })
 /**
  * 顶层两档：问答 / 阅读资料。
@@ -3927,7 +3944,7 @@ onUnmounted(() => {
         <button class="tool-button tool-icon-text" title="标记" aria-label="标记" @click="showMarks = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg><span>标记</span></button>
         <button class="tool-button tool-icon-text" title="书中地图" aria-label="书中地图" @click="showMap = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg><span>地图</span></button>
         <button class="tool-button tool-icon-text" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg><span>朗读</span></button>
-        <button class="tool-button tool-icon-text" title="AI 助手" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg><span>AI</span></button>
+        <button class="tool-button tool-icon-text" title="AI 助手" aria-label="AI" :class="{ active: showAiAssistant }" @click="toggleAiAssistant"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg><span>AI</span></button>
         <button v-if="isRealBook" class="tool-button bottom-button" type="button" title="字体" aria-label="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg></button>
         <button v-if="isRealBook" class="tool-button bottom-button real-book-btn" type="button" title="平放" aria-label="平放" @click="realBookStageRef?.resetPitch()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16"/><path d="M7 12V8h10v4"/></svg></button>
         <button
@@ -3936,7 +3953,7 @@ onUnmounted(() => {
           type="button"
           role="status"
           :title="`${backgroundAiLabel}：点开看后台 AI 任务`"
-          @click="toggleToolPanel('ai')"
+          @click="openAiAssistant('recap')"
         >{{ backgroundAiLabel }}</button>
         <span class="toolbar-gap" aria-hidden="true"></span>
         <template v-if="isCurrentBookDownloading(downloadProgress, book.id)">
@@ -3998,10 +4015,6 @@ onUnmounted(() => {
               <div><dt>M / Alt / Esc</dt><dd>沉浸模式 / 临时唤回 / 关闭面板</dd></div>
               <div><dt>Ctrl+F，+ / -</dt><dd>本书搜索 / 调整字号</dd></div>
             </dl>
-          </template>
-          <template v-else>
-            <strong>AI</strong>
-            <n-space vertical :size="6"><n-button size="tiny" block :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button><n-button v-if="cleanRunning" size="tiny" block type="warning" @click="stopCleanBody">停止清正文</n-button><n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button><n-button size="tiny" block @click="openAiAssistant('recap')">AI 助手</n-button><n-button size="tiny" block :disabled="!chapterReady" @click="openAiAssistant('qa')">聊书</n-button></n-space>
           </template>
         </div>
       </div>
@@ -4282,7 +4295,7 @@ onUnmounted(() => {
                 <button type="button" @click="closeBottomPanel(); showMarks = true">标记</button>
                 <button type="button" @click="closeBottomPanel(); showMap = true">书中地图</button>
                 <button type="button" @click="toggleToolPanel('tts')">朗读</button>
-                <button type="button" @click="toggleToolPanel('ai')">AI</button>
+                <button type="button" @click="toggleAiAssistant">AI</button>
                 <button type="button" @click="toggleBottomPanel('font')">字体 / 排版</button>
                 <button type="button" @click="realBookStageRef?.resetPitch?.()">平放</button>
                 <button type="button" @click="toggleToolPanel('shortcuts')">快捷键</button>
@@ -4589,9 +4602,16 @@ onUnmounted(() => {
             顶层只留两种意图：问答，和翻阅读资料。前情/记忆/笔记/结果退成阅读资料内部的一段，
             不再和问答抢同一排页签——读者第一眼只需要决定「问」还是「翻」。
           -->
-          <div class="ai-top-switch" role="tablist" aria-label="AI 助手模式">
-            <button role="tab" :aria-selected="assistantTopTab === 'chat'" :class="{ 'is-on': assistantTopTab === 'chat' }" type="button" @click="assistantTopTab = 'chat'">问答</button>
-            <button role="tab" :aria-selected="assistantTopTab === 'read'" :class="{ 'is-on': assistantTopTab === 'read' }" type="button" @click="assistantTopTab = 'read'">阅读资料</button>
+          <div class="ai-top-bar">
+            <div class="ai-top-switch" role="tablist" aria-label="AI 助手模式">
+              <button role="tab" :aria-selected="assistantTopTab === 'chat'" :class="{ 'is-on': assistantTopTab === 'chat' }" type="button" @click="assistantTopTab = 'chat'">问答</button>
+              <button role="tab" :aria-selected="assistantTopTab === 'read'" :class="{ 'is-on': assistantTopTab === 'read' }" type="button" @click="assistantTopTab = 'read'">阅读资料</button>
+            </div>
+            <div class="ai-clean-actions">
+              <n-button size="tiny" quaternary :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button>
+              <n-button v-if="cleanRunning" size="tiny" type="warning" @click="stopCleanBody">停止清正文</n-button>
+              <n-button v-if="hasBodyRaw" size="tiny" quaternary @click="restoreCleanedBody">撤销清正文</n-button>
+            </div>
           </div>
           <!-- 阅读资料内部的分段：只换内容，不换层级 -->
           <div v-show="assistantTopTab === 'read'" class="ai-read-switch" role="tablist" aria-label="阅读资料分类">
@@ -4718,13 +4738,20 @@ onUnmounted(() => {
                     <details v-for="item in visibleMemoryCharacters" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.name }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}<span v-if="item.userEditedAliases">（用户修正）</span></p><p>{{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
+                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
+                      <div class="memory-item-actions">
+                        <button class="chat-chip" type="button" @click="editingMemoryId = editingMemoryId === item.id ? '' : item.id">{{ editingMemoryId === item.id ? '收起修正' : '修正' }}</button>
+                        <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
+                      </div>
+                      <div v-if="editingMemoryId === item.id" class="memory-edit-form">
                       <n-input :value="aliasDrafts[item.id] ?? item.aliases.join('、')" size="small" placeholder="纠正别名，用顿号分隔" @update:value="(value: string) => { aliasDrafts[item.id] = value }" />
                       <n-button size="tiny" :loading="correctingAliasId === item.id" :disabled="assistantBusyByKind.memory" @click="saveCharacterAliases(item)">保存别名</n-button>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('character', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
-                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
+                        <div class="memory-edit-buttons">
+                        <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('character', item)">保存说明</n-button>
+                        <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                        </div>
+                      </div>
                     </details>
                   </section>
                   <section v-if="visibleMemoryRelations.length" class="memory-section">
@@ -4732,11 +4759,18 @@ onUnmounted(() => {
                     <details v-for="item in visibleMemoryRelations" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
-                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('relation', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
+                      <div class="memory-item-actions">
+                        <button class="chat-chip" type="button" @click="editingMemoryId = editingMemoryId === item.id ? '' : item.id">{{ editingMemoryId === item.id ? '收起修正' : '修正' }}</button>
+                        <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
+                      </div>
+                      <div v-if="editingMemoryId === item.id" class="memory-edit-form">
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                        <div class="memory-edit-buttons">
+                        <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('relation', item)">保存说明</n-button>
+                        <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                        </div>
+                      </div>
                     </details>
                   </section>
                   <section v-if="visibleMemoryForeshadows.length" class="memory-section">
@@ -4744,11 +4778,18 @@ onUnmounted(() => {
                     <details v-for="item in visibleMemoryForeshadows" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.desc }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
-                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('foreshadow', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
+                      <div class="memory-item-actions">
+                        <button class="chat-chip" type="button" @click="editingMemoryId = editingMemoryId === item.id ? '' : item.id">{{ editingMemoryId === item.id ? '收起修正' : '修正' }}</button>
+                        <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
+                      </div>
+                      <div v-if="editingMemoryId === item.id" class="memory-edit-form">
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                        <div class="memory-edit-buttons">
+                        <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('foreshadow', item)">保存说明</n-button>
+                        <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                        </div>
+                      </div>
                     </details>
                   </section>
                   <section v-if="visibleMemoryEvents.length" class="memory-section">
@@ -4756,11 +4797,18 @@ onUnmounted(() => {
                     <details v-for="item in visibleMemoryEvents" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.title }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
-                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('event', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
+                      <div class="memory-item-actions">
+                        <button class="chat-chip" type="button" @click="editingMemoryId = editingMemoryId === item.id ? '' : item.id">{{ editingMemoryId === item.id ? '收起修正' : '修正' }}</button>
+                        <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
+                      </div>
+                      <div v-if="editingMemoryId === item.id" class="memory-edit-form">
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                        <div class="memory-edit-buttons">
+                        <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('event', item)">保存说明</n-button>
+                        <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                        </div>
+                      </div>
                     </details>
                   </section>
                   <n-empty v-if="memoryQuery && visibleMemoryCount === 0" description="本地记忆里没有匹配内容" />
@@ -4865,12 +4913,7 @@ onUnmounted(() => {
                     <div class="chat-actions">
                       <button class="chat-chip" type="button" :disabled="chatActionsDisabled" @click="copyChatAnswer(i)">复制</button>
                       <template v-if="chatMessages[i - 1]?.role === 'user'">
-                        <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="reAskChatAnswer(i)">
-                          会删掉这条回答并重新生成，历史里只留新的这一轮。
-                          <template #trigger>
-                            <button class="chat-chip" type="button" :disabled="chatActionsDisabled">重问</button>
-                          </template>
-                        </n-popconfirm>
+                        <button class="chat-chip" type="button" :disabled="chatActionsDisabled" @click="reAskChatAnswer(i)">重问</button>
                         <button class="chat-chip" type="button" :disabled="chatActionsDisabled" @click="editChatQuestion(i)">编辑</button>
                         <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="deleteChatRound(i)">
                           删除这一轮问答，不会调用模型。
@@ -4984,19 +5027,9 @@ onUnmounted(() => {
                   </details>
                 </div>
                 <div class="wordbook">
-                  <strong>生词本</strong>
-                  <p class="subtle">这里只汇总你自己的划线和已核实的记忆，不另外存一份。</p>
-                  <details v-if="wordbookPeople.length" class="notes-archive-item">
-                    <summary>人物 {{ wordbookPeople.length }} 个</summary>
-                    <ul class="wordbook-list">
-                      <li v-for="person in wordbookPeople" :key="person.id">
-                        <strong>{{ person.name }}</strong>
-                        <span v-if="person.aliases.length" class="subtle">{{ person.aliases.join('、') }}</span>
-                        <p>{{ person.summary }}</p>
-                      </li>
-                    </ul>
-                  </details>
-                  <details v-if="wordbookTerms.length" class="notes-archive-item">
+                  <strong>划线与释义</strong>
+                  <p class="subtle">这里只汇总你自己的划线与批注（含 AI 解释），不另外存一份。</p>
+                  <details v-if="wordbookTerms.length" class="notes-archive-item" open>
                     <summary>划线 {{ wordbookTerms.length }} 处{{ wordbookTrimmed ? '（只显示最近 60 处）' : '' }}</summary>
                     <ul class="wordbook-list">
                       <li v-for="term in wordbookTerms" :key="term.id">
@@ -5006,8 +5039,8 @@ onUnmounted(() => {
                       </li>
                     </ul>
                   </details>
-                  <p v-if="!wordbookPeople.length && !wordbookTerms.length" class="subtle">
-                    在正文里划一段、或让它先记住几个人物，这里就会开始攒你自己的词表。
+                  <p v-if="!wordbookTerms.length" class="subtle">
+                    在正文里划词解释或加批注后，这里会按顺序列出。
                   </p>
                 </div>
               </n-space>
@@ -5024,9 +5057,13 @@ onUnmounted(() => {
                 <div v-if="aiResult" class="ai-result">{{ aiResult }}</div>
                 <n-space v-if="aiResultTitle === '清正文'">
                   <n-button type="primary" size="small" :disabled="!aiResult" @click="applyCleanedBody">应用到正文</n-button>
+                  <n-button v-if="aiResult" size="small" @click="copyAiResult">复制结果</n-button>
                   <n-button size="small" @click="showAiAssistant = false">关闭</n-button>
                 </n-space>
-                <n-button v-else-if="aiResultTitle === '翻译' && translateLoading" type="warning" @click="stopTranslate">停止</n-button>
+                <n-space v-else>
+                  <n-button v-if="aiResultTitle === '翻译' && translateLoading" size="small" type="warning" @click="stopTranslate">停止</n-button>
+                  <n-button v-if="aiResult" size="small" :disabled="translateLoading" @click="copyAiResult">复制结果</n-button>
+                </n-space>
               </n-space>
           </div>
 
@@ -7743,7 +7780,12 @@ onUnmounted(() => {
 }
 
 /* 阅读资料里的两排切换粘在抽屉顶部：滚到几千像素时还能一键换页。 */
-.ai-top-switch { position: sticky; top: 0; z-index: 3; background: var(--r-surface, var(--surface-2, #ffffff)); }
+.ai-top-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--r-surface, var(--surface-2, #ffffff)); }
+.ai-top-bar .ai-top-switch { flex: 1 1 auto; margin-bottom: 0; }
+.ai-clean-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.memory-item-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.memory-edit-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--r-line); }
+.memory-edit-buttons { display: flex; align-items: center; gap: 6px; }
 .ai-read-switch { position: sticky; top: 31px; z-index: 2; background: var(--r-surface, var(--surface-2, #ffffff)); }
 
 /* 输入区在窄抽屉里允许换行：8 个控件硬挤一行，发送按钮会被裁掉半个。 */

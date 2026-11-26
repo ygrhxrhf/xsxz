@@ -72,18 +72,11 @@ async function mountReader() {
   return app
 }
 
-/** 助手抽屉是两跳进去的：顶栏「AI 助手」工具按钮 → 工具面板里的「AI 助手」。 */
+/** 顶栏「AI 助手」按钮一键直达侧栏抽屉。 */
 async function openAssistant(): Promise<void> {
   const toolbarButton = document.querySelector<HTMLElement>('[title="AI 助手"]')
   expect(toolbarButton, '顶栏应有 AI 工具入口').toBeTruthy()
   toolbarButton?.click()
-  await nextTick()
-  await new Promise((resolve) => setTimeout(resolve, 0))
-
-  const entry = [...document.querySelectorAll<HTMLButtonElement>('button')]
-    .find((button) => (button.textContent ?? '').trim() === 'AI 助手')
-  expect(entry, '工具面板里应有「AI 助手」入口').toBeTruthy()
-  entry?.click()
   await nextTick()
   await new Promise((resolve) => setTimeout(resolve, 0))
   await nextTick()

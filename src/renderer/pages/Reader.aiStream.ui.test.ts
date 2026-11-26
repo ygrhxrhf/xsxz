@@ -144,11 +144,6 @@ async function mountAssistant(
   app.mount(host)
   await vi.waitFor(() => expect(document.querySelector('.reader-content')?.textContent).toContain('c1正文。'))
   document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
-  await nextTick()
-  const qaButton = [...document.querySelectorAll<HTMLButtonElement>('.tool-panel button')]
-    .find((item) => item.textContent?.includes('聊书'))
-  expect(qaButton, 'AI 面板里的「聊书」入口').toBeTruthy()
-  qaButton?.click()
   await vi.waitFor(() => expect(document.querySelector('.chat-input-row textarea')).toBeTruthy())
   return {
     app,
