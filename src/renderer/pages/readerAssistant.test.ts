@@ -17,7 +17,7 @@ const api = {
   ai: {
     getChat: vi.fn(), getSummaries: vi.fn(), getMemory: vi.fn(), getTimeline: vi.fn(),
     timeline: vi.fn(), chapterNotes: vi.fn(), resumeCard: vi.fn(), getMaterialCoverage: vi.fn(),
-    getUsage: vi.fn(), chatStream: vi.fn(), agentChat: vi.fn(), replaceChat: vi.fn(),
+    getUsage: vi.fn(), chatStream: vi.fn(), agentChat: vi.fn(), generalChat: vi.fn(), explainText: vi.fn(), replaceChat: vi.fn(),
     clearChat: vi.fn(), listThreads: vi.fn(), createThread: vi.fn(), deleteThread: vi.fn(),
     storySoFar: vi.fn(), summarizeChapter: vi.fn(), semanticIndexStatus: vi.fn(),
   },
@@ -25,7 +25,7 @@ const api = {
 
 const notices: string[] = []
 
-function makeAssistant(overrides: { book?: Book | null } = {}) {
+function makeAssistant(overrides: { book?: Book | null; selectedExcerpt?: string } = {}) {
   return useReaderAssistant({
     book: ref(overrides.book === undefined ? BOOK : overrides.book),
     currentChapter: ref(CHAPTER),
@@ -48,7 +48,7 @@ function makeAssistant(overrides: { book?: Book | null } = {}) {
     resumeCardLoading: ref(false),
     resumeCardWarning: ref(''),
     showSelPopup: ref(false),
-    selectedExcerpt: ref(''),
+    selectedExcerpt: ref(overrides.selectedExcerpt ?? ''),
     selectedRange: ref(null),
     selectionOffsets: () => null,
     restoringChat: ref(false),
@@ -145,6 +145,36 @@ describe('useReaderAssistant（助手面板域）', () => {
     assistant.chatMode.value = 'evidence'
     assistant.toggleQaContextChip('chapter')
     expect(assistant.qaContextChips.value.chapter).toBe(false)
+  })
+  it('通用字词/百科模式（general）不拼参考范围，走 generalChat 通道并标记 scope=general', async () => {
+    const assistant = makeAssistant()
+    assistant.qaContextChips.value = { chapter: true, memory: true, notes: true }
+    assistant.chatMode.value = 'general'
+    assistant.chatInput.value = '“夺舍”原本是道教什么概念？'
+    await assistant.sendChat()
+
+    expect(api.ai.generalChat).toHaveBeenCalledTimes(1)
+    expect(api.ai.agentChat).not.toHaveBeenCalled()
+    expect(api.ai.chatStream).not.toHaveBeenCalled()
+    const payload = api.ai.generalChat.mock.calls[0]![1] as { role: string; content: string }[]
+    expect(payload.at(-1)!.content).toBe('“夺舍”原本是道教什么概念？')
+    expect(assistant.chatMessages.value.at(-1)?.scope).toBe('general')
+  })
+
+  it('划词「解释字词」点「在侧边栏中继续」后自动落到 general 模式，不会硬切回书籍 agent', async () => {
+    api.ai.explainText.mockResolvedValue({ ok: true, jobId: 'job-1' })
+    const assistant = makeAssistant({ selectedExcerpt: '踟蹰' })
+    await assistant.explainSelection('word')
+    assistant.inlineAsk.finish({ jobId: 'job-1', ok: true, text: '踟蹰：徘徊不前。' })
+    assistant.inlineAsk.continueInSidebar()
+
+    expect(assistant.chatMode.value).toBe('general')
+    expect(assistant.chatMessages.value.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: '踟蹰：徘徊不前。',
+      citations: [],
+      scope: 'general',
+    })
   })
 
 /**

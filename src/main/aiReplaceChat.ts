@@ -129,6 +129,12 @@ function parseMessage(value: unknown, index: number): AiEvidenceChatMessage {
     if (typeof value.stopped !== 'boolean') throw new Error(`${at}的停止标记格式无效`)
     if (value.stopped) message.stopped = true
   }
+  if (value.scope !== undefined) {
+    if (value.scope !== 'book' && value.scope !== 'general') {
+      throw new Error(`${at}的问答范围标记无效`)
+    }
+    message.scope = value.scope
+  }
   return message
 }
 

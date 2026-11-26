@@ -1047,6 +1047,9 @@ function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | 
     if (typeof value.stopped !== 'boolean') return null
     if (value.stopped) message.stopped = true
   }
+  if (value.scope === 'book' || value.scope === 'general') {
+    message.scope = value.scope
+  }
   return message
 }
 

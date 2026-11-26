@@ -1376,6 +1376,9 @@ export interface AiEvidenceClaim {
  */
 export type AiEvidenceVerification = 'verified' | 'partial' | 'not_run' | 'disabled'
 
+/** 问答回答的知识范围：book 为结合本书已读内容，general 为脱离书籍的字词释义/通识百科。 */
+export type AiChatScope = 'book' | 'general'
+
 export interface AiEvidenceChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -1386,6 +1389,8 @@ export interface AiEvidenceChatMessage {
   droppedClaims?: number
   uptoChapterId?: string
   stopped?: boolean
+  /** 回答所属范围：general 表示纯字词/通识百科回答（未引用本书内容）。 */
+  scope?: AiChatScope
 }
 
 /**
@@ -1509,6 +1514,8 @@ export type AiDoneEvent =
       droppedClaims?: number
       /** 本次回答严格夹紧的已读截止。 */
       uptoChapterId?: string
+      /** 回答所属范围：general 表示纯字词/通识百科回答（未引用本书内容）。 */
+      scope?: AiChatScope
       /** 记忆更新/重建的结构化结果与处理统计。 */
       memoryUpdate?: AiMemoryUpdateResult
       /** 写盘失败后仅当前主进程有效的重试令牌。 */

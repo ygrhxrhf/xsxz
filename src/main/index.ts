@@ -158,7 +158,7 @@ import {
   parseFollowSetPayload,
 } from './aiFollowIpcValidation'
 import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
-import { runReaderAgent, buildReaderAgentSystemPrompt, formatMemoryDigest } from './aiAgent'
+import { runReaderAgent, buildReaderAgentSystemPrompt, buildGeneralChatSystemPrompt, formatMemoryDigest } from './aiAgent'
 import { renderedParagraphs } from '../shared/aiText'
 import { indexingText, queueWaitingText } from './aiStageCopy'
 import { BookOverviewService } from './bookOverview'
@@ -1625,8 +1625,11 @@ function registerIpc(): void {
       if (!chat.ok) return { ok: false, message: chat.message }
       const visible = await Promise.all(chat.messages.map(async (entry) => {
         if (entry.role !== 'assistant') return entry
-        const citations = 'citations' in entry ? entry.citations ?? [] : []
-        if (!citations.length || (await readableCitations(bookId, citations)).length !== citations.length) {
+        if (entry.scope === 'general') return entry
+        if (!Array.isArray(entry.citations)) {
+          return { role: 'assistant' as const, content: '这条旧回答无法按当前已读范围核验，已隐藏；可重新提问。' }
+        }
+        if (entry.citations.length > 0 && (await readableCitations(bookId, entry.citations)).length !== entry.citations.length) {
           return { role: 'assistant' as const, content: '这条旧回答无法按当前已读范围核验，已隐藏；可重新提问。' }
         }
         return entry
@@ -2227,14 +2230,16 @@ function registerIpc(): void {
           })
           citations.push(...result.citations)
           const stopped = result.stopReason === 'stopped'
+          const scope: import('../shared/types').AiChatScope =
+            result.toolCalls === 0 && result.citations.length === 0 ? 'general' : 'book'
           const answerMessages: import('../shared/types').AiEvidenceChatMessage[] = [
             { role: 'user', content: question },
-            { role: 'assistant', content: result.text, citations: result.citations, uptoChapterId: progressChapterId, ...(stopped ? { stopped: true } : {}) },
+            { role: 'assistant', content: result.text, citations: result.citations, scope, uptoChapterId: progressChapterId, ...(stopped ? { stopped: true } : {}) },
           ]
           // 只读回这条会话自己的历史：别的会话的消息不该被并进来。
           const existing = await readChat(args.bookId, threadId)
           await saveAiDone(jobId, {
-            jobId, ok: true, text: result.text, citations: result.citations, uptoChapterId: progressChapterId,
+            jobId, ok: true, text: result.text, citations: result.citations, scope, uptoChapterId: progressChapterId,
             ...(stopped ? { stopped: true } : {}),
           }, () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }), {
             retrySave: () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }),
@@ -2253,6 +2258,75 @@ function registerIpc(): void {
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
+  /**
+   * 侧边栏「字词 / 百科」（general 模式）：脱离具体书籍、不挂载查书工具、不校验阅读进度，
+   * 直接走多轮流式请求，回答字词释义、成语典故或通用百科问题，并按当前会话落盘。
+   */
+  ipcMain.handle('ai.generalChat', async (_e, args: { bookId: string; messages: import('../shared/types').AiChatMessage[]; threadId?: string }) => {
+    try {
+      await getBook(args.bookId)
+      const question = [...args.messages].reverse().find((message) => message.role === 'user')?.content.trim() ?? ''
+      if (!question) return { ok: false, message: '请输入问题' }
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const config = trustedAiConfig(settings, apiKey)
+      const thread = await prepareChatThread(args.bookId, args.threadId)
+      if (!thread.ok) return { ok: false, message: thread.message }
+      const threadId = thread.threadId
+      await markChatThreadStarted(args.bookId, threadId, question)
+      const turns = args.messages
+        .filter((message): message is { role: 'user' | 'assistant'; content: string } =>
+          (message.role === 'user' || message.role === 'assistant') && Boolean(message.content.trim()))
+        .slice(-12)
+      const llmMessages = [
+        { role: 'system' as const, content: buildGeneralChatSystemPrompt() },
+        ...turns,
+      ]
+      return aiStart({
+        lane: 'interactive', cls: 'qa', bookId: args.bookId,
+        dedupeKey: `general:${args.bookId}:${question}`,
+      }, async (jobId, signal) => {
+        let partial = ''
+        sendAiStage(jobId, 'preparing')
+        try {
+          sendAiStage(jobId, 'requesting')
+          const result = await streamAiTaskCompletion(
+            config,
+            llmMessages,
+            signal,
+            (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
+            { task: 'translate', inputTokenEstimate: Math.ceil(llmMessages.reduce((sum, item) => sum + item.content.length, 0) / 2) },
+          )
+          await persistAiUsage(args.bookId, result.usage)
+          const answerMessages: import('../shared/types').AiEvidenceChatMessage[] = [
+            { role: 'user', content: question },
+            { role: 'assistant', content: result.text, citations: [], scope: 'general' },
+          ]
+          const existing = await readChat(args.bookId, threadId)
+          await saveAiDone(jobId, {
+            jobId, ok: true, text: result.text, usage: result.usage, truncated: result.truncated, citations: [], scope: 'general',
+          }, () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }), {
+            retrySave: () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }),
+          })
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
+            return
+          }
+          mainWindow?.webContents.send('ai.done', {
+            jobId, ok: false, message: e instanceof Error ? e.message : String(e),
+          })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
 
   ipcMain.handle('ai.storySoFar', async (_e, unsafePayload?: unknown) => {
     try {

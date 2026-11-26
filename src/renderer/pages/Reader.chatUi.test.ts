@@ -52,7 +52,7 @@ type Handlers = {
 }
 type ReplaceCall = { bookId: string; messages: AiEvidenceChatMessage[] }
 /** 一次真实发出去的问答：记下模式与 payload，好断言「附没附参考范围那行」。 */
-type ChatCall = { mode: 'agent' | 'evidence'; messages: AiEvidenceChatMessage[]; threadId?: string }
+type ChatCall = { mode: 'agent' | 'general' | 'evidence'; messages: AiEvidenceChatMessage[]; threadId?: string }
 type ChatThreadCall = { created: string[]; deleted: string[]; getChat: (string | undefined)[] }
 /** 一颗会话种子：id / 标题 / 消息是主进程 chats.json 里那条线程的摘要与历史。 */
 type ThreadSeed = { id: string; title: string; messages: AiEvidenceChatMessage[]; updatedAt: string }
@@ -107,6 +107,11 @@ async function mountReader(options: {
       agentChat: async (_bookId: string, _chapterId: string, messages: AiEvidenceChatMessage[], threadId?: string) => {
         starts.count += 1
         options.chatCalls?.push({ mode: 'agent', messages, threadId })
+        return { ok: true, jobId: 'qa-1' }
+      },
+      generalChat: async (_bookId: string, messages: AiEvidenceChatMessage[], threadId?: string) => {
+        starts.count += 1
+        options.chatCalls?.push({ mode: 'general', messages, threadId })
         return { ok: true, jobId: 'qa-1' }
       },
       chatStream: async (_bookId: string, _chapterId: string, messages: AiEvidenceChatMessage[], threadId?: string) => {
@@ -547,29 +552,45 @@ describe('Reader 思考链', () => {
  * 证据模式只吃检索结果，拼上去会让读者误以为能改变检索范围，所以连开关一起禁用。
  */
 describe('Reader 问答模式切换（精简输入栏）', () => {
-  it('输入框下方只保留「对话 / 证据」两档胶囊，去掉本章/记忆/批注/清空冗余开关与灰字提示', async () => {
+  it('输入框下方提供「对话 / 字词 / 百科 / 证据」三档胶囊，去掉本章/记忆/批注/清空冗余开关与灰字提示', async () => {
     const { app } = await mountReader()
     try {
       expect(composerChips().map((item) => item.textContent?.trim()))
-        .toEqual(['对话', '证据'])
+        .toEqual(['对话', '字词 / 百科', '证据'])
       expect(composerChip('对话').classList.contains('chat-chip-on')).toBe(true)
+      expect(composerChip('字词 / 百科').classList.contains('chat-chip-on')).toBe(false)
       expect(composerChip('证据').classList.contains('chat-chip-on')).toBe(false)
       expect(document.querySelector('.sider-composer-hint')).toBeNull()
     } finally { app.unmount() }
   })
 
-  it('切到「证据」模式后发送走 evidence 通道，切回「对话」走 agent 通道', async () => {
+  it('切到「字词 / 百科」走 general 通道并渲染通用徽标，切到「证据」走 evidence 通道', async () => {
     const chatCalls: ChatCall[] = []
-    const { app } = await mountReader({ chatCalls })
+    const handlers: Handlers = {}
+    const { app } = await mountReader({ chatCalls, handlers })
     try {
+      composerChip('字词 / 百科').click()
+      await nextTick()
+      expect(composerChip('字词 / 百科').classList.contains('chat-chip-on')).toBe(true)
+
+      await typeAndSend('踟蹰是什么意思？')
+      await vi.waitFor(() => expect(chatCalls).toHaveLength(1))
+      expect(chatCalls[0]!.mode).toBe('general')
+      expect(chatCalls[0]!.messages.at(-1)!.content).toBe('踟蹰是什么意思？')
+      expect(document.querySelector('.chat-scope-tag')?.textContent?.trim()).toBe('字词 / 百科')
+      expect(document.querySelector('.chat-legacy')).toBeNull()
+      handlers.done?.({ jobId: 'qa-1', ok: true, text: '踟蹰：徘徊不前。', citations: [], scope: 'general' })
+      await nextTick()
+      expect(document.querySelector('.chat-scope-tag')?.textContent?.trim()).toBe('字词 / 百科')
+
       composerChip('证据').click()
       await nextTick()
       expect(composerChip('证据').classList.contains('chat-chip-on')).toBe(true)
 
       await typeAndSend(QUESTION)
-      await vi.waitFor(() => expect(chatCalls).toHaveLength(1))
-      expect(chatCalls[0]!.mode).toBe('evidence')
-      expect(chatCalls[0]!.messages.at(-1)!.content).toBe(QUESTION)
+      await vi.waitFor(() => expect(chatCalls).toHaveLength(2))
+      expect(chatCalls[1]!.mode).toBe('evidence')
+      expect(chatCalls[1]!.messages.at(-1)!.content).toBe(QUESTION)
     } finally { app.unmount() }
   })
 })

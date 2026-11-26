@@ -130,7 +130,7 @@ const otherChapterNotes = computed(() => chapterNotes.value.filter((note) => not
 const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
-const chatMode = ref<'agent' | 'evidence'>('agent')
+const chatMode = ref<'agent' | 'general' | 'evidence'>('agent')
 /**
  * 参考范围开关（本章 / 记忆 / 批注）：读者显式告诉模型先看什么，省掉每轮靠模型猜。
  * 只影响发送时附上的那一行指令，不新增 IPC、不额外调用模型。
@@ -143,7 +143,7 @@ const qaContextActive = computed(() => hasQaContext(qaContextChips.value))
  * 所以界面把开关禁用掉，这里再兜一层：状态再怎么变都不会拼进去。
  */
 function toggleQaContextChip(key: keyof QaContextChips) {
-  if (chatMode.value === 'evidence') return
+  if (chatMode.value !== 'agent') return
   qaContextChips.value = { ...qaContextChips.value, [key]: !qaContextChips.value[key] }
   writeQaContextChips(qaContextChips.value)
 }
@@ -1089,7 +1089,7 @@ async function startChatFrom(history: readonly AiEvidenceChatMessage[], question
   // 旧句子末尾可能已经带着上次那行标记（重问/编辑重发就是拿聊天记录里的句子再发一遍），
   // 先剥掉再按当前开关拼，否则同一行会叠成两行。
   const userMsg = stripQaContextDirective(question.trim())
-  if (!target || !chapter || !userMsg) return
+  if (!target || (!chapter && chatMode.value !== 'general') || !userMsg) return
   if (assistantBusyByKind.value.qa || assistantSaveRetrying.value) {
     message.warning('请先停止当前生成')
     return
@@ -1110,8 +1110,10 @@ async function startChatFrom(history: readonly AiEvidenceChatMessage[], question
     // 带上当前会话：没有会话时主进程会按需开一条，并把这一轮写进去。
     const threadId = chatThreadId.value || undefined
     const res = chatMode.value === 'agent'
-      ? await window.api.ai.agentChat(target.id, chapter.id, payload, threadId)
-      : await window.api.ai.chatStream(target.id, chapter.id, payload, threadId)
+      ? await window.api.ai.agentChat(target.id, chapter!.id, payload, threadId)
+      : chatMode.value === 'general'
+        ? await window.api.ai.generalChat(target.id, payload, threadId)
+        : await window.api.ai.chatStream(target.id, chapter!.id, payload, threadId)
     if (!res.ok) {
       chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
       return
@@ -1119,7 +1121,11 @@ async function startChatFrom(history: readonly AiEvidenceChatMessage[], question
     agentToolActivity.value = ''
     chatJobId.value = res.jobId
     chatLoading.value = true
-    chatMessages.value.push({ role: 'assistant', content: '' })
+    chatMessages.value.push({
+      role: 'assistant',
+      content: '',
+      ...(chatMode.value === 'general' ? { citations: [], scope: 'general' as const } : {}),
+    })
     chatAssistantIndex.value = chatMessages.value.length - 1
     // 主进程已经把这条会话设为 active 并补上了标题：刷新列表，下拉框才显示得出。
     // （一本书还没有会话时 chatThreadId 是空串，这次刷新才把它落到新建的那条上。）
@@ -1135,7 +1141,7 @@ async function startChatFrom(history: readonly AiEvidenceChatMessage[], question
 
 async function sendChat() {
   const question = chatInput.value.trim()
-  if (!book.value || !currentChapter.value || !question) return
+  if (!book.value || (!currentChapter.value && chatMode.value !== 'general') || !question) return
   if (assistantBusyByKind.value.qa || assistantSaveRetrying.value) {
     message.warning('请先停止当前生成')
     return
@@ -1252,6 +1258,7 @@ async function persistChatSnapshot() {
     role: message.role,
     content: message.content,
     ...(message.citations ? { citations: message.citations.map((citation) => ({ ...citation })) } : {}),
+    ...(message.scope ? { scope: message.scope } : {}),
     // quote 也要跟着走：它是引文校验的依据，丢了下次就只能说「没核过」。
     ...(message.claims ? { claims: message.claims.map((claim) => ({ text: claim.text, citationIds: [...claim.citationIds], ...(claim.quote ? { quote: claim.quote } : {}) })) } : {}),
     // 可信度标签不是界面临时算的，重开面板后要能原样复现，所以一起写回。
@@ -1355,13 +1362,19 @@ const inlineAsk = useInlineAsk({
   },
   handOff: (turns) => {
     // 整段对话原样进侧栏：卡片里的问题与回答变成侧栏的前几轮，之后接着追问。
-    chatMode.value = 'agent'
+    const isWordMode = inlineAsk.mode.value === 'word'
+    chatMode.value = isWordMode ? 'general' : 'agent'
     aiAssistantTab.value = 'qa'
     // 行内卡片本来就没有引用坐标，但也不能让它落进「旧版回答，无来源」的分支：
     // 空数组是「有来源字段、只是这次没有引用」，与 undefined 的旧记录不是一回事。
     chatMessages.value = [...chatMessages.value, ...turns.flatMap((turn) => [
       { role: 'user' as const, content: turn.question },
-      { role: 'assistant' as const, content: turn.answer, citations: [] },
+      {
+        role: 'assistant' as const,
+        content: turn.answer,
+        citations: [],
+        ...(isWordMode ? { scope: 'general' as const } : {}),
+      },
     ])]
     showAiAssistant.value = true
   },

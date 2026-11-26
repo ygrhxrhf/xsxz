@@ -3790,6 +3790,7 @@ onMounted(async () => {
         if (assistant) {
           assistant.content = event.text
           assistant.citations = event.citations
+          if (event.scope) assistant.scope = event.scope
           assistant.claims = event.claims
           // 可信度三件套一起落地：少了它们，界面会把一轮「删过结论」的回答当成普通回答展示。
           assistant.verification = event.verification
@@ -4885,6 +4886,8 @@ onUnmounted(() => {
                     </div>
                     <!-- 可信度徽标：结论到底核过没有，一行说清；旧记录没有这个字段就不显示，不默认说它被核过。 -->
                     <div v-if="msg.claims?.length && evidenceVerificationLabel(msg)" :class="['chat-verify', `is-${msg.verification}`]">{{ evidenceVerificationLabel(msg) }}</div>
+                    <!-- 通用/字词百科徽标：告诉读者这条回答来自通用知识库，未动用本书内容。 -->
+                    <div v-else-if="msg.scope === 'general'" class="chat-scope-tag">字词 / 百科</div>
                     <!-- 依据默认收起：角标回答按结论分组，旧回答保留「未逐条对应」的平铺列表。 -->
                     <details v-if="msg.claims?.length || msg.citations?.length" class="chat-evidence">
                       <summary>依据 · {{ (msg.citations ?? []).length }} 条</summary>
@@ -4965,10 +4968,11 @@ onUnmounted(() => {
                 </div>
                 <div class="chat-input-row">
                   <div class="sider-composer">
-                    <n-input v-model:value="chatInput" type="textarea" :rows="3" :autosize="{ minRows: 3, maxRows: 6 }" placeholder="提问任何问题，或描述一项阅读任务…（Ctrl+Enter 发送）" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
+                    <n-input v-model:value="chatInput" type="textarea" :rows="3" :autosize="{ minRows: 3, maxRows: 6 }" :placeholder="chatMode === 'general' ? '输入字词、成语或通用百科问题（不关联当前书籍，Ctrl+Enter 发送）…' : '提问任何问题，或描述一项阅读任务…（Ctrl+Enter 发送）'" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
                     <div class="sider-composer-bar">
                       <div class="sider-composer-chips">
-                        <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'agent' }" title="模型自己决定查目录、读原文、检索、看记忆" @click="chatMode = 'agent'">对话</button>
+                        <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'agent' }" title="结合本书已读内容：模型自己决定查目录、读原文、检索、看记忆（问通用字词也会自动直答）" @click="chatMode = 'agent'">对话</button>
+                        <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'general' }" title="纯字词释义与通识百科：脱离当前书籍、不校验阅读进度、极速直答" @click="chatMode = 'general'">字词 / 百科</button>
                         <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'evidence' }" title="单轮严格引用，每条结论绑定已读段落" @click="chatMode = 'evidence'">证据</button>
                       </div>
                       <div class="sider-composer-send">
@@ -5085,8 +5089,8 @@ onUnmounted(() => {
                 class="sider-rail-tool"
                 role="button"
                 tabindex="0"
-                title="切换问答 / 证据模式"
-                @click="chatMode = chatMode === 'agent' ? 'evidence' : 'agent'"
+                title="切换对话 / 字词百科 / 证据模式"
+                @click="chatMode = chatMode === 'agent' ? 'general' : chatMode === 'general' ? 'evidence' : 'agent'"
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9h14l-3.2-3.2M19 15H5l3.2 3.2" /></svg>
               </div>
@@ -6978,6 +6982,18 @@ onUnmounted(() => {
 .chat-verify.is-not_run,
 .chat-verify.is-disabled {
   color: var(--r-muted);
+}
+.chat-scope-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.22);
 }
 .chat-evidence {
   width: 90%;
