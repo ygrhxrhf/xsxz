@@ -4520,7 +4520,11 @@ onUnmounted(() => {
         :max-width="720"
         @update:width="setAiDrawerWidth"
       >
-        <n-drawer-content title="AI 助手" closable :body-style="{ overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: '0' }" :body-content-style="{ padding: '0', overflow: 'hidden', height: '100%', flex: '1 1 0%', minHeight: '0', display: 'flex', flexDirection: 'column' }">
+        <n-drawer-content title="AI 助手" closable
+          :header-style="{ background: 'var(--sider-bg, #f5f6f8)', borderBottom: 'none', padding: '12px 16px 6px' }"
+          :body-style="{ background: 'var(--sider-bg, #f5f6f8)', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: '0' }"
+          :body-content-style="{ padding: '0', overflow: 'hidden', height: '100%', flex: '1 1 0%', minHeight: '0', display: 'flex', flexDirection: 'column' }"
+        >
           <div class="sider-shell">
           <div class="sider-main">
           <div v-if="legacyReadProposal" class="ai-budget-status">
@@ -4780,53 +4784,66 @@ onUnmounted(() => {
           </div>
           <div v-show="aiAssistantTab === 'qa'" data-ai-pane="qa" class="sider-qa-pane">
               <div class="chat-messages">
-                <!-- 欢迎态：复刻 Sider 居中彩云吉祥物 + 标题副标题 + 深色横幅 + 居中胶囊快捷卡 -->
+                <!-- 欢迎态：复刻 Sider 柔和弥散彩云吉祥物 + 标题副标题 + 左对齐双行深色横幅 + 3+3+2 胶囊快捷云 -->
                 <div v-if="chatMessages.length === 0 && !chatLoading" class="sider-welcome">
                   <div class="sider-welcome-logo" aria-hidden="true">
-                    <svg viewBox="0 0 64 64" fill="none">
+                    <svg viewBox="0 0 72 72" fill="none">
                       <defs>
-                        <radialGradient id="siderCloudGrad" cx="30%" cy="25%" r="78%">
-                          <stop offset="0%" stop-color="#38bdf8" />
-                          <stop offset="38%" stop-color="#818cf8" />
-                          <stop offset="70%" stop-color="#ec4899" />
-                          <stop offset="100%" stop-color="#fb923c" />
-                        </radialGradient>
-                        <linearGradient id="siderCloudBase" x1="12" y1="14" x2="54" y2="54" gradientUnits="userSpaceOnUse">
-                          <stop offset="0%" stop-color="#60a5fa" />
-                          <stop offset="48%" stop-color="#8b5cf6" />
-                          <stop offset="100%" stop-color="#f43f5e" />
-                        </linearGradient>
+                        <clipPath id="siderBlobClip">
+                          <path d="M36 9c5.8 0 10.7 3.4 12.7 8.3 5.4.8 9.5 5.4 9.5 11 0 3-1.2 5.7-3.1 7.7 1.9 2 3.1 4.7 3.1 7.7 0 5.6-4.1 10.2-9.5 11-2 4.9-6.9 8.3-12.7 8.3s-10.7-3.4-12.7-8.3c-5.4-.8-9.5-5.4-9.5-11 0-3 1.2-5.7 3.1-7.7-1.9-2-3.1-4.7-3.1-7.7 0-5.6 4.1-10.2 9.5-11C25.3 12.4 30.2 9 36 9Z" />
+                        </clipPath>
+                        <filter id="siderMeshBlur" x="-30%" y="-30%" width="160%" height="160%">
+                          <feGaussianBlur stdDeviation="6" />
+                        </filter>
                       </defs>
-                      <path
-                        d="M32 8c5.2 0 9.6 3.1 11.4 7.5 4.8.7 8.6 4.8 8.6 9.8 0 2.7-1.1 5.1-2.8 6.9 1.7 1.8 2.8 4.2 2.8 6.9 0 5-3.8 9.1-8.6 9.8-1.8 4.4-6.2 7.5-11.4 7.5s-9.6-3.1-11.4-7.5c-4.8-.7-8.6-4.8-8.6-9.8 0-2.7 1.1-5.1 2.8-6.9-1.7-1.8-2.8-4.2-2.8-6.9 0-5 3.8-9.1 8.6-9.8C22.4 11.1 26.8 8 32 8Z"
-                        fill="url(#siderCloudGrad)"
-                      />
-                      <circle cx="24" cy="21" r="9" fill="#38bdf8" fill-opacity="0.45" />
-                      <circle cx="41" cy="22" r="9" fill="#fb923c" fill-opacity="0.42" />
-                      <circle cx="32" cy="42" r="11" fill="url(#siderCloudBase)" fill-opacity="0.55" />
-                      <rect x="26.2" y="26.5" width="3.8" height="8.5" rx="1.9" fill="#ffffff" />
-                      <rect x="34" y="26.5" width="3.8" height="8.5" rx="1.9" fill="#ffffff" />
+                      <g clip-path="url(#siderBlobClip)">
+                        <rect width="72" height="72" fill="#8b5cf6" />
+                        <g filter="url(#siderMeshBlur)">
+                          <circle cx="24" cy="20" r="16" fill="#38bdf8" />
+                          <circle cx="48" cy="22" r="16" fill="#7c3aed" />
+                          <circle cx="20" cy="40" r="16" fill="#f43f5e" />
+                          <circle cx="34" cy="52" r="16" fill="#facc15" />
+                          <circle cx="50" cy="44" r="15" fill="#60a5fa" />
+                          <circle cx="35" cy="33" r="13" fill="#c084fc" />
+                        </g>
+                      </g>
+                      <rect x="31" y="22.5" width="4.4" height="9.2" rx="2.2" fill="#ffffff" />
+                      <rect x="39.2" y="22.5" width="4.4" height="9.2" rx="2.2" fill="#ffffff" />
                     </svg>
                   </div>
                   <h3>提问任何剧情，或直接交办阅读任务</h3>
                   <p>在一个地方完成剧情问答、人物考据、前情梳理与笔记 · 已读到「{{ currentChapter?.title || '当前章' }}」</p>
                   <div class="sider-welcome-banner">
-                    <span class="sider-banner-text"><strong>防剧透护栏：</strong>所有分析严格锁定在当前已读进度内。</span>
+                    <div class="sider-banner-text"><strong>防剧透护栏：</strong>所有分析严格锁定在当前已读进度内。</div>
                     <span class="sider-banner-link" role="button" tabindex="0" @click="aiAssistantTab = 'recap'">查看前情 →</span>
                   </div>
                   <div class="sider-welcome-grid">
                     <button
-                      v-for="(question, qi) in QUICK_READING_QUESTIONS"
-                      :key="question"
+                      v-for="(item, qi) in ([
+                        { label: '主线进展', question: QUICK_READING_QUESTIONS[0] },
+                        { label: '人物关系', question: QUICK_READING_QUESTIONS[1] },
+                        { label: '未解伏笔', question: QUICK_READING_QUESTIONS[2] },
+                        { label: '核心冲突', question: QUICK_READING_QUESTIONS[3] },
+                        { label: '本章脉络', question: '梳理本章的叙事脉络、关键转折与场面调度。' },
+                        { label: '人物考据', question: '盘点目前已出场主要人物的身份背景、性格特征与关键行动。' },
+                        { label: '设定梳理', question: '整理目前已经揭示的世界观设定、势力分布与核心规则。' },
+                        { label: '细节呼应', question: '找出近期章节里容易被忽略的细节暗示与前后呼应。' },
+                      ] as const)"
+                      :key="item.label"
                       type="button"
                       class="sider-welcome-card"
-                      @click="prepareQuickQuestion(question)"
+                      :title="item.question"
+                      @click="prepareQuickQuestion(item.question)"
                     >
-                      <svg v-if="qi === 0" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3Zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3Zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5Zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5Z" /></svg>
-                      <svg v-else-if="qi === 1" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v2H4V6Zm0 5h16v2H4v-2Zm0 5h10v2H4v-2Z" /></svg>
-                      <svg v-else-if="qi === 2" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-4 12.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26A7 7 0 0 0 12 2Zm-2 18h4v2h-4v-2Z" /></svg>
-                      <svg v-else class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm2 4v2h10V8H7Zm0 4v2h7v-2H7Z" /></svg>
-                      {{ question }}
+                      <svg v-if="qi === 0" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="3" /><path d="M8 10h4m-4 4h8" /></svg>
+                      <svg v-else-if="qi === 1" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3" /><circle cx="16.5" cy="9.5" r="2.3" /><path d="M3.8 18.5c0-2.6 2.3-4.5 5.2-4.5s5.2 1.9 5.2 4.5M14.5 18.5c.3-1.8 1.7-3.2 3.7-3.2 1.2 0 2.2.5 2.8 1.3" /></svg>
+                      <svg v-else-if="qi === 2" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 17h5M10 20h4M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.4 1.1 2.2h5c0-.8.4-1.6 1.1-2.2A6 6 0 0 0 12 3Z" /></svg>
+                      <svg v-else-if="qi === 3" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4" /><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3" /></svg>
+                      <svg v-else-if="qi === 4" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M4 9.5h16M9.5 9.5V20" /></svg>
+                      <svg v-else-if="qi === 5" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 3H19a1 1 0 0 1 1 1v16H6.5A2.5 2.5 0 0 1 4 17.5v-12A2.5 2.5 0 0 1 6.5 3Z" /><path d="M9 8h6M9 12h4" /></svg>
+                      <svg v-else-if="qi === 6" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M3.6 12h16.8M12 3.5c2.3 2.3 3.6 5.3 3.6 8.5s-1.3 6.2-3.6 8.5c-2.3-2.3-3.6-5.3-3.6-8.5s1.3-6.2 3.6-8.5Z" /></svg>
+                      <svg v-else class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V9L14 3.5Z" /><path d="M13.5 3.5V9H19M8.5 13h7M8.5 16.5h4.5" /></svg>
+                      <span>{{ item.label }}</span>
                     </button>
                   </div>
                 </div>
@@ -4910,17 +4927,19 @@ onUnmounted(() => {
                   <span class="ai-status-toggle">{{ aiRuntimeOpen ? '收起 ▴' : '设置与状态 ▾' }}</span>
                 </button>
                 <div class="chat-threads">
-                  <span class="sider-fusion-badge" aria-hidden="true" />
-                  <n-select
-                    class="chat-threads-select"
-                    size="tiny"
-                    :value="chatThreadId"
-                    :options="chatThreadOptions"
-                    :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || chatThreads.length === 0"
-                    placeholder="新会话"
-                    aria-label="切换问答会话"
-                    @update:value="switchChatThread"
-                  />
+                  <div class="sider-fusion-pill">
+                    <span class="sider-fusion-badge" aria-hidden="true" />
+                    <n-select
+                      class="chat-threads-select"
+                      size="tiny"
+                      :value="chatThreadId"
+                      :options="chatThreadOptions"
+                      :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || chatThreads.length === 0"
+                      placeholder="新会话"
+                      aria-label="切换问答会话"
+                      @update:value="switchChatThread"
+                    />
+                  </div>
                   <button
                     class="chat-topbar-btn is-new-thread"
                     type="button"
@@ -5042,14 +5061,14 @@ onUnmounted(() => {
               </n-space>
           </div>
           </div>
-          <!-- Sider 右侧竖向窄导航轨：图标在上、文字在下，底部带快捷工具与彩环图标 -->
+          <!-- Sider 右侧竖向窄导航轨：纤细线性图标在上、文字在下，底部带快捷工具与彩环图标 -->
           <aside class="ai-top-bar sider-rail">
             <div class="ai-top-switch" role="tablist" aria-label="AI 助手模式">
-              <button role="tab" :aria-selected="aiAssistantTab === 'qa'" :class="['ai-tab-btn', 'is-qa', { 'is-on': aiAssistantTab === 'qa' }]" type="button" @click="aiAssistantTab = 'qa'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3C7.03 3 3 6.58 3 11c0 2.1.91 4.01 2.4 5.44L4.5 20.5l4.33-1.44c1.01.3 2.07.44 3.17.44 4.97 0 9-3.58 9-8s-4.03-8-9-8Zm-3 7h2v3H9v-3Zm4 0h2v3h-2v-3Z" /></svg></span>问答</button>
-              <button role="tab" :aria-selected="aiAssistantTab === 'recap'" :class="['ai-tab-btn', 'is-recap', { 'is-on': aiAssistantTab === 'recap' }]" type="button" @click="aiAssistantTab = 'recap'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm2 3v2h12V8H6Zm0 4v2h12v-2H6Zm0 4v2h8v-2H6Z" /></svg></span>前情</button>
-              <button role="tab" :aria-selected="aiAssistantTab === 'memory'" :class="['ai-tab-btn', 'is-memory', { 'is-on': aiAssistantTab === 'memory' }]" type="button" @click="aiAssistantTab = 'memory'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2.5 5L6 12l2.5 3 1.2-1-1.7-2 1.7-2-1.2-1Zm7 0-1.2 1 1.7 2-1.7 2 1.2 1L18 12l-2.5-3Z" /></svg></span>记忆</button>
-              <button role="tab" :aria-selected="aiAssistantTab === 'notes'" :class="['ai-tab-btn', 'is-notes', { 'is-on': aiAssistantTab === 'notes' }]" type="button" @click="aiAssistantTab = 'notes'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm2 4v2h10V8H7Zm0 4v2h7v-2H7Z" /></svg></span>笔记</button>
-              <button v-if="aiResult" role="tab" :aria-selected="aiAssistantTab === 'output'" :class="['ai-tab-btn', 'is-output', { 'is-on': aiAssistantTab === 'output' }]" type="button" @click="aiAssistantTab = 'output'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5L12 2Z" /></svg></span>结果</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'qa'" :class="['ai-tab-btn', 'is-qa', { 'is-on': aiAssistantTab === 'qa' }]" type="button" @click="aiAssistantTab = 'qa'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5c-1.3 0-2.5-.3-3.6-.9L4.5 19.5l1.3-3.9A7.4 7.4 0 0 1 4.5 11.5 7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.5Z" /><path d="M9 10.5h6M9 13.5h4" /></svg></span>问答</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'recap'" :class="['ai-tab-btn', 'is-recap', { 'is-on': aiAssistantTab === 'recap' }]" type="button" @click="aiAssistantTab = 'recap'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4.5" width="16" height="15" rx="3" /><path d="M8 9.5h8M8 13h8M8 16.5h5" /></svg></span>前情</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'memory'" :class="['ai-tab-btn', 'is-memory', { 'is-on': aiAssistantTab === 'memory' }]" type="button" @click="aiAssistantTab = 'memory'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3.2" /><path d="m9.5 9.5-2.5 2.5 2.5 2.5m5-5 2.5 2.5-2.5 2.5" /></svg></span>记忆</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'notes'" :class="['ai-tab-btn', 'is-notes', { 'is-on': aiAssistantTab === 'notes' }]" type="button" @click="aiAssistantTab = 'notes'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.5 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V8.5L14.5 3.5Z" /><path d="M14 3.5V9h5.5M8.5 13h7M8.5 16.5h4.5" /></svg></span>笔记</button>
+              <button v-if="aiResult" role="tab" :aria-selected="aiAssistantTab === 'output'" :class="['ai-tab-btn', 'is-output', { 'is-on': aiAssistantTab === 'output' }]" type="button" @click="aiAssistantTab = 'output'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2L12 3Z" /></svg></span>结果</button>
             </div>
             <div class="sider-rail-divider" aria-hidden="true" />
             <div class="sider-rail-tools">
@@ -5060,7 +5079,7 @@ onUnmounted(() => {
                 title="AI 清正文"
                 @click="chapterReady && !cleanRunning && aiCleanBody()"
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm7 3L8.5 16h1.8l.8-2.2h3.8l.8 2.2h1.8L14 7h-2Zm-.3 5.2L13 8.8l1.3 3.4h-2.6Z" /></svg>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="m9 16 3-8 3 8m-5-2.5h4" /></svg>
               </div>
               <div
                 class="sider-rail-tool"
@@ -5069,7 +5088,7 @@ onUnmounted(() => {
                 title="切换问答 / 证据模式"
                 @click="chatMode = chatMode === 'agent' ? 'evidence' : 'agent'"
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h11v2H7v3l-4-4 4-4v3Zm10 10H6v-2h11v-3l4 4-4 4v-3Z" /></svg>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9h14l-3.2-3.2M19 15H5l3.2 3.2" /></svg>
               </div>
             </div>
             <div class="sider-rail-bottom">
@@ -5081,7 +5100,7 @@ onUnmounted(() => {
                 title="运行信息与模型设置"
                 @click="aiRuntimeOpen = !aiRuntimeOpen"
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4Zm8.66-2a8.1 8.1 0 0 0-.14-1.5l2.11-1.65-2-3.46-2.49 1a8.14 8.14 0 0 0-2.6-1.5l-.38-2.65h-4l-.38 2.65a8.14 8.14 0 0 0-2.6 1.5l-2.49-1-2 3.46 2.11 1.65a8.1 8.1 0 0 0 0 3l-2.11 1.65 2 3.46 2.49-1a8.14 8.14 0 0 0 2.6 1.5l.38 2.65h4l.38-2.65a8.14 8.14 0 0 0 2.6-1.5l2.49 1 2-3.46-2.11-1.65c.09-.49.14-.99.14-1.5Z" /></svg>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19.5 7.8v8.4L12 20.5 4.5 16.2V7.8L12 3.5Z" /><circle cx="12" cy="12" r="2.8" /></svg>
               </div>
               <div
                 class="sider-rail-orb"
@@ -5823,21 +5842,21 @@ onUnmounted(() => {
 .ai-status-bar {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
-  padding: 7px 14px;
+  padding: 8px 13px;
   margin-bottom: 10px;
-  border: 1px solid rgba(124, 92, 255, 0.12);
-  border-radius: 999px;
-  background: rgba(124, 92, 255, 0.07);
-  color: var(--r-text);
-  font-size: 12px;
+  border: 1px solid rgba(124, 92, 255, 0.08);
+  border-radius: 11px;
+  background: var(--sider-status-bg, #f2f1f8);
+  color: var(--r-text, #1f2329);
+  font-size: 12.5px;
   text-align: left;
   cursor: pointer;
   transition: background 0.18s ease, border-color 0.18s ease;
 }
 .ai-status-bar:hover {
-  border-color: rgba(124, 92, 255, 0.28);
+  border-color: rgba(124, 92, 255, 0.22);
   background: rgba(124, 92, 255, 0.11);
 }
 .ai-status-dot {
@@ -5858,20 +5877,20 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-  color: var(--r-text);
+  color: var(--r-text, #1f2329);
 }
 .ai-status-sep { opacity: 0.4; }
 .ai-status-read {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--r-muted);
+  color: var(--r-muted, #646a73);
 }
 .ai-status-toggle {
   flex: 0 0 auto;
   margin-left: auto;
   color: #7c5cff;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
 }
 
@@ -5879,9 +5898,9 @@ onUnmounted(() => {
 .ai-runtime-panel {
   margin: 0 0 12px;
   padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--r-text) 10%, transparent);
+  border: 1px solid var(--sider-card-border, rgba(15, 23, 42, 0.08));
   border-radius: 14px;
-  background: color-mix(in srgb, var(--r-text) 3%, var(--r-surface, #ffffff));
+  background: var(--sider-pill-bg, #f6f7f9);
 }
 .ai-runtime-label {
   flex: 0 0 auto;
@@ -5894,8 +5913,8 @@ onUnmounted(() => {
 }
 .ai-follow-box {
   margin: 8px 0;
-  border: 1px solid color-mix(in srgb, var(--r-text) 8%, transparent);
-  background: var(--r-surface, #ffffff);
+  border: 1px solid var(--sider-card-border, rgba(15, 23, 42, 0.08));
+  background: var(--sider-card-bg, #ffffff);
 }
 .ai-follow-head {
   display: flex;
@@ -5911,15 +5930,43 @@ onUnmounted(() => {
 .ai-runtime-panel .ai-assistant-status,
 .ai-runtime-panel .subtle { margin: 0 0 6px; }
 
-/* ── Sider 双栏骨架：左侧主工作区（对话框/内容区独立滚动） + 右侧竖向固定工具栏 ───────────── */
+/* ── Sider 双栏骨架：外层浅灰底 + 左侧纯白圆角主卡片（独立滚动） + 右侧固定线性工具轨 ───────────── */
 .sider-shell {
+  --r-text: var(--text, #1f2329);
+  --r-muted: var(--muted, #646a73);
+  --r-surface: var(--card, #ffffff);
+  --r-line: var(--line, rgba(15, 23, 42, 0.08));
+  --sider-bg: #f5f6f8;
+  --sider-card-bg: #ffffff;
+  --sider-card-border: rgba(15, 23, 42, 0.07);
+  --sider-pill-bg: #f6f7f9;
+  --sider-pill-border: rgba(15, 23, 42, 0.06);
+  --sider-status-bg: #f2f1f8;
+  --sider-input-border: rgba(15, 23, 42, 0.11);
   display: flex;
   align-items: stretch;
   flex: 1 1 0%;
   height: 100%;
   min-height: 0;
   margin: 0;
+  padding: 2px 0 10px 10px;
+  background: var(--sider-bg);
+  color: var(--r-text);
   overflow: hidden;
+  box-sizing: border-box;
+}
+:global(body[data-skin="dark"]) .sider-shell {
+  --r-text: #f1f5f9;
+  --r-muted: #94a3b8;
+  --r-surface: #181b20;
+  --r-line: rgba(255, 255, 255, 0.09);
+  --sider-bg: #111317;
+  --sider-card-bg: #181b20;
+  --sider-card-border: rgba(255, 255, 255, 0.08);
+  --sider-pill-bg: #22262e;
+  --sider-pill-border: rgba(255, 255, 255, 0.08);
+  --sider-status-bg: rgba(124, 92, 255, 0.14);
+  --sider-input-border: rgba(255, 255, 255, 0.14);
 }
 .sider-main {
   flex: 1 1 0%;
@@ -5928,7 +5975,11 @@ onUnmounted(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 10px 14px 10px 16px;
+  padding: 14px 16px 14px;
+  background: var(--sider-card-bg);
+  border: 1px solid var(--sider-card-border);
+  border-radius: 16px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.025);
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -5956,16 +6007,15 @@ onUnmounted(() => {
 }
 
 .sider-rail {
-  flex: 0 0 56px;
-  width: 56px;
+  flex: 0 0 54px;
+  width: 54px;
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 8px 4px 10px;
-  border-left: 1px solid color-mix(in srgb, var(--r-text) 8%, transparent);
-  background: color-mix(in srgb, var(--r-text) 3.5%, var(--r-surface, #ffffff));
+  padding: 6px 4px 10px;
+  background: transparent;
   user-select: none;
   overflow: hidden;
   box-sizing: border-box;
@@ -5974,7 +6024,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
   padding: 0;
   margin: 0;
@@ -5988,13 +6038,13 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  width: 48px;
+  gap: 4px;
+  width: 46px;
   padding: 5px 2px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 11px;
   background: transparent;
-  color: var(--r-muted);
+  color: var(--r-muted, #646a73);
   font-size: 11px;
   font-weight: 500;
   line-height: 1.2;
@@ -6004,22 +6054,26 @@ onUnmounted(() => {
 .sider-rail-icon {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 28px;
-  border-radius: 9px;
+  width: 34px;
+  height: 30px;
+  border-radius: 10px;
   color: inherit;
   transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
 }
 .sider-rail-icon svg {
-  width: 17px;
-  height: 17px;
-  fill: currentColor;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .ai-top-switch button:hover:not(.is-on) {
-  color: var(--r-text);
+  color: var(--r-text, #1f2329);
 }
 .ai-top-switch button:hover:not(.is-on) .sider-rail-icon {
-  background: color-mix(in srgb, var(--r-text) 7%, transparent);
+  background: rgba(15, 23, 42, 0.055);
 }
 .ai-top-switch button.is-on {
   color: #7c5cff;
@@ -6031,10 +6085,10 @@ onUnmounted(() => {
 }
 
 .sider-rail-divider {
-  width: 24px;
+  width: 22px;
   height: 1px;
   margin: 12px 0;
-  background: color-mix(in srgb, var(--r-text) 10%, transparent);
+  background: rgba(15, 23, 42, 0.09);
 }
 .sider-rail-tools {
   display: flex;
@@ -6055,15 +6109,19 @@ onUnmounted(() => {
   place-items: center;
   width: 34px;
   height: 34px;
-  border-radius: 9px;
-  color: var(--r-muted);
+  border-radius: 10px;
+  color: var(--r-muted, #646a73);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
 .sider-rail-tool svg {
-  width: 17px;
-  height: 17px;
-  fill: currentColor;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .sider-rail-tool:hover,
 .sider-rail-tool.is-active {
@@ -7038,9 +7096,11 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
-  margin: auto 0;
-  padding: 20px 6px 16px;
+  gap: 12px;
+  margin: auto;
+  width: 100%;
+  max-width: 420px;
+  padding: 20px 8px 18px;
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -7050,46 +7110,48 @@ onUnmounted(() => {
 .sider-welcome-logo {
   display: grid;
   place-items: center;
-  width: 64px;
-  height: 64px;
-  filter: drop-shadow(0 8px 18px rgba(139, 92, 246, 0.26));
+  width: 72px;
+  height: 72px;
+  filter: drop-shadow(0 10px 20px rgba(139, 92, 246, 0.24));
 }
 .sider-welcome-logo svg {
-  width: 64px;
-  height: 64px;
+  width: 72px;
+  height: 72px;
 }
 
 .sider-welcome h3 {
   margin: 4px 0 0;
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 700;
-  color: var(--r-text);
+  color: var(--r-text, #1f2329);
   letter-spacing: -0.01em;
 }
 .sider-welcome p {
   margin: 0;
-  max-width: 340px;
-  color: var(--r-muted);
-  font-size: 12px;
+  max-width: 380px;
+  color: var(--r-muted, #646a73);
+  font-size: 12.5px;
   line-height: 1.55;
 }
 
 .sider-welcome-banner {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   justify-content: center;
-  gap: 8px;
+  gap: 4px;
   width: 100%;
-  max-width: 420px;
+  max-width: 400px;
   margin: 4px 0 6px;
-  padding: 9px 14px;
-  border-radius: 10px;
+  padding: 13px 18px;
+  border-radius: 14px;
   background: #230906;
-  color: #f8fafc;
-  font-size: 12px;
-  line-height: 1.45;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  color: #fff5f0;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.1);
+  box-sizing: border-box;
 }
 .sider-banner-link {
   color: #f87171;
@@ -7105,33 +7167,38 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
+  max-width: 400px;
   margin-top: 4px;
 }
 
 .sider-welcome-card {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 13px;
-  border: 1px solid color-mix(in srgb, var(--r-text) 7%, transparent);
+  gap: 7px;
+  padding: 8px 15px;
+  border: 1px solid var(--sider-pill-border, rgba(15, 23, 42, 0.06));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--r-text) 4.5%, var(--r-surface, #ffffff));
-  color: var(--r-text);
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.4;
-  text-align: left;
+  background: var(--sider-pill-bg, #f6f7f9);
+  color: var(--r-text, #1f2329);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
 .sider-pill-icon {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-  fill: currentColor;
-  opacity: 0.7;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.78;
 }
 .sider-welcome-card:hover {
   border-color: rgba(124, 92, 255, 0.32);
@@ -7141,14 +7208,14 @@ onUnmounted(() => {
 }
 
 .chat-chip {
-  padding: 3px 11px;
-  border: 1px solid color-mix(in srgb, var(--r-text) 10%, transparent);
+  padding: 4px 12px;
+  border: 1px solid var(--sider-pill-border, rgba(15, 23, 42, 0.08));
   border-radius: 999px;
-  background: transparent;
-  color: var(--r-muted);
+  background: var(--sider-pill-bg, #f6f7f9);
+  color: var(--r-muted, #646a73);
   font-size: 12px;
   font-weight: 500;
-  line-height: 1.5;
+  line-height: 1.4;
   white-space: nowrap;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -7156,12 +7223,12 @@ onUnmounted(() => {
 .chat-chip:hover:not(:disabled) {
   color: #6d4aff;
   border-color: rgba(124, 92, 255, 0.35);
-  background: rgba(124, 92, 255, 0.06);
+  background: rgba(124, 92, 255, 0.08);
 }
 .chat-chip:disabled { opacity: 0.45; cursor: default; }
 .chat-chip-on {
   color: #6d4aff;
-  border-color: rgba(124, 92, 255, 0.35);
+  border-color: rgba(124, 92, 255, 0.32);
   background: rgba(124, 92, 255, 0.12);
   font-weight: 600;
 }
@@ -7170,25 +7237,38 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   width: 100%;
-  border: 1px solid color-mix(in srgb, var(--r-text) 12%, transparent);
-  border-radius: 14px;
-  background: var(--card, #ffffff);
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+  border: 1px solid var(--sider-input-border, rgba(15, 23, 42, 0.11));
+  border-radius: 16px;
+  background: var(--sider-card-bg, #ffffff);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.03);
   overflow: hidden;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .sider-composer:focus-within {
-  border-color: rgba(124, 92, 255, 0.45);
-  box-shadow: 0 4px 16px rgba(124, 92, 255, 0.12);
+  border-color: rgba(124, 92, 255, 0.48);
+  box-shadow: 0 4px 18px rgba(124, 92, 255, 0.11);
 }
 
 .sider-composer :deep(.n-input),
+.sider-composer :deep(.n-input:focus-within),
+.sider-composer :deep(.n-input .n-input-wrapper),
 .sider-composer :deep(.n-input .n-input__textarea),
+.sider-composer :deep(.n-input .n-input__textarea-el),
 .sider-composer :deep(.n-input .n-input__border),
 .sider-composer :deep(.n-input .n-input__state-border) {
+  --n-color: transparent !important;
+  --n-color-focus: transparent !important;
+  --n-color-disabled: transparent !important;
+  --n-border: 0 !important;
+  --n-border-hover: 0 !important;
+  --n-border-focus: 0 !important;
+  --n-border-disabled: 0 !important;
+  --n-box-shadow-focus: none !important;
+  --n-caret-color: #7c5cff !important;
   border: 0 !important;
   box-shadow: none !important;
   background: transparent !important;
+  outline: none !important;
 }
 
 .sider-composer-bar {
@@ -7196,11 +7276,27 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 10px 10px;
+  padding: 4px 12px 10px;
 }
 
 .sider-composer-chips { display: flex; align-items: center; gap: 6px; }
 .sider-composer-send { display: flex; align-items: center; gap: 8px; }
+
+.sider-main :deep(.n-button--primary-type) {
+  --n-color: #7c5cff !important;
+  --n-color-hover: #6d4aff !important;
+  --n-color-pressed: #5b38f5 !important;
+  --n-color-focus: #6d4aff !important;
+  --n-color-disabled: #a594f9 !important;
+  --n-border: 1px solid #7c5cff !important;
+  --n-border-hover: 1px solid #6d4aff !important;
+  --n-border-pressed: 1px solid #5b38f5 !important;
+  --n-border-focus: 1px solid #6d4aff !important;
+  --n-border-disabled: 1px solid #a594f9 !important;
+  --n-border-radius: 999px !important;
+  border-radius: 999px !important;
+  font-weight: 600;
+}
 
 :deep(.n-drawer-header__main)::before {
   content: '✦';
@@ -7216,19 +7312,25 @@ onUnmounted(() => {
   vertical-align: middle;
 }
 
-:deep(.n-drawer-body-content-wrapper) {
-  padding-top: 6px;
-}
-
-/* Sider 输入框上方的 Fusion 会话选择 + 右侧紫色「+ 新会话」栏 */
+/* Sider 输入框上方的 Fusion 胶囊会话选择 + 右侧紫色「+ 新会话」栏 */
 .chat-threads {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 2px 6px;
-  margin-bottom: 2px;
+  gap: 8px;
+  padding: 2px 0 8px;
+  margin-bottom: 0;
   border: 0;
   background: transparent;
+}
+.sider-fusion-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 7px;
+  border-radius: 999px;
+  background: var(--sider-pill-bg, #f6f7f9);
+  border: 1px solid var(--sider-pill-border, rgba(15, 23, 42, 0.06));
+  max-width: 240px;
 }
 .sider-fusion-badge {
   position: relative;
@@ -7250,21 +7352,37 @@ onUnmounted(() => {
   line-height: 1;
 }
 .chat-threads-select {
-  flex: 0 1 190px;
-  min-width: 110px;
+  flex: 0 1 175px;
+  min-width: 100px;
 }
 .chat-threads-select :deep(.n-base-selection) {
+  --n-color: transparent !important;
+  --n-color-active: transparent !important;
+  --n-color-disabled: transparent !important;
+  --n-border: 0 !important;
+  --n-border-hover: 0 !important;
+  --n-border-active: 0 !important;
+  --n-border-focus: 0 !important;
+  --n-border-disabled: 0 !important;
+  --n-box-shadow-active: none !important;
+  --n-box-shadow-focus: none !important;
+  --n-box-shadow-hover: none !important;
   border-radius: 999px !important;
-  background: color-mix(in srgb, var(--r-text) 4%, transparent) !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 .chat-topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 0;
   background: transparent;
-  color: #6d4aff;
-  font-size: 12px;
+  color: #7c5cff;
+  font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  padding: 3px 8px;
+  padding: 4px 8px;
   border-radius: 8px;
   transition: background 0.15s ease, color 0.15s ease;
 }
@@ -7272,11 +7390,20 @@ onUnmounted(() => {
   margin-left: auto;
 }
 .chat-topbar-btn.is-new-thread::before {
-  content: '⊞ ';
-  font-weight: 400;
+  content: '+';
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: #7c5cff;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
 }
 .chat-topbar-btn.is-del-thread {
-  color: var(--r-muted);
+  color: var(--r-muted, #646a73);
   font-weight: 500;
 }
 .chat-topbar-btn:hover:not(:disabled) {
@@ -7288,7 +7415,7 @@ onUnmounted(() => {
 .chat-input-row {
   display: flex;
   gap: 8px;
-  padding: 2px 0 4px;
+  padding: 2px 0 0;
   background: transparent;
 }
 

@@ -94,5 +94,7 @@ describe('AI 侧栏的信息层级', () => {
     expect(source).not.toContain('sider-promo-pill')
     expect(source).toContain('.chat-messages {\n  flex: 1 1 0%;\n  min-height: 0;\n  overflow-y: auto;')
     expect(source).toContain('.ai-top-bar.sider-rail { flex-shrink: 0; height: 100%; overflow: hidden; }')
+    expect(source).toContain('--sider-bg: #f5f6f8;')
+    expect(source).toContain('--sider-card-bg: #ffffff;')
   })
 })
