@@ -1629,7 +1629,7 @@ function registerIpc(): void {
         if (!Array.isArray(entry.citations)) {
           return { role: 'assistant' as const, content: '这条旧回答无法按当前已读范围核验，已隐藏；可重新提问。' }
         }
-        if (entry.citations.length > 0 && (await readableCitations(bookId, entry.citations)).length !== entry.citations.length) {
+        if (entry.citations.length > 0 && (await readableCitations(bookId, entry.citations, undefined, { fullBook: true })).length !== entry.citations.length) {
           return { role: 'assistant' as const, content: '这条旧回答无法按当前已读范围核验，已隐藏；可重新提问。' }
         }
         return entry
@@ -2126,12 +2126,16 @@ function registerIpc(): void {
    * 与证据问答并存而不是替换它——证据问答每条结论强制绑引用，适合「核对剧情」；
    * 这里适合「聊着读」，追问和跨章综合不会被单轮流水线卡住。
    */
-  ipcMain.handle('ai.agentChat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[]; threadId?: string }) => {
+  ipcMain.handle('ai.agentChat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[]; threadId?: string; recallScope?: 'book' | 'progress' }) => {
     try {
       const book = await getBook(args.bookId)
       const frontier = await getReadFrontier(args.bookId)
       const progressChapterId = book.progress?.chapterId
-      if (!progressChapterId) return { ok: false, message: '还没有阅读进度，先阅读一章再和 AI 聊。' }
+      const recallScope = args.recallScope === 'progress' ? 'progress' : 'book'
+      // 「全书」是默认：问答不再被已读进度锁死；只有读者主动关掉「可聊全书」才要求有进度。
+      if (recallScope === 'progress' && !progressChapterId) {
+        return { ok: false, message: '已开启「仅限当前进度」，请先阅读一章再和 AI 聊；或在设置里允许聊全书。' }
+      }
       if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) return { ok: false, message: '章节不存在' }
       const question = [...args.messages].reverse().find((message) => message.role === 'user')?.content.trim() ?? ''
       if (!question) return { ok: false, message: '请输入问题' }
@@ -2141,10 +2145,12 @@ function registerIpc(): void {
       const config = trustedAiConfig(settings, apiKey)
       const ordered = [...book.chapters].sort((left, right) => left.index - right.index)
       const progressPosition = ordered.findIndex((chapter) => chapter.id === progressChapterId)
-      if (progressPosition < 0) return { ok: false, message: '还没有阅读进度，先阅读一章再和 AI 聊。' }
-      const readable = new Set(ordered.slice(0, progressPosition + 1)
-        .filter((chapter) => chapter.status === 'ready' && Boolean(frontier.chapters[chapter.id]))
-        .map((chapter) => chapter.id))
+      const scopeChapterId = progressChapterId ?? args.chapterId
+      const readable = recallScope === 'book'
+        ? new Set(ordered.filter((chapter) => chapter.status === 'ready').map((chapter) => chapter.id))
+        : new Set(ordered.slice(0, Math.max(0, progressPosition) + 1)
+          .filter((chapter) => chapter.status === 'ready' && Boolean(frontier.chapters[chapter.id]))
+          .map((chapter) => chapter.id))
       const history = args.messages.slice(0, -1).filter((message): message is { role: 'user' | 'assistant'; content: string } => message.role !== 'system')
       // 先定下这条问答写回哪个会话：指定了不存在的会话就当场报错，不能静默落回默认会话。
       const thread = await prepareChatThread(args.bookId, args.threadId)
@@ -2163,7 +2169,11 @@ function registerIpc(): void {
         try {
           const result = await runReaderAgent({
             config: { baseUrl: config.baseUrl, model: config.model, apiKey: config.apiKey },
-            systemPrompt: buildReaderAgentSystemPrompt(book.title, ordered[progressPosition]!.title),
+            systemPrompt: buildReaderAgentSystemPrompt(
+              book.title,
+              ordered[progressPosition]?.title ?? ordered.find((chapter) => chapter.id === args.chapterId)?.title ?? ordered[0]!.title,
+              recallScope,
+            ),
             history,
             question,
             signal,
@@ -2172,7 +2182,7 @@ function registerIpc(): void {
               mainWindow?.webContents.send('ai.chunk', { jobId, delta })
             },
             onTool: (event) => sendAiStage(jobId, event.phase === 'start' ? 'indexing' : 'requesting', event.label),
-            onCitations: (items) => sendAiEvidence(jobId, items, progressChapterId),
+            onCitations: (items) => sendAiEvidence(jobId, items, scopeChapterId),
             toolkit: {
               listChapters: async () => Promise.all(ordered.map(async (chapter) => {
                 const body = await readChapter(args.bookId, chapter.id).catch(() => null)
@@ -2188,15 +2198,16 @@ function registerIpc(): void {
               readChapter: async (chapterId) => {
                 const chapter = ordered.find((item) => item.id === chapterId)
                 if (!chapter) throw new Error('章节不存在')
-                // 未读章一律不给：正文进模型就等于把没读的内容送出去。
                 if (!readable.has(chapterId)) {
-                  throw new Error(`《${chapter.title}》读者还没读到，无法引用；请只使用已读章节。`)
+                  throw new Error(`《${chapter.title}》还没有可读正文，无法引用。`)
                 }
-                const clipped = (await readClippedChapter(args.bookId, chapterId, frontier)).body
-                if (clipped.length > 12000) {
-                  return { title: chapter.title, body: `${clipped.slice(0, 12000)}\n\n（本章过长，已截断前 12000 字；需要细节请用 search_read_text）`, full: false }
+                const fullBody = recallScope === 'book'
+                  ? (await readChapter(args.bookId, chapterId)).body
+                  : (await readClippedChapter(args.bookId, chapterId, frontier)).body
+                if (fullBody.length > 12000) {
+                  return { title: chapter.title, body: `${fullBody.slice(0, 12000)}\n\n（本章过长，已截断前 12000 字；需要细节请用 search_read_text）`, full: false }
                 }
-                return { title: chapter.title, body: clipped, full: isFullyRead((await readChapter(args.bookId, chapterId)).body, frontier.chapters[chapterId]) }
+                return { title: chapter.title, body: fullBody, full: recallScope === 'book' ? true : isFullyRead((await readChapter(args.bookId, chapterId)).body, frontier.chapters[chapterId]) }
               },
               searchReadText: async (query) => {
                 const { citations: hits } = await retrieveLocalEvidence({
@@ -2204,12 +2215,15 @@ function registerIpc(): void {
                   chapters: ordered,
                   query: { originalQuestion: query },
                   options: {
-                    requestedUptoChapterId: progressChapterId,
-                    progressChapterId,
+                    requestedUptoChapterId: recallScope === 'book' ? ordered.at(-1)!.id : scopeChapterId,
+                    progressChapterId: scopeChapterId,
                     currentChapterId: args.chapterId,
+                    ...(recallScope === 'book' ? { allowUnread: true } : {}),
                   },
                   readBody: async (chapterId) => ({
-                    body: (await readClippedChapter(args.bookId, chapterId, frontier)).body,
+                    body: recallScope === 'book'
+                      ? (await readChapter(args.bookId, chapterId)).body
+                      : (await readClippedChapter(args.bookId, chapterId, frontier)).body,
                     status: (await readChapter(args.bookId, chapterId)).status,
                   }),
                   stopped: () => signal.aborted,
@@ -2234,12 +2248,12 @@ function registerIpc(): void {
             result.toolCalls === 0 && result.citations.length === 0 ? 'general' : 'book'
           const answerMessages: import('../shared/types').AiEvidenceChatMessage[] = [
             { role: 'user', content: question },
-            { role: 'assistant', content: result.text, citations: result.citations, scope, uptoChapterId: progressChapterId, ...(stopped ? { stopped: true } : {}) },
+            { role: 'assistant', content: result.text, citations: result.citations, scope, uptoChapterId: scopeChapterId, ...(stopped ? { stopped: true } : {}) },
           ]
           // 只读回这条会话自己的历史：别的会话的消息不该被并进来。
           const existing = await readChat(args.bookId, threadId)
           await saveAiDone(jobId, {
-            jobId, ok: true, text: result.text, citations: result.citations, scope, uptoChapterId: progressChapterId,
+            jobId, ok: true, text: result.text, citations: result.citations, scope, uptoChapterId: scopeChapterId,
             ...(stopped ? { stopped: true } : {}),
           }, () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }), {
             retrySave: () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }),

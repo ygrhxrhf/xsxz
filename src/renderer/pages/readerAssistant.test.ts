@@ -146,6 +146,21 @@ describe('useReaderAssistant（助手面板域）', () => {
     assistant.toggleQaContextChip('chapter')
     expect(assistant.qaContextChips.value.chapter).toBe(false)
   })
+  it('问答默认聊全书；关掉「可聊全书」后 agentChat 传 progress，重新锁回已读进度', async () => {
+    const assistant = makeAssistant()
+    assistant.chatInput.value = '结局是什么？'
+    await assistant.sendChat()
+    expect(api.ai.agentChat.mock.calls[0]![4]).toBe('book')
+    // 模拟第一轮已收尾，否则界面还在「生成中」，第二句会被挡住不发。
+    assistant.chatLoading.value = false
+    assistant.chatJobId.value = ''
+
+    assistant.setChatRecallScope(false)
+    expect(assistant.chatRecallScope.value).toBe('progress')
+    assistant.chatInput.value = '再问一次'
+    await assistant.sendChat()
+    expect(api.ai.agentChat.mock.calls.at(-1)![4]).toBe('progress')
+  })
   it('通用字词/百科模式（general）不拼参考范围，走 generalChat 通道并标记 scope=general', async () => {
     const assistant = makeAssistant()
     assistant.qaContextChips.value = { chapter: true, memory: true, notes: true }

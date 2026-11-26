@@ -3487,6 +3487,8 @@ const {
   translateLoading,
   chatMessages,
   chatMode,
+  chatRecallScope,
+  setChatRecallScope,
   qaContextChips,
   qaContextActive,
   toggleQaContextChip,
@@ -4538,6 +4540,11 @@ onUnmounted(() => {
               <span class="ai-runtime-label">模型</span>
               <n-select size="tiny" :value="aiModelValue" :options="aiModelOptions" @update:value="applyAiModel" />
             </div>
+            <div class="ai-recall-row">
+              <span class="ai-runtime-label">问答范围</span>
+              <n-switch :value="chatRecallScope === 'book'" size="small" @update:value="setChatRecallScope" />
+              <span class="ai-recall-hint">{{ chatRecallScope === 'book' ? '允许聊全书（追问后续会直接回答）' : '仅限已读进度（怕剧透就保持关）' }}</span>
+            </div>
             <div class="ai-clean-actions">
               <span class="ai-runtime-label">工具</span>
               <n-button size="tiny" quaternary :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button>
@@ -4815,7 +4822,7 @@ onUnmounted(() => {
                   <h3>提问任何剧情，或直接交办阅读任务</h3>
                   <p>在一个地方完成剧情问答、人物考据、前情梳理与笔记 · 已读到「{{ currentChapter?.title || '当前章' }}」</p>
                   <div class="sider-welcome-banner">
-                    <div class="sider-banner-text"><strong>防剧透护栏：</strong>所有分析严格锁定在当前已读进度内。</div>
+                    <div class="sider-banner-text"><strong>进度对齐：</strong>前情与记忆只到当前章；问答默认可聊全书，怕剧透可在「设置与状态」里锁回已读进度。</div>
                     <span class="sider-banner-link" role="button" tabindex="0" @click="aiAssistantTab = 'recap'">查看前情 →</span>
                   </div>
                   <div class="sider-welcome-grid">
@@ -8293,6 +8300,8 @@ onUnmounted(() => {
 
 .ai-model-row { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
 .ai-model-row .n-select { flex: 1 1 auto; min-width: 0; }
+.ai-recall-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; }
+.ai-recall-hint { color: var(--r-muted, #646a73); font-size: 11px; line-height: 1.5; }
 
 .memory-timeline > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 4px; }
 .memory-timeline > summary::-webkit-details-marker { display: none; }

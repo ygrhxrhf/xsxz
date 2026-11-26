@@ -132,6 +132,28 @@ const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
 const chatMode = ref<'agent' | 'general' | 'evidence'>('agent')
 /**
+ * 问答检索范围：默认 'book' 允许问全书（不问就不主动透未读剧情）；
+ * 读者在运行面板里关掉「可聊全书」后变成 'progress'，检索重新锁在已读前沿。
+ * 存 localStorage：这是读者「我怕不怕被剧透」的偏好，不该每开一次面板就重设。
+ */
+const CHAT_RECALL_SCOPE_KEY = 'spbf.chatRecallScope'
+function readChatRecallScope(): 'book' | 'progress' {
+  try {
+    return localStorage.getItem(CHAT_RECALL_SCOPE_KEY) === 'progress' ? 'progress' : 'book'
+  } catch {
+    return 'book'
+  }
+}
+const chatRecallScope = ref<'book' | 'progress'>(readChatRecallScope())
+function setChatRecallScope(allowBook: boolean) {
+  chatRecallScope.value = allowBook ? 'book' : 'progress'
+  try {
+    localStorage.setItem(CHAT_RECALL_SCOPE_KEY, chatRecallScope.value)
+  } catch {
+    /* 隐私模式等写不进就只走内存 */
+  }
+}
+/**
  * 参考范围开关（本章 / 记忆 / 批注）：读者显式告诉模型先看什么，省掉每轮靠模型猜。
  * 只影响发送时附上的那一行指令，不新增 IPC、不额外调用模型。
  * 状态存 localStorage：这是读者「我通常想怎么看」的偏好，不该每开一次面板就重设。
@@ -1110,7 +1132,7 @@ async function startChatFrom(history: readonly AiEvidenceChatMessage[], question
     // 带上当前会话：没有会话时主进程会按需开一条，并把这一轮写进去。
     const threadId = chatThreadId.value || undefined
     const res = chatMode.value === 'agent'
-      ? await window.api.ai.agentChat(target.id, chapter!.id, payload, threadId)
+      ? await window.api.ai.agentChat(target.id, chapter!.id, payload, threadId, chatRecallScope.value)
       : chatMode.value === 'general'
         ? await window.api.ai.generalChat(target.id, payload, threadId)
         : await window.api.ai.chatStream(target.id, chapter!.id, payload, threadId)
@@ -1437,6 +1459,8 @@ const inlineAsk = useInlineAsk({
     translateLoading,
     chatMessages,
     chatMode,
+    chatRecallScope,
+    setChatRecallScope,
     qaContextChips,
     qaContextActive,
     toggleQaContextChip,

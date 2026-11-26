@@ -13,17 +13,27 @@ import { Agent, type AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@mariozechner/pi-ai'
 import type { AiCitation, AiMemoryFile } from '../shared/types'
 
+export type ReaderAgentRecallScope = 'book' | 'progress'
+
 /**
- * 对话型 agent 的系统提示：说清可用工具、已读边界与回答口径。
- * 取数边界不靠这句话守住——真正的裁剪在 toolkit 里，这里只让模型少走弯路。
+ * 对话型 agent 的系统提示：说清可用工具、检索范围与回答口径。
+ * `recallScope` 控制能否聊到未读章节：默认 `book`（问答不设防剧透锁），只有读者主动关掉
+ * 「可聊全书」时才回退到旧的已读前沿约束。真正的取数边界由 toolkit 夹紧，这里只让模型少走弯路。
  */
-export function buildReaderAgentSystemPrompt(bookTitle: string, currentChapterTitle: string): string {
+export function buildReaderAgentSystemPrompt(
+  bookTitle: string,
+  currentChapterTitle: string,
+  recallScope: ReaderAgentRecallScope = 'book',
+): string {
+  const scopeRule = recallScope === 'progress'
+    ? '- 已读范围之外的内容不要编：读者还没读到就直说“你还没读到那里”。'
+    : '- 读者主动追问后续剧情或结局时可以直接回答：read_chapter 与 search_read_text 此时可以访问全书，不要因为某章标着「未读」就拒答；但没人问的时候不要主动把未读章节的后续透出来。'
   return `你是《${bookTitle}》这本书的阅读搭子，读者正读到这里：${currentChapterTitle}。
 
 你可以调用工具：
 - list_chapters：看书名、章节与读者读到哪。
-- read_chapter：读一章正文（只返回读者已读到的部分）。
-- search_read_text：在已读正文里按关键词找原文，结果带段落坐标。
+- read_chapter：读一章正文。
+- search_read_text：按关键词找原文，结果带段落坐标。
 - get_memory：人物、关系、伏笔、关键事件（已整理好的记忆）。
 - get_chapter_notes：AI 或读者写过的章节笔记。
 
@@ -34,7 +44,7 @@ export function buildReaderAgentSystemPrompt(bookTitle: string, currentChapterTi
 - 【情况 B：本书剧情 / 人物关系 / 设定伏笔 / 原文上下文（需结合书籍）】
   - 先用 memory / 章节笔记这类便宜材料；不够再 search_read_text 找原文；需要上下文与语气才 read_chapter。
   - 读者划词「询问 AI」时，必须将选中原文与《${bookTitle}》的已读剧情、人物设定、伏笔和当前章节上下文联系起来回答，不要脱离本书只给泛泛的词典式解释。
-  - 已读范围之外的内容不要编：读者还没读到就直说“你还没读到那里”。
+  ${scopeRule}
   - 不确定就说不确定，并指出需要查哪个工具。
 - 回答用简洁中文，直接说结论；需要引原文时给出处（章名与段号）。`
 }

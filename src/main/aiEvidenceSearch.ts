@@ -29,6 +29,8 @@ export interface EvidenceSearchOptions {
   summaries?: AiSummaries | null
   /** 读者的划线与笔记所在段：只提升排序，绝不作为剧情事实。 */
   readerNotes?: readonly EvidenceReaderNote[]
+  /** 允许检索到尚未读到的章节（问答「全书」范围用）；默认 false = 只用已读范围。 */
+  allowUnread?: boolean
 }
 
 export interface EvidenceReaderNote {
@@ -251,8 +253,11 @@ function planEvidenceQuery(
 ): EvidenceQueryPlan {
   const requestedPosition = ordered.findIndex((chapter) => chapter.id === options.requestedUptoChapterId)
   const progressPosition = ordered.findIndex((chapter) => chapter.id === options.progressChapterId)
-  if (requestedPosition < 0 || progressPosition < 0) throw new Error(EVIDENCE_NO_PROGRESS_MESSAGE)
-  const cutoffPosition = Math.min(requestedPosition, progressPosition)
+  if (requestedPosition < 0 || (progressPosition < 0 && !options.allowUnread)) throw new Error(EVIDENCE_NO_PROGRESS_MESSAGE)
+  // 全书范围：只按请求的截止章夹紧，不再被已读前沿夹住（问答允许问未读剧情）。
+  const cutoffPosition = options.allowUnread
+    ? requestedPosition
+    : (progressPosition < 0 ? requestedPosition : Math.min(requestedPosition, progressPosition))
   const uptoChapterId = ordered[cutoffPosition]!.id
   const currentPosition = ordered.findIndex((chapter) => chapter.id === options.currentChapterId)
   const terms = normalizeEvidenceSearchTerms(query)

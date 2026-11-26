@@ -514,8 +514,8 @@ const api = {
     chatStream: (bookId: string, chapterId: string, messages: AiChatMessage[], threadId?: string) =>
       ipcRenderer.invoke('ai.chatStream', { bookId, chapterId, messages, threadId }) as Promise<AiJobStart>,
     /** 「对话」tab：pi 驱动的多轮 agent，模型可自行调工具查原文/检索/看记忆。 */
-    agentChat: (bookId: string, chapterId: string, messages: AiChatMessage[], threadId?: string) =>
-      ipcRenderer.invoke('ai.agentChat', { bookId, chapterId, messages, threadId }) as Promise<AiJobStart>,
+    agentChat: (bookId: string, chapterId: string, messages: AiChatMessage[], threadId?: string, recallScope: 'book' | 'progress' = 'book') =>
+      ipcRenderer.invoke('ai.agentChat', { bookId, chapterId, messages, threadId, recallScope }) as Promise<AiJobStart>,
     /** 「字词 / 百科」模式：脱离书籍、不校验阅读进度的多轮通用流式问答。 */
     generalChat: (bookId: string, messages: AiChatMessage[], threadId?: string) =>
       ipcRenderer.invoke('ai.generalChat', { bookId, messages, threadId }) as Promise<AiJobStart>,
