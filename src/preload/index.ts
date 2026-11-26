@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { AtlasRecognition } from '../shared/atlas'
 import type {
   AiBookUsage,
   AiBudgetEstimate,
@@ -7,11 +8,15 @@ import type {
   AiChapterNote,
   AiChapterNotesResult,
   AiChatMessage,
+  AiChatThreadSummary,
+  AiCreateThreadResult,
+  AiListThreadsResult,
   AiChunkEvent,
   AiCleanResult,
   AiDoneEvent,
   AiFollowCoverage,
   AiFollowMode,
+  AiEvidenceChatMessage,
   AiFollowStart,
   AiGetChatResult,
   AiJobStart,
@@ -283,6 +288,16 @@ const api = {
       ipcRenderer.invoke('map.addManualPlace', payload) as Promise<
         { ok: true; places: AiPlaceGeo[] } | { ok: false; message: string }
       >,
+    /** 自动识别书中原图（视觉模型 + 城市坐标库）；refresh 为 true 时绕过缓存重新识别。 */
+    recognize: (bookId: string, refresh = false) =>
+      ipcRenderer.invoke('map.recognize', { bookId, refresh }) as Promise<
+        { ok: true; recognition: AtlasRecognition } | { ok: false; message: string }
+      >,
+    /** 只读上次保存的识别结论，不调用模型。 */
+    getRecognition: (bookId: string) =>
+      ipcRenderer.invoke('map.getRecognition', { bookId }) as Promise<
+        { ok: true; recognition: AtlasRecognition | null } | { ok: false; message: string }
+      >,
   },
   proxy: {
     /** 用真会话试一次：只看有没有拿到 HTTP 响应，403 / 挑战页也算通。 */
@@ -453,8 +468,20 @@ const api = {
         | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
         | { ok: false; stopped?: boolean; message: string }
       >,
-    getChat: (bookId: string) => ipcRenderer.invoke('ai.getChat', { bookId }) as Promise<AiGetChatResult>,
-    clearChat: (bookId: string) => ipcRenderer.invoke('ai.clearChat', { bookId }) as Promise<{ ok: true } | { ok: false; message: string }>,
+    getChat: (bookId: string, threadId?: string) =>
+      ipcRenderer.invoke('ai.getChat', { bookId, threadId }) as Promise<AiGetChatResult>,
+    clearChat: (bookId: string, threadId?: string) =>
+      ipcRenderer.invoke('ai.clearChat', { bookId, threadId }) as Promise<{ ok: true } | { ok: false; message: string }>,
+    /** 整段覆盖问答历史：重问 / 编辑重发 / 删除某一轮都用它，避免重复轮次堆积。 */
+    replaceChat: (bookId: string, messages: AiEvidenceChatMessage[], threadId?: string) =>
+      ipcRenderer.invoke('ai.replaceChat', { bookId, messages, threadId }) as Promise<{ ok: true } | { ok: false; message: string }>,
+    /** 会话栏：一本书的多条问答会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。 */
+    listThreads: (bookId: string) =>
+      ipcRenderer.invoke('ai.listThreads', { bookId }) as Promise<AiListThreadsResult>,
+    createThread: (bookId: string, title?: string) =>
+      ipcRenderer.invoke('ai.createThread', { bookId, title }) as Promise<AiCreateThreadResult>,
+    deleteThread: (bookId: string, threadId: string) =>
+      ipcRenderer.invoke('ai.deleteThread', { bookId, threadId }) as Promise<{ ok: true } | { ok: false; message: string }>,
     test: (opts?: {
       baseUrl?: string
       model?: string
@@ -466,6 +493,14 @@ const api = {
     summarizeChapter: (bookId: string, chapterId: string, confirmOverBudget = false) =>
       ipcRenderer.invoke('ai.summarizeChapter', { bookId, chapterId, confirmOverBudget }) as Promise<
         AiJobStart | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
+      >,
+    getMindmap: (bookId: string, chapterId: string) =>
+      ipcRenderer.invoke('ai.getMindmap', { bookId, chapterId }) as Promise<
+        import('../shared/mindmap').AiMindmapGetResponse
+      >,
+    generateMindmap: (bookId: string, chapterId: string, force = false) =>
+      ipcRenderer.invoke('ai.generateMindmap', { bookId, chapterId, force }) as Promise<
+        import('../shared/mindmap').AiMindmapGenerateResponse
       >,
     chapterNote: (
       bookId: string,
@@ -495,8 +530,14 @@ const api = {
         | { ok: true; summaries: AiSummaries }
         | { ok: false; message: string }
       >,
-    chatStream: (bookId: string, chapterId: string, messages: AiChatMessage[]) =>
-      ipcRenderer.invoke('ai.chatStream', { bookId, chapterId, messages }) as Promise<AiJobStart>,
+    chatStream: (bookId: string, chapterId: string, messages: AiChatMessage[], threadId?: string) =>
+      ipcRenderer.invoke('ai.chatStream', { bookId, chapterId, messages, threadId }) as Promise<AiJobStart>,
+    /** 「对话」tab：pi 驱动的多轮 agent，模型可自行调工具查原文/检索/看记忆。 */
+    agentChat: (bookId: string, chapterId: string, messages: AiChatMessage[], threadId?: string, recallScope: 'book' | 'progress' = 'book') =>
+      ipcRenderer.invoke('ai.agentChat', { bookId, chapterId, messages, threadId, recallScope }) as Promise<AiJobStart>,
+    /** 「字词 / 百科」模式：脱离书籍、不校验阅读进度的多轮通用流式问答。 */
+    generalChat: (bookId: string, messages: AiChatMessage[], threadId?: string) =>
+      ipcRenderer.invoke('ai.generalChat', { bookId, messages, threadId }) as Promise<AiJobStart>,
     translateStream: (text: string, bookId?: string) =>
       ipcRenderer.invoke('ai.translateStream', { text, bookId }) as Promise<AiJobStart>,
     /** 「解释这段」：网页阅读模式用；与 translateStream 同形，不依赖书库条目。 */

@@ -1,11 +1,14 @@
 import { computed, ref } from 'vue'
 import type { Ref } from 'vue'
-import type { Book, ChapterMeta, ReaderReadingMode, AiChatMessage, AiResumeCardView, AiBookUsage, AiBudgetEstimate, AiBudgetEvent, AiChapterNote, AiCitation, AiEvidenceChatMessage, AiFollowCoverage, AiFollowMode, AiMaterialCoverage, AiMemoryBase, AiMemoryCharacter, AiMemoryFile, AiTimelineView, AiUsage } from '@shared/types'
+import type { Book, ChapterMeta, ReaderReadingMode, AiChatMessage, AiChatThreadSummary, AiResumeCardView, AiBookUsage, AiBudgetEstimate, AiBudgetEvent, AiChapterNote, AiCitation, AiEvidenceChatMessage, AiFollowCoverage, AiFollowMode, AiMaterialCoverage, AiMemoryBase, AiMemoryCharacter, AiMemoryFile, AiTimelineView, AiUsage } from '@shared/types'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { clearRetriedAssistantSaveToken, describeAssistantStage, currentAssistantStage as resolveAssistantStage, type AssistantJobKind, type AssistantPanelTab, type AssistantSaveTokenState, type AssistantStageState } from './aiAssistantStatus'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
+import { appendChatStep, type ChatStep, type ReaderChatMessage } from './readerChatMessage'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { splitIntoParagraphs } from './useTts'
+import { useInlineAsk } from './readerInlineAsk'
+import { hasQaContext, qaContextDirective, readQaContextChips, stripQaContextDirective, writeQaContextChips, type QaContextChips } from './readerQaContext'
 
 /**
  * 阅读器的「AI 助手面板」域：前情/记忆/问答/笔记/输出五个 tab 的状态与行为。
@@ -36,10 +39,16 @@ export interface ReaderAssistantDeps {
   resumeCardWarning: Ref<string>
   showSelPopup: Ref<boolean>
   selectedExcerpt: Ref<string>
+  /** 选区在规范化正文里的区间；划词提问要用它把回答存回原文。 */
+  selectedRange: Ref<{ start: number; end: number; text: string } | null>
+  /** 当前浏览器选区换算成规范化正文区间（Reader 侧实现）。 */
+  selectionOffsets: () => { start: number; end: number; text: string } | null
   restoringChat: Ref<boolean>
   aiResult: Ref<string>
   aiResultTitle: Ref<string>
   closeSelectionTools: (clearBrowserSelection?: boolean) => void
+  /** 跳回原文后给目标段落闪一下（Reader.vue 实现）；省略时只保证滚动到段落。 */
+  flashParagraph?: (paragraphIndex: number) => void
 }
 
 export function useReaderAssistant(deps: ReaderAssistantDeps) {
@@ -47,7 +56,8 @@ export function useReaderAssistant(deps: ReaderAssistantDeps) {
     book, currentChapter, chapterBody, paras, chapters, contentRef, fontSize, readingMode, message,
     loadBook, openChapter, pendingScrollPara,
     resumeCardView, resumeCardLoading, resumeCardWarning, showSelPopup, selectedExcerpt,
-    restoringChat, aiResult, aiResultTitle, closeSelectionTools,
+    selectedRange, selectionOffsets,
+    restoringChat, aiResult, aiResultTitle, closeSelectionTools, flashParagraph,
   } = deps
 
 const showAiAssistant = ref(false)
@@ -120,12 +130,64 @@ const otherChapterNotes = computed(() => chapterNotes.value.filter((note) => not
 const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
-const chatMessages = ref<AiEvidenceChatMessage[]>([])
+const chatMode = ref<'agent' | 'general' | 'evidence'>('agent')
+/**
+ * 问答检索范围：默认 'book' 允许问全书（不问就不主动透未读剧情）；
+ * 读者在运行面板里关掉「可聊全书」后变成 'progress'，检索重新锁在已读前沿。
+ * 存 localStorage：这是读者「我怕不怕被剧透」的偏好，不该每开一次面板就重设。
+ */
+const CHAT_RECALL_SCOPE_KEY = 'spbf.chatRecallScope'
+function readChatRecallScope(): 'book' | 'progress' {
+  try {
+    return localStorage.getItem(CHAT_RECALL_SCOPE_KEY) === 'progress' ? 'progress' : 'book'
+  } catch {
+    return 'book'
+  }
+}
+const chatRecallScope = ref<'book' | 'progress'>(readChatRecallScope())
+function setChatRecallScope(allowBook: boolean) {
+  chatRecallScope.value = allowBook ? 'book' : 'progress'
+  try {
+    localStorage.setItem(CHAT_RECALL_SCOPE_KEY, chatRecallScope.value)
+  } catch {
+    /* 隐私模式等写不进就只走内存 */
+  }
+}
+/**
+ * 参考范围开关（本章 / 记忆 / 批注）：读者显式告诉模型先看什么，省掉每轮靠模型猜。
+ * 只影响发送时附上的那一行指令，不新增 IPC、不额外调用模型。
+ * 状态存 localStorage：这是读者「我通常想怎么看」的偏好，不该每开一次面板就重设。
+ */
+const qaContextChips = ref<QaContextChips>(readQaContextChips())
+const qaContextActive = computed(() => hasQaContext(qaContextChips.value))
+/**
+ * 证据模式只吃检索到的已读段落，附这行指令属于误导（读者会以为能改变检索范围），
+ * 所以界面把开关禁用掉，这里再兜一层：状态再怎么变都不会拼进去。
+ */
+function toggleQaContextChip(key: keyof QaContextChips) {
+  if (chatMode.value !== 'agent') return
+  qaContextChips.value = { ...qaContextChips.value, [key]: !qaContextChips.value[key] }
+  writeQaContextChips(qaContextChips.value)
+}
+const chatMessages = ref<ReaderChatMessage[]>([])
+/** 对话模式下模型正在调的本地工具，界面上显示成一行小字而不是空白转圈。 */
+const agentToolActivity = ref('')
 const chatInput = ref('')
 const chatLoading = ref(false)
 const chatStarting = ref(false)
 const chatJobId = ref('')
 const chatAssistantIndex = ref(-1)
+/**
+ * 会话栏：一本书可以有多条互不污染的问答会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。
+ * 消息仍落在主进程的 ai/chats.json，这里只拿列表要用的摘要与当前会话 ID。
+ *
+ * `chatThreadId` 空串的含义是「这本书还没有会话」：界面据此回到欢迎态，
+ * 而不是指向一条已经不存在的会话。
+ */
+const chatThreadId = ref('')
+const chatThreads = ref<AiChatThreadSummary[]>([])
+/** 会话栏正在读写：新建/切换/删除会话是一次 IPC + 一次读盘，连点会拿旧 active 覆盖新结果。 */
+const chatThreadSaving = ref(false)
 /**
  * 从选区发起的那次提问：记住气泡序号与选区区间，回答完成后就能把 AI 的解释
  * 存回读者刚才选中的同一段文字。换章、清空记录或手动提问都会让它失效。
@@ -438,6 +500,153 @@ function showAiOutput() {
   showAiAssistant.value = true
 }
 
+/**
+ * 会话下拉里的一行文案：「标题 · N 条」。
+ * 没起过标题的会话显示「新会话」：空标题在下拉框里就是一条看不见的空白。
+ */
+function chatThreadOptionLabel(thread: AiChatThreadSummary): string {
+  const title = thread.title.trim() || '新会话'
+  return `${title} · ${thread.messageCount} 条`
+}
+
+/**
+ * n-select 要的 { label, value }。
+ * 文案复用 chatThreadOptionLabel：下拉框和别处各写一遍，迟早会漂成两种说法。
+ */
+const chatThreadOptions = computed(() => chatThreads.value.map((thread) => ({
+  label: chatThreadOptionLabel(thread),
+  value: thread.id,
+})))
+
+/**
+ * 拉会话列表，并把当前会话收口到一份真实存在的会话上。
+ *
+ * 为什么要管 `chatThreadId`：它可能来自上一本书、或指向刚在别处被删掉的会话。
+ * 不在这里对齐的话，下一句提问会带着一个不存在的 id 去请求，直接报错。
+ */
+async function listChatThreads() {
+  const target = book.value
+  if (!target) return
+  try {
+    const res = await window.api.ai.listThreads(target.id)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    chatThreads.value = res.threads
+    if (!res.threads.some((thread) => thread.id === chatThreadId.value)) {
+      chatThreadId.value = res.activeThreadId
+    }
+    // 历史文件坏掉时主进程会带一句原因：不说清的话，读者只会看到会话栏突然空了。
+    if (res.message) message.warning(res.message)
+  } catch {
+    message.error('读取问答会话失败，请稍后重试')
+  }
+}
+
+/**
+ * 切到另一条会话：用磁盘上的那条历史整段覆盖界面。
+ *
+ * 生成中一律拒绝（连点击都不该接）：流式回答还在往 `chatAssistantIndex` 追加，
+ * 换一条会话就会把后面的句子写进刚切过去的那条，两条记录同时被污染。
+ */
+async function switchChatThread(id: string) {
+  const target = book.value
+  if (!target || !id) return
+  if (chatLoading.value || assistantSaveRetrying.value) return
+  chatThreadSaving.value = true
+  try {
+    const res = await window.api.ai.getChat(target.id, id)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    chatThreadId.value = res.threadId ?? id
+    chatMessages.value = normalizeEvidenceChatHistory(res.messages)
+    // 草稿、下标与选区目标都是上一条会话的：留着就会把 A 会话的问题发进 B 会话。
+    chatInput.value = ''
+    chatAssistantIndex.value = -1
+    selectionNoteTarget.value = null
+    agentToolActivity.value = ''
+  } catch {
+    message.error('读取会话历史失败，请稍后重试')
+  } finally {
+    chatThreadSaving.value = false
+  }
+}
+
+/** 新建一条空会话并切过去。到上限时主进程直接给可读原因，不必再问一次。 */
+async function newChatThread() {
+  const target = book.value
+  if (!target || chatLoading.value || assistantSaveRetrying.value || chatThreadSaving.value) return
+  chatThreadSaving.value = true
+  try {
+    const res = await window.api.ai.createThread(target.id)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    // 先刷新列表再切：下拉框里得先有这一项，选中态才落得下来。
+    await listChatThreads()
+    await switchChatThread(res.threadId)
+  } catch {
+    message.error('新建会话失败，请稍后重试')
+  } finally {
+    chatThreadSaving.value = false
+  }
+}
+
+/**
+ * 删除一条会话。删的若是当前会话，主进程已经把 active 交给了最近的剩余会话，
+ * 这里重新拉一遍列表就能落到它；一条不剩时 `chatThreadId` 为空串，界面回欢迎态。
+ */
+async function removeChatThread(id: string) {
+  const target = book.value
+  if (!target || !id || chatLoading.value || assistantSaveRetrying.value || chatThreadSaving.value) return
+  // 删之前先记住它是不是当前会话：删完列表已经刷新，那个 id 不会再出现在里面。
+  const wasCurrent = id === chatThreadId.value
+  chatThreadSaving.value = true
+  try {
+    const res = await window.api.ai.deleteThread(target.id, id)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    await listChatThreads()
+    if (!wasCurrent) return
+    // 删的是当前会话：加载剩下的那一条；一条不剩就清空消息，让它自然回到欢迎态。
+    if (chatThreadId.value) {
+      await switchChatThread(chatThreadId.value)
+    } else {
+      chatMessages.value = []
+      chatInput.value = ''
+      chatAssistantIndex.value = -1
+      selectionNoteTarget.value = null
+      agentToolActivity.value = ''
+    }
+  } catch {
+    message.error('删除会话失败，请稍后重试')
+  } finally {
+    chatThreadSaving.value = false
+  }
+}
+
+/**
+ * 打开面板时刷新会话栏再读历史。
+ *
+ * 顺序不能反：`getChat` 省略 threadId 读的是主进程的 active，
+ * 会话列表后到的话，下拉框会先显示一条、消息却来自另一条。
+ */
+async function reloadChatThreads() {
+  const target = book.value
+  if (!target) return
+  await listChatThreads()
+  const res = await window.api.ai.getChat(target.id, chatThreadId.value || undefined)
+  if (!res.ok) return
+  chatThreadId.value = res.threadId ?? chatThreadId.value
+  chatMessages.value = normalizeEvidenceChatHistory(res.messages)
+}
+
 async function openAiAssistant(tab: AssistantPanelTab = 'recap') {
   if (!book.value) return
   aiAssistantTab.value = tab
@@ -447,9 +656,8 @@ async function openAiAssistant(tab: AssistantPanelTab = 'recap') {
     loadStoredMemory(),
     loadAssistantMaterial(),
     refreshSemanticStatus(),
-    chatLoading.value || restoringChat.value
-      ? Promise.resolve()
-      : window.api.ai.getChat(book.value.id).then((res) => { if (res.ok) chatMessages.value = normalizeEvidenceChatHistory(res.messages) }),
+    // 生成中不碰历史：否则会把流式追加的内容和刚读回来的旧记录混在一起。
+    chatLoading.value || restoringChat.value ? Promise.resolve() : reloadChatThreads(),
   ])
 }
 
@@ -518,6 +726,9 @@ async function jumpToMemorySource(source: AiCitation) {
     }
     if (location.mode === 'fallback') {
       message.warning('原段落已变化，已跳到该章开头。')
+    } else {
+      // 同一章里从引用角标跳过来时页码可能没变，闪一下才知道落在哪一段。
+      flashParagraph?.(location.paragraphIndex)
     }
   } catch {
     pendingScrollPara.set(-1)
@@ -886,30 +1097,61 @@ function prepareQuickQuestion(question: string) {
   chatInput.value = question
 }
 
-async function sendChat() {
-  if (!book.value || !currentChapter.value || !chatInput.value.trim()) return
+/**
+ * 真正发起一轮问答：发问、重问、编辑重发都走这里。
+ *
+ * `history` 是本轮问题之前的历史（不含新问题）。先把历史拍成纯快照再往 `chatMessages`
+ * 里塞用户消息：两处引用同一个响应式数组时，后塞的那条会被算进历史，问题就发了两遍。
+ *
+ * 参考范围只在这里拼：三个入口共用这一处，重问/编辑重发就自然带上读者当前的开关状态。
+ */
+async function startChatFrom(history: readonly AiEvidenceChatMessage[], question: string) {
+  const target = book.value
+  const chapter = currentChapter.value
+  // 旧句子末尾可能已经带着上次那行标记（重问/编辑重发就是拿聊天记录里的句子再发一遍），
+  // 先剥掉再按当前开关拼，否则同一行会叠成两行。
+  const userMsg = stripQaContextDirective(question.trim())
+  if (!target || (!chapter && chatMode.value !== 'general') || !userMsg) return
   if (assistantBusyByKind.value.qa || assistantSaveRetrying.value) {
     message.warning('请先停止当前生成')
     return
   }
-  const userMsg = chatInput.value.trim()
+  // 证据模式不拼：它只吃检索结果，附上这行会让读者误以为能改变检索范围。
+  const directive = chatMode.value === 'agent' ? qaContextDirective(qaContextChips.value) : ''
+  // 拼好的整句同时进 payload 和聊天记录：主进程会原样落盘，两处不一致下次重开就对不上。
+  const userContent = directive ? `${userMsg}\n\n${directive}` : userMsg
+  // 主进程只读 role/content，且 IPC 走 structured clone：Vue 的响应式数组/对象是 Proxy，
+  // 原样传过去会直接抛「An object could not be cloned」，问答永远起不来。这里发一份纯快照。
+  const payload: AiChatMessage[] = [...history, { role: 'user' as const, content: userContent }]
+    .map((m) => ({ role: m.role, content: m.content }))
   selectionNoteTarget.value = null
-  chatMessages.value.push({ role: 'user', content: userMsg })
-  chatInput.value = ''
+  chatMessages.value.push({ role: 'user', content: userContent })
   chatStarting.value = true
   try {
-    // 主进程只读 role/content，且 IPC 走 structured clone：Vue 的响应式数组/对象是 Proxy，
-    // 原样传过去会直接抛「An object could not be cloned」，问答永远起不来。这里发一份纯快照。
-    const history: AiChatMessage[] = chatMessages.value.map((m) => ({ role: m.role, content: m.content }))
-    const res = await window.api.ai.chatStream(book.value.id, currentChapter.value.id, history)
+    // 对话模式走 pi agent（模型自己决定查目录/读原文/检索/看记忆），证据模式仍是单轮严格引用。
+    // 带上当前会话：没有会话时主进程会按需开一条，并把这一轮写进去。
+    const threadId = chatThreadId.value || undefined
+    const res = chatMode.value === 'agent'
+      ? await window.api.ai.agentChat(target.id, chapter!.id, payload, threadId, chatRecallScope.value)
+      : chatMode.value === 'general'
+        ? await window.api.ai.generalChat(target.id, payload, threadId)
+        : await window.api.ai.chatStream(target.id, chapter!.id, payload, threadId)
     if (!res.ok) {
       chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
       return
     }
+    agentToolActivity.value = ''
     chatJobId.value = res.jobId
     chatLoading.value = true
-    chatMessages.value.push({ role: 'assistant', content: '' })
+    chatMessages.value.push({
+      role: 'assistant',
+      content: '',
+      ...(chatMode.value === 'general' ? { citations: [], scope: 'general' as const } : {}),
+    })
     chatAssistantIndex.value = chatMessages.value.length - 1
+    // 主进程已经把这条会话设为 active 并补上了标题：刷新列表，下拉框才显示得出。
+    // （一本书还没有会话时 chatThreadId 是空串，这次刷新才把它落到新建的那条上。）
+    void listChatThreads()
   } catch (error) {
     // 失败要说人话：保留真实原因并给出下一步，别再吞成一句「无法启动」。
     const detail = error instanceof Error ? error.message : String(error)
@@ -919,21 +1161,247 @@ async function sendChat() {
   }
 }
 
+async function sendChat() {
+  const question = chatInput.value.trim()
+  if (!book.value || (!currentChapter.value && chatMode.value !== 'general') || !question) return
+  if (assistantBusyByKind.value.qa || assistantSaveRetrying.value) {
+    message.warning('请先停止当前生成')
+    return
+  }
+  chatInput.value = ''
+  await startChatFrom(chatMessages.value, question)
+}
+
 function stopChat() {
   if (chatJobId.value) void window.api.ai.cancel(chatJobId.value)
 }
 
+/**
+ * 选区的段落上下文：生僻字词脱离原句没意义，必须带着前后句一起问。
+ * 只取命中段的前后各一段并夹住长度，不把整章塞进提示词。
+ */
+function selectionContext(range: { start: number; end: number } | null, excerpt: string): string {
+  const list = paras.value
+  if (!list.length) return ''
+  let index = -1
+  if (range && Number.isSafeInteger(range.start)) {
+    // 规范化正文是段落以空行连接，回推段落下标要用同样两字的分隔符。
+    let cursor = 0
+    for (let i = 0; i < list.length; i += 1) {
+      const start = cursor
+      const end = start + list[i]!.length
+      if (range.start >= start && range.start <= end) { index = i; break }
+      cursor = end + 2
+    }
+  }
+  if (index < 0) {
+    const probe = excerpt.trim().slice(0, 30)
+    if (probe) index = list.findIndex((paragraph) => paragraph.includes(probe))
+  }
+  if (index < 0) return ''
+  return [list[index - 1], list[index], list[index + 1]]
+    .filter((paragraph): paragraph is string => Boolean(paragraph))
+    .join('\n')
+    .slice(0, 600)
+}
+
+/**
+ * 划词后的「解释字词」：读者单纯询问这一个字或词本身的意思，
+ * 与文章内容无关、不需要和书籍联系在一起，直接走纯字词释义卡片。
+ */
+async function explainSelection(_kind: 'word' | 'sentence' = 'word') {
+  await inlineAsk.explainWord()
+  if (inlineAsk.open.value) showSelPopup.value = false
+}
+
+/** 划词菜单里的「继续追问」：不预设问法，只把选区和出处放进对话，等读者自己写。 */
+async function askSelectionInAgent(question?: string) {
+  if (!book.value || !currentChapter.value) return
+  const excerpt = selectedExcerpt.value || getSelectedText()
+  chatMode.value = 'agent'
+  aiAssistantTab.value = 'qa'
+  showAiAssistant.value = true
+  if (question) {
+    chatInput.value = question
+    closeSelectionTools()
+    await sendChat()
+    return
+  }
+  const target = selectedRange.value ?? selectionOffsets()
+  const context = [
+    currentChapter.value ? `本章：《${currentChapter.value.title}》` : '',
+    selectionContext(target, excerpt),
+  ].filter(Boolean).join('\n')
+  chatInput.value = excerpt ? `关于「${excerpt.slice(0, 200)}」\n${context}\n` : ''
+  showSelPopup.value = false
+}
+
+/**
+ * 主进程把工具进度搭在 ai.stage 的 detail 上：既更新那行全局小字，也把它存进当前这条
+ * 流式助手消息的思考链。`settle` 只在收尾时有意义（ab.done）：失败把还在跑的那步标成 error。
+ */
+function setAgentToolActivity(label: string, settle: ChatStep['state'] = 'done') {
+  agentToolActivity.value = label
+  const index = chatAssistantIndex.value
+  if (index < 0) return
+  const assistant = chatMessages.value[index]
+  if (!assistant || assistant.role !== 'assistant') return
+  assistant.steps = appendChatStep(assistant.steps, label, settle)
+}
+
+/** 生成中或等补写时不动历史：否则会把流式追加和覆盖写进同一个下标。 */
+const chatActionsDisabled = computed(() => chatLoading.value || assistantSaveRetrying.value)
+
+/** 界面上的「一轮」= 助手回答 + 紧挨着它前面的用户提问。 */
+interface ChatRound {
+  questionIndex: number
+  answerIndex: number
+  question: string
+}
+
+function chatRoundAt(answerIndex: number): ChatRound | null {
+  const answer = chatMessages.value[answerIndex]
+  if (!answer || answer.role !== 'assistant') return null
+  const question = chatMessages.value[answerIndex - 1]
+  if (!question || question.role !== 'user') return null
+  return { questionIndex: answerIndex - 1, answerIndex, question: question.content }
+}
+
+/**
+ * 结构性修改（删一轮、改历史）后必须整段覆盖磁盘：
+ * 主进程的问答只会往后追加，不覆盖的话被删的那一轮会被下一次回答带回来。
+ */
+async function persistChatSnapshot() {
+  const target = book.value
+  if (!target) return
+  // 传 IPC 的必须是纯对象：Vue 的响应式对象是 Proxy，structured clone 会直接抛。
+  // steps 是界面上的思考链，不写进书库。
+  const snapshot: AiEvidenceChatMessage[] = chatMessages.value.map((message) => ({
+    role: message.role,
+    content: message.content,
+    ...(message.citations ? { citations: message.citations.map((citation) => ({ ...citation })) } : {}),
+    ...(message.scope ? { scope: message.scope } : {}),
+    // quote 也要跟着走：它是引文校验的依据，丢了下次就只能说「没核过」。
+    ...(message.claims ? { claims: message.claims.map((claim) => ({ text: claim.text, citationIds: [...claim.citationIds], ...(claim.quote ? { quote: claim.quote } : {}) })) } : {}),
+    // 可信度标签不是界面临时算的，重开面板后要能原样复现，所以一起写回。
+    ...(message.verification ? { verification: message.verification } : {}),
+    ...(message.droppedClaims !== undefined ? { droppedClaims: message.droppedClaims } : {}),
+    ...(message.uptoChapterId ? { uptoChapterId: message.uptoChapterId } : {}),
+    ...(message.stopped ? { stopped: true } : {}),
+  }))
+  try {
+    // 只覆盖当前会话：不带 threadId 会盖到主进程的 active 上，删错一条会话。
+    const res = await window.api.ai.replaceChat(target.id, snapshot, chatThreadId.value || undefined)
+    if (!res.ok) message.error(`已修改本地记录，未能写入书库：${res.message}`)
+  } catch {
+    message.error('已修改本地记录，未能写入书库：写盘请求没有送达')
+  }
+}
+
+/** 复制只拿正文：角标与依据列表是界面上的东西，粘到别处只会变成噪声。 */
+async function copyChatAnswer(index: number) {
+  const content = chatMessages.value[index]?.content ?? ''
+  if (!content) return
+  try {
+    await navigator.clipboard.writeText(content)
+    message.success('已复制')
+  } catch {
+    message.error('复制失败，请手动选中文字')
+  }
+}
+
+/** 重问：把同一句话用截断后的历史重发一次，避免历史里堆出两轮一样的问答。 */
+async function reAskChatAnswer(index: number) {
+  const round = chatRoundAt(index)
+  if (!round || chatActionsDisabled.value) return
+  const history = chatMessages.value.slice(0, round.questionIndex)
+  chatMessages.value.splice(round.questionIndex, 2)
+  await persistChatSnapshot()
+  await startChatFrom(history, round.question)
+}
+
+/**
+ * 编辑：把上一句放回输入框并删掉这一轮，改完由读者自己发。
+ * 先剥掉参考范围那行：读者改的是自己的问题，不是机器标记；发送时再按当时开关拼回去。
+ */
+async function editChatQuestion(index: number) {
+  const round = chatRoundAt(index)
+  if (!round || chatActionsDisabled.value) return
+  chatMessages.value.splice(round.questionIndex, 2)
+  chatInput.value = stripQaContextDirective(round.question)
+  await persistChatSnapshot()
+}
+
+/** 删除：同样只删这一轮，不调模型、不花钱。 */
+async function deleteChatRound(index: number) {
+  const round = chatRoundAt(index)
+  if (!round || chatActionsDisabled.value) return
+  chatMessages.value.splice(round.questionIndex, 2)
+  await persistChatSnapshot()
+}
+
 async function clearChat() {
   if (!book.value || chatLoading.value || assistantSaveRetrying.value) return
-  const res = await window.api.ai.clearChat(book.value.id)
+  // 只清当前会话，不删会话本身：其余会话的历史必须留着。
+  const res = await window.api.ai.clearChat(book.value.id, chatThreadId.value || undefined)
   if (res.ok) {
     chatMessages.value = []
     chatInput.value = ''
+    chatAssistantIndex.value = -1
     selectionNoteTarget.value = null
+    // 条数变了，会话栏上的「N 条」要跟着回到 0。
+    void listChatThreads()
   } else {
     message.error(res.message)
   }
 }
+
+/**
+ * 划词行内卡片：
+ * - 「询问 AI」必须与书籍联系在一起（附带书名、当前章、所在段落上下文，走书籍 agentChat）；
+ * - 「解释字词」只问字词本身的意思（不带任何文章或书籍上下文，走 explainText）。
+ */
+const inlineAsk = useInlineAsk({
+  canAsk: () => Boolean(book.value && currentChapter.value),
+  excerpt: () => selectedExcerpt.value || getSelectedText(),
+  context: () => {
+    const target = selectedRange.value ?? selectionOffsets()
+    const excerpt = selectedExcerpt.value || getSelectedText()
+    const paragraphContext = selectionContext(target, excerpt)
+    return [
+      book.value ? `书籍：《${book.value.title}》` : '',
+      currentChapter.value ? `本章：《${currentChapter.value.title}》` : '',
+      paragraphContext ? `原文段落上下文：\n${paragraphContext}` : '',
+    ].filter(Boolean).join('\n')
+  },
+  ask: async (prompt) => {
+    if (!book.value || !currentChapter.value) return { ok: false, message: '还没有可提问的章节' }
+    chatMode.value = 'agent'
+    return window.api.ai.agentChat(book.value.id, currentChapter.value.id, [{ role: 'user', content: prompt }])
+  },
+  explainWord: async (word) => {
+    return window.api.ai.explainText(word, book.value?.id)
+  },
+  handOff: (turns) => {
+    // 整段对话原样进侧栏：卡片里的问题与回答变成侧栏的前几轮，之后接着追问。
+    const isWordMode = inlineAsk.mode.value === 'word'
+    chatMode.value = isWordMode ? 'general' : 'agent'
+    aiAssistantTab.value = 'qa'
+    // 行内卡片本来就没有引用坐标，但也不能让它落进「旧版回答，无来源」的分支：
+    // 空数组是「有来源字段、只是这次没有引用」，与 undefined 的旧记录不是一回事。
+    chatMessages.value = [...chatMessages.value, ...turns.flatMap((turn) => [
+      { role: 'user' as const, content: turn.question },
+      {
+        role: 'assistant' as const,
+        content: turn.answer,
+        citations: [],
+        ...(isWordMode ? { scope: 'general' as const } : {}),
+      },
+    ])]
+    showAiAssistant.value = true
+  },
+  message,
+})
 
   return {
     showAiAssistant,
@@ -990,11 +1458,29 @@ async function clearChat() {
     translateJobId,
     translateLoading,
     chatMessages,
+    chatMode,
+    chatRecallScope,
+    setChatRecallScope,
+    qaContextChips,
+    qaContextActive,
+    toggleQaContextChip,
+    agentToolActivity,
+    setAgentToolActivity,
     chatInput,
     chatLoading,
     chatStarting,
     chatJobId,
     chatAssistantIndex,
+    // 会话栏：模板用 state + 四个动作，全部从这里导出，Reader.vue 不再自己拼一遍。
+    chatThreadId,
+    chatThreads,
+    chatThreadSaving,
+    chatThreadOptionLabel,
+    chatThreadOptions,
+    listChatThreads,
+    switchChatThread,
+    newChatThread,
+    removeChatThread,
     selectionNoteTarget,
     selectionNoteSaving,
     follow,
@@ -1073,10 +1559,20 @@ async function clearChat() {
     getSelectedText,
     translateSelectedText,
     stopTranslate,
+    explainSelection,
+    askSelectionInAgent,
+    /** 划词工具栏第一个按钮：就地弹卡片问一句（Sider 的「询问AI」）。 */
+    openInlineAsk: () => inlineAsk.show(),
+    inlineAsk,
     QUICK_READING_QUESTIONS,
     prepareQuickQuestion,
     sendChat,
     stopChat,
     clearChat,
+    chatActionsDisabled,
+    copyChatAnswer,
+    reAskChatAnswer,
+    editChatQuestion,
+    deleteChatRound,
   }
 }

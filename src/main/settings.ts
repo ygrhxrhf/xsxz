@@ -164,6 +164,12 @@ export function normalizeAiPrefs(value: unknown): AiPrefs {
     provider: readEnum(ai.provider, AI_PROVIDERS, DEFAULT_AI_PREFS.provider),
     thinkingEnabled:
       typeof ai.thinkingEnabled === 'boolean' ? ai.thinkingEnabled : DEFAULT_AI_PREFS.thinkingEnabled,
+    // 核验开关：只认真正的布尔。缺字段的老设置文件、被手改成字符串或数字的脏值一律按开启处理——
+    // 这里默认值选错的方向不是「省钱」而是「静默关掉安全网」，所以只允许显式 false 关掉。
+    verifyEvidenceAnswers:
+      typeof ai.verifyEvidenceAnswers === 'boolean'
+        ? ai.verifyEvidenceAnswers
+        : DEFAULT_AI_PREFS.verifyEvidenceAnswers,
     recapLength: readEnum(ai.recapLength, AI_RECAP_LENGTHS, DEFAULT_AI_PREFS.recapLength),
     budgetWarningTokens: typeof ai.budgetWarningTokens === 'number' && Number.isSafeInteger(ai.budgetWarningTokens)
       ? Math.max(1000, Math.min(50000, ai.budgetWarningTokens))
@@ -321,6 +327,11 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
       typeof reader.hideReaderChrome === 'boolean'
         ? reader.hideReaderChrome
         : DEFAULT_READER_PREFS.hideReaderChrome!,
+    highlightColor:
+      typeof reader.highlightColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(reader.highlightColor)
+        ? reader.highlightColor
+        : DEFAULT_READER_PREFS.highlightColor!,
+    highlightOpacity: Math.round(readFiniteClamped(reader.highlightOpacity, 0, 100, DEFAULT_READER_PREFS.highlightOpacity!)),
   }
 }
 

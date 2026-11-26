@@ -16,7 +16,7 @@ import {
     type Annotation,
     type MarkKind
 } from './annotations'
-import { measure, type LayoutConfig, type Line, type Page, type Word } from './layout'
+import { fontString, glyphInk, measure, type LayoutConfig, type Line, type Page, type Word } from './layout'
 
 export interface RenderOptions {
   cfg: LayoutConfig
@@ -29,6 +29,10 @@ export interface RenderOptions {
   ink?: string
   /** spbf 的主题弱色（页眉页脚）；缺省用参考站的灰。 */
   muted?: string
+  /** 自定义高亮色（十六进制，如 #ffe45c）；缺省用 MARK_COLORS 的 fill。 */
+  highlightColor?: string
+  /** 自定义高亮透明度 0–100；缺省 35。 */
+  highlightOpacity?: number
 }
 
 export const INK = '#241c15'
@@ -67,11 +71,27 @@ export interface MarkRect {
  * Vertical span of a mark in page-content coordinates.
  * A highlight is the wash around the glyphs. An underline uses that same band and the stroke beneath it.
  * The line box is taller than this band; the cream between bars is not part of the mark.
+ *
+ * 上下沿取真实字形墨迹（`glyphInk`）而不是「字号 × 系数」：汉字、数字、标点的实际高度差
+ * 很大，用统一系数时暖色块会在字上偏一截。留白按字号给一点余量，让色块像笔刷而不切字。
  */
-export function markBand(line: { y: number; baseline: number }, fontSize: number, kind: MarkKind = 'highlight') {
-  const top = line.y + line.baseline - fontSize * 0.84
-  const washBot = line.y + line.baseline + fontSize * 0.28
-  const bot = kind === 'underline' ? Math.max(washBot, line.y + line.baseline + 6) : washBot
+export function markBand(
+  line: { y: number; baseline: number; words?: Word[] },
+  fontSize: number,
+  kind: MarkKind = 'highlight',
+  cfg?: LayoutConfig,
+) {
+  const sample = line.words?.map((w) => w.text).join('') ?? ''
+  const family = cfg?.family || 'serif'
+  const font = fontString({ ...(cfg ?? ({} as LayoutConfig)), family, fontSize }, fontSize, {})
+  const ink = glyphInk(font, sample)
+  // 有真实墨迹就用它；没有则退回旧的系数，保证任何调用方式都有结果。
+  const ascent = ink?.ascent || fontSize * 0.84
+  const descent = ink?.descent || fontSize * 0.28
+  // 色带比字框收细约三成：从真实字形上下沿向内收，既贴合字身中心，又不会糊满整行显得粗重。
+  const top = line.y + line.baseline - ascent * 0.76
+  const washBot = line.y + line.baseline + descent * 0.55
+  const bot = kind === 'underline' ? Math.max(line.y + line.baseline + descent, line.y + line.baseline + 6) : washBot
   return { top, bot }
 }
 
@@ -88,7 +108,7 @@ export function markUnderPoint(page: Page, x: number, y: number, marks: Annotati
         if (judouHit(r, cfg, x, y)) return mark
         continue
       }
-      const band = markBand(r.line, cfg.fontSize, mark.kind)
+      const band = markBand(r.line, cfg.fontSize, mark.kind, cfg)
       if (y < band.top - 1.25 || y > band.bot + 1.25) continue
       if (x < r.x0 - 2 || x > r.x1 + 2) continue
       bandHit = mark
@@ -281,12 +301,16 @@ export function renderPage(page: Page, o: RenderOptions): PageCanvas {
       const l = r.line
       const size = cfg.fontSize
       if (m.kind === 'highlight') {
-        const { top, bot } = markBand(l, size)
+        const { top, bot } = markBand(l, size, 'highlight', cfg)
         const h = bot - top
-        const x0 = r.x0 - 1.8 + (rand() - 0.5) * 1.6
-        const x1 = r.x1 + 1.8 + (rand() - 0.5) * 1.6
-        const tilt = (rand() - 0.5) * 1.1
-        const wob = () => (rand() - 0.5) * 0.9
+        // 横向留白按字号走、且有上限：原来是固定 1.8px + 0.8px 抖动，
+        // 小字号时会显得色块比字宽出一截，开始/结束也不是同一行字的边界。
+        const padX = Math.min(1.1, size * 0.05)
+        const jitterX = Math.min(0.6, size * 0.028)
+        const x0 = r.x0 - padX + (rand() - 0.5) * jitterX
+        const x1 = r.x1 + padX + (rand() - 0.5) * jitterX
+        const tilt = (rand() - 0.5) * 0.6
+        const wob = () => (rand() - 0.5) * 0.45
         const body = () => {
           c.beginPath()
           c.moveTo(x0 + 2, top + wob())
@@ -298,12 +322,27 @@ export function renderPage(page: Page, o: RenderOptions): PageCanvas {
         }
         c.save()
         c.filter = 'blur(0.55px)'
-        // One continuous wash: a soft vertical gradient without pooled ink or overlapping passes.
-        const wash = c.createLinearGradient(0, top, 0, bot)
-        wash.addColorStop(0, col.fill + '99')
-        wash.addColorStop(0.48, col.fill + 'b3')
-        wash.addColorStop(1, col.fill + 'a3')
-        c.fillStyle = wash
+        // 使用自定义高亮色与透明度；未自定义时回退到 MARK_COLORS 的渐变。
+        const customColor = o.highlightColor
+        const customOpacity = o.highlightOpacity ?? 35
+        if (customColor) {
+          const r = parseInt(customColor.slice(1, 3), 16)
+          const g = parseInt(customColor.slice(3, 5), 16)
+          const b = parseInt(customColor.slice(5, 7), 16)
+          const alpha = customOpacity / 100
+          const wash = c.createLinearGradient(0, top, 0, bot)
+          wash.addColorStop(0, `rgba(${r},${g},${b},${Math.min(alpha * 0.6, 1)})`)
+          wash.addColorStop(0.48, `rgba(${r},${g},${b},${Math.min(alpha * 0.7, 1)})`)
+          wash.addColorStop(1, `rgba(${r},${g},${b},${Math.min(alpha * 0.64, 1)})`)
+          c.fillStyle = wash
+        } else {
+          // One continuous wash: a soft vertical gradient without pooled ink or overlapping passes.
+          const wash = c.createLinearGradient(0, top, 0, bot)
+          wash.addColorStop(0, col.fill + '99')
+          wash.addColorStop(0.48, col.fill + 'b3')
+          wash.addColorStop(1, col.fill + 'a3')
+          c.fillStyle = wash
+        }
         body()
         c.fill()
         c.restore()

@@ -307,4 +307,16 @@ describe('Library comfortable card contract', () => {
     expect(source).toContain('<div v-if="failedRows.length" class="fail-list">')
     expect(source).not.toContain('v-html')
   })
+
+  it('shows book synopsis on card hover and hides it on mouseleave', async () => {
+    const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
+    expect(source).toContain('showHoverOverview(b.title, b.overview?.text, e)')
+    expect(source).toContain('showHoverOverview(book.title, book.description, e)')
+    expect(source).toContain('@mouseleave="hideHoverOverview"')
+    expect(source).toContain('HOVER_OVERVIEW_DELAY_MS')
+    expect(source).toContain('<Transition name="book-hover-overview-fade">')
+    expect(source).toContain('class="book-hover-overview"')
+    expect(source).toContain('role="tooltip"')
+    expect(source).not.toContain('v-html')
+  })
 })

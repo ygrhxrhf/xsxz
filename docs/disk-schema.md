@@ -25,7 +25,8 @@
       bookOverview.json     # AI 全书概览与逐章处理缓存；可含未读剧情和结局
       characters.json      # 旧 AI 人物卡 / 伏笔追踪；兼容保留
       memory.json          # 可核验小说记忆 v1（用户触发后生成）
-      chat.json            # 聊天 v1 / 证据问答 v2
+      chats.json          # 问答会话容器 v1（多条线程），见「ai/chats.json」
+      chat.json            # 旧聊天 v1 / 证据问答 v2；只读兼容，不再写入
       notes.json           # AI 生成或读者手写的本章笔记，见「ai/notes.json」
       follow.json          # 自动追剧的队列与进度真源，见「ai/follow.json」
       monthly-usage.json   # 每书每月自动任务额度与预留
@@ -254,7 +255,53 @@
 
 ---
 
-## ai/chat.json
+## ai/chats.json
+
+问答会话容器，版本 1，对齐 `AiChatThreadsFile`。一本书可以有多条互不污染的会话（问人物线 / 问这卷剧情 / 问伏笔各一条）：
+
+```json
+{
+  "version": 1,
+  "activeThreadId": "th_9f2c1a4b8d3e6075",
+  "threads": [
+    {
+      "id": "th_9f2c1a4b8d3e6075",
+      "title": "玉印后来去了哪里？",
+      "createdAt": "ISO-8601",
+      "updatedAt": "ISO-8601",
+      "messages": [
+        { "role": "user", "content": "玉印后来去了哪里？" },
+        {
+          "role": "assistant",
+          "content": "她把玉印交了出去。",
+          "uptoChapterId": "c0012",
+          "citations": [
+            {
+              "id": "ev-c0012-p8",
+              "chapterId": "c0012",
+              "chapterTitle": "第十二章 旧宅",
+              "paragraphIndex": 8,
+              "excerpt": "她推开积灰的书房门，想起父亲信中反复提到的那本旧账。"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `activeThreadId` 是当前会话；没有会话时为空串（界面回到欢迎态，首次发送再建）。线程被删或被裁掉后 active 不能悬空，读写两侧都会把它落到 `updatedAt` 最新的那条。
+- 线程顺序以 `updatedAt` 倒序为准；同一份文件最多 **20 条**会话（超过就删旧的），再多会话栏就滚不动了。
+- **每条线程内部的消息沿用 `trimChatPairs` 的 40 条规则**：一问一答算一个单位，从最新往后按单位累加，超出 40 条就丢掉最旧的完整单位——永远不会留下没有对应问题的孤立 assistant。裁剪只在读取与写入时统一做一次。
+- 消息字段与旧 `chat.json` v2 完全相同；逐条宽容解析，单条脏记录只丢那一条，不会让整条会话打不开。
+- `chats.json` 声称有线程却一条都解析不出来、版本不是 1、或是坏 JSON：一律按「没有会话」读，`ai.listThreads` 仍返回空列表并在 `message` 里说明原因。
+- 写入：只改指定线程的消息与 `updatedAt`，其余线程原样保留；整文件经同目录临时文件 fsync/close 后 rename 原子替换，失败保留旧文件。读写都是 read-modify-write，所以同一本书内加了锁，两个会话同时保存不会互相丢更新。
+- 会话 ID 收紧到 `[A-Za-z0-9_-]{1,64}`；第一条隐式会话固定用 `default`，让迁移与回退指向同一条。
+
+## ai/chat.json（只读兼容）
+
+**新数据不再写这里**。问答分成多条会话后，存储迁到 `ai/chats.json`；这份文件原样留着，供旧版本回退时看到最后一份状态。读顺序是「有 `chats.json` 就只读它，没有才回落到 `chat.json`」。
 
 旧版对齐 `AiChatFile` v1；新版证据问答对齐 `AiChatFileV2`：
 
@@ -283,11 +330,11 @@
 }
 ```
 
-- v1 消息无 `citations` / `uptoChapterId` / `stopped`，按“旧版回答，无来源”读取；首次成功保存证据问答时升级为 v2。
+- v1 消息无 `citations` / `uptoChapterId` / `stopped`，按“旧版回答，无来源”读取。
 - 每书独立保存，不含 system、reasoning 或 API Key。
-- 最多 40 条；超限时删除最旧的完整问答，不能留下没有对应问题的孤立 assistant。
-- v2 正式写入必须同目录临时文件完成 fsync/close 后 rename 原子替换；失败保留旧正式文件。缺失或损坏按空历史读取。
-
+- 最多 40 条；超限时删除最旧的完整问答，不能留下没有对应问题的孤立 assistant（与 `chats.json` 每条线程一致）。
+- 缺失或损坏按空历史读取。
+- **迁移只在内存里发生**：读到 `chat.json` 就当成一条 id 为 `default`、标题为「默认会话」的线程展示，打开侧栏不产生任何写盘；下一次写操作才整体落成 `chats.json`。因此迁移幂等，重启不会长出第二条默认会话。
 ---
 
 ## annotations.json
