@@ -51,11 +51,10 @@ function createNoteFixture(): NoteFixture {
   return { notes: [], current: null, starts: [], startResults: [], saves: [], listCalls: [], cancels: [] }
 }
 
-/** 笔记 pane 用文案认，不靠 naive-ui 生成的 tab id */
+/** 笔记区靠稳定的 data-ai-pane 认，不再依赖 naive-ui 的 tab 容器 */
 function readerNotesPane(): HTMLElement {
-  const pane = [...document.querySelectorAll<HTMLElement>('.n-tab-pane')]
-    .find((item) => item.textContent?.includes('只发送本章正文和本章的划线批注'))
-  if (!pane) throw new Error('笔记 pane 没渲染')
+  const pane = document.querySelector<HTMLElement>('[data-ai-pane="notes"]')
+  if (!pane) throw new Error('笔记区没渲染')
   return pane
 }
 
@@ -158,11 +157,14 @@ async function mountAssistant(
     bodyText: () => document.body.textContent ?? '',
     bubbles: () => [...document.querySelectorAll('.chat-msg.assistant .chat-bubble')].map((el) => el.textContent ?? ''),
     async clickTab(label: string) {
-      const tab = [...document.querySelectorAll<HTMLElement>('.n-tabs-tab')]
-        .find((item) => item.textContent?.trim() === label)
-      expect(tab, `抽屉里应有「${label}」tab`).toBeTruthy()
+      // 两层开关：顶层问答/阅读资料，阅读资料内部再分段；隐藏的分段也能收到 click。
+      const tab = [
+        ...document.querySelectorAll<HTMLElement>('.ai-top-switch button'),
+        ...document.querySelectorAll<HTMLElement>('.ai-read-switch button'),
+      ].find((item) => item.textContent?.trim() === label)
+      expect(tab, `抽屉里应有「${label}」开关`).toBeTruthy()
       tab!.click()
-      await vi.waitFor(() => expect(document.body.textContent).toContain('只发送本章正文和本章的划线批注'))
+      await vi.waitFor(() => expect(getComputedStyle(readerNotesPane()).display).not.toBe('none'))
       await nextTick()
     },
     notesPane: readerNotesPane,
@@ -253,6 +255,9 @@ describe('Reader 问答流式呈现', () => {
       await nextTick()
       expect(reader.bubbles()[0]).toBe('她把玉印交给了码头的账房先生。此后她离开了码头。')
       expect(reader.stopButton(), '终态后回到可再次提问').toBeUndefined()
+      // 用量不再常驻：点开状态条的运行信息面板才看得到，避免每次打开侧栏先读一张账单。
+      document.querySelector<HTMLButtonElement>('.ai-status-bar')?.click()
+      await nextTick()
       expect(document.body.textContent).toContain('最近一次：输入 12 / 输出 8 tokens')
       expect(document.body.textContent).not.toContain('服务未返回 token 用量。')
       expect(chatStarts.count).toBe(1)

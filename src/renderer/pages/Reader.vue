@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
-import { NButton, NConfigProvider, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPopconfirm, NRadioButton, NRadioGroup, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, darkTheme, useMessage } from 'naive-ui'
+import { NButton, NConfigProvider, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPopconfirm, NRadioButton, NRadioGroup, NSelect, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, darkTheme, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
 import { READER_THEME_COLORS } from '@shared/readerTheme'
 import type {
@@ -3471,6 +3471,16 @@ const {
   chatAssistantIndex,
   selectionNoteTarget,
   selectionNoteSaving,
+  // 会话栏：一本书的多条问答会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。
+  chatThreadId,
+  chatThreads,
+  chatThreadSaving,
+  chatThreadOptionLabel,
+  chatThreadOptions,
+  listChatThreads,
+  switchChatThread,
+  newChatThread,
+  removeChatThread,
   follow,
   readingAiMode,
   materialCoverage,
@@ -3563,6 +3573,29 @@ const {
   editChatQuestion,
   deleteChatRound,
 } = assistant
+
+/**
+ * 顶层两档：问答 / 阅读资料。
+ * 只留 aiAssistantTab 一份真源，顶层档位用可写 computed 推出来——
+ * 多存一个 ref 迟早出现「顶层停在问答、内容却是记忆」的错位。
+ */
+const assistantTopTab = computed<'chat' | 'read'>({
+  get: () => (aiAssistantTab.value === 'qa' ? 'chat' : 'read'),
+  set: (value) => {
+    if (value === 'chat') aiAssistantTab.value = 'qa'
+    else if (aiAssistantTab.value === 'qa') aiAssistantTab.value = 'recap'
+  },
+})
+
+/** 运行信息面板默认收起：模型与已读边界已经在状态条上，其余按需展开。 */
+const aiRuntimeOpen = ref(false)
+
+/** 状态条上的「已读至」：没有进度就直说，别显示一个空章节名。 */
+const readUptoTitle = computed(() => {
+  const chapterId = book.value?.progress?.chapterId
+  if (!chapterId) return '还没有阅读进度'
+  return book.value?.chapters.find((chapter) => chapter.id === chapterId)?.title || '未知章节'
+})
 
 /**
  * 打开「聊书」后把抽屉滚到最底：抽屉内容比窗口高，输入框在对话末尾，
@@ -4476,15 +4509,23 @@ onUnmounted(() => {
           </div>
 
           <!--
-            运行信息默认收起：模型端点、当前任务、已读截止、取材边界这些是调试与核对用的，
-            平时占据侧栏顶部只会淹没对话。保留原文案，只是移到折叠区里。
+            一行状态条：模型和已读边界是唯二需要常驻的信息。
+            预算、用量、取材范围、自动整理都收进「运行信息」面板——打开侧栏先看到内容，不是先读一张账单。
           -->
-          <details class="ai-runtime-info">
-            <summary>
-              <span>{{ book?.title }}</span>
-              <span v-if="!aiServiceOrigin" class="ai-heading-missing">未配置模型服务</span>
-              <span v-else class="subtle">运行信息</span>
-            </summary>
+          <button
+            class="ai-status-bar"
+            type="button"
+            :aria-expanded="aiRuntimeOpen"
+            aria-label="运行信息"
+            @click="aiRuntimeOpen = !aiRuntimeOpen"
+          >
+            <span class="ai-status-dot" :class="{ 'is-off': !aiServiceOrigin }" aria-hidden="true" />
+            <span class="ai-status-model">{{ aiServiceOrigin ? aiModelLabel : '未配置模型服务' }}</span>
+            <span class="ai-status-sep" aria-hidden="true">·</span>
+            <span class="ai-status-read">已读至 {{ readUptoTitle }}</span>
+            <span class="ai-status-toggle">{{ aiRuntimeOpen ? '收起' : '运行信息' }}</span>
+          </button>
+          <div v-if="aiRuntimeOpen" class="ai-runtime-panel">
             <div class="ai-assistant-heading">
               <strong>{{ book?.title }}</strong>
               <span v-if="aiServiceOrigin">模型服务：{{ aiServiceOrigin }}</span>
@@ -4513,7 +4554,7 @@ onUnmounted(() => {
             <div v-if="autoBudget" class="subtle">
               本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens；达到上限会暂停自动任务。
             </div>
-          </details>
+          </div>
 
           <!-- 只在真需要告知时浮出来：生成中、被截断、保存失败。 -->
           <div v-if="assistantStageText" class="ai-assistant-status">{{ assistantStageText }}</div>
@@ -4522,8 +4563,22 @@ onUnmounted(() => {
             结果已生成，但未能保存到书库。
             <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantSaveBusy" @click="retryAssistantSave">重试保存</n-button>
           </div>
-          <n-tabs v-model:value="aiAssistantTab" type="line" animated>
-            <n-tab-pane name="recap" tab="前情">
+          <!--
+            顶层只留两种意图：问答，和翻阅读资料。前情/记忆/笔记/结果退成阅读资料内部的一段，
+            不再和问答抢同一排页签——读者第一眼只需要决定「问」还是「翻」。
+          -->
+          <div class="ai-top-switch" role="tablist" aria-label="AI 助手模式">
+            <button role="tab" :aria-selected="assistantTopTab === 'chat'" :class="{ 'is-on': assistantTopTab === 'chat' }" type="button" @click="assistantTopTab = 'chat'">问答</button>
+            <button role="tab" :aria-selected="assistantTopTab === 'read'" :class="{ 'is-on': assistantTopTab === 'read' }" type="button" @click="assistantTopTab = 'read'">阅读资料</button>
+          </div>
+          <!-- 阅读资料内部的分段：只换内容，不换层级 -->
+          <div v-show="assistantTopTab === 'read'" class="ai-read-switch" role="tablist" aria-label="阅读资料分类">
+            <button role="tab" :aria-selected="aiAssistantTab === 'recap'" :class="{ 'is-on': aiAssistantTab === 'recap' }" type="button" @click="aiAssistantTab = 'recap'">前情</button>
+            <button role="tab" :aria-selected="aiAssistantTab === 'memory'" :class="{ 'is-on': aiAssistantTab === 'memory' }" type="button" @click="aiAssistantTab = 'memory'">记忆</button>
+            <button role="tab" :aria-selected="aiAssistantTab === 'notes'" :class="{ 'is-on': aiAssistantTab === 'notes' }" type="button" @click="aiAssistantTab = 'notes'">笔记</button>
+            <button v-if="aiResult" role="tab" :aria-selected="aiAssistantTab === 'output'" :class="{ 'is-on': aiAssistantTab === 'output' }" type="button" @click="aiAssistantTab = 'output'">结果</button>
+          </div>
+          <div v-show="assistantTopTab === 'read' && aiAssistantTab === 'recap'" data-ai-pane="recap">
               <section v-if="resumeCardView?.available" class="ai-budget-status">
                 <strong>断点续读卡</strong>
                 <div class="subtle">上次会话附近最多 10 个读完的章节；只在你点击生成时调用模型。</div>
@@ -4558,8 +4613,8 @@ onUnmounted(() => {
                 <n-button :disabled="!book?.progress?.chapterId || assistantBusyByKind.recap || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
                 <n-button :disabled="!chapterReady || assistantBusyByKind.recap || assistantSaveRetrying" @click="startRecap('chapter')">生成本章摘要</n-button>
               </n-space>
-            </n-tab-pane>
-            <n-tab-pane name="memory" tab="记忆">
+          </div>
+          <div v-show="assistantTopTab === 'read' && aiAssistantTab === 'memory'" data-ai-pane="memory">
               <n-space vertical>
                 <!--
                   关系图默认收起：记忆页一进来先看到的是「更新记忆」和搜索框，
@@ -4638,7 +4693,7 @@ onUnmounted(() => {
                 <template v-else>
                   <section v-if="visibleMemoryCharacters.length" class="memory-section">
                     <h3>人物</h3>
-                    <details v-for="item in visibleMemoryCharacters" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryCharacters" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.name }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}<span v-if="item.userEditedAliases">（用户修正）</span></p><p>{{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input :value="aliasDrafts[item.id] ?? item.aliases.join('、')" size="small" placeholder="纠正别名，用顿号分隔" @update:value="(value: string) => { aliasDrafts[item.id] = value }" />
@@ -4652,7 +4707,7 @@ onUnmounted(() => {
                   </section>
                   <section v-if="visibleMemoryRelations.length" class="memory-section">
                     <h3>关系</h3>
-                    <details v-for="item in visibleMemoryRelations" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryRelations" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
@@ -4664,7 +4719,7 @@ onUnmounted(() => {
                   </section>
                   <section v-if="visibleMemoryForeshadows.length" class="memory-section">
                     <h3>伏笔</h3>
-                    <details v-for="item in visibleMemoryForeshadows" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryForeshadows" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.desc }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
@@ -4676,7 +4731,7 @@ onUnmounted(() => {
                   </section>
                   <section v-if="visibleMemoryEvents.length" class="memory-section">
                     <h3>关键事件</h3>
-                    <details v-for="item in visibleMemoryEvents" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryEvents" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.title }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
@@ -4689,8 +4744,48 @@ onUnmounted(() => {
                   <n-empty v-if="memoryQuery && visibleMemoryCount === 0" description="本地记忆里没有匹配内容" />
                 </template>
               </n-space>
-            </n-tab-pane>
-            <n-tab-pane name="qa" tab="问答">
+          </div>
+          <div v-show="assistantTopTab === 'chat'" data-ai-pane="qa">
+              <!--
+                会话栏：一本书可以有多条互不污染的问答会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。
+                视觉跟下面的 .chat-topbar 一套（小字号、低对比），不再开另一种风格。
+                生成中整栏禁用：流式回答还在往当前会话追加，切走会把后面的句子写进另一条。
+              -->
+              <div class="chat-threads">
+                <n-select
+                  class="chat-threads-select"
+                  size="tiny"
+                  :value="chatThreadId"
+                  :options="chatThreadOptions"
+                  :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || chatThreads.length === 0"
+                  placeholder="新会话"
+                  aria-label="切换问答会话"
+                  @update:value="switchChatThread"
+                />
+                <button
+                  class="chat-topbar-btn"
+                  type="button"
+                  :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving"
+                  title="新建一条空的问答会话；上限由主进程判定并给出可读原因"
+                  @click="newChatThread"
+                >新会话</button>
+                <!-- 只剩一条时不露删除：删完就没会话了，只是把读者送回欢迎态，没必要给这个口。 -->
+                <n-popconfirm
+                  v-if="chatThreads.length > 1"
+                  positive-text="确定"
+                  negative-text="取消"
+                  @positive-click="removeChatThread(chatThreadId)"
+                >
+                  删除这个会话的全部消息，不会删除书籍，也无法撤销。
+                  <template #trigger>
+                    <button
+                      class="chat-topbar-btn"
+                      type="button"
+                      :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || !chatThreadId"
+                    >删除会话</button>
+                  </template>
+                </n-popconfirm>
+              </div>
               <div class="chat-messages">
                 <!-- 欢迎态：Sider 的新会话不铺表单，先给问候与可点的问题卡片。 -->
                 <div v-if="chatMessages.length === 0 && !chatLoading" class="sider-welcome">
@@ -4706,6 +4801,14 @@ onUnmounted(() => {
                       class="sider-welcome-card"
                       @click="prepareQuickQuestion(question)"
                     >{{ question }}</button>
+                  </div>
+                  <!-- 阅读资料的入口只在欢迎态给一行文字，不再常驻一整套卡片。 -->
+                  <div class="sider-welcome-links">
+                    <button type="button" @click="aiAssistantTab = 'recap'">看前情</button>
+                    <span aria-hidden="true">·</span>
+                    <button type="button" @click="aiAssistantTab = 'memory'">翻人物</button>
+                    <span aria-hidden="true">·</span>
+                    <button type="button" @click="aiAssistantTab = 'notes'">写笔记</button>
                   </div>
                   <div class="sider-welcome-find">
                     <n-input v-model:value="sceneQuestion" size="small" placeholder="找回情节：那封信是谁交给他的？" @keyup.enter="searchScenes" />
@@ -4815,8 +4918,8 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
-            </n-tab-pane>
-            <n-tab-pane name="notes" tab="笔记">
+          </div>
+          <div v-show="assistantTopTab === 'read' && aiAssistantTab === 'notes'" data-ai-pane="notes">
               <n-space vertical>
                 <p class="subtle">只发送本章正文和本章的划线批注来生成读书笔记，不发送未读章节。</p>
                 <n-tag v-if="currentChapterNote?.stale" size="small" type="warning">正文已变，建议重新生成</n-tag>
@@ -4885,8 +4988,8 @@ onUnmounted(() => {
                   </p>
                 </div>
               </n-space>
-            </n-tab-pane>
-            <n-tab-pane name="output" tab="输出">
+          </div>
+          <div v-show="assistantTopTab === 'read' && aiAssistantTab === 'output'" data-ai-pane="output">
               <n-space vertical>
                 <div class="ai-budget-status">
                   <strong>{{ aiResultTitle || '输出' }}</strong>
@@ -4902,23 +5005,14 @@ onUnmounted(() => {
                 </n-space>
                 <n-button v-else-if="aiResultTitle === '翻译' && translateLoading" type="warning" @click="stopTranslate">停止</n-button>
               </n-space>
-            </n-tab-pane>
-          </n-tabs>
+          </div>
 
-          <!-- 任务是主体，参数是背景：任务入口放在页签里，整理开关 / 配额这类设置挪到页签之后，
-               否则从「聊书」进来第一屏全是配额和状态，提问要滚半屏才看得见。 -->
-          <section class="ai-reading-desk" aria-label="AI 阅读工作台">
-            <div class="ai-reading-desk__title">
-              <strong>现在可以做什么</strong>
-              <span>先选任务，再由你决定是否调用模型。</span>
-            </div>
-            <div class="ai-reading-desk__actions">
-              <button type="button" @click="aiAssistantTab = 'recap'"><strong>接着读</strong><span>{{ recapText ? '查看已保存前情' : '整理读到这里的剧情' }}</span></button>
-              <button type="button" @click="aiAssistantTab = 'memory'"><strong>找人物与伏笔</strong><span>{{ memoryData ? `${memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length} 条本地记忆` : '建立已读剧情记忆' }}</span></button>
-              <button type="button" @click="aiAssistantTab = 'qa'"><strong>带依据地问</strong><span>回答可跳回已读原文</span></button>
-              <button type="button" @click="aiAssistantTab = 'notes'"><strong>记住本章</strong><span>{{ currentChapterNote ? '已有笔记，可继续修改' : '生成或手写本章笔记' }}</span></button>
-            </div>
-          </section>
+          <!--
+            任务入口只在问答欢迎态出现一次；自动整理、配额、用量这类「偶尔要看」的东西收进一条折叠，
+            它们不再是任务，只是设置性质的状态。
+          -->
+          <details class="ai-follow-panel">
+            <summary>自动整理与用量</summary>
           <div class="ai-budget-status">
             <strong>读完一章后整理</strong>
             <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
@@ -4948,6 +5042,7 @@ onUnmounted(() => {
           <div v-if="autoBudget" class="subtle">
             本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens（已含排队预留 {{ autoBudget.reservedTokens }}）；达到上限会暂停自动任务，实际费用以服务商账单为准。
           </div>
+          </details>
           <template #footer>
             <n-button v-if="recapLoading && aiAssistantTab === 'recap'" type="warning" @click="stopRecap">停止生成</n-button>
           </template>
@@ -5675,32 +5770,138 @@ onUnmounted(() => {
 }
 
 /* 运行信息：默认折叠的一行，展开才是模型端点/已读截止/用量这类核对信息。 */
-.ai-runtime-info {
-  margin-bottom: 8px;
+/* 状态条：一行就够。模型 + 已读边界常驻，其余收进面板。 */
+.ai-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 2px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--r-line);
+  background: transparent;
+  color: var(--r-muted);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.ai-status-bar:hover { color: var(--r-text); }
+.ai-status-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.ai-status-dot.is-off { background: var(--warning); }
+.ai-status-model {
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--r-text);
+  font-weight: 500;
+}
+.ai-status-sep { opacity: 0.5; }
+.ai-status-read { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-status-toggle { flex: 0 0 auto; margin-left: auto; }
+
+/* 运行信息面板：只有点开状态条才存在，不占默认视线的任何高度。 */
+.ai-runtime-panel {
+  margin: 8px 0;
+  padding: 2px 10px 8px;
   border: 1px solid var(--r-line);
   border-radius: 8px;
   background: var(--surface-3, rgba(127, 127, 127, 0.06));
 }
+.ai-runtime-panel .ai-assistant-heading { padding: 6px 0 8px; }
+.ai-runtime-panel .ai-budget-status,
+.ai-runtime-panel .ai-assistant-status,
+.ai-runtime-panel .subtle { margin: 0 0 8px; }
 
-.ai-runtime-info > summary {
+/* 顶层两档：用按钮做页签，省掉一层 tabs 容器；选中态一条下划线 + 文字加深。 */
+.ai-top-switch {
+  display: flex;
+  gap: 2px;
+  margin-top: 2px;
+  border-bottom: 1px solid var(--r-line);
+}
+.ai-top-switch button {
+  position: relative;
+  padding: 7px 12px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--r-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.ai-top-switch button:hover { color: var(--r-text); }
+.ai-top-switch button.is-on { color: var(--r-text); font-weight: 600; }
+.ai-top-switch button.is-on::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--active-chapter);
+}
+
+/* 阅读资料分段：比顶层轻一档，不做下划线，选中态用底色块。 */
+.ai-read-switch { display: flex; gap: 4px; padding: 8px 0 6px; }
+.ai-read-switch button {
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--r-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ai-read-switch button:hover { color: var(--r-text); }
+.ai-read-switch button.is-on {
+  color: var(--r-text);
+  border-color: var(--r-line);
+  background: var(--surface-3, rgba(127, 127, 127, 0.1));
+}
+
+/* 自动整理与用量：折叠的一行设置项，不再是任务入口。 */
+.ai-follow-panel { margin-top: 10px; border-top: 1px solid var(--r-line); }
+.ai-follow-panel > summary {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 6px;
+  padding: 8px 2px 4px;
   color: var(--r-muted);
   font-size: 12px;
   cursor: pointer;
   list-style: none;
 }
+.ai-follow-panel > summary::-webkit-details-marker { display: none; }
+.ai-follow-panel > summary::after { content: '⌄'; margin-left: auto; opacity: 0.6; }
+.ai-follow-panel[open] > summary::after { content: '⌃'; }
+.ai-follow-panel .ai-budget-status { margin-top: 6px; }
 
-.ai-runtime-info > summary::-webkit-details-marker { display: none; }
-.ai-runtime-info > summary::after { content: '⌄'; margin-left: auto; opacity: 0.6; }
-.ai-runtime-info[open] > summary::after { content: '⌃'; }
-.ai-runtime-info > summary > span:first-child { color: var(--r-text); font-weight: 500; }
-.ai-runtime-info .ai-assistant-heading { padding: 0 10px 8px; }
-.ai-runtime-info .ai-budget-status,
-.ai-runtime-info .ai-assistant-status,
-.ai-runtime-info .subtle { margin: 0 10px 8px; }
+/* 欢迎态的阅读资料入口：一行文字，不占卡片。 */
+.sider-welcome-links {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--r-muted);
+  font-size: 12px;
+}
+.sider-welcome-links button {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--r-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.sider-welcome-links button:hover { color: var(--r-text); background: var(--surface-3, rgba(127, 127, 127, 0.1)); }
 
 /* 划词行内问答卡：挂在选区下方的小窗，比侧栏轻，一问一答不占屏幕。 */
 .inline-ask {
@@ -6165,56 +6366,6 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-}
-
-.ai-reading-desk {
-  margin-bottom: 12px;
-  padding: 12px;
-  border: 1px solid var(--r-line);
-  border-radius: 10px;
-  background: var(--r-panel-bg);
-}
-
-.ai-reading-desk__title {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.ai-reading-desk__title span {
-  color: var(--r-muted);
-  font-size: 12px;
-}
-
-.ai-reading-desk__actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.ai-reading-desk__actions button {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 9px 10px;
-  border: 1px solid var(--r-line);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.ai-reading-desk__actions button:hover,
-.ai-reading-desk__actions button:focus-visible {
-  border-color: var(--active-chapter);
-}
-
-.ai-reading-desk__actions span {
-  color: var(--r-muted);
-  font-size: 11px;
 }
 
 .ai-quick-questions {
@@ -6699,6 +6850,17 @@ onUnmounted(() => {
 .chat-topbar-btn:hover:not(:disabled) { color: var(--r-text); background: var(--surface-3, rgba(127, 127, 127, 0.1)); }
 .chat-topbar-btn:disabled { opacity: 0.45; cursor: default; }
 .chat-topbar-count { color: var(--r-muted); font-size: 11px; }
+
+/* 会话栏：跟 .chat-topbar 同一套小字号低对比，只是多一个下拉框。
+   下拉框占满剩余宽度，删/建按钮保持文字宽，侧栏拖窄时不会被挤成两行。 */
+.chat-threads {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 8px;
+  border-bottom: 1px solid var(--r-line);
+}
+.chat-threads-select { flex: 1 1 auto; min-width: 0; }
 
 .chat-input-row {
   display: flex;

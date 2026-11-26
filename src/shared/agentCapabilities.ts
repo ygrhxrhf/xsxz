@@ -1649,6 +1649,7 @@ const SPECS: readonly CapabilitySpec[] = [
         items: { type: 'object', description: 'AiChatMessage', additionalProperties: true },
         required: true,
       },
+      threadId: strOpt('会话 ID；省略即当前 active 会话，并发起时自动设为当前会话'),
     }),
     result: 'AiJobStart',
     description:
@@ -1682,10 +1683,46 @@ const SPECS: readonly CapabilitySpec[] = [
     tier: 'read',
     confirm: 'none',
     deps: ['disk'],
-    params: obj({ bookId: str('书籍 ID') }),
-    result: 'AiGetChatResult（兼容 v1/v2）',
-    description: '读取一本书的问答历史，v2 消息保留引用、已读截止与停止状态。',
+    // threadId 可选：省略 = 当前 active 会话，旧调用不用改。
+    params: obj({ bookId: str('书籍 ID'), threadId: strOpt('会话 ID；省略即当前 active 会话') }),
+    result: 'AiGetChatResult（兼容 v1/v2；带 threadId）',
+    description: '读取一本书某条问答会话的历史（省略 threadId 读当前会话），v2 消息保留引用、已读截止与停止状态。',
     coreToolset: true,
+  },
+  {
+    channel: 'ai.listThreads',
+    title: '列出问答会话',
+    tier: 'read',
+    confirm: 'none',
+    deps: ['disk'],
+    params: obj({ bookId: str('书籍 ID') }),
+    result: '{ ok: true; threads: { id, title, messageCount, updatedAt }[]; activeThreadId } 或 { ok: false, message }',
+    description:
+      '列出一本书的全部问答会话（按最近更新倒序）与当前会话 ID；一本书可以有多条互不污染的会话。历史文件损坏时仍返回空列表，并在 message 里说明原因。',
+    coreToolset: true,
+  },
+  {
+    channel: 'ai.createThread',
+    title: '新建问答会话',
+    tier: 'write',
+    confirm: 'none',
+    deps: ['disk'],
+    params: obj({ bookId: str('书籍 ID'), title: strOpt('会话标题；省略则首次提问时用问题前 24 个字自动命名') }),
+    result: '{ ok: true; threadId } 或 { ok: false, message }',
+    description: '新建一条空会话并设为当前会话；每本书最多 20 条。',
+    coreToolset: false,
+  },
+  {
+    channel: 'ai.deleteThread',
+    title: '删除问答会话',
+    tier: 'destructive',
+    confirm: 'token',
+    deps: ['disk'],
+    params: obj({ bookId: str('书籍 ID'), threadId: str('会话 ID') }),
+    result: '{ ok: true } 或 { ok: false; message }',
+    description:
+      '删除一条会话及其全部消息，不可恢复，必须持 dryRun 令牌。删的是当前会话时自动切到最近更新的剩余会话，删完就回到欢迎态。',
+    coreToolset: false,
   },
   {
     channel: 'ai.clearChat',
@@ -1693,9 +1730,9 @@ const SPECS: readonly CapabilitySpec[] = [
     tier: 'destructive',
     confirm: 'token',
     deps: ['disk'],
-    params: obj({ bookId: str('书籍 ID') }),
+    params: obj({ bookId: str('书籍 ID'), threadId: strOpt('会话 ID；省略即当前 active 会话') }),
     result: '{ ok: true } 或 { ok: false, message }',
-    description: '清空一本书的问答历史，不可恢复。必须持 dryRun 令牌。',
+    description: '清空一本书某条会话的问答历史（会话本身保留），不可恢复。必须持 dryRun 令牌。',
     coreToolset: false,
   },
   {
@@ -1706,6 +1743,7 @@ const SPECS: readonly CapabilitySpec[] = [
     deps: ['disk'],
     params: obj({
       bookId: str('书籍 ID'),
+      threadId: strOpt('会话 ID；省略即当前 active 会话'),
       messages: {
         type: 'array',
         description: '整段问答历史；传什么就覆盖成什么，不是追加',
@@ -1715,7 +1753,7 @@ const SPECS: readonly CapabilitySpec[] = [
     }),
     result: '{ ok: true } 或 { ok: false, message }',
     description:
-      '覆盖一本书的问答历史，不可恢复，必须持 dryRun 令牌。用于重问、编辑重发、删除某一轮；单次最多 200 条，每条正文最多 20000 字。',
+      '覆盖一本书某条会话的问答历史，不可恢复，必须持 dryRun 令牌。用于重问、编辑重发、删除某一轮；单次最多 200 条，每条正文最多 20000 字。',
     coreToolset: false,
   },
   {

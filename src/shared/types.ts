@@ -1388,9 +1388,53 @@ export interface AiEvidenceChatMessage {
   stopped?: boolean
 }
 
-/** ai.getChat 的兼容响应：旧 handler 可暂不返回 version，消息字段保持可读。 */
+/**
+ * ai.getChat 的兼容响应：旧 handler 可暂不返回 version，消息字段保持可读。
+ * `threadId` 是主进程实际解析到的会话线程；省略 threadId 时它告诉渲染层「当前 active 是哪条」，
+ * 一本书还没有任何会话时为空串（欢迎态，首次发送再建）。
+ */
 export type AiGetChatResult =
-  | { ok: true; version?: 1 | 2; messages: AiEvidenceChatMessage[] }
+  | { ok: true; version?: 1 | 2; messages: AiEvidenceChatMessage[]; threadId?: string }
+  | { ok: false; message: string }
+
+/** 一条问答线程：同一本书里互不污染的独立会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。 */
+export interface AiChatThread {
+  id: string
+  /** 空串表示「还没起过标题」：界面显示「新会话」，首次提问后由主进程按问题补上。 */
+  title: string
+  createdAt: string
+  updatedAt: string
+  messages: AiEvidenceChatMessage[]
+}
+
+/** 每书 ai/chats.json v1：把原先唯一的 chat.json 变成多条线程的容器。 */
+export interface AiChatThreadsFile {
+  version: 1
+  /** 当前会话；一本书还没有线程时为空串。 */
+  activeThreadId: string
+  threads: AiChatThread[]
+}
+
+/** ai.listThreads 的线程摘要：只带列表要用的字段，不搬消息正文。 */
+export interface AiChatThreadSummary {
+  id: string
+  title: string
+  messageCount: number
+  updatedAt: string
+}
+
+export type AiListThreadsResult =
+  | {
+    ok: true
+    threads: AiChatThreadSummary[]
+    activeThreadId: string
+    /** 历史文件坏掉时的可读提示：仍然返回空列表，侧栏照旧能打开。 */
+    message?: string
+  }
+  | { ok: false; message: string }
+
+export type AiCreateThreadResult =
+  | { ok: true; threadId: string }
   | { ok: false; message: string }
 
 export interface AiStorySoFar {
@@ -1472,14 +1516,18 @@ export type AiDoneEvent =
     }
   | { jobId: string; ok: false; message: string }
 
-/** 旧 ai/chat.json v1；读取兼容，不含来源。 */
+/**
+ * 旧 ai/chat.json v1；只读兼容，不含来源。
+ * 问答分成多条线程后新数据写 `ai/chats.json`，这份文件不再被写入：
+ * 留着它，旧版本回退时还能看到最后一份状态。
+ */
 export interface AiChatFile {
   version: 1
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
   updatedAt: string
 }
 
-/** 新 ai/chat.json v2；首次成功保存证据问答时升级。 */
+/** 旧 ai/chat.json v2；同样只读兼容，新数据见 `AiChatThreadsFile`。 */
 export interface AiChatFileV2 {
   version: 2
   messages: AiEvidenceChatMessage[]

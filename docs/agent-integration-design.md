@@ -407,7 +407,7 @@ export interface AgentCapability {
 | `proxy.refreshSubscription` | `proxy_refresh_subscription` | 网 | — | 无 | 立刻重拉一次订阅，不切换当前节点 |
 | `proxy.speedTest` | `proxy_speed_test` | 网 | — | 无 | 并发探测各节点延迟，返回最快节点序号 |
 
-### 4.12 AI 与 OCR（36 = 35 个 `ai.*` + `ocr.status`）
+### 4.12 AI 与 OCR（38 = 37 个 `ai.*` + `ocr.status`）
 
 | 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
 |---|---|---|---|---|---|
@@ -421,9 +421,12 @@ export interface AgentCapability {
 | `ai.getSummaries` | `ai_get_summaries` | 读 | — | disk | |
 | `ai.chatStream` | `ai_chat_stream` | 费 | dry | key | 返回 `AiJobStart`；进度走 `job_status` |
 | `ai.agentChat` | `ai_agent_chat` | 费 | dry | key | pi 内核多轮 agent；工具只读已读前沿以内的正文 |
-| `ai.getChat` | `ai_get_chat` | 读 | — | disk | 兼容 v1/v2 |
-| `ai.clearChat` | `ai_clear_chat` | 破 | tok | disk | 清空该书问答历史 |
-| `ai.replaceChat` | `ai_replace_chat` | 破 | tok | disk | 整段覆盖该书问答历史（不是追加）；重问 / 编辑重发 / 删除某一轮靠它 |
+| `ai.getChat` | `ai_get_chat` | 读 | — | disk | 兼容 v1/v2；`threadId` 省略即当前会话 |
+| `ai.listThreads` | `ai_list_threads` | 读 | — | disk | 列出该书的问答会话与当前会话（`ai/chats.json`） |
+| `ai.createThread` | `ai_create_thread` | 写 | — | disk | 新建空会话并设为当前；每书上限 20 条 |
+| `ai.deleteThread` | `ai_delete_thread` | 破 | tok | disk | 删一条会话及其消息；删当前会话时切到最近更新的剩余会话 |
+| `ai.clearChat` | `ai_clear_chat` | 破 | tok | disk | 清空该书某条会话的问答历史（会话本身保留） |
+| `ai.replaceChat` | `ai_replace_chat` | 破 | tok | disk | 整段覆盖该书某条会话的问答历史（不是追加）；重问 / 编辑重发 / 删除某一轮靠它 |
 | `ai.translateStream` | `ai_translate_stream` | 费 | — | key | 传 `bookId` 时计入每书用量 |
 | `ai.explainSelection` | `ai_explain_selection` | 费 | — | key | preload 里叫 `explainText`，频道名仍是 `ai.explainSelection` |
 | `ai.getMemory` | `ai_get_memory` | 读 | — | disk | 可兼容返回旧 `characters.json` |
@@ -463,17 +466,17 @@ export interface AgentCapability {
 | `map.geocodePlaces` | `map_geocode_places` | 费 | dry | key | 批量地理编码并写回坐标状态，消耗配额 |
 | `map.addManualPlace` | `map_add_manual_place` | 写 | — | disk | 手工标注坐标，不消耗配额；可附正文锚点以便跳回原文 |
 
-**统计**：150 个 handler = 143 个 MCP tool + 7 个不暴露（3 个 `dialog.*`、`library.pickCoverFile`、`browse.setBounds`、`browse.setVisible`、`browse.zoom`）。
+**统计**：153 个 handler = 146 个 MCP tool + 7 个不暴露（3 个 `dialog.*`、`library.pickCoverFile`、`browse.setBounds`、`browse.setVisible`、`browse.zoom`）。
 
 **本节完整性复核**（对 §4 正文表格，不含 §5.3 与 §7 的交叉引用表）：
 
 ```
-sec4Rows=150 unique=150 missing=0 extra=0
-per-section: 4.1=19 4.2=7 4.3=3 4.4=22 4.5=4 4.6=8 4.7=10 4.8=3 4.9=4 4.9.1=8 4.10=7 4.11=11 4.12=35 4.12.1=9 => 150
-4.12 内部: 34 个 ai.* + ocr.status = 35；4.12.1: 9 个 map.* = 9
+sec4Rows=153 unique=153 missing=0 extra=0
+per-section: 4.1=19 4.2=7 4.3=3 4.4=22 4.5=4 4.6=8 4.7=10 4.8=3 4.9=4 4.9.1=8 4.10=7 4.11=11 4.12=38 4.12.1=9 => 153
+4.12 内部: 37 个 ai.* + ocr.status = 38；4.12.1: 9 个 map.* = 9
 ```
 
-即 150 行、150 个唯一频道，与 `ipcMain.handle` 集合完全相等。§4.13 是 Electron 耦合说明表，不是频道清单，不参与计数。
+即 153 行、153 个唯一频道，与 `ipcMain.handle` 集合完全相等。§4.13 是 Electron 耦合说明表，不是频道清单，不参与计数。
 
 ### 4.13 Electron 耦合面与 agent 侧处理
 

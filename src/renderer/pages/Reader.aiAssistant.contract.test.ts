@@ -21,12 +21,15 @@ describe('Reader unified AI assistant shell', () => {
     // 一次性结果并入「输出」tab，不再开第二个 AI 抽屉。
     expect(source).not.toContain('v-model:show="showAiResult"')
     expect(source).toContain('<n-drawer-content title="AI 助手"')
-    expect(source).toContain('<n-tab-pane name="recap" tab="前情">')
-    expect(source).toContain('<n-tab-pane name="memory" tab="记忆">')
-    expect(source).toContain('<n-tab-pane name="qa" tab="问答">')
-    expect(source).toContain('<n-tab-pane name="notes" tab="笔记">')
-    expect(source).toContain('<n-tab-pane name="output" tab="输出">')
-    expect(source.match(/<n-tab-pane /g)).toHaveLength(5)
+    // 骨架收敛成两层：顶层「问答 / 阅读资料」，阅读资料内部再分前情、记忆、笔记、结果。
+    expect(source).toContain('class="ai-top-switch"')
+    expect(source).toContain("assistantTopTab = 'chat'\">问答</button>")
+    expect(source).toContain("assistantTopTab = 'read'\">阅读资料</button>")
+    expect(source).toContain('class="ai-read-switch"')
+    for (const label of ['前情', '记忆', '笔记']) expect(source).toContain(`>${label}</button>`)
+    // 「结果」只在真有一次性的清正文/翻译输出时才出现，不占常驻分段。
+    expect(source).toContain('v-if="aiResult"')
+    expect(source).not.toContain('<n-tab-pane')
     expect(source).toContain('清正文、翻译这类一次性结果会显示在这里。')
     // 人物卡生成侧已下线：旧卡只经 ai.getMemory 兼容读取，不再有自己的频道、按钮与文案。
     expect(source).not.toContain('人物卡')
@@ -46,7 +49,8 @@ describe('Reader unified AI assistant shell', () => {
     expect(block).toContain('Promise.allSettled([')
     expect(block).toContain('loadStoredRecap()')
     expect(block).toContain('loadStoredMemory()')
-    expect(block).toContain('window.api.ai.getChat(book.value.id)')
+    // 多会话之后，打开面板先列会话、再按当前会话取历史；仍只读本地磁盘，不触发模型。
+    expect(block).toContain('reloadChatThreads()')
     expect(block).not.toContain('storySoFar(')
     expect(block).not.toContain('updateMemory(')
     expect(block).not.toContain('sendChat(')
@@ -108,12 +112,11 @@ describe('Reader unified AI assistant shell', () => {
     expect(helpers).toContain("if (opts.key.toLowerCase() === 'n') return 'open-note'")
   })
 
-  it('把高频阅读任务放到工作台，快捷问题只填草稿不直接计费', async () => {
+  it('欢迎态给一行阅读资料入口，快捷问题只填草稿不直接计费', async () => {
     const source = await readReaderSurface()
-    expect(source).toContain('aria-label="AI 阅读工作台"')
-    for (const label of ['接着读', '找人物与伏笔', '带依据地问', '记住本章']) {
-      expect(source).toContain(label)
-    }
+    // 四张入口卡换成一行文字：入口只在欢迎态出现，不再常驻侧栏底部。
+    expect(source).toContain('class="sider-welcome-links"')
+    for (const label of ['看前情', '翻人物', '写笔记']) expect(source).toContain(`>${label}</button>`)
     expect(source).toContain('const QUICK_READING_QUESTIONS = [')
     expect(source).toContain('有哪些已经出现但尚未回收的伏笔？')
     const start = source.indexOf('function prepareQuickQuestion')

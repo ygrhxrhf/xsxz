@@ -52,10 +52,15 @@ type Handlers = {
 }
 type ReplaceCall = { bookId: string; messages: AiEvidenceChatMessage[] }
 /** 一次真实发出去的问答：记下模式与 payload，好断言「附没附参考范围那行」。 */
-type ChatCall = { mode: 'agent' | 'evidence'; messages: AiEvidenceChatMessage[] }
+type ChatCall = { mode: 'agent' | 'evidence'; messages: AiEvidenceChatMessage[]; threadId?: string }
+type ChatThreadCall = { created: string[]; deleted: string[]; getChat: (string | undefined)[] }
+/** 一颗会话种子：id / 标题 / 消息是主进程 chats.json 里那条线程的摘要与历史。 */
+type ThreadSeed = { id: string; title: string; messages: AiEvidenceChatMessage[]; updatedAt: string }
 
 async function mountReader(options: {
   messages?: AiEvidenceChatMessage[]
+  /** 给了就是一份两三条线程的 chats.json：不给则沿用「getChat 一律回 messages」的旧桩。 */
+  threads?: ThreadSeed[]
   handlers?: Handlers
   replaceCalls?: ReplaceCall[]
   chatCalls?: ChatCall[]
@@ -69,6 +74,12 @@ async function mountReader(options: {
   const handlers = options.handlers ?? {}
   // 只数「开了几次模型调用」：复制/编辑/删除都不该碰它，重问才该多一次。
   const starts = { count: 0 }
+  // 会话栏的假书库：listThreads / createThread / deleteThread 都改这份内存，
+  // 断言就能落在「真的换了一条会话」上，而不是只看按钮有没有被点到。
+  const threads = new Map<string, ThreadSeed>((options.threads ?? []).map((seed) => [seed.id, { ...seed }]))
+  let activeThreadId = options.threads?.[0]?.id ?? ''
+  let createdCount = 0
+  const threadCalls: ChatThreadCall = { created: [], deleted: [], getChat: [] }
   Object.defineProperty(window, 'api', { configurable: true, value: {
     library: {
       get: async () => ({ book: JSON.parse(JSON.stringify(book)) }),
@@ -93,17 +104,48 @@ async function mountReader(options: {
       onStage: (fn: (event: AiStageEvent) => void) => { handlers.stage = fn; return () => { handlers.stage = undefined } },
       onBudget: () => () => {},
       onDone: (fn: (event: AiDoneEvent) => void) => { handlers.done = fn; return () => { handlers.done = undefined } },
-      agentChat: async (_bookId: string, _chapterId: string, messages: AiEvidenceChatMessage[]) => {
+      agentChat: async (_bookId: string, _chapterId: string, messages: AiEvidenceChatMessage[], threadId?: string) => {
         starts.count += 1
-        options.chatCalls?.push({ mode: 'agent', messages })
+        options.chatCalls?.push({ mode: 'agent', messages, threadId })
         return { ok: true, jobId: 'qa-1' }
       },
-      chatStream: async (_bookId: string, _chapterId: string, messages: AiEvidenceChatMessage[]) => {
+      chatStream: async (_bookId: string, _chapterId: string, messages: AiEvidenceChatMessage[], threadId?: string) => {
         starts.count += 1
-        options.chatCalls?.push({ mode: 'evidence', messages })
+        options.chatCalls?.push({ mode: 'evidence', messages, threadId })
         return { ok: true, jobId: 'qa-1' }
       },
-      getChat: async () => ({ ok: true, version: 2, messages: options.messages ?? [] }),
+      getChat: async (_bookId: string, threadId?: string) => {
+        threadCalls.getChat.push(threadId)
+        if (!options.threads) return { ok: true, version: 2, messages: options.messages ?? [] }
+        const id = threadId ?? activeThreadId
+        const found = threads.get(id)
+        if (!found) return { ok: false, message: `会话不存在，请刷新会话列表（${id}）` }
+        return { ok: true, version: 2, messages: found.messages, threadId: id }
+      },
+      listThreads: async () => ({
+        ok: true,
+        activeThreadId,
+        threads: [...threads.values()]
+          .map((item) => ({ id: item.id, title: item.title, messageCount: item.messages.length, updatedAt: item.updatedAt }))
+          .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+      }),
+      createThread: async () => {
+        createdCount += 1
+        const id = `th_new_${createdCount}`
+        threads.set(id, { id, title: '', messages: [], updatedAt: `2026-02-0${createdCount}T00:00:00.000Z` })
+        activeThreadId = id
+        threadCalls.created.push(id)
+        return { ok: true, threadId: id }
+      },
+      deleteThread: async (_bookId: string, threadId: string) => {
+        threadCalls.deleted.push(threadId)
+        threads.delete(threadId)
+        if (activeThreadId === threadId) {
+          activeThreadId = [...threads.values()]
+            .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]?.id ?? ''
+        }
+        return { ok: true }
+      },
       replaceChat: async (bookId: string, messages: AiEvidenceChatMessage[]) => {
         options.replaceCalls?.push({ bookId, messages })
         return { ok: true }
@@ -134,7 +176,7 @@ async function mountReader(options: {
   expect(qaButton, 'AI 面板里的「聊书」入口').toBeTruthy()
   qaButton?.click()
   await vi.waitFor(() => expect(document.querySelector('.chat-input-row textarea')).toBeTruthy())
-  return { app, handlers, starts }
+  return { app, handlers, starts, threadCalls }
 }
 
 function assistantBubbles(): HTMLElement[] {
@@ -185,6 +227,39 @@ async function typeAndSend(question: string): Promise<void> {
     .find((item) => item.textContent?.includes('发送问题'))!
   await vi.waitFor(() => expect(send.disabled).toBe(false))
   send.click()
+}
+
+/** 会话栏里的按钮（「新会话」/「删除会话」）：按文案取，不靠位置。 */
+function threadBarButton(label: string): HTMLButtonElement {
+  const button = [...document.querySelectorAll<HTMLButtonElement>('.chat-threads button')]
+    .find((item) => item.textContent?.trim() === label)
+  if (!button) throw new Error(`会话栏里没有「${label}」`)
+  return button
+}
+
+function threadBarLabels(): string[] {
+  return [...document.querySelectorAll<HTMLButtonElement>('.chat-threads button')]
+    .map((item) => item.textContent?.trim() ?? '')
+}
+
+/** 下拉框当前显示的那一行文案（naive-ui 在收起态把选中项的 label 画在框里）。 */
+function selectedThreadLabel(): string {
+  return document.querySelector('.chat-threads-select')?.textContent?.trim() ?? ''
+}
+
+/**
+ * 切会话：直接调下拉框绑定的 update:value。
+ *
+ * 为什么不用点击：naive-ui 的选项列表是虚拟列表，jsdom 里量不到高度、一条选项都不渲染，
+ * 点得开却点不到选项。这里走的是模板上同一个 handler，验的仍是 Reader 切会话的行为。
+ */
+function selectChatThread(id: string): void {
+  const host = document.querySelector('.chat-threads-select') as unknown as {
+    __vueParentComponent?: { vnode: { props?: Record<string, (value: string) => void> } }
+  }
+  const update = host?.__vueParentComponent?.vnode.props?.['onUpdate:value']
+  if (!update) throw new Error('下拉框没有绑定 update:value')
+  update(id)
 }
 
 afterEach(() => { document.body.innerHTML = ''; localStorage.clear(); vi.unstubAllGlobals() })
@@ -541,6 +616,111 @@ describe('Reader 问答参考范围', () => {
       const last = chatCalls[0]!.messages.at(-1)!
       expect(last.content).toBe(QUESTION)
       expect(last.content.includes('【参考：')).toBe(false)
+    } finally { app.unmount() }
+  })
+})
+
+/**
+ * 会话栏：一本书可以有多条互不污染的问答会话。
+ *
+ * 这层守的是「删了当前会话会不会回退」「切会话会不会把消息写到错线程」在界面上的那一半：
+ * 下拉框显示的是哪条、切过去之后消息区是不是真的换成了另一条的历史。
+ */
+describe('Reader 问答会话栏', () => {
+  const seedA: ThreadSeed = {
+    id: 'th_a',
+    title: '默认会话',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    messages: [
+      { role: 'user', content: 'A 会话的问题' },
+      { role: 'assistant', content: 'A 会话的回答' },
+    ],
+  }
+  const seedB: ThreadSeed = {
+    id: 'th_b',
+    title: '人物线',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    messages: [
+      { role: 'user', content: 'B 会话的问题' },
+      { role: 'assistant', content: 'B 会话的回答' },
+    ],
+  }
+
+  function bubbles(): string[] {
+    return [...document.querySelectorAll<HTMLElement>('.chat-msg .chat-bubble')]
+      .map((item) => item.textContent?.trim() ?? '')
+  }
+
+  it('下拉框显示「标题 · N 条」，只剩一条会话时不露删除', async () => {
+    const { app } = await mountReader({ threads: [seedA] })
+    try {
+      await vi.waitFor(() => expect(selectedThreadLabel()).toContain('默认会话 · 2 条'))
+      // 删完就没会话了，只是把读者送回欢迎态，没必要给这个口
+      expect(threadBarLabels()).toEqual(['新会话'])
+    } finally { app.unmount() }
+  })
+
+  it('两条会话时露删除按钮', async () => {
+    const { app } = await mountReader({ threads: [seedA, seedB] })
+    try {
+      await vi.waitFor(() => expect(selectedThreadLabel()).toContain('默认会话 · 2 条'))
+      expect(threadBarLabels()).toEqual(['新会话', '删除会话'])
+    } finally { app.unmount() }
+  })
+
+  it('点「新会话」先建会话再按新 id 拉历史，旧会话的消息被换掉', async () => {
+    const { app, threadCalls } = await mountReader({ threads: [seedA, seedB] })
+    try {
+      await vi.waitFor(() => expect(bubbles()).toContain('A 会话的问题'))
+      threadBarButton('新会话').click()
+
+      await vi.waitFor(() => expect(threadCalls.created).toHaveLength(1))
+      const created = threadCalls.created[0]!
+      // 拉历史必须带新会话的 id：不带就会读到主进程的 active，显示的还是上一条
+      await vi.waitFor(() => expect(threadCalls.getChat.at(-1)).toBe(created))
+      await vi.waitFor(() => expect(document.querySelectorAll('.chat-msg')).toHaveLength(0))
+      expect(bubbles()).toEqual([])
+      // 下拉框里已经有这一条，并且选中态落在它上面
+      await vi.waitFor(() => expect(selectedThreadLabel()).toContain('新会话 · 0 条'))
+      // 旧会话的历史一个字都不该留在界面上
+      expect(document.body.textContent).not.toContain('A 会话的问题')
+    } finally { app.unmount() }
+  })
+
+  it('切会话后消息区显示的是另一条会话的历史', async () => {
+    const { app, threadCalls } = await mountReader({ threads: [seedA, seedB] })
+    try {
+      await vi.waitFor(() => expect(bubbles()).toContain('A 会话的问题'))
+      selectChatThread('th_b')
+
+      await vi.waitFor(() => expect(bubbles()).toEqual(['B 会话的问题', 'B 会话的回答']))
+      expect(threadCalls.getChat.at(-1)).toBe('th_b')
+      await vi.waitFor(() => expect(selectedThreadLabel()).toContain('人物线 · 2 条'))
+      expect(document.body.textContent).not.toContain('A 会话的问题')
+    } finally { app.unmount() }
+  })
+
+  it('生成中下拉框与新会话按钮变灰，点删除也不删会话', async () => {
+    const { app, threadCalls } = await mountReader({ threads: [seedA, seedB] })
+    try {
+      await vi.waitFor(() => expect(bubbles()).toContain('A 会话的问题'))
+      await typeAndSend(QUESTION)
+      // 流式回答还在往当前会话追加：这一栏整栏禁用，切走会把后面的句子写进另一条
+      await vi.waitFor(() => {
+        expect(document.querySelector('.chat-threads-select .n-base-selection')?.className)
+          .toContain('n-base-selection--disabled')
+      })
+      expect(threadBarButton('新会话').disabled).toBe(true)
+      expect(threadBarButton('删除会话').disabled).toBe(true)
+
+      threadBarButton('删除会话').click()
+      await nextTick()
+      // 就算确认框被点出来了，handler 也会因为还在生成中直接返回
+      const confirm = [...document.querySelectorAll<HTMLButtonElement>('.n-popconfirm button')]
+        .find((item) => item.textContent?.trim() === '确定')
+      confirm?.click()
+      await nextTick()
+      expect(threadCalls.deleted).toEqual([])
     } finally { app.unmount() }
   })
 })

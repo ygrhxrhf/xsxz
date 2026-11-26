@@ -515,11 +515,14 @@
 | `ai.saveChapterNote` | invoke | `{ bookId: string; chapterId: string; text: string }` | `{ ok: true; note: AiChapterNote } \| { ok: false; message: string }` |
 | `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.getSummaries` | invoke | `{ bookId: string }` | `{ ok: true; summaries: AiSummaries } \| { ok: false; message: string }` |
-| `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart`（已读证据问答，最后一条 user 消息即问题） |
-| `ai.agentChat` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart`（pi 内核的多轮对话 agent，工具只读已读前沿以内的正文） |
-| `ai.getChat` | invoke | `{ bookId: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省） |
-| `ai.clearChat` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
-| `ai.replaceChat` | invoke | `{ bookId: string; messages: AiEvidenceChatMessage[] }` | `{ ok: true } \| { ok: false; message: string }`（整段覆盖而非追加：重问 / 编辑重发 / 删除某一轮都用它；单次 ≤ 200 条，每条正文 ≤ 20000 字，`citations`/`claims` 各 ≤ 50 条，`claims[].text` ≤ 1000 字） |
+| `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[]; threadId?: string }` | `AiJobStart`（已读证据问答，最后一条 user 消息即问题；省略 `threadId` 写当前会话） |
+| `ai.agentChat` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[]; threadId?: string }` | `AiJobStart`（pi 内核的多轮对话 agent，工具只读已读前沿以内的正文；省略 `threadId` 写当前会话） |
+| `ai.getChat` | invoke | `{ bookId: string; threadId?: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省；返回的 `threadId` 是实际解析到的会话，省略入参时读当前会话） |
+| `ai.listThreads` | invoke | `{ bookId: string }` | `{ ok: true; threads: AiChatThreadSummary[]; activeThreadId: string; message?: string } \| { ok: false; message: string }`（线程按 `updatedAt` 倒序；历史文件损坏时仍返回空列表，原因写在 `message`） |
+| `ai.createThread` | invoke | `{ bookId: string; title?: string }` | `{ ok: true; threadId: string } \| { ok: false; message: string }`（新建空会话并设为当前会话；每书上限 20 条，超限返回可读原因） |
+| `ai.deleteThread` | invoke | `{ bookId: string; threadId: string }` | `{ ok: true } \| { ok: false; message: string }`（删的若是当前会话，`activeThreadId` 回退到 `updatedAt` 最新的剩余会话；删空则为空串） |
+| `ai.clearChat` | invoke | `{ bookId: string; threadId?: string }` | `{ ok: true } \| { ok: false; message: string }`（只清这条会话的消息，会话本身保留；省略 `threadId` 清当前会话） |
+| `ai.replaceChat` | invoke | `{ bookId: string; messages: AiEvidenceChatMessage[]; threadId?: string }` | `{ ok: true } \| { ok: false; message: string }`（整段覆盖而非追加：重问 / 编辑重发 / 删除某一轮都用它，只覆盖指定会话；单次 ≤ 200 条，每条正文 ≤ 20000 字，`citations`/`claims` 各 ≤ 50 条，`claims[].text` ≤ 1000 字） |
 | `ai.translateStream` | invoke | `{ text: string; bookId?: string }` | `AiJobStart`；传入书籍 ID 时计入每书用量 |
 | `ai.explainSelection` | invoke | `{ text: string; bookId?: string }` | `AiJobStart`；「解释这段」，与 `ai.translateStream` 同形但提示词不同，供网页阅读模式无书场景使用 |
 | `ai.getMemory` | invoke | `{ bookId: string }` | `{ ok: true; memory: AiMemoryFile \| CharacterCard \| null } \| { ok: false; message: string }` |
@@ -578,7 +581,9 @@
 
 `ai.chatStream`（已读证据问答）成功时通过 `ai.done` 同时返回 `text`、候选白名单内的 `citations`、`uptoChapterId` 与 `stopped`。保存失败仍保留这些字段并追加 `saveToken`；重开后 `ai.getChat` 返回 `AiGetChatResult`，v1 消息按无来源兼容读取，v2 消息保留引用、已读截止和停止状态。
 
-`ai.chatStream` 的回答按 `ai.chunk` 流式推送：任务要求 `response_format` 为 JSON，因此只转发 `answer` 字段中已完成解码的部分（不完整的 `\`、`\uXXXX` 或代理对必须挂起等后续帧），改写与检索阶段不发 `ai.chunk`；服务不守 JSON 约定时不转发任何字符，改由 `ai.done.text` 一次性给出，两种路径下终态文本必须一致。用户在任意时刻停止（阶段之间或流中途 abort）时，`ai.done` 仍必须恰好一个：已流出非空正文时走 `ok:true` 分支，携带 `stopped:true`、停止前的 `text`、当次候选 `citations` 与 `uptoChapterId`，并把这条部分回答写进 `chat.json`；只有正文为空才允许 `text:''` 且不留空消息。
+`ai.chatStream` 的回答按 `ai.chunk` 流式推送：任务要求 `response_format` 为 JSON，因此只转发 `answer` 字段中已完成解码的部分（不完整的 `\`、`\uXXXX` 或代理对必须挂起等后续帧），改写与检索阶段不发 `ai.chunk`；服务不守 JSON 约定时不转发任何字符，改由 `ai.done.text` 一次性给出，两种路径下终态文本必须一致。用户在任意时刻停止（阶段之间或流中途 abort）时，`ai.done` 仍必须恰好一个：已流出非空正文时走 `ok:true` 分支，携带 `stopped:true`、停止前的 `text`、当次候选 `citations` 与 `uptoChapterId`，并把这条部分回答写进该会话（`ai/chats.json`）；只有正文为空才允许 `text:''` 且不留空消息。
+
+`ai.chatStream` / `ai.agentChat` / `ai.getChat` / `ai.clearChat` / `ai.replaceChat` 的 `threadId` 一律可省略，省略即作用于当前 active 会话——旧调用方（划词提问、行内卡片）不必改。显式传了不存在的 `threadId` 则报错，**不静默落回**当前会话：否则读者以为写进了 A 会话，其实进了 B。发起一轮问答时会话自动成为 active，并在它还没有标题时用问题前 24 个字补上（已有标题不覆盖）。
 
 `ai.chatStream` 先用原始问题做本地检索，命中足够（不少于 3 段可核验依据，且最强候选的打分达到字面命中线）时跳过 `queryRewrite` 这次模型往返，`ai.stage` 只出现一次 `searching` 就进 `requesting`；不足才改写并二次检索，二次依据更少时沿用原句结果，改写失败同样只退回原句结果、不再重复检索。跳过与否不新增 `AiRequestStage` 取值，也不放松引用白名单：最终 `citations` 仍只能取自当次候选。
 
@@ -621,7 +626,7 @@ window.api = {
   annotations: { list, add, update, remove },
   webAnnotations: { list, add, update, remove },
   siteRules: { list, preview, upsert, remove },
-  ai: { clean, getChat, clearChat, replaceChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, agentChat, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
+  ai: { clean, getChat, listThreads, createThread, deleteThread, clearChat, replaceChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, agentChat, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
 }
 ```
 

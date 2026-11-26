@@ -1,14 +1,15 @@
 import { mkdir, readFile, readdir, rm, rename, stat, cp } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import { basename, extname, join } from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { atomicWriteText, type AtomicWriteOptions } from './atomicFile'
 import { withLibraryWrite } from './libraryMaintenance'
 export { atomicWriteText } from './atomicFile'
 import type {
   AiBookUsage,
-  AiChatFile,
   AiChatFileV2,
+  AiChatThread,
+  AiChatThreadsFile,
   AiEvidenceChatMessage,
   AiEvidenceClaim,
   AiMemoryBase,
@@ -1049,34 +1050,386 @@ function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | 
   return message
 }
 
-export async function readChat(bookId: string): Promise<AiChatFile | AiChatFileV2> {
+// ---------------------------------------------------------------------------
+// 问答会话（<书>/ai/chats.json）
+//
+// 为什么拆成多条线程：一本书里「问人物线」「问这卷剧情」「问伏笔」是三种不同的
+// 上下文，挤在一条历史里既互相污染，也没法各自重问。文件从 chat.json 的
+// `{version, messages}` 换成 `{version:1, activeThreadId, threads[]}`，每条线程
+// 各自沿用原来的 40 条裁剪与消息解析规则。
+// ---------------------------------------------------------------------------
+
+/** 每本书最多几条线程：再多会话栏就滚不动了，也确实该删了。 */
+export const AI_CHAT_THREAD_LIMIT = 20
+/** 旧 chat.json 迁成的唯一线程用固定 id：迁移幂等，重启不会长出第二条。 */
+export const DEFAULT_CHAT_THREAD_ID = 'default'
+/** 旧 chat.json 读出来的那条线程的标题。 */
+export const DEFAULT_CHAT_THREAD_TITLE = '默认会话'
+/** 会话 id 会进 IPC 与文件名判断，收紧到 URL-safe 短 id。 */
+const CHAT_THREAD_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+/** 自动标题取问题前多少个字符：够认出一句话，又不至于把会话栏撑爆。 */
+const CHAT_THREAD_TITLE_LENGTH = 24
+
+function chatThreadsPath(bookId: string): string {
+  return join(bookDir(bookId), 'ai', 'chats.json')
+}
+
+function legacyChatPath(bookId: string): string {
+  return join(bookDir(bookId), 'ai', 'chat.json')
+}
+
+function emptyChatThreads(): AiChatThreadsFile {
+  return { version: 1, activeThreadId: '', threads: [] }
+}
+
+/** 读不到文件就当没有；只有「读到了但解析不了」才算坏文件。 */
+async function readTextOrNull(file: string): Promise<string | null> {
   try {
-    const data: unknown = JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'chat.json'), 'utf-8'))
-    if (!isRecord(data) || (data.version !== 1 && data.version !== 2) || !Array.isArray(data.messages)) throw new Error('invalid chat')
-    const v2 = data.version === 2
-    const parsed = data.messages.map((message) => parseChatMessage(message, v2))
-    if (parsed.some((message) => message === null)) throw new Error('invalid chat message')
-    const messages = trimChatPairs(parsed as AiEvidenceChatMessage[])
-    return v2
-      ? { version: 2, messages, updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : now() }
-      : { version: 1, messages: messages.map(({ role, content }) => ({ role, content })), updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : now() }
+    return await readFile(file, 'utf-8')
   } catch {
-    return { version: 1, messages: [], updatedAt: now() }
+    return null
   }
 }
 
+/**
+ * 逐条宽容解析消息。
+ *
+ * 为什么不再「一条坏就整份作废」：线程是容器，一条脏记录不该让读者连整条会话都打不开；
+ * 丢掉那一条、留下其余，仍是读者眼里的那份历史。`v2` 由文件版本决定 —— 旧 v1 文件本来
+ * 就没有引用/停止这些附加字段，按 v2 判会把它们全判成坏消息。
+ */
+function parseThreadMessages(value: unknown, v2: boolean): AiEvidenceChatMessage[] {
+  if (!Array.isArray(value)) return []
+  const parsed = value.map((message) => parseChatMessage(message, v2))
+  return trimChatPairs(parsed.filter((message): message is AiEvidenceChatMessage => message !== null))
+}
+
+function parseChatThread(value: unknown): AiChatThread | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || !CHAT_THREAD_ID_PATTERN.test(value.id)) return null
+  const updatedAt = typeof value.updatedAt === 'string' ? value.updatedAt : now()
+  return {
+    id: value.id,
+    title: typeof value.title === 'string' ? value.title : '',
+    createdAt: typeof value.createdAt === 'string' ? value.createdAt : updatedAt,
+    updatedAt,
+    messages: parseThreadMessages(value.messages, true),
+  }
+}
+
+/** 线程按最近更新在前：会话栏、active 回退都认这一个顺序，存储层只排一次。 */
+function byUpdatedAtDesc(left: AiChatThread, right: AiChatThread): number {
+  return right.updatedAt.localeCompare(left.updatedAt)
+}
+
+/**
+ * 统一收口：去重、裁剪、校验 active 指向。
+ *
+ * 读和写都过这里：历史文件可能被老版本或手改塞进超限/重复/悬空 active，
+ * 只在写时收口的话，界面读出来的会是修正前的形状。
+ */
+function normalizeChatThreads(file: AiChatThreadsFile): AiChatThreadsFile {
+  const seen = new Set<string>()
+  const threads = file.threads
+    .filter((thread) => {
+      if (seen.has(thread.id)) return false
+      seen.add(thread.id)
+      return true
+    })
+    .map((thread) => ({ ...thread, messages: trimChatPairs(thread.messages) }))
+    .sort(byUpdatedAtDesc)
+    .slice(0, AI_CHAT_THREAD_LIMIT)
+  // 线程被裁掉或删掉后 active 可能悬空：落到最新的那条，一条都没有就空置。
+  const activeThreadId = threads.some((thread) => thread.id === file.activeThreadId)
+    ? file.activeThreadId
+    : threads[0]?.id ?? ''
+  return { version: 1, activeThreadId, threads }
+}
+
+function parseChatThreadsText(text: string): AiChatThreadsFile | null {
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!isRecord(data) || data.version !== 1 || !Array.isArray(data.threads)) return null
+  const threads = data.threads.map(parseChatThread).filter((thread): thread is AiChatThread => thread !== null)
+  // 原文声称有线程却一条都解析不出来 = 文件坏了；真的空数组才是「这本书还没会话」。
+  if (data.threads.length > 0 && threads.length === 0) return null
+  return normalizeChatThreads({
+    version: 1,
+    activeThreadId: typeof data.activeThreadId === 'string' ? data.activeThreadId : '',
+    threads,
+  })
+}
+
+/**
+ * 旧 ai/chat.json：`undefined` = 没有这份文件；`'corrupt'` = 有但读不出来。
+ *
+ * 迁移只在内存里发生：读历史不该产生写盘（打开侧栏就改写书库是很脏的副作用），
+ * 真正的 chats.json 由下一次写操作整体落成。
+ */
+async function readLegacyChatThread(bookId: string): Promise<AiChatThread | 'corrupt' | undefined> {
+  const text = await readTextOrNull(legacyChatPath(bookId))
+  if (text === null) return undefined
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return 'corrupt'
+  }
+  if (!isRecord(data) || (data.version !== 1 && data.version !== 2) || !Array.isArray(data.messages)) return 'corrupt'
+  const updatedAt = typeof data.updatedAt === 'string' ? data.updatedAt : now()
+  return {
+    id: DEFAULT_CHAT_THREAD_ID,
+    title: DEFAULT_CHAT_THREAD_TITLE,
+    createdAt: updatedAt,
+    updatedAt,
+    messages: parseThreadMessages(data.messages, data.version === 2),
+  }
+}
+
+export interface AiChatThreadsState {
+  file: AiChatThreadsFile
+  /** 历史文件存在但读不出来：按「没有会话」处理，同时把可读原因带给上层。 */
+  corrupt: boolean
+  /** 本次是从旧 chat.json 读出来的：还没落盘。 */
+  migrated: boolean
+}
+
+/** 读整份会话集合（永不抛）。读不到 chats.json 时回落到旧 chat.json。 */
+export async function readChatThreadsState(bookId: string): Promise<AiChatThreadsState> {
+  const text = await readTextOrNull(chatThreadsPath(bookId))
+  if (text !== null) {
+    const file = parseChatThreadsText(text)
+    return file
+      ? { file, corrupt: false, migrated: false }
+      : { file: emptyChatThreads(), corrupt: true, migrated: false }
+  }
+  const legacy = await readLegacyChatThread(bookId)
+  if (legacy === undefined) return { file: emptyChatThreads(), corrupt: false, migrated: false }
+  if (legacy === 'corrupt') return { file: emptyChatThreads(), corrupt: true, migrated: false }
+  return {
+    file: { version: 1, activeThreadId: DEFAULT_CHAT_THREAD_ID, threads: [legacy] },
+    corrupt: false,
+    migrated: true,
+  }
+}
+
+export async function readChatThreads(bookId: string): Promise<AiChatThreadsFile> {
+  return (await readChatThreadsState(bookId)).file
+}
+
+/** 整份落盘。只写 chats.json：chat.json 原样留着，供旧版本回退时查看最后状态。 */
+export async function writeChatThreads(
+  bookId: string,
+  file: AiChatThreadsFile,
+  options: AtomicWriteOptions = {},
+): Promise<AiChatThreadsFile> {
+  const normalized = normalizeChatThreads(file)
+  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
+  await atomicWriteText(chatThreadsPath(bookId), JSON.stringify(normalized, null, 2), options)
+  return normalized
+}
+
+export type ChatThreadLookup =
+  | { ok: true; threadId: string; messages: AiEvidenceChatMessage[]; updatedAt: string; corrupt: boolean }
+  | { ok: false; message: string }
+
+function chatThreadMissing(threadId: string): { ok: false; message: string } {
+  return { ok: false, message: `会话不存在，请刷新会话列表（${threadId}）` }
+}
+
+/**
+ * 解析出确定的那条线程：给了 id 就必须存在（不静默落回默认线程），
+ * 没给就用 active；一本书还没有任何线程时返回空串 + 空消息。
+ */
+export async function readChatThread(bookId: string, threadId?: string): Promise<ChatThreadLookup> {
+  const state = await readChatThreadsState(bookId)
+  const wanted = threadId ?? state.file.activeThreadId
+  if (!wanted) return { ok: true, threadId: '', messages: [], updatedAt: now(), corrupt: state.corrupt }
+  const thread = state.file.threads.find((item) => item.id === wanted)
+  if (!thread) {
+    // 指定了 id 却找不到：宁可报错，也不要让这一轮问答悄悄写进别的会话。
+    return threadId ? chatThreadMissing(threadId) : { ok: true, threadId: '', messages: [], updatedAt: now(), corrupt: state.corrupt }
+  }
+  return {
+    ok: true,
+    threadId: thread.id,
+    messages: thread.messages,
+    updatedAt: thread.updatedAt,
+    corrupt: state.corrupt,
+  }
+}
+
+/** `readChat` 的线程版：拿不到指定线程时抛错，交给 handler 摊成中文文案。 */
+export async function readChat(
+  bookId: string,
+  threadId?: string,
+): Promise<AiChatFileV2 & { threadId: string }> {
+  const found = await readChatThread(bookId, threadId)
+  if (!found.ok) throw new Error(found.message)
+  return { version: 2, messages: found.messages, updatedAt: found.updatedAt, threadId: found.threadId }
+}
+
+/** 会话标题：问题压平空白（含换行）后取前 24 个字符，超出补省略号。 */
+export function chatThreadTitleFromQuestion(question: string): string {
+  const flat = question.replace(/\s+/g, ' ').trim()
+  // 按码点切：直接把 emoji 劈成两半会得到替换字符。
+  const chars = Array.from(flat)
+  return chars.length <= CHAT_THREAD_TITLE_LENGTH
+    ? flat
+    : `${chars.slice(0, CHAT_THREAD_TITLE_LENGTH).join('')}…`
+}
+
+function newChatThreadId(file: AiChatThreadsFile): string {
+  const taken = new Set(file.threads.map((thread) => thread.id))
+  // 第一条隐式会话沿用旧文件的固定 id，回退与迁移都指向同一条。
+  if (!taken.has(DEFAULT_CHAT_THREAD_ID)) return DEFAULT_CHAT_THREAD_ID
+  let id = ''
+  do {
+    id = `th_${randomUUID().replace(/-/g, '').slice(0, 16)}`
+  } while (taken.has(id))
+  return id
+}
+
+export interface ChatThreadWriteOptions extends AtomicWriteOptions {
+  /** 缺省 = 当前 active 线程。给了就必须存在，否则抛错（见下）。 */
+  threadId?: string
+}
+
+/**
+ * 把整段消息写进某条线程（缺省 active）。
+ *
+ * 只动这一条线程的消息与 updatedAt，其余线程原样保留 —— 分线程的意义就在于
+ * 两条会话各问各的、互不覆盖。加了 per-book 锁：读写整份文件是 read-modify-write，
+ * 两个线程同时保存时无锁会互相丢更新。
+ */
 export async function writeChat(
   bookId: string,
   messages: readonly AiEvidenceChatMessage[],
-  options: AtomicWriteOptions & { version?: 1 | 2 } = {},
+  options: ChatThreadWriteOptions = {},
 ): Promise<void> {
-  await mkdir(join(bookDir(bookId), 'ai'), { recursive: true })
-  const trimmed = trimChatPairs(messages)
-  const version = options.version ?? 2
-  const data: AiChatFile | AiChatFileV2 = version === 1
-    ? { version: 1, messages: trimmed.map(({ role, content }) => ({ role, content })), updatedAt: now() }
-    : { version: 2, messages: trimmed, updatedAt: now() }
-  await atomicWriteText(join(bookDir(bookId), 'ai', 'chat.json'), JSON.stringify(data, null, 2), options)
+  await withBookLock(bookId, async () => {
+    const { file } = await readChatThreadsState(bookId)
+    const trimmed = trimChatPairs(messages)
+    const wanted = options.threadId ?? file.activeThreadId
+    const existing = wanted ? file.threads.find((thread) => thread.id === wanted) : undefined
+    if (options.threadId && !existing) {
+      // 显式指定却找不到：不能静默落回默认线程，否则读者以为写进了 A 会话，其实进了 B。
+      throw new Error('会话不存在，请刷新会话列表')
+    }
+    const timestamp = now()
+    let threads: AiChatThread[]
+    let activeThreadId: string
+    if (existing) {
+      threads = file.threads.map((thread) => (thread.id === existing.id
+        ? { ...thread, messages: trimmed, updatedAt: timestamp }
+        : thread))
+      activeThreadId = file.activeThreadId
+    } else {
+      // 旧调用方（划词提问等）不带 threadId、且这本书还没有任何会话：按需开一条，
+      // 否则消息无处可落。标题留空，首次提问后由 markChatThreadStarted 补上。
+      const id = wanted || newChatThreadId(file)
+      threads = [...file.threads, { id, title: '', createdAt: timestamp, updatedAt: timestamp, messages: trimmed }]
+      activeThreadId = file.activeThreadId || id
+    }
+    await writeChatThreads(bookId, { version: 1, activeThreadId, threads }, options)
+  })
+}
+
+/**
+ * 发起一轮问答时把线程设为 active，并在它还是空的时候用问题补标题。
+ *
+ * 为什么在任务开跑前调用：流式回答先落盘的场景下，等任务发起再补标题就晚了——
+ * 线程已经不再「空」，自动标题永远轮不到。已有标题一律不覆盖。
+ */
+export async function markChatThreadStarted(bookId: string, threadId: string, question: string): Promise<void> {
+  if (!threadId) return
+  await withBookLock(bookId, async () => {
+    const { file } = await readChatThreadsState(bookId)
+    const thread = file.threads.find((item) => item.id === threadId)
+    if (!thread) return
+    const title = thread.title.trim() ? thread.title : chatThreadTitleFromQuestion(question)
+    await writeChatThreads(bookId, {
+      version: 1,
+      activeThreadId: threadId,
+      threads: file.threads.map((item) => (item.id === threadId ? { ...item, title } : item)),
+    })
+  })
+}
+
+/**
+ * 发起问答前确定线程：缺省用 active；一本书一条会话都没有时按需建一条。
+ *
+ * 「按需建」是旧调用方（不带 threadId）仍然可用的前提；显式传了不存在的 id 则一律报错。
+ */
+export async function prepareChatThread(
+  bookId: string,
+  threadId?: string,
+): Promise<{ ok: true; threadId: string } | { ok: false; message: string }> {
+  if (threadId) {
+    const found = await readChatThread(bookId, threadId)
+    return found.ok ? { ok: true, threadId } : found
+  }
+  const state = await readChatThreadsState(bookId)
+  if (state.file.activeThreadId) return { ok: true, threadId: state.file.activeThreadId }
+  const timestamp = now()
+  const id = newChatThreadId(state.file)
+  await writeChatThreads(bookId, {
+    version: 1,
+    activeThreadId: id,
+    threads: [{ id, title: '', createdAt: timestamp, updatedAt: timestamp, messages: [] }],
+  })
+  return { ok: true, threadId: id }
+}
+
+/** 新建一条会话并切过去。到上限时直接把可读原因交回去。 */
+export async function createChatThread(
+  bookId: string,
+  title?: string,
+): Promise<{ ok: true; threadId: string } | { ok: false; message: string }> {
+  return withBookLock(bookId, async () => {
+    const state = await readChatThreadsState(bookId)
+    if (state.file.threads.length >= AI_CHAT_THREAD_LIMIT) {
+      return { ok: false as const, message: `会话数量已达上限（${AI_CHAT_THREAD_LIMIT}），请先删除不用的会话` }
+    }
+    const timestamp = now()
+    const id = newChatThreadId(state.file)
+    await writeChatThreads(bookId, {
+      version: 1,
+      activeThreadId: id,
+      threads: [...state.file.threads, {
+        id,
+        // 标题留空：第一条问题才是这条会话真正的名字（见 markChatThreadStarted）。
+        title: (title ?? '').trim(),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        messages: [],
+      }],
+    })
+    return { ok: true as const, threadId: id }
+  })
+}
+
+/**
+ * 删除一条会话。删的是 active 时把 active 交给 updatedAt 最新的剩余会话，
+ * 一条不剩就空置 —— 界面据此回到欢迎态，而不是指向一条已经不存在的会话。
+ */
+export async function deleteChatThread(
+  bookId: string,
+  threadId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  return withBookLock(bookId, async () => {
+    const state = await readChatThreadsState(bookId)
+    if (!state.file.threads.some((thread) => thread.id === threadId)) return chatThreadMissing(threadId)
+    const threads = state.file.threads.filter((thread) => thread.id !== threadId)
+    const activeThreadId = state.file.activeThreadId === threadId
+      ? [...threads].sort(byUpdatedAtDesc)[0]?.id ?? ''
+      : state.file.activeThreadId
+    await writeChatThreads(bookId, { version: 1, activeThreadId, threads })
+    return { ok: true as const }
+  })
 }
 
 export type AiMemoryCollection = 'characters' | 'relations' | 'foreshadows' | 'events'

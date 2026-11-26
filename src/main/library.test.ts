@@ -1015,15 +1015,22 @@ describe('chat storage', () => {
     expect(saved.messages.at(-1)?.content).toBe('latest-single')
   })
 
-  it('reads v1 compatibly and preserves v2 citations, cutoff, and stopped state', async () => {
-    const file = join(dir, 'd_chat', 'ai', 'chat.json')
-    await writeFile(file, JSON.stringify({ version: 1, messages: [
+  // 存储迁到 chats.json，chat.json 只读兼容：下面的用例都针对 chats.json，
+  // 旧 chat.json 的读取兼容由 aiChatThreads.test.ts 单独覆盖。
+  it('旧 chat.json 只读兼容，下一次写入才落成 chats.json', async () => {
+    const legacyFile = join(dir, 'd_chat', 'ai', 'chat.json')
+    const file = join(dir, 'd_chat', 'ai', 'chats.json')
+    await writeFile(legacyFile, JSON.stringify({ version: 1, messages: [
       { role: 'assistant', content: 'orphan' },
       { role: 'user', content: '旧问题' }, { role: 'assistant', content: '旧回答', citations: [{ id: 'ignored' }] },
     ], updatedAt: 'old' }), 'utf-8')
+    // v1 消息按无来源读；迁移成一条 id 为 default 的会话，且在内存里完成，不写盘。
     await expect(readChat('d_chat')).resolves.toEqual({
-      version: 1, messages: [{ role: 'user', content: '旧问题' }, { role: 'assistant', content: '旧回答' }], updatedAt: 'old',
+      version: 2, messages: [{ role: 'user', content: '旧问题' }, { role: 'assistant', content: '旧回答' }],
+      updatedAt: 'old', threadId: 'default',
     })
+    expect(await readdir(join(dir, 'd_chat', 'ai'))).not.toContain('chats.json')
+
     const citation = { id: 'qa-c0001-p0', chapterId: 'c0001', chapterTitle: '一', paragraphIndex: 0, excerpt: '证据' }
     await writeChat('d_chat', [
       { role: 'user', content: '新问题' },
@@ -1031,26 +1038,44 @@ describe('chat storage', () => {
     ])
     await expect(readChat('d_chat')).resolves.toMatchObject({
       version: 2,
+      threadId: 'default',
       messages: [
         { role: 'user', content: '新问题' },
         { role: 'assistant', content: '部分回答', citations: [citation], uptoChapterId: 'c0001', stopped: true },
       ],
     })
-    await writeFile(file, JSON.stringify({ version: 3, messages: [{ role: 'user', content: '未来格式' }] }), 'utf-8')
-    await expect(readChat('d_chat')).resolves.toMatchObject({ version: 1, messages: [] })
-    await writeFile(file, JSON.stringify({ version: 2, messages: [
-      { role: 'user', content: 'Q1' }, { role: 'user' }, { role: 'assistant', content: 'A2' },
-    ] }), 'utf-8')
-    await expect(readChat('d_chat')).resolves.toMatchObject({ version: 1, messages: [] })
-    await writeFile(file, '{ bad', 'utf-8')
-    await expect(readChat('d_chat')).resolves.toMatchObject({ version: 1, messages: [] })
+    // chat.json 只读兼容：新写入一份都不该出现在旧文件里。
+    expect(await readFile(legacyFile, 'utf-8')).not.toContain('新问题')
+    expect(await readFile(file, 'utf-8')).toContain('新问题')
   })
 
-  it('keeps the previous chat file intact when the atomic commit fails', async () => {
-    const file = join(dir, 'd_chat', 'ai', 'chat.json')
-    const previous = JSON.stringify({ version: 1, messages: [{ role: 'user', content: '旧消息' }], updatedAt: 'old' })
+  it('chats.json 的未来版本、坏 JSON 与坏消息都按可读结果处理，不抛', async () => {
+    const file = join(dir, 'd_chat', 'ai', 'chats.json')
+    // 未来版本：按「没有会话」读，一本书还没有线程时 threadId 是空串。
+    await writeFile(file, JSON.stringify({ version: 3, activeThreadId: 'x', threads: [] }), 'utf-8')
+    await expect(readChat('d_chat')).resolves.toMatchObject({ version: 2, messages: [], threadId: '' })
+    await writeFile(file, '{ bad', 'utf-8')
+    await expect(readChat('d_chat')).resolves.toMatchObject({ version: 2, messages: [], threadId: '' })
+    // 坏消息逐条丢弃，剩下的照旧读出：一条脏记录不该让整条会话打不开。
+    await writeFile(file, JSON.stringify({ version: 1, activeThreadId: 'default', threads: [
+      { id: 'default', title: '', createdAt: 'old', updatedAt: 'old', messages: [
+        { role: 'user', content: 'Q1' }, { role: 'user' }, { role: 'assistant', content: 'A2' },
+      ] },
+    ] }), 'utf-8')
+    await expect(readChat('d_chat')).resolves.toMatchObject({
+      version: 2,
+      threadId: 'default',
+      messages: [{ role: 'user', content: 'Q1' }, { role: 'assistant', content: 'A2' }],
+    })
+  })
+
+  it('keeps the previous chats.json intact when the atomic commit fails', async () => {
+    const file = join(dir, 'd_chat', 'ai', 'chats.json')
+    const previous = JSON.stringify({ version: 1, activeThreadId: 'default', threads: [
+      { id: 'default', title: '', createdAt: 'old', updatedAt: 'old', messages: [{ role: 'user', content: '旧消息' }] },
+    ] })
     await writeFile(file, previous, 'utf-8')
-    await expect(writeChat('d_chat', [{ role: 'assistant', content: '新消息' }], {
+    await expect(writeChat('d_chat', [{ role: 'user', content: '新消息' }], {
       hooks: { rename: async () => { throw new Error('disk commit failed') } },
     })).rejects.toThrow(/disk commit failed/)
     expect(await readFile(file, 'utf-8')).toBe(previous)

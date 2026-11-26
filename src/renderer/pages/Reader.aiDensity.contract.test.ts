@@ -43,31 +43,34 @@ describe('划词问答的完整链路', () => {
 })
 
 describe('AI 侧栏的信息层级', () => {
-  it('模型端点、已读截止、用量收在默认折叠的 <details> 里', async () => {
+  it('模型端点、已读截止、用量收在默认收起的运行信息面板里', async () => {
     const source = await readerSource()
-    // 这些文案必须还在（它们是核对信息），但只能在折叠区里出现。
-    const detailsStart = source.indexOf('<details class="ai-runtime-info">')
-    expect(detailsStart, '缺少运行信息折叠区').toBeGreaterThan(0)
-    const detailsEnd = source.indexOf('</details>', detailsStart)
-    const runtimeBlock = source.slice(detailsStart, detailsEnd)
+    // 常驻只留一行状态条；这些核对信息必须还在，但只在面板展开时出现。
+    expect(source).toContain('class="ai-status-bar"')
+    const panelStart = source.indexOf('<div v-if="aiRuntimeOpen" class="ai-runtime-panel">')
+    expect(panelStart, '缺少运行信息面板').toBeGreaterThan(0)
+    // 面板一直包到「本次发送范围 / 用量」之后，下一条注释是它的收口边界。
+    const panelEnd = source.indexOf('<!-- 只在真需要告知时浮出来', panelStart)
+    const runtimeBlock = source.slice(panelStart, panelEnd)
 
     expect(runtimeBlock).toContain('模型服务：{{ aiServiceOrigin')
     expect(runtimeBlock).toContain('已读截止：')
     expect(runtimeBlock).toContain('仅包含当前阅读进度以内的内容，不发送未读章节。')
     expect(runtimeBlock).toContain('本书累计')
 
-    // 默认不收开：标签上不能带 open。
-    expect(source).not.toContain('<details class="ai-runtime-info" open>')
+    // 默认收起：面板由 v-if 控制，初值 false。
+    expect(source).toContain('const aiRuntimeOpen = ref(false)')
 
-    // 折叠区之外不应再有第二份同样的常驻说明。
-    const outside = source.slice(0, detailsStart) + source.slice(detailsEnd)
+    // 面板之外不应再有第二份同样的常驻说明。
+    const outside = source.slice(0, panelStart) + source.slice(panelEnd)
     expect(outside).not.toContain('仅包含当前阅读进度以内的内容，不发送未读章节。')
   })
 
   it('问答 tab 只有一处空状态提示，不再叠一层 .chat-empty', async () => {
     const source = await readerSource()
-    const qaStart = source.indexOf('<n-tab-pane name="qa" tab="问答">')
-    const qaEnd = source.indexOf('<n-tab-pane name="notes" tab="笔记">')
+    // 骨架换成两层开关后，按稳定的 data-ai-pane 取这段内容。
+    const qaStart = source.indexOf('data-ai-pane="qa"')
+    const qaEnd = source.indexOf('data-ai-pane="notes"')
     const qaBlock = source.slice(qaStart, qaEnd)
     // 欢迎态自己承担空状态，旧的 chat-empty 必须删掉。
     expect(qaBlock).toContain('sider-welcome')
@@ -76,8 +79,8 @@ describe('AI 侧栏的信息层级', () => {
 
   it('前情 tab 的取材覆盖只有一行，不再是大面板', async () => {
     const source = await readerSource()
-    const recapStart = source.indexOf('<n-tab-pane name="recap" tab="前情">')
-    const recapEnd = source.indexOf('<n-tab-pane name="memory" tab="记忆">')
+    const recapStart = source.indexOf('data-ai-pane="recap"')
+    const recapEnd = source.indexOf('data-ai-pane="memory"')
     const recapBlock = source.slice(recapStart, recapEnd)
     expect(recapBlock).toContain('缺摘要')
     // 覆盖信息用一行 subtle，不再套 ai-budget-status 卡片。

@@ -28,6 +28,8 @@ export const REPLACE_CHAT_VERIFICATIONS: readonly AiEvidenceVerification[] = [
 
 export interface ReplaceChatPayload {
   bookId: string
+  /** 缺省 = 当前 active 会话；给了就必须存在（见 library.writeChat）。 */
+  threadId?: string
   messages: AiEvidenceChatMessage[]
 }
 
@@ -140,8 +142,14 @@ export function parseReplaceChatPayload(payload: unknown): ReplaceChatPayload {
   if (payload.messages.length > REPLACE_CHAT_MAX_MESSAGES) {
     throw new Error(`一次最多只能覆盖 ${REPLACE_CHAT_MAX_MESSAGES} 条消息，这次有 ${payload.messages.length} 条`)
   }
+  // 会话 ID 可选（缺省 = 当前 active），但给了就必须是个非空字符串：
+  // 空串等于把历史「盖到一条不存在的会话」上，应当作参数错误拒掉。
+  if (payload.threadId !== undefined && (typeof payload.threadId !== 'string' || !payload.threadId.trim())) {
+    throw new Error('会话 ID 格式无效，无法覆盖问答历史')
+  }
   return {
     bookId: payload.bookId.trim(),
+    ...(payload.threadId === undefined ? {} : { threadId: payload.threadId.trim() }),
     messages: payload.messages.map((message, index) => parseMessage(message, index)),
   }
 }

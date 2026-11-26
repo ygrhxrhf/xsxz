@@ -117,9 +117,10 @@ async function openMemoryTab() {
   document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
   await vi.waitFor(() => expect(findButton('AI 助手')).toBeTruthy())
   findButton('AI 助手')!.click()
-  await vi.waitFor(() => expect([...document.querySelectorAll('.n-tabs-tab')]
-    .some((tab) => tab.textContent?.trim() === '记忆')).toBe(true))
-  const tab = [...document.querySelectorAll<HTMLElement>('.n-tabs-tab')].find((item) => item.textContent?.trim() === '记忆')!
+  // 阅读资料内部的分段开关：直接点「记忆」，顶层会自动跟着切到阅读资料。
+  await vi.waitFor(() => expect(document.querySelectorAll('.ai-read-switch button').length).toBeGreaterThan(0))
+  const tab = [...document.querySelectorAll<HTMLElement>('.ai-read-switch button')]
+    .find((item) => item.textContent?.trim() === '记忆')!
   tab.click()
   await nextTick()
   return app

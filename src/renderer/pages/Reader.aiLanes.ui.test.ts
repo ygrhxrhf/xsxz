@@ -97,14 +97,21 @@ async function mountReader() {
       if (!item) throw new Error(`找不到按钮「${label}」`)
       return item
     },
-    async clickTab(label: '前情' | '记忆' | '问答' | '输出') {
-      const tab = [...document.querySelectorAll<HTMLElement>('.n-tabs-tab')]
-        .find((item) => item.textContent?.trim() === label)
+    async clickTab(label: '前情' | '记忆' | '问答' | '结果') {
+      // 两层开关：顶层问答/阅读资料，阅读资料内部再分段。v-show 的分段即使隐藏也能收到 click。
+      const tab = [
+        ...document.querySelectorAll<HTMLElement>('.ai-top-switch button'),
+        ...document.querySelectorAll<HTMLElement>('.ai-read-switch button'),
+      ].find((item) => item.textContent?.trim() === label)
       if (!tab) throw new Error(`找不到 tab「${label}」`)
       tab.click()
       await nextTick()
     },
-    activeTab: () => document.querySelector<HTMLElement>('.n-tabs-tab--active')?.textContent?.trim() ?? '',
+    activeTab: () => {
+      const top = document.querySelector<HTMLElement>('.ai-top-switch button.is-on')?.textContent?.trim() ?? ''
+      if (top !== '阅读资料') return top
+      return document.querySelector<HTMLElement>('.ai-read-switch button.is-on')?.textContent?.trim() ?? ''
+    },
     async closeToolPanel() {
       document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
       await vi.waitFor(() => expect(document.querySelector('.tool-panel')).toBeNull())
@@ -155,7 +162,7 @@ describe('Reader AI 壳的分任务忙闲', () => {
     try {
       reader.button('清正文').click()
       await vi.waitFor(() => expect(reader.bodyText()).toContain('干净正文'))
-      expect(reader.activeTab(), '一次性结果应停在输出 tab').toBe('输出')
+      expect(reader.activeTab(), '一次性结果应停在结果分段').toBe('结果')
       expect(reader.bodyText()).toContain('预计发送：1 章 / 20 段')
       expect(document.querySelectorAll('.n-drawer'), '不该再有第二个 AI 抽屉').toHaveLength(1)
 

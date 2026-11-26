@@ -29,6 +29,12 @@ import {
   writeStorySoFar,
   writeChat,
   readChat,
+  readChatThread,
+  readChatThreadsState,
+  prepareChatThread,
+  markChatThreadStarted,
+  createChatThread,
+  deleteChatThread,
   readAiMemory,
   readAiMemoryCompat,
   writeAiMemory,
@@ -1610,9 +1616,13 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.getChat', async (_e, { bookId }: { bookId: string }) => {
+  ipcMain.handle('ai.getChat', async (_e, { bookId, threadId }: { bookId: string; threadId?: string }) => {
     try {
-      const chat = await readChat(bookId)
+      // 不带 threadId = 读当前 active 会话（旧调用方照旧能用）。
+      // 历史文件坏掉时 readChatThread 按「没有会话」回空，不报错：报错就等于侧栏打不开，
+      // 可读原因由 ai.listThreads 带回给界面。
+      const chat = await readChatThread(bookId, threadId)
+      if (!chat.ok) return { ok: false, message: chat.message }
       const visible = await Promise.all(chat.messages.map(async (entry) => {
         if (entry.role !== 'assistant') return entry
         const citations = 'citations' in entry ? entry.citations ?? [] : []
@@ -1621,7 +1631,7 @@ function registerIpc(): void {
         }
         return entry
       }))
-      return { ok: true, version: chat.version, messages: visible }
+      return { ok: true, version: 2, messages: visible, threadId: chat.threadId }
     }
     catch (e: unknown) { return { ok: false, message: e instanceof Error ? e.message : String(e) } }
   })
@@ -1634,9 +1644,12 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.clearChat', async (_e, { bookId }: { bookId: string }) => {
+  ipcMain.handle('ai.clearChat', async (_e, { bookId, threadId }: { bookId: string; threadId?: string }) => {
     try {
-      await writeChat(bookId, [])
+      const found = await readChatThread(bookId, threadId)
+      if (!found.ok) return { ok: false, message: found.message }
+      // 清空只清这条会话的消息，不删会话本身；一条会话都没有时没什么可清，直接成功。
+      if (found.threadId) await writeChat(bookId, [], { threadId: found.threadId })
       return { ok: true }
     } catch {
       return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
@@ -1653,8 +1666,56 @@ function registerIpc(): void {
       return { ok: false, message: e instanceof Error ? e.message : '问答历史格式无效，无法覆盖' }
     }
     try {
-      await writeChat(parsed.bookId, parsed.messages)
+      // 先确认会话存在，再整段覆盖：不存在是参数问题，不该被当成磁盘故障报给读者。
+      const found = await readChatThread(parsed.bookId, parsed.threadId)
+      if (!found.ok) return { ok: false, message: found.message }
+      // 还没有任何会话且要被覆盖成空历史：不必为了写一个空而新建会话。
+      if (!found.threadId && !parsed.messages.length) return { ok: true }
+      await writeChat(parsed.bookId, parsed.messages, found.threadId ? { threadId: found.threadId } : {})
       return { ok: true }
+    } catch {
+      return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
+    }
+  })
+
+  // ---- 问答会话（线程）--------------------------------------------------------
+  // 一本书可以有多条互不污染的会话：问人物线、问这卷剧情、问伏笔各开一条。
+  // 消息仍落 <书>/ai/chats.json；旧 chat.json 只在读时兼容迁移，不再写入。
+  ipcMain.handle('ai.listThreads', async (_e, { bookId }: { bookId: string }) => {
+    try {
+      const state = await readChatThreadsState(bookId)
+      const threads = state.file.threads
+        .map((thread) => ({
+          id: thread.id,
+          title: thread.title,
+          messageCount: thread.messages.length,
+          updatedAt: thread.updatedAt,
+        }))
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      return {
+        ok: true,
+        threads,
+        activeThreadId: state.file.activeThreadId,
+        // 坏文件按「没有会话」返回，但把原因说清楚：否则读者只会看到会话栏突然空了。
+        ...(state.corrupt ? { message: '问答历史文件已损坏，已按没有会话处理；新建会话后可以继续提问' } : {}),
+      }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.createThread', async (_e, { bookId, title }: { bookId: string; title?: string }) => {
+    try {
+      return await createChatThread(bookId, typeof title === 'string' ? title : undefined)
+    } catch {
+      return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
+    }
+  })
+
+  ipcMain.handle('ai.deleteThread', async (_e, { bookId, threadId }: { bookId: string; threadId: string }) => {
+    try {
+      if (typeof threadId !== 'string' || !threadId) return { ok: false, message: '缺少会话 ID，无法删除会话' }
+      return await deleteChatThread(bookId, threadId)
     } catch {
       return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
     }
@@ -2062,7 +2123,7 @@ function registerIpc(): void {
    * 与证据问答并存而不是替换它——证据问答每条结论强制绑引用，适合「核对剧情」；
    * 这里适合「聊着读」，追问和跨章综合不会被单轮流水线卡住。
    */
-  ipcMain.handle('ai.agentChat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {
+  ipcMain.handle('ai.agentChat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[]; threadId?: string }) => {
     try {
       const book = await getBook(args.bookId)
       const frontier = await getReadFrontier(args.bookId)
@@ -2082,6 +2143,13 @@ function registerIpc(): void {
         .filter((chapter) => chapter.status === 'ready' && Boolean(frontier.chapters[chapter.id]))
         .map((chapter) => chapter.id))
       const history = args.messages.slice(0, -1).filter((message): message is { role: 'user' | 'assistant'; content: string } => message.role !== 'system')
+      // 先定下这条问答写回哪个会话：指定了不存在的会话就当场报错，不能静默落回默认会话。
+      const thread = await prepareChatThread(args.bookId, args.threadId)
+      if (!thread.ok) return { ok: false, message: thread.message }
+      const threadId = thread.threadId
+      // 切 active + 补标题要在任务开跑前做：流式回答先落盘后，线程就不再是「空」，
+      // 自动标题永远轮不到（已有标题不会被覆盖）。
+      await markChatThreadStarted(args.bookId, threadId, question)
 
       return aiStart({
         lane: 'interactive', cls: 'qa', bookId: args.bookId,
@@ -2163,12 +2231,13 @@ function registerIpc(): void {
             { role: 'user', content: question },
             { role: 'assistant', content: result.text, citations: result.citations, uptoChapterId: progressChapterId, ...(stopped ? { stopped: true } : {}) },
           ]
-          const existing = await readChat(args.bookId)
+          // 只读回这条会话自己的历史：别的会话的消息不该被并进来。
+          const existing = await readChat(args.bookId, threadId)
           await saveAiDone(jobId, {
             jobId, ok: true, text: result.text, citations: result.citations, uptoChapterId: progressChapterId,
             ...(stopped ? { stopped: true } : {}),
-          }, () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { version: existing.version }), {
-            retrySave: () => writeChat(args.bookId, [...existing.messages, ...answerMessages]),
+          }, () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }), {
+            retrySave: () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }),
           })
         } catch (e: unknown) {
           if (signal.aborted) {
@@ -2639,7 +2708,8 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.chatStream', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {    try {
+  ipcMain.handle('ai.chatStream', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[]; threadId?: string }) => {
+    try {
       const book = await getBook(args.bookId)
       const frontier = await getReadFrontier(args.bookId)
       const progressChapterId = book.progress?.chapterId
@@ -2652,7 +2722,13 @@ function registerIpc(): void {
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const tierSenseApiKey = await getTierSenseApiKey()
       const config = trustedAiConfig(settings, apiKey)
-      const existingChat = await readChat(args.bookId)
+      // 先定下这条问答写回哪个会话：指定了不存在的会话就当场报错，不静默落回默认会话。
+      const thread = await prepareChatThread(args.bookId, args.threadId)
+      if (!thread.ok) return { ok: false, message: thread.message }
+      const threadId = thread.threadId
+      // 切 active + 补标题要先于任务开跑：流式回答先落盘后线程就不再是「空」，自动标题就轮不到了。
+      await markChatThreadStarted(args.bookId, threadId, question)
+      const existingChat = await readChat(args.bookId, threadId)
       const persistedMessages: import('../shared/types').AiEvidenceChatMessage[] = [...existingChat.messages]
       const latest = persistedMessages.at(-1)
       if (latest?.role !== 'user' || latest.content !== question) {
@@ -2685,13 +2761,13 @@ function registerIpc(): void {
               jobId, ok: true, text: partial, stopped: true, truncated: false,
               citations: candidateCitations, uptoChapterId: upto,
             },
-            () => writeChat(args.bookId, partialMessages),
-            { retrySave: () => writeChat(args.bookId, partialMessages) },
+            () => writeChat(args.bookId, partialMessages, { threadId }),
+            { retrySave: () => writeChat(args.bookId, partialMessages, { threadId }) },
           )
         }
         sendAiStage(jobId, 'preparing')
         try {
-          await writeChat(args.bookId, persistedMessages, { version: existingChat.version })
+          await writeChat(args.bookId, persistedMessages, { threadId })
         } catch {
           mainWindow?.webContents.send('ai.done', signal.aborted
             ? aiStoppedDoneEvent(jobId, '')
@@ -2853,19 +2929,19 @@ function registerIpc(): void {
               uptoChapterId: result.uptoChapterId, stopped: true,
             },
           ]
-          const retrySave = () => writeChat(args.bookId, completedMessages)
+          const retrySave = () => writeChat(args.bookId, completedMessages, { threadId })
           await saveAiDone(jobId, {
             jobId, ok: true, text: result.text, usage: result.usage,
             citations: result.citations, uptoChapterId: result.uptoChapterId,
             ...evidenceMeta,
             truncated: result.kind === 'answer' ? result.truncated : false,
-          }, () => writeChat(args.bookId, completedMessages, { signal }), {
+          }, () => writeChat(args.bookId, completedMessages, { signal, threadId }), {
             signal,
             stoppedEvent: {
               jobId, ok: true, text: result.text, stopped: true,
               citations: result.citations, uptoChapterId: result.uptoChapterId,
             },
-            saveStopped: () => writeChat(args.bookId, stoppedMessages),
+            saveStopped: () => writeChat(args.bookId, stoppedMessages, { threadId }),
             retrySave,
           })
         } catch (e: unknown) {

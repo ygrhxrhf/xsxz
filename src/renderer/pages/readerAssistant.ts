@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import type { Ref } from 'vue'
-import type { Book, ChapterMeta, ReaderReadingMode, AiChatMessage, AiResumeCardView, AiBookUsage, AiBudgetEstimate, AiBudgetEvent, AiChapterNote, AiCitation, AiEvidenceChatMessage, AiFollowCoverage, AiFollowMode, AiMaterialCoverage, AiMemoryBase, AiMemoryCharacter, AiMemoryFile, AiTimelineView, AiUsage } from '@shared/types'
+import type { Book, ChapterMeta, ReaderReadingMode, AiChatMessage, AiChatThreadSummary, AiResumeCardView, AiBookUsage, AiBudgetEstimate, AiBudgetEvent, AiChapterNote, AiCitation, AiEvidenceChatMessage, AiFollowCoverage, AiFollowMode, AiMaterialCoverage, AiMemoryBase, AiMemoryCharacter, AiMemoryFile, AiTimelineView, AiUsage } from '@shared/types'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { clearRetriedAssistantSaveToken, describeAssistantStage, currentAssistantStage as resolveAssistantStage, type AssistantJobKind, type AssistantPanelTab, type AssistantSaveTokenState, type AssistantStageState } from './aiAssistantStatus'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
@@ -155,6 +155,17 @@ const chatLoading = ref(false)
 const chatStarting = ref(false)
 const chatJobId = ref('')
 const chatAssistantIndex = ref(-1)
+/**
+ * 会话栏：一本书可以有多条互不污染的问答会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。
+ * 消息仍落在主进程的 ai/chats.json，这里只拿列表要用的摘要与当前会话 ID。
+ *
+ * `chatThreadId` 空串的含义是「这本书还没有会话」：界面据此回到欢迎态，
+ * 而不是指向一条已经不存在的会话。
+ */
+const chatThreadId = ref('')
+const chatThreads = ref<AiChatThreadSummary[]>([])
+/** 会话栏正在读写：新建/切换/删除会话是一次 IPC + 一次读盘，连点会拿旧 active 覆盖新结果。 */
+const chatThreadSaving = ref(false)
 /**
  * 从选区发起的那次提问：记住气泡序号与选区区间，回答完成后就能把 AI 的解释
  * 存回读者刚才选中的同一段文字。换章、清空记录或手动提问都会让它失效。
@@ -467,6 +478,153 @@ function showAiOutput() {
   showAiAssistant.value = true
 }
 
+/**
+ * 会话下拉里的一行文案：「标题 · N 条」。
+ * 没起过标题的会话显示「新会话」：空标题在下拉框里就是一条看不见的空白。
+ */
+function chatThreadOptionLabel(thread: AiChatThreadSummary): string {
+  const title = thread.title.trim() || '新会话'
+  return `${title} · ${thread.messageCount} 条`
+}
+
+/**
+ * n-select 要的 { label, value }。
+ * 文案复用 chatThreadOptionLabel：下拉框和别处各写一遍，迟早会漂成两种说法。
+ */
+const chatThreadOptions = computed(() => chatThreads.value.map((thread) => ({
+  label: chatThreadOptionLabel(thread),
+  value: thread.id,
+})))
+
+/**
+ * 拉会话列表，并把当前会话收口到一份真实存在的会话上。
+ *
+ * 为什么要管 `chatThreadId`：它可能来自上一本书、或指向刚在别处被删掉的会话。
+ * 不在这里对齐的话，下一句提问会带着一个不存在的 id 去请求，直接报错。
+ */
+async function listChatThreads() {
+  const target = book.value
+  if (!target) return
+  try {
+    const res = await window.api.ai.listThreads(target.id)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    chatThreads.value = res.threads
+    if (!res.threads.some((thread) => thread.id === chatThreadId.value)) {
+      chatThreadId.value = res.activeThreadId
+    }
+    // 历史文件坏掉时主进程会带一句原因：不说清的话，读者只会看到会话栏突然空了。
+    if (res.message) message.warning(res.message)
+  } catch {
+    message.error('读取问答会话失败，请稍后重试')
+  }
+}
+
+/**
+ * 切到另一条会话：用磁盘上的那条历史整段覆盖界面。
+ *
+ * 生成中一律拒绝（连点击都不该接）：流式回答还在往 `chatAssistantIndex` 追加，
+ * 换一条会话就会把后面的句子写进刚切过去的那条，两条记录同时被污染。
+ */
+async function switchChatThread(id: string) {
+  const target = book.value
+  if (!target || !id) return
+  if (chatLoading.value || assistantSaveRetrying.value) return
+  chatThreadSaving.value = true
+  try {
+    const res = await window.api.ai.getChat(target.id, id)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    chatThreadId.value = res.threadId ?? id
+    chatMessages.value = normalizeEvidenceChatHistory(res.messages)
+    // 草稿、下标与选区目标都是上一条会话的：留着就会把 A 会话的问题发进 B 会话。
+    chatInput.value = ''
+    chatAssistantIndex.value = -1
+    selectionNoteTarget.value = null
+    agentToolActivity.value = ''
+  } catch {
+    message.error('读取会话历史失败，请稍后重试')
+  } finally {
+    chatThreadSaving.value = false
+  }
+}
+
+/** 新建一条空会话并切过去。到上限时主进程直接给可读原因，不必再问一次。 */
+async function newChatThread() {
+  const target = book.value
+  if (!target || chatLoading.value || assistantSaveRetrying.value || chatThreadSaving.value) return
+  chatThreadSaving.value = true
+  try {
+    const res = await window.api.ai.createThread(target.id)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    // 先刷新列表再切：下拉框里得先有这一项，选中态才落得下来。
+    await listChatThreads()
+    await switchChatThread(res.threadId)
+  } catch {
+    message.error('新建会话失败，请稍后重试')
+  } finally {
+    chatThreadSaving.value = false
+  }
+}
+
+/**
+ * 删除一条会话。删的若是当前会话，主进程已经把 active 交给了最近的剩余会话，
+ * 这里重新拉一遍列表就能落到它；一条不剩时 `chatThreadId` 为空串，界面回欢迎态。
+ */
+async function removeChatThread(id: string) {
+  const target = book.value
+  if (!target || !id || chatLoading.value || assistantSaveRetrying.value || chatThreadSaving.value) return
+  // 删之前先记住它是不是当前会话：删完列表已经刷新，那个 id 不会再出现在里面。
+  const wasCurrent = id === chatThreadId.value
+  chatThreadSaving.value = true
+  try {
+    const res = await window.api.ai.deleteThread(target.id, id)
+    if (!res.ok) {
+      message.error(res.message)
+      return
+    }
+    await listChatThreads()
+    if (!wasCurrent) return
+    // 删的是当前会话：加载剩下的那一条；一条不剩就清空消息，让它自然回到欢迎态。
+    if (chatThreadId.value) {
+      await switchChatThread(chatThreadId.value)
+    } else {
+      chatMessages.value = []
+      chatInput.value = ''
+      chatAssistantIndex.value = -1
+      selectionNoteTarget.value = null
+      agentToolActivity.value = ''
+    }
+  } catch {
+    message.error('删除会话失败，请稍后重试')
+  } finally {
+    chatThreadSaving.value = false
+  }
+}
+
+/**
+ * 打开面板时刷新会话栏再读历史。
+ *
+ * 顺序不能反：`getChat` 省略 threadId 读的是主进程的 active，
+ * 会话列表后到的话，下拉框会先显示一条、消息却来自另一条。
+ */
+async function reloadChatThreads() {
+  const target = book.value
+  if (!target) return
+  await listChatThreads()
+  const res = await window.api.ai.getChat(target.id, chatThreadId.value || undefined)
+  if (!res.ok) return
+  chatThreadId.value = res.threadId ?? chatThreadId.value
+  chatMessages.value = normalizeEvidenceChatHistory(res.messages)
+}
+
 async function openAiAssistant(tab: AssistantPanelTab = 'recap') {
   if (!book.value) return
   aiAssistantTab.value = tab
@@ -476,9 +634,8 @@ async function openAiAssistant(tab: AssistantPanelTab = 'recap') {
     loadStoredMemory(),
     loadAssistantMaterial(),
     refreshSemanticStatus(),
-    chatLoading.value || restoringChat.value
-      ? Promise.resolve()
-      : window.api.ai.getChat(book.value.id).then((res) => { if (res.ok) chatMessages.value = normalizeEvidenceChatHistory(res.messages) }),
+    // 生成中不碰历史：否则会把流式追加的内容和刚读回来的旧记录混在一起。
+    chatLoading.value || restoringChat.value ? Promise.resolve() : reloadChatThreads(),
   ])
 }
 
@@ -950,9 +1107,11 @@ async function startChatFrom(history: readonly AiEvidenceChatMessage[], question
   chatStarting.value = true
   try {
     // 对话模式走 pi agent（模型自己决定查目录/读原文/检索/看记忆），证据模式仍是单轮严格引用。
+    // 带上当前会话：没有会话时主进程会按需开一条，并把这一轮写进去。
+    const threadId = chatThreadId.value || undefined
     const res = chatMode.value === 'agent'
-      ? await window.api.ai.agentChat(target.id, chapter.id, payload)
-      : await window.api.ai.chatStream(target.id, chapter.id, payload)
+      ? await window.api.ai.agentChat(target.id, chapter.id, payload, threadId)
+      : await window.api.ai.chatStream(target.id, chapter.id, payload, threadId)
     if (!res.ok) {
       chatMessages.value.push({ role: 'assistant', content: `错误：${res.message}` })
       return
@@ -962,6 +1121,9 @@ async function startChatFrom(history: readonly AiEvidenceChatMessage[], question
     chatLoading.value = true
     chatMessages.value.push({ role: 'assistant', content: '' })
     chatAssistantIndex.value = chatMessages.value.length - 1
+    // 主进程已经把这条会话设为 active 并补上了标题：刷新列表，下拉框才显示得出。
+    // （一本书还没有会话时 chatThreadId 是空串，这次刷新才把它落到新建的那条上。）
+    void listChatThreads()
   } catch (error) {
     // 失败要说人话：保留真实原因并给出下一步，别再吞成一句「无法启动」。
     const detail = error instanceof Error ? error.message : String(error)
@@ -1099,7 +1261,8 @@ async function persistChatSnapshot() {
     ...(message.stopped ? { stopped: true } : {}),
   }))
   try {
-    const res = await window.api.ai.replaceChat(target.id, snapshot)
+    // 只覆盖当前会话：不带 threadId 会盖到主进程的 active 上，删错一条会话。
+    const res = await window.api.ai.replaceChat(target.id, snapshot, chatThreadId.value || undefined)
     if (!res.ok) message.error(`已修改本地记录，未能写入书库：${res.message}`)
   } catch {
     message.error('已修改本地记录，未能写入书库：写盘请求没有送达')
@@ -1150,11 +1313,15 @@ async function deleteChatRound(index: number) {
 
 async function clearChat() {
   if (!book.value || chatLoading.value || assistantSaveRetrying.value) return
-  const res = await window.api.ai.clearChat(book.value.id)
+  // 只清当前会话，不删会话本身：其余会话的历史必须留着。
+  const res = await window.api.ai.clearChat(book.value.id, chatThreadId.value || undefined)
   if (res.ok) {
     chatMessages.value = []
     chatInput.value = ''
+    chatAssistantIndex.value = -1
     selectionNoteTarget.value = null
+    // 条数变了，会话栏上的「N 条」要跟着回到 0。
+    void listChatThreads()
   } else {
     message.error(res.message)
   }
@@ -1265,6 +1432,16 @@ const inlineAsk = useInlineAsk({
     chatStarting,
     chatJobId,
     chatAssistantIndex,
+    // 会话栏：模板用 state + 四个动作，全部从这里导出，Reader.vue 不再自己拼一遍。
+    chatThreadId,
+    chatThreads,
+    chatThreadSaving,
+    chatThreadOptionLabel,
+    chatThreadOptions,
+    listChatThreads,
+    switchChatThread,
+    newChatThread,
+    removeChatThread,
     selectionNoteTarget,
     selectionNoteSaving,
     follow,

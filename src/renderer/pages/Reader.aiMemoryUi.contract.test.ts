@@ -47,15 +47,16 @@ describe('Reader recap and memory UI contract', () => {
     }
     // 数量断言只看记忆 pane：别的 tab 加折叠列表不该让这条测试误报。
     const memoryPane = source.slice(
-      source.indexOf('<n-tab-pane name="memory"'),
-      source.indexOf('<n-tab-pane name="qa"'),
+      source.indexOf('data-ai-pane="memory"'),
+      source.indexOf('data-ai-pane="qa"'),
     )
     expect(memoryPane).toContain('source.paragraphIndex + 1')
     expect(memoryPane).toContain("item.aliases.join('、')")
     expect(memoryPane).toContain("item.participants.join('、')")
     expect(memoryPane).toContain('source.excerpt')
     expect(memoryPane.match(/<details v-for=/g)).toHaveLength(4)
-    expect(memoryPane.match(/:open="item\.accuracy === 'normal'"/g)).toHaveLength(4)
+    // 条目默认收起：一进记忆页先看到标题行，而不是四组全部摊开的正文。
+    expect(memoryPane.match(/:open="item\.accuracy/g)).toBeNull()
     expect(memoryPane.match(/<summary>/g)).toHaveLength(4)
     expect(memoryPane.match(/class="memory-accuracy-tag"/g)).toHaveLength(4)
     expect(memoryPane).not.toMatch(/<summary>[^\n]*<n-tag/)
