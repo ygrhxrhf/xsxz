@@ -87,4 +87,12 @@ describe('AI 侧栏的信息层级', () => {
     expect(recapBlock).not.toContain('materialCoverage')
     expect(recapBlock).not.toContain('recapLength')
   })
+
+  it('对话区独立滚动，右侧工具栏固定不出滚动条，且去掉底部脚标条', async () => {
+    const source = await readerSource()
+    expect(source).not.toContain('sider-footer-strip')
+    expect(source).not.toContain('sider-promo-pill')
+    expect(source).toContain('.chat-messages {\n  flex: 1 1 0%;\n  min-height: 0;\n  overflow-y: auto;')
+    expect(source).toContain('.ai-top-bar.sider-rail { flex-shrink: 0; height: 100%; overflow: hidden; }')
+  })
 })

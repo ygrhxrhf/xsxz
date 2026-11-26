@@ -4520,7 +4520,7 @@ onUnmounted(() => {
         :max-width="720"
         @update:width="setAiDrawerWidth"
       >
-        <n-drawer-content title="AI 助手" closable>
+        <n-drawer-content title="AI 助手" closable :body-style="{ overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: '0' }" :body-content-style="{ padding: '0', overflow: 'hidden', height: '100%', flex: '1 1 0%', minHeight: '0', display: 'flex', flexDirection: 'column' }">
           <div class="sider-shell">
           <div class="sider-main">
           <div v-if="legacyReadProposal" class="ai-budget-status">
@@ -4603,6 +4603,7 @@ onUnmounted(() => {
               <div class="ai-pane-toolbar is-recap-bar">
                 <n-button size="small" :disabled="!book?.progress?.chapterId || assistantBusyByKind.recap || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
                 <n-button size="small" :disabled="!chapterReady || assistantBusyByKind.recap || assistantSaveRetrying" @click="startRecap('chapter')">生成本章摘要</n-button>
+                <n-button v-if="recapLoading && aiAssistantTab === 'recap'" size="small" type="warning" @click="stopRecap">停止生成</n-button>
               </div>
               <section v-if="resumeCardView?.available" class="ai-budget-status resume-card-panel">
                 <div class="resume-card-head">
@@ -4958,16 +4959,6 @@ onUnmounted(() => {
                     </div>
                   </div>
                 </div>
-                <div class="sider-footer-strip" aria-hidden="true">
-                  <div class="sider-footer-left">
-                    <span class="sider-quota-pill"><span class="sider-quota-ring" />{{ bookUsage?.calls ?? chatMessages.length }}</span>
-                    <span class="sider-promo-pill">✦ 防剧透护栏</span>
-                  </div>
-                  <div class="sider-footer-right">
-                    <span class="sider-footer-icon" title="快捷键 I 打开侧栏，N 打开本章笔记">?</span>
-                    <span class="sider-footer-icon" title="基于本地已读章节与记忆索引">♡</span>
-                  </div>
-                </div>
               </div>
           </div>
           <div v-show="aiAssistantTab === 'notes'" data-ai-pane="notes">
@@ -5053,10 +5044,6 @@ onUnmounted(() => {
           </div>
           <!-- Sider 右侧竖向窄导航轨：图标在上、文字在下，底部带快捷工具与彩环图标 -->
           <aside class="ai-top-bar sider-rail">
-            <div class="sider-rail-top-icons" aria-hidden="true">
-              <span>⇥</span>
-              <span>‹›</span>
-            </div>
             <div class="ai-top-switch" role="tablist" aria-label="AI 助手模式">
               <button role="tab" :aria-selected="aiAssistantTab === 'qa'" :class="['ai-tab-btn', 'is-qa', { 'is-on': aiAssistantTab === 'qa' }]" type="button" @click="aiAssistantTab = 'qa'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3C7.03 3 3 6.58 3 11c0 2.1.91 4.01 2.4 5.44L4.5 20.5l4.33-1.44c1.01.3 2.07.44 3.17.44 4.97 0 9-3.58 9-8s-4.03-8-9-8Zm-3 7h2v3H9v-3Zm4 0h2v3h-2v-3Z" /></svg></span>问答</button>
               <button role="tab" :aria-selected="aiAssistantTab === 'recap'" :class="['ai-tab-btn', 'is-recap', { 'is-on': aiAssistantTab === 'recap' }]" type="button" @click="aiAssistantTab = 'recap'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm2 3v2h12V8H6Zm0 4v2h12v-2H6Zm0 4v2h8v-2H6Z" /></svg></span>前情</button>
@@ -5106,9 +5093,6 @@ onUnmounted(() => {
             </div>
           </aside>
           </div>
-          <template #footer>
-            <n-button v-if="recapLoading && aiAssistantTab === 'recap'" type="warning" @click="stopRecap">停止生成</n-button>
-          </template>
         </n-drawer-content>
       </n-drawer>
 
@@ -5921,57 +5905,70 @@ onUnmounted(() => {
   gap: 8px;
   margin-bottom: 6px;
 }
+.ai-runtime-panel { flex: 0 0 auto; max-height: 45%; overflow-y: auto; }
 .ai-runtime-panel .ai-assistant-heading { padding: 6px 0 4px; font-size: 12px; }
 .ai-runtime-panel .ai-budget-status,
 .ai-runtime-panel .ai-assistant-status,
 .ai-runtime-panel .subtle { margin: 0 0 6px; }
 
-/* ── Sider 双栏骨架：左侧主工作区 + 右侧竖向窄图标导航轨 ───────────── */
+/* ── Sider 双栏骨架：左侧主工作区（对话框/内容区独立滚动） + 右侧竖向固定工具栏 ───────────── */
 .sider-shell {
   display: flex;
   align-items: stretch;
-  min-height: calc(100vh - 57px);
-  margin: -6px -24px -16px;
+  flex: 1 1 0%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
 }
 .sider-main {
-  flex: 1 1 auto;
+  flex: 1 1 0%;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 12px 16px 12px;
+  padding: 10px 14px 10px 16px;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .sider-qa-pane {
-  flex: 1 1 auto;
+  flex: 1 1 0%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 86px);
+  overflow: hidden;
+}
+[data-ai-pane="recap"],
+[data-ai-pane="memory"],
+[data-ai-pane="notes"],
+[data-ai-pane="output"] {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
 }
 .sider-bottom-dock {
-  margin-top: auto;
+  flex: 0 0 auto;
+  margin-top: 0;
   padding-top: 8px;
 }
 
 .sider-rail {
   flex: 0 0 56px;
   width: 56px;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 10px 4px 14px;
+  padding: 8px 4px 10px;
   border-left: 1px solid color-mix(in srgb, var(--r-text) 8%, transparent);
   background: color-mix(in srgb, var(--r-text) 3.5%, var(--r-surface, #ffffff));
   user-select: none;
-}
-.sider-rail-top-icons {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  margin-bottom: 10px;
-  color: var(--r-muted);
-  font-size: 11px;
-  opacity: 0.72;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .ai-top-switch {
   display: flex;
@@ -6088,6 +6085,9 @@ onUnmounted(() => {
 
 /* 各页签顶部工具栏：极简浅灰底 */
 .ai-pane-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -6869,12 +6869,15 @@ onUnmounted(() => {
 .memory-source:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
 
 .chat-messages {
-  flex: 1;
+  flex: 1 1 0%;
+  min-height: 0;
   overflow-y: auto;
-  padding: 12px 0;
+  overflow-x: hidden;
+  padding: 8px 4px 12px 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  scrollbar-gutter: stable;
 }
 
 .chat-msg {
@@ -7289,59 +7292,6 @@ onUnmounted(() => {
   background: transparent;
 }
 
-/* Sider 输入框底部的状态脚标条：左侧额度环 + 黑底特惠胶囊，右侧轻量图标 */
-.sider-footer-strip {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 2px 0;
-  font-size: 11px;
-  color: var(--r-muted);
-}
-.sider-footer-left,
-.sider-footer-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.sider-quota-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--r-text) 10%, transparent);
-  background: color-mix(in srgb, var(--r-text) 3%, transparent);
-  color: var(--r-muted);
-  font-weight: 500;
-}
-.sider-quota-ring {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  border: 1.5px solid #94a3b8;
-}
-.sider-promo-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: #18181b;
-  color: #fafafa;
-  font-weight: 600;
-}
-.sider-footer-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--r-text) 12%, transparent);
-  font-size: 10px;
-  opacity: 0.72;
-}
 
 
 .reader-toolbar {
@@ -8187,8 +8137,8 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 
-/* 右侧竖向导航轨粘在抽屉侧边 */
-.ai-top-bar.sider-rail { position: sticky; top: 0; z-index: 3; align-self: stretch; }
+/* 右侧竖向导航轨固定在抽屉右侧，不随对话区滚动、不出滚动条 */
+.ai-top-bar.sider-rail { flex-shrink: 0; height: 100%; overflow: hidden; }
 .ai-clean-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; }
 .memory-item-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .memory-edit-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(124, 92, 255, 0.25); }
