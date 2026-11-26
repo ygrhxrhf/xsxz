@@ -4521,29 +4521,13 @@ onUnmounted(() => {
         @update:width="setAiDrawerWidth"
       >
         <n-drawer-content title="AI 助手" closable>
+          <div class="sider-shell">
+          <div class="sider-main">
           <div v-if="legacyReadProposal" class="ai-budget-status">
             <strong>旧书已读范围待确认</strong>
             <div>旧版只记录到当前章节的进度。确认后，将它之前的章节与本章已到位置纳入 AI 已读范围；不确认时只使用新版实际记录的位置。</div>
             <n-button size="small" @click="confirmLegacyFrontier">确认旧进度为已读</n-button>
           </div>
-
-          <!--
-            一行状态条：模型和已读边界是唯二需要常驻的信息。
-            预算、用量、取材范围、自动整理都收进「运行信息」面板——打开侧栏先看到内容，不是先读一张账单。
-          -->
-          <button
-            class="ai-status-bar"
-            type="button"
-            :aria-expanded="aiRuntimeOpen"
-            aria-label="运行信息"
-            @click="aiRuntimeOpen = !aiRuntimeOpen"
-          >
-            <span class="ai-status-dot" :class="{ 'is-off': !aiServiceOrigin }" aria-hidden="true" />
-            <span class="ai-status-model">{{ aiServiceOrigin ? aiModelLabel : '未配置模型服务' }}</span>
-            <span class="ai-status-sep" aria-hidden="true">·</span>
-            <span class="ai-status-read">已读至 {{ readUptoTitle }}</span>
-            <span class="ai-status-toggle">{{ aiRuntimeOpen ? '收起 ▴' : '设置与状态 ▾' }}</span>
-          </button>
           <div v-show="aiRuntimeOpen" class="ai-runtime-panel">
             <div class="ai-model-row">
               <span class="ai-runtime-label">模型</span>
@@ -4614,16 +4598,6 @@ onUnmounted(() => {
           <div v-if="assistantSaveState.token" class="ai-save-warning">
             结果已生成，但未能保存到书库。
             <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantSaveBusy" @click="retryAssistantSave">重试保存</n-button>
-          </div>
-          <!-- 单层四色鎏光页签：问答 · 前情 · 记忆 · 笔记（有一次性结果时浮出「结果」），点一下直达 -->
-          <div class="ai-top-bar">
-            <div class="ai-top-switch" role="tablist" aria-label="AI 助手模式">
-              <button role="tab" :aria-selected="aiAssistantTab === 'qa'" :class="['ai-tab-btn', 'is-qa', { 'is-on': aiAssistantTab === 'qa' }]" type="button" @click="aiAssistantTab = 'qa'">问答</button>
-              <button role="tab" :aria-selected="aiAssistantTab === 'recap'" :class="['ai-tab-btn', 'is-recap', { 'is-on': aiAssistantTab === 'recap' }]" type="button" @click="aiAssistantTab = 'recap'">前情</button>
-              <button role="tab" :aria-selected="aiAssistantTab === 'memory'" :class="['ai-tab-btn', 'is-memory', { 'is-on': aiAssistantTab === 'memory' }]" type="button" @click="aiAssistantTab = 'memory'">记忆</button>
-              <button role="tab" :aria-selected="aiAssistantTab === 'notes'" :class="['ai-tab-btn', 'is-notes', { 'is-on': aiAssistantTab === 'notes' }]" type="button" @click="aiAssistantTab = 'notes'">笔记</button>
-              <button v-if="aiResult" role="tab" :aria-selected="aiAssistantTab === 'output'" :class="['ai-tab-btn', 'is-output', { 'is-on': aiAssistantTab === 'output' }]" type="button" @click="aiAssistantTab = 'output'">结果</button>
-            </div>
           </div>
           <div v-show="aiAssistantTab === 'recap'" data-ai-pane="recap">
               <div class="ai-pane-toolbar is-recap-bar">
@@ -4803,61 +4777,56 @@ onUnmounted(() => {
                 </template>
               </n-space>
           </div>
-          <div v-show="aiAssistantTab === 'qa'" data-ai-pane="qa">
-              <!--
-                会话栏：一本书可以有多条互不污染的问答会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。
-                视觉跟下面的 .chat-topbar 一套（小字号、低对比），不再开另一种风格。
-                生成中整栏禁用：流式回答还在往当前会话追加，切走会把后面的句子写进另一条。
-              -->
-              <div class="chat-threads">
-                <n-select
-                  class="chat-threads-select"
-                  size="tiny"
-                  :value="chatThreadId"
-                  :options="chatThreadOptions"
-                  :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || chatThreads.length === 0"
-                  placeholder="新会话"
-                  aria-label="切换问答会话"
-                  @update:value="switchChatThread"
-                />
-                <button
-                  class="chat-topbar-btn"
-                  type="button"
-                  :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving"
-                  title="新建一条空的问答会话；上限由主进程判定并给出可读原因"
-                  @click="newChatThread"
-                >新会话</button>
-                <!-- 只剩一条时不露删除：删完就没会话了，只是把读者送回欢迎态，没必要给这个口。 -->
-                <n-popconfirm
-                  v-if="chatThreads.length > 1"
-                  positive-text="确定"
-                  negative-text="取消"
-                  @positive-click="removeChatThread(chatThreadId)"
-                >
-                  删除这个会话的全部消息，不会删除书籍，也无法撤销。
-                  <template #trigger>
-                    <button
-                      class="chat-topbar-btn"
-                      type="button"
-                      :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || !chatThreadId"
-                    >删除会话</button>
-                  </template>
-                </n-popconfirm>
-              </div>
+          <div v-show="aiAssistantTab === 'qa'" data-ai-pane="qa" class="sider-qa-pane">
               <div class="chat-messages">
-                <!-- 欢迎态：Sider 的新会话不铺表单，先给问候与可点的问题卡片。 -->
+                <!-- 欢迎态：复刻 Sider 居中彩云吉祥物 + 标题副标题 + 深色横幅 + 居中胶囊快捷卡 -->
                 <div v-if="chatMessages.length === 0 && !chatLoading" class="sider-welcome">
-                  <div class="sider-welcome-logo" aria-hidden="true">✦</div>
-                  <h3>你好，想从哪里聊起？</h3>
-                  <p>已读到「{{ currentChapter?.title || '当前章' }}」· 问剧情、人物或字词都行</p>
+                  <div class="sider-welcome-logo" aria-hidden="true">
+                    <svg viewBox="0 0 64 64" fill="none">
+                      <defs>
+                        <radialGradient id="siderCloudGrad" cx="30%" cy="25%" r="78%">
+                          <stop offset="0%" stop-color="#38bdf8" />
+                          <stop offset="38%" stop-color="#818cf8" />
+                          <stop offset="70%" stop-color="#ec4899" />
+                          <stop offset="100%" stop-color="#fb923c" />
+                        </radialGradient>
+                        <linearGradient id="siderCloudBase" x1="12" y1="14" x2="54" y2="54" gradientUnits="userSpaceOnUse">
+                          <stop offset="0%" stop-color="#60a5fa" />
+                          <stop offset="48%" stop-color="#8b5cf6" />
+                          <stop offset="100%" stop-color="#f43f5e" />
+                        </linearGradient>
+                      </defs>
+                      <path
+                        d="M32 8c5.2 0 9.6 3.1 11.4 7.5 4.8.7 8.6 4.8 8.6 9.8 0 2.7-1.1 5.1-2.8 6.9 1.7 1.8 2.8 4.2 2.8 6.9 0 5-3.8 9.1-8.6 9.8-1.8 4.4-6.2 7.5-11.4 7.5s-9.6-3.1-11.4-7.5c-4.8-.7-8.6-4.8-8.6-9.8 0-2.7 1.1-5.1 2.8-6.9-1.7-1.8-2.8-4.2-2.8-6.9 0-5 3.8-9.1 8.6-9.8C22.4 11.1 26.8 8 32 8Z"
+                        fill="url(#siderCloudGrad)"
+                      />
+                      <circle cx="24" cy="21" r="9" fill="#38bdf8" fill-opacity="0.45" />
+                      <circle cx="41" cy="22" r="9" fill="#fb923c" fill-opacity="0.42" />
+                      <circle cx="32" cy="42" r="11" fill="url(#siderCloudBase)" fill-opacity="0.55" />
+                      <rect x="26.2" y="26.5" width="3.8" height="8.5" rx="1.9" fill="#ffffff" />
+                      <rect x="34" y="26.5" width="3.8" height="8.5" rx="1.9" fill="#ffffff" />
+                    </svg>
+                  </div>
+                  <h3>提问任何剧情，或直接交办阅读任务</h3>
+                  <p>在一个地方完成剧情问答、人物考据、前情梳理与笔记 · 已读到「{{ currentChapter?.title || '当前章' }}」</p>
+                  <div class="sider-welcome-banner">
+                    <span class="sider-banner-text"><strong>防剧透护栏：</strong>所有分析严格锁定在当前已读进度内。</span>
+                    <span class="sider-banner-link" role="button" tabindex="0" @click="aiAssistantTab = 'recap'">查看前情 →</span>
+                  </div>
                   <div class="sider-welcome-grid">
                     <button
-                      v-for="question in QUICK_READING_QUESTIONS"
+                      v-for="(question, qi) in QUICK_READING_QUESTIONS"
                       :key="question"
                       type="button"
                       class="sider-welcome-card"
                       @click="prepareQuickQuestion(question)"
-                    >{{ question }}</button>
+                    >
+                      <svg v-if="qi === 0" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3Zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3Zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5Zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5Z" /></svg>
+                      <svg v-else-if="qi === 1" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v2H4V6Zm0 5h16v2H4v-2Zm0 5h10v2H4v-2Z" /></svg>
+                      <svg v-else-if="qi === 2" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-4 12.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26A7 7 0 0 0 12 2Zm-2 18h4v2h-4v-2Z" /></svg>
+                      <svg v-else class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm2 4v2h10V8H7Zm0 4v2h7v-2H7Z" /></svg>
+                      {{ question }}
+                    </button>
                   </div>
                 </div>
                 <div v-if="chatLoading && agentToolActivity" class="chat-tool-activity">{{ agentToolActivity }}…</div>
@@ -4924,18 +4893,79 @@ onUnmounted(() => {
                   </template>
                 </div>
               </div>
-              <div class="chat-input-row">
-                <div class="sider-composer">
-                  <n-input v-model:value="chatInput" type="textarea" :rows="2" :autosize="{ minRows: 2, maxRows: 6 }" placeholder="问剧情、人物或字词（Ctrl+Enter 发送）…" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
-                  <div class="sider-composer-bar">
-                    <div class="sider-composer-chips">
-                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'agent' }" title="模型自己决定查目录、读原文、检索、看记忆" @click="chatMode = 'agent'">对话</button>
-                      <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'evidence' }" title="单轮严格引用，每条结论绑定已读段落" @click="chatMode = 'evidence'">证据</button>
+              <!-- Sider 底部悬浮区：浅紫上下文状态胶囊 + 会话选择/新任务栏 + 纯白大圆角输入盒 + 底部状态脚标 -->
+              <div class="sider-bottom-dock">
+                <button
+                  class="ai-status-bar"
+                  type="button"
+                  :aria-expanded="aiRuntimeOpen"
+                  aria-label="运行信息"
+                  @click="aiRuntimeOpen = !aiRuntimeOpen"
+                >
+                  <span class="ai-status-dot" :class="{ 'is-off': !aiServiceOrigin }" aria-hidden="true" />
+                  <span class="ai-status-model">{{ aiServiceOrigin ? aiModelLabel : '未配置模型服务' }}</span>
+                  <span class="ai-status-sep" aria-hidden="true">·</span>
+                  <span class="ai-status-read">已读至 {{ readUptoTitle }}</span>
+                  <span class="ai-status-toggle">{{ aiRuntimeOpen ? '收起 ▴' : '设置与状态 ▾' }}</span>
+                </button>
+                <div class="chat-threads">
+                  <span class="sider-fusion-badge" aria-hidden="true" />
+                  <n-select
+                    class="chat-threads-select"
+                    size="tiny"
+                    :value="chatThreadId"
+                    :options="chatThreadOptions"
+                    :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || chatThreads.length === 0"
+                    placeholder="新会话"
+                    aria-label="切换问答会话"
+                    @update:value="switchChatThread"
+                  />
+                  <button
+                    class="chat-topbar-btn is-new-thread"
+                    type="button"
+                    :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving"
+                    title="新建一条空的问答会话；上限由主进程判定并给出可读原因"
+                    @click="newChatThread"
+                  >新会话</button>
+                  <n-popconfirm
+                    v-if="chatThreads.length > 1"
+                    positive-text="确定"
+                    negative-text="取消"
+                    @positive-click="removeChatThread(chatThreadId)"
+                  >
+                    删除这个会话的全部消息，不会删除书籍，也无法撤销。
+                    <template #trigger>
+                      <button
+                        class="chat-topbar-btn is-del-thread"
+                        type="button"
+                        :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || !chatThreadId"
+                      >删除会话</button>
+                    </template>
+                  </n-popconfirm>
+                </div>
+                <div class="chat-input-row">
+                  <div class="sider-composer">
+                    <n-input v-model:value="chatInput" type="textarea" :rows="3" :autosize="{ minRows: 3, maxRows: 6 }" placeholder="提问任何问题，或描述一项阅读任务…（Ctrl+Enter 发送）" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
+                    <div class="sider-composer-bar">
+                      <div class="sider-composer-chips">
+                        <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'agent' }" title="模型自己决定查目录、读原文、检索、看记忆" @click="chatMode = 'agent'">对话</button>
+                        <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'evidence' }" title="单轮严格引用，每条结论绑定已读段落" @click="chatMode = 'evidence'">证据</button>
+                      </div>
+                      <div class="sider-composer-send">
+                        <n-button v-if="chatLoading" type="warning" size="small" @click="stopChat">停止生成</n-button>
+                        <n-button v-else type="primary" size="small" :disabled="!chatInput.trim() || assistantBusyByKind.qa || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
+                      </div>
                     </div>
-                    <div class="sider-composer-send">
-                      <n-button v-if="chatLoading" type="warning" size="small" @click="stopChat">停止生成</n-button>
-                      <n-button v-else type="primary" size="small" :disabled="!chatInput.trim() || assistantBusyByKind.qa || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
-                    </div>
+                  </div>
+                </div>
+                <div class="sider-footer-strip" aria-hidden="true">
+                  <div class="sider-footer-left">
+                    <span class="sider-quota-pill"><span class="sider-quota-ring" />{{ bookUsage?.calls ?? chatMessages.length }}</span>
+                    <span class="sider-promo-pill">✦ 防剧透护栏</span>
+                  </div>
+                  <div class="sider-footer-right">
+                    <span class="sider-footer-icon" title="快捷键 I 打开侧栏，N 打开本章笔记">?</span>
+                    <span class="sider-footer-icon" title="基于本地已读章节与记忆索引">♡</span>
                   </div>
                 </div>
               </div>
@@ -5019,6 +5049,62 @@ onUnmounted(() => {
                   <n-button v-if="aiResult" size="small" :disabled="translateLoading" @click="copyAiResult">复制结果</n-button>
                 </n-space>
               </n-space>
+          </div>
+          </div>
+          <!-- Sider 右侧竖向窄导航轨：图标在上、文字在下，底部带快捷工具与彩环图标 -->
+          <aside class="ai-top-bar sider-rail">
+            <div class="sider-rail-top-icons" aria-hidden="true">
+              <span>⇥</span>
+              <span>‹›</span>
+            </div>
+            <div class="ai-top-switch" role="tablist" aria-label="AI 助手模式">
+              <button role="tab" :aria-selected="aiAssistantTab === 'qa'" :class="['ai-tab-btn', 'is-qa', { 'is-on': aiAssistantTab === 'qa' }]" type="button" @click="aiAssistantTab = 'qa'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3C7.03 3 3 6.58 3 11c0 2.1.91 4.01 2.4 5.44L4.5 20.5l4.33-1.44c1.01.3 2.07.44 3.17.44 4.97 0 9-3.58 9-8s-4.03-8-9-8Zm-3 7h2v3H9v-3Zm4 0h2v3h-2v-3Z" /></svg></span>问答</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'recap'" :class="['ai-tab-btn', 'is-recap', { 'is-on': aiAssistantTab === 'recap' }]" type="button" @click="aiAssistantTab = 'recap'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm2 3v2h12V8H6Zm0 4v2h12v-2H6Zm0 4v2h8v-2H6Z" /></svg></span>前情</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'memory'" :class="['ai-tab-btn', 'is-memory', { 'is-on': aiAssistantTab === 'memory' }]" type="button" @click="aiAssistantTab = 'memory'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2.5 5L6 12l2.5 3 1.2-1-1.7-2 1.7-2-1.2-1Zm7 0-1.2 1 1.7 2-1.7 2 1.2 1L18 12l-2.5-3Z" /></svg></span>记忆</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'notes'" :class="['ai-tab-btn', 'is-notes', { 'is-on': aiAssistantTab === 'notes' }]" type="button" @click="aiAssistantTab = 'notes'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm2 4v2h10V8H7Zm0 4v2h7v-2H7Z" /></svg></span>笔记</button>
+              <button v-if="aiResult" role="tab" :aria-selected="aiAssistantTab === 'output'" :class="['ai-tab-btn', 'is-output', { 'is-on': aiAssistantTab === 'output' }]" type="button" @click="aiAssistantTab = 'output'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5L12 2Z" /></svg></span>结果</button>
+            </div>
+            <div class="sider-rail-divider" aria-hidden="true" />
+            <div class="sider-rail-tools">
+              <div
+                class="sider-rail-tool"
+                role="button"
+                tabindex="0"
+                title="AI 清正文"
+                @click="chapterReady && !cleanRunning && aiCleanBody()"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm7 3L8.5 16h1.8l.8-2.2h3.8l.8 2.2h1.8L14 7h-2Zm-.3 5.2L13 8.8l1.3 3.4h-2.6Z" /></svg>
+              </div>
+              <div
+                class="sider-rail-tool"
+                role="button"
+                tabindex="0"
+                title="切换问答 / 证据模式"
+                @click="chatMode = chatMode === 'agent' ? 'evidence' : 'agent'"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h11v2H7v3l-4-4 4-4v3Zm10 10H6v-2h11v-3l4 4-4 4v-3Z" /></svg>
+              </div>
+            </div>
+            <div class="sider-rail-bottom">
+              <div
+                class="sider-rail-tool"
+                :class="{ 'is-active': aiRuntimeOpen }"
+                role="button"
+                tabindex="0"
+                title="运行信息与模型设置"
+                @click="aiRuntimeOpen = !aiRuntimeOpen"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4Zm8.66-2a8.1 8.1 0 0 0-.14-1.5l2.11-1.65-2-3.46-2.49 1a8.14 8.14 0 0 0-2.6-1.5l-.38-2.65h-4l-.38 2.65a8.14 8.14 0 0 0-2.6 1.5l-2.49-1-2 3.46 2.11 1.65a8.1 8.1 0 0 0 0 3l-2.11 1.65 2 3.46 2.49-1a8.14 8.14 0 0 0 2.6 1.5l.38 2.65h4l.38-2.65a8.14 8.14 0 0 0 2.6-1.5l2.49 1 2-3.46-2.11-1.65c.09-.49.14-.99.14-1.5Z" /></svg>
+              </div>
+              <div
+                class="sider-rail-orb"
+                role="button"
+                tabindex="0"
+                title="AI 服务状态与已读范围"
+                @click="aiRuntimeOpen = !aiRuntimeOpen"
+              />
+            </div>
+          </aside>
           </div>
           <template #footer>
             <n-button v-if="recapLoading && aiAssistantTab === 'recap'" type="warning" @click="stopRecap">停止生成</n-button>
@@ -5749,90 +5835,83 @@ onUnmounted(() => {
 /* 运行信息：默认折叠的一行，展开才是模型端点/已读截止/用量这类核对信息。 */
 /* 状态条：一行就够。模型 + 已读边界常驻，其余收进面板。 */
 /* 状态条：流光毛玻璃胶囊，模型名与已读进度各带色彩层次。 */
+/* Sider 浅紫上下文状态胶囊条（对应 Sider 输入框上方的浅紫圆角横条） */
 .ai-status-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  padding: 8px 12px;
-  border: 1px solid rgba(124, 92, 255, 0.24);
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(124, 92, 255, 0.13), rgba(14, 165, 233, 0.09) 52%, rgba(236, 72, 153, 0.08));
-  box-shadow: 0 4px 16px rgba(124, 92, 255, 0.08);
+  padding: 7px 14px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(124, 92, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(124, 92, 255, 0.07);
   color: var(--r-text);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+  transition: background 0.18s ease, border-color 0.18s ease;
 }
 .ai-status-bar:hover {
-  border-color: rgba(124, 92, 255, 0.45);
-  box-shadow: 0 6px 20px rgba(124, 92, 255, 0.15);
+  border-color: rgba(124, 92, 255, 0.28);
+  background: rgba(124, 92, 255, 0.11);
 }
 .ai-status-dot {
   flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: #10b981;
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.22);
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
 }
 .ai-status-dot.is-off {
   background: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.22);
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
 }
 .ai-status-model {
-  max-width: 44%;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(124, 92, 255, 0.16);
-  color: #6d4aff;
+  max-width: 42%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
+  color: var(--r-text);
 }
-.ai-status-sep { opacity: 0.45; }
+.ai-status-sep { opacity: 0.4; }
 .ai-status-read {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #0284c7;
-  font-weight: 500;
+  color: var(--r-muted);
 }
 .ai-status-toggle {
   flex: 0 0 auto;
   margin-left: auto;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(14, 165, 233, 0.12);
-  color: #0369a1;
+  color: #7c5cff;
   font-size: 11px;
   font-weight: 600;
 }
 
-/* 运行信息与设置抽屉：点开状态条展开，带柔和极光渐变底。 */
+/* 运行信息与设置抽屉：点状态条或右侧齿轮展开 */
 .ai-runtime-panel {
-  margin: 10px 0;
+  margin: 0 0 12px;
   padding: 12px;
-  border: 1px solid rgba(124, 92, 255, 0.22);
+  border: 1px solid color-mix(in srgb, var(--r-text) 10%, transparent);
   border-radius: 14px;
-  background: linear-gradient(155deg, rgba(124, 92, 255, 0.09), rgba(14, 165, 233, 0.06) 55%, rgba(245, 158, 11, 0.05));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  background: color-mix(in srgb, var(--r-text) 3%, var(--r-surface, #ffffff));
 }
 .ai-runtime-label {
   flex: 0 0 auto;
   padding: 2px 7px;
   border-radius: 6px;
-  background: rgba(124, 92, 255, 0.14);
-  color: #6d4aff;
+  background: rgba(124, 92, 255, 0.1);
+  color: #7c5cff;
   font-size: 11px;
   font-weight: 600;
 }
 .ai-follow-box {
   margin: 8px 0;
-  border: 1px solid rgba(16, 185, 129, 0.24);
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(14, 165, 233, 0.06));
+  border: 1px solid color-mix(in srgb, var(--r-text) 8%, transparent);
+  background: var(--r-surface, #ffffff);
 }
 .ai-follow-head {
   display: flex;
@@ -5847,83 +5926,167 @@ onUnmounted(() => {
 .ai-runtime-panel .ai-assistant-status,
 .ai-runtime-panel .subtle { margin: 0 0 6px; }
 
-/* 单层四色鎏光页签：每个页签拥有专属宝石色点与渐变激活态。 */
-.ai-top-switch {
+/* ── Sider 双栏骨架：左侧主工作区 + 右侧竖向窄图标导航轨 ───────────── */
+.sider-shell {
   display: flex;
-  gap: 6px;
-  padding: 5px;
-  margin: 10px 0;
-  border: 1px solid rgba(124, 92, 255, 0.18);
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(124, 92, 255, 0.09), rgba(14, 165, 233, 0.07) 50%, rgba(245, 158, 11, 0.07));
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05);
+  align-items: stretch;
+  min-height: calc(100vh - 57px);
+  margin: -6px -24px -16px;
 }
-.ai-top-switch button {
-  position: relative;
-  flex: 1 1 0;
-  display: inline-flex;
+.sider-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px 12px;
+}
+.sider-qa-pane {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 86px);
+}
+.sider-bottom-dock {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.sider-rail {
+  flex: 0 0 56px;
+  width: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 4px 14px;
+  border-left: 1px solid color-mix(in srgb, var(--r-text) 8%, transparent);
+  background: color-mix(in srgb, var(--r-text) 3.5%, var(--r-surface, #ffffff));
+  user-select: none;
+}
+.sider-rail-top-icons {
+  display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 7px 10px;
-  border: 1px solid transparent;
+  width: 100%;
+  margin-bottom: 10px;
+  color: var(--r-muted);
+  font-size: 11px;
+  opacity: 0.72;
+}
+.ai-top-switch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.ai-top-switch button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 48px;
+  padding: 5px 2px;
+  border: 0;
   border-radius: 10px;
   background: transparent;
-  color: var(--r-text);
-  font-size: 13px;
+  color: var(--r-muted);
+  font-size: 11px;
   font-weight: 500;
+  line-height: 1.2;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.16s ease, background 0.16s ease;
 }
-.ai-top-switch button::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  transition: transform 0.2s ease, background 0.2s ease;
+.sider-rail-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 28px;
+  border-radius: 9px;
+  color: inherit;
+  transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
 }
-.ai-top-switch button.is-qa::before { background: #8b5cf6; box-shadow: 0 0 6px rgba(139, 92, 246, 0.6); }
-.ai-top-switch button.is-recap::before { background: #0ea5e9; box-shadow: 0 0 6px rgba(14, 165, 233, 0.6); }
-.ai-top-switch button.is-memory::before { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.6); }
-.ai-top-switch button.is-notes::before { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.6); }
-.ai-top-switch button.is-output::before { background: #ec4899; box-shadow: 0 0 6px rgba(236, 72, 153, 0.6); }
-
+.sider-rail-icon svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
 .ai-top-switch button:hover:not(.is-on) {
-  background: rgba(255, 255, 255, 0.45);
-  border-color: rgba(124, 92, 255, 0.2);
+  color: var(--r-text);
+}
+.ai-top-switch button:hover:not(.is-on) .sider-rail-icon {
+  background: color-mix(in srgb, var(--r-text) 7%, transparent);
 }
 .ai-top-switch button.is-on {
-  color: #ffffff;
+  color: #7c5cff;
   font-weight: 600;
 }
-.ai-top-switch button.is-on::before {
-  background: #ffffff;
-  box-shadow: 0 0 8px rgba(255, 255, 255, 0.9);
-  transform: scale(1.15);
-}
-.ai-top-switch button.is-qa.is-on {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6 55%, #ec4899);
-  box-shadow: 0 4px 14px rgba(124, 92, 255, 0.34);
-}
-.ai-top-switch button.is-recap.is-on {
-  background: linear-gradient(135deg, #0284c7, #0ea5e9 55%, #38bdf8);
-  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.32);
-}
-.ai-top-switch button.is-memory.is-on {
-  background: linear-gradient(135deg, #059669, #10b981 55%, #14b8a6);
-  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.32);
-}
-.ai-top-switch button.is-notes.is-on {
-  background: linear-gradient(135deg, #d97706, #f59e0b 55%, #f97316);
-  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.32);
-}
-.ai-top-switch button.is-output.is-on {
-  background: linear-gradient(135deg, #e11d48, #ec4899 55%, #a855f7);
-  box-shadow: 0 4px 14px rgba(236, 72, 153, 0.32);
+.ai-top-switch button.is-on .sider-rail-icon {
+  background: rgba(124, 92, 255, 0.14);
+  color: #7c5cff;
 }
 
-/* 各页签顶部工具栏：带对应主题色彩微光 */
+.sider-rail-divider {
+  width: 24px;
+  height: 1px;
+  margin: 12px 0;
+  background: color-mix(in srgb, var(--r-text) 10%, transparent);
+}
+.sider-rail-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.sider-rail-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+}
+.sider-rail-tool {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  color: var(--r-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.sider-rail-tool svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+.sider-rail-tool:hover,
+.sider-rail-tool.is-active {
+  background: rgba(124, 92, 255, 0.12);
+  color: #7c5cff;
+}
+.sider-rail-orb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: conic-gradient(from 45deg, #38bdf8, #818cf8, #ec4899, #facc15, #38bdf8);
+  box-shadow: 0 2px 8px rgba(124, 92, 255, 0.28);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+.sider-rail-orb:hover {
+  transform: scale(1.08);
+}
+
+/* 各页签顶部工具栏：极简浅灰底 */
 .ai-pane-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -5932,14 +6095,8 @@ onUnmounted(() => {
   padding: 10px 12px;
   margin-bottom: 10px;
   border-radius: 12px;
-}
-.ai-pane-toolbar.is-recap-bar {
-  border: 1px solid rgba(14, 165, 233, 0.25);
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(99, 102, 241, 0.07));
-}
-.ai-pane-toolbar.is-memory-bar {
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(14, 165, 233, 0.07));
+  border: 1px solid color-mix(in srgb, var(--r-text) 8%, transparent);
+  background: color-mix(in srgb, var(--r-text) 3%, var(--r-surface, #ffffff));
 }
 .ai-pane-toolbar.is-memory-bar :deep(.n-input) {
   flex: 1 1 160px;
@@ -6872,96 +7029,119 @@ onUnmounted(() => {
 .chat-steps li.is-done { opacity: 0.72; }
 .chat-steps li.is-error { color: #e11d48; font-weight: 600; }
 
-/* ── 流光极光欢迎态 + 四色快捷提问卡 + 悬浮输入舱 ───────────────────── */
+/* ── Sider 极简居中欢迎舱 + 深色横幅 + 药丸快捷卡 + 悬浮输入坞 ─────────── */
 
 .sider-welcome {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  margin: 6px 4px;
-  padding: 24px 14px 18px;
-  border: 1px solid rgba(124, 92, 255, 0.22);
-  border-radius: 18px;
-  background:
-    radial-gradient(120% 90% at 50% 0%, rgba(124, 92, 255, 0.18), rgba(14, 165, 233, 0.09) 55%, rgba(236, 72, 153, 0.06) 85%, transparent 100%),
-    var(--surface-3, rgba(127, 127, 127, 0.04));
-  box-shadow: 0 10px 28px rgba(124, 92, 255, 0.09);
+  margin: auto 0;
+  padding: 20px 6px 16px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
   text-align: center;
 }
 
 .sider-welcome-logo {
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6 42%, #ec4899 78%, #f97316);
-  color: #fff;
-  font-size: 22px;
-  box-shadow: 0 8px 22px rgba(124, 92, 255, 0.36), 0 0 0 4px rgba(124, 92, 255, 0.14);
+  width: 64px;
+  height: 64px;
+  filter: drop-shadow(0 8px 18px rgba(139, 92, 246, 0.26));
+}
+.sider-welcome-logo svg {
+  width: 64px;
+  height: 64px;
 }
 
 .sider-welcome h3 {
-  margin: 2px 0 0;
-  font-size: 17px;
+  margin: 4px 0 0;
+  font-size: 18px;
   font-weight: 700;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6 45%, #ec4899);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--r-text);
+  letter-spacing: -0.01em;
 }
-.sider-welcome p { margin: 0; max-width: 300px; color: var(--r-muted); font-size: 12px; line-height: 1.6; }
+.sider-welcome p {
+  margin: 0;
+  max-width: 340px;
+  color: var(--r-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sider-welcome-banner {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 420px;
+  margin: 4px 0 6px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  background: #230906;
+  color: #f8fafc;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+}
+.sider-banner-link {
+  color: #f87171;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sider-banner-link:hover {
+  text-decoration: underline;
+}
 
 .sider-welcome-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
   width: 100%;
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
 .sider-welcome-card {
-  position: relative;
-  padding: 11px 12px;
-  border: 1px solid rgba(124, 92, 255, 0.26);
-  border-left: 3px solid #7c5cff;
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(124, 92, 255, 0.13), rgba(168, 85, 247, 0.05));
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid color-mix(in srgb, var(--r-text) 7%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--r-text) 4.5%, var(--r-surface, #ffffff));
   color: var(--r-text);
   font-size: 12px;
-  font-weight: 500;
-  line-height: 1.5;
+  font-weight: 400;
+  line-height: 1.4;
   text-align: left;
   cursor: pointer;
-  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
-.sider-welcome-card:nth-child(2) {
-  border-color: rgba(14, 165, 233, 0.28);
-  border-left-color: #0ea5e9;
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.13), rgba(6, 182, 212, 0.05));
+.sider-pill-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: currentColor;
+  opacity: 0.7;
 }
-.sider-welcome-card:nth-child(3) {
-  border-color: rgba(245, 158, 11, 0.3);
-  border-left-color: #f59e0b;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.14), rgba(249, 115, 22, 0.05));
-}
-.sider-welcome-card:nth-child(4) {
-  border-color: rgba(236, 72, 153, 0.28);
-  border-left-color: #ec4899;
-  background: linear-gradient(135deg, rgba(236, 72, 153, 0.13), rgba(244, 63, 94, 0.05));
-}
-
 .sider-welcome-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(124, 92, 255, 0.16);
+  border-color: rgba(124, 92, 255, 0.32);
+  background: rgba(124, 92, 255, 0.08);
+  color: #6d4aff;
+  transform: translateY(-1px);
 }
 
 .chat-chip {
   padding: 3px 11px;
-  border: 1px solid rgba(124, 92, 255, 0.22);
+  border: 1px solid color-mix(in srgb, var(--r-text) 10%, transparent);
   border-radius: 999px;
-  background: rgba(124, 92, 255, 0.06);
+  background: transparent;
   color: var(--r-muted);
   font-size: 12px;
   font-weight: 500;
@@ -6970,34 +7150,33 @@ onUnmounted(() => {
   cursor: pointer;
   transition: all 0.15s ease;
 }
-
 .chat-chip:hover:not(:disabled) {
   color: #6d4aff;
-  border-color: rgba(124, 92, 255, 0.45);
-  background: rgba(124, 92, 255, 0.12);
+  border-color: rgba(124, 92, 255, 0.35);
+  background: rgba(124, 92, 255, 0.06);
 }
 .chat-chip:disabled { opacity: 0.45; cursor: default; }
 .chat-chip-on {
-  color: #ffffff;
-  border-color: transparent;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6 60%, #ec4899);
-  box-shadow: 0 2px 10px rgba(124, 92, 255, 0.3);
+  color: #6d4aff;
+  border-color: rgba(124, 92, 255, 0.35);
+  background: rgba(124, 92, 255, 0.12);
+  font-weight: 600;
 }
 
 .sider-composer {
   display: flex;
   flex-direction: column;
   width: 100%;
-  border: 1px solid rgba(124, 92, 255, 0.28);
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(124, 92, 255, 0.06), rgba(14, 165, 233, 0.03) 45%, var(--card, #ffffff));
-  box-shadow: 0 8px 24px rgba(124, 92, 255, 0.12), 0 2px 6px rgba(0, 0, 0, 0.04);
+  border: 1px solid color-mix(in srgb, var(--r-text) 12%, transparent);
+  border-radius: 14px;
+  background: var(--card, #ffffff);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
   overflow: hidden;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .sider-composer:focus-within {
-  border-color: rgba(124, 92, 255, 0.55);
-  box-shadow: 0 10px 28px rgba(124, 92, 255, 0.2);
+  border-color: rgba(124, 92, 255, 0.45);
+  box-shadow: 0 4px 16px rgba(124, 92, 255, 0.12);
 }
 
 .sider-composer :deep(.n-input),
@@ -7024,60 +7203,144 @@ onUnmounted(() => {
   content: '✦';
   display: inline-grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   margin-right: 8px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6 50%, #ec4899);
-  box-shadow: 0 3px 10px rgba(124, 92, 255, 0.32);
+  border-radius: 7px;
+  background: linear-gradient(135deg, #38bdf8, #8b5cf6 52%, #ec4899);
   color: #fff;
-  font-size: 13px;
+  font-size: 12px;
   vertical-align: middle;
 }
 
 :deep(.n-drawer-body-content-wrapper) {
   padding-top: 6px;
-  background: radial-gradient(120% 220px at 15% 0%, rgba(124, 92, 255, 0.1), rgba(14, 165, 233, 0.06) 55%, transparent 100%);
 }
 
-.chat-topbar-btn {
-  border: 1px solid rgba(124, 92, 255, 0.22);
-  background: rgba(124, 92, 255, 0.08);
-  color: #6d4aff;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  padding: 3px 10px;
-  border-radius: 8px;
-  transition: all 0.15s ease;
-}
-.chat-topbar-btn:hover:not(:disabled) {
-  color: #ffffff;
-  border-color: transparent;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-}
-.chat-topbar-btn:disabled { opacity: 0.45; cursor: default; }
-
+/* Sider 输入框上方的 Fusion 会话选择 + 右侧紫色「+ 新会话」栏 */
 .chat-threads {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px;
-  margin-bottom: 4px;
-  border: 1px solid rgba(124, 92, 255, 0.18);
-  border-radius: 12px;
-  background: linear-gradient(90deg, rgba(124, 92, 255, 0.08), rgba(14, 165, 233, 0.05));
+  padding: 2px 2px 6px;
+  margin-bottom: 2px;
+  border: 0;
+  background: transparent;
 }
-.chat-threads-select { flex: 1 1 auto; min-width: 0; }
+.sider-fusion-badge {
+  position: relative;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1, #a855f7 55%, #ec4899);
+  box-shadow: 0 2px 6px rgba(124, 92, 255, 0.28);
+}
+.sider-fusion-badge::after {
+  content: '✦';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-size: 10px;
+  line-height: 1;
+}
+.chat-threads-select {
+  flex: 0 1 190px;
+  min-width: 110px;
+}
+.chat-threads-select :deep(.n-base-selection) {
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--r-text) 4%, transparent) !important;
+}
+.chat-topbar-btn {
+  border: 0;
+  background: transparent;
+  color: #6d4aff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 8px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.chat-topbar-btn.is-new-thread {
+  margin-left: auto;
+}
+.chat-topbar-btn.is-new-thread::before {
+  content: '⊞ ';
+  font-weight: 400;
+}
+.chat-topbar-btn.is-del-thread {
+  color: var(--r-muted);
+  font-weight: 500;
+}
+.chat-topbar-btn:hover:not(:disabled) {
+  background: rgba(124, 92, 255, 0.1);
+  color: #5b38f5;
+}
+.chat-topbar-btn:disabled { opacity: 0.45; cursor: default; }
 
 .chat-input-row {
   display: flex;
   gap: 8px;
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  padding: 8px 0 4px;
-  background: var(--r-surface, var(--surface-2, #ffffff));
+  padding: 2px 0 4px;
+  background: transparent;
+}
+
+/* Sider 输入框底部的状态脚标条：左侧额度环 + 黑底特惠胶囊，右侧轻量图标 */
+.sider-footer-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px 0;
+  font-size: 11px;
+  color: var(--r-muted);
+}
+.sider-footer-left,
+.sider-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sider-quota-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--r-text) 10%, transparent);
+  background: color-mix(in srgb, var(--r-text) 3%, transparent);
+  color: var(--r-muted);
+  font-weight: 500;
+}
+.sider-quota-ring {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid #94a3b8;
+}
+.sider-promo-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #18181b;
+  color: #fafafa;
+  font-weight: 600;
+}
+.sider-footer-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--r-text) 12%, transparent);
+  font-size: 10px;
+  opacity: 0.72;
 }
 
 
@@ -7924,9 +8187,8 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 
-/* 单层导航粘在抽屉顶部：滚到几千像素时还能一键换页。 */
-.ai-top-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; background: var(--r-surface, var(--surface-2, #ffffff)); }
-.ai-top-bar .ai-top-switch { flex: 1 1 auto; margin: 4px 0 8px; }
+/* 右侧竖向导航轨粘在抽屉侧边 */
+.ai-top-bar.sider-rail { position: sticky; top: 0; z-index: 3; align-self: stretch; }
 .ai-clean-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; }
 .memory-item-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .memory-edit-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(124, 92, 255, 0.25); }
