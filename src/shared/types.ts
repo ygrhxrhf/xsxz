@@ -539,6 +539,8 @@ export interface WebShelfBook {
   title: string
   author: string
   coverUrl?: string
+  /** 站点书页上的简介；抓不到为空串。口径与书库书目一致。 */
+  description: string
   catalogUrl: string
   /** 最近读到的章节。 */
   lastChapter: WebShelfChapter
@@ -606,6 +608,10 @@ export interface ReaderPrefs {
   hideSiteTail?: boolean
   /** 是否默认收起顶栏与右侧胶囊（字体面板「工具一直显示」的反义）；缺省 true，旧文件缺字段等于 true。 */
   hideReaderChrome?: boolean
+  /** 高亮色带颜色（十六进制，如 #ffe45c）；缺省按主题内置黄色。 */
+  highlightColor?: string
+  /** 高亮色带透明度 0–100；缺省 35。 */
+  highlightOpacity?: number
 }
 
 /** 网页阅读模式（内置浏览器的阅读模式）偏好；与本地阅读器 ReaderPrefs 分开。 */
@@ -614,6 +620,8 @@ export interface WebReadingPrefs {
   autoPage: boolean
   /** 自动滚动/自动翻页速度档，1–5。 */
   autoSpeed: number
+  /** 翻页模式下的版面：1 单栏、2 双栏（左右两页，像翻开的书）。滚动模式下忽略。 */
+  columns: 1 | 2
 }
 
 /**
@@ -780,6 +788,35 @@ export interface SyncBundle {
 }
 
 /**
+ * Crafty 联动（把读书笔记推成文档）的连接状态。
+ *
+ * 只推读书产物：全书概览、人物与伏笔、章节笔记、划线批注。书库正文不上传。
+ * 令牌与云同步的账号令牌分开存，同样走 safeStorage，渲染层只拿布尔位。
+ */
+export interface CraftState {
+  /** 端点可推送：填了 http(s) 地址且令牌已保存。 */
+  configured: boolean
+  /** Crafty 站点根地址，如 https://craft.example.com；未配置为空串。 */
+  endpoint: string
+  tokenConfigured: boolean
+  /** 有密文但本机解不开：界面提示「重新填写」而不是「未配置」。 */
+  tokenUnreadable?: boolean
+}
+
+/** 一次推送的结果。 */
+export interface CraftPushResult {
+  /** Crafty 里的文档 id；下次推同一本书用它做幂等更新。 */
+  docId: string
+  title: string
+  /** true = 新建了一篇；false = 更新了上次推的那篇。 */
+  created: boolean
+  /** 推送的 Markdown 字节数（UTF-8）。 */
+  bytes: number
+  pushedAt: string
+  endpoint: string
+}
+
+/**
  * 站点规则市场里的一条共享规则。
  *
  * 市场的规则是「别人写好的抽取规则」：只含 CSS 选择器，不含任何凭据。
@@ -857,6 +894,12 @@ export interface TierSensePrefs {
 export interface AiPrefs {
   provider: AiProvider
   thinkingEnabled: boolean
+  /**
+   * 回答后核对原文：每条结论额外发一次小请求，让模型判断原文是否真的支持它。
+   * 默认开启——关掉只省一次调用，但回答的可信度就只能如实说「未做支持性判断」。
+   * 字段缺失（老设置文件）时必须按开启处理：核验是这功能的安全网，不能因为没写过这个键就静默退化。
+   */
+  verifyEvidenceAnswers: boolean
   recapLength: 'short' | 'standard' | 'detailed'
   /** 单次预计输入达到此 token 数时，联网前提醒确认。 */
   budgetWarningTokens: number
@@ -895,6 +938,25 @@ export interface CoverGenPrefs {
   size: string
   /** 追加到提示词的风格说明（不含书名等变量）。 */
   style: string
+}
+
+/**
+ * 书中地图识别用的视觉服务。
+ *
+ * 与聊天模型分开：识别只需要「看图 + 返回严格 JSON」，用本机 magpie 这类网关既快又不花钱。
+ * `baseUrl` 留空表示回退到聊天 AI 的服务地址与 Key（旧行为）。
+ */
+export interface AtlasVisionPrefs {
+  /** OpenAI 兼容根，例如 `http://127.0.0.1:3425/v1`；空串表示回退聊天 AI 配置。 */
+  baseUrl: string
+  /** 视觉模型名，例如 `auto/glm-5.3-flash`。 */
+  model: string
+}
+
+export const DEFAULT_ATLAS_VISION_PREFS: AtlasVisionPrefs = {
+  // 本机 magpie 网关：不需要 Key，`auto/glm-5.3-flash` 支持图像输入并稳定返回 JSON。
+  baseUrl: 'http://127.0.0.1:3425/v1',
+  model: 'auto/glm-5.3-flash',
 }
 
 export interface AutoUpdateCheckPrefs {
@@ -945,10 +1007,22 @@ export interface Settings {
   proxy?: ProxyPrefs
   /** 封面生成偏好；主进程始终补齐，缺省按默认值读取。 */
   coverGen?: CoverGenPrefs
+  /** 书中地图识别用的视觉服务；主进程始终补齐，缺省走本机 magpie。 */
+  atlasVision?: AtlasVisionPrefs
   /** 图片服务独立 Key 是否已配置；渲染层只拿布尔值。未配置时回退 AI 的 Key。 */
   coverGenKeyConfigured?: boolean
   /** 有密文但本机解不开；界面据此提示「重新填写」。 */
   coverGenKeyUnreadable?: boolean
+  /** Craft MCP 端点是否已配置（渲染层只拿布尔值，不回传含 linkid 的 URL）。 */
+  craftMcpUrlConfigured?: boolean
+  /** 有密文但本机解不开；界面据此提示「重新填写」。 */
+  craftMcpUrlUnreadable?: boolean
+  /** ima OpenAPI 凭据是否已配置；渲染层只拿布尔值，不回传明文。 */
+  imaConfigured?: boolean
+  /** 有密文但本机解不开。 */
+  imaUnreadable?: boolean
+  /** 选定的 ima 知识库（非凭据，可直接下发）；空串表示只用笔记检索。 */
+  imaKnowledgeBaseId?: string
 }
 
 export interface SettingsUpdate {
@@ -984,8 +1058,18 @@ export interface SettingsUpdate {
   proxyPassword?: string
   /** 只合并提交的字段，非法值逐项回退默认。 */
   coverGen?: Partial<CoverGenPrefs>
+  /** 书中地图识别用的视觉服务；`baseUrl` 空串表示回退聊天 AI 配置。 */
+  atlasVision?: Partial<AtlasVisionPrefs>
   /** 图片服务独立的 Key；空字符串清除（清除后回退 AI 的 Key）。 */
   coverGenApiKey?: string
+  /** Craft MCP 端点 URL（含 linkid，是凭据）；空字符串清除。 */
+  craftMcpUrl?: string
+  /** ima OpenAPI 的 Client ID；空字符串清除。 */
+  imaClientId?: string
+  /** ima OpenAPI 的 API Key；空字符串清除。 */
+  imaApiKey?: string
+  /** 选定的 ima 知识库 ID；空字符串表示只用笔记检索。 */
+  imaKnowledgeBaseId?: string
 }
 
 /** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */
@@ -1048,6 +1132,22 @@ export interface AiCitation {
   chapterId: string
   chapterTitle: string
   paragraphIndex: number
+  excerpt: string
+}
+
+/**
+ * 外部 MCP 来源引用（Craft 等）。刻意与 AiCitation 分开：后者是纯书籍坐标类型，
+ * 没有 url；MCP 来源没有章节坐标，硬塞进 citations 会让 isChatCitation 拒掉整轮消息。
+ */
+export interface ExternalSource {
+  /** 稳定 id：`craft:<文档或块 id>`；同一轮内去重靠它。 */
+  id: string
+  providerName: string
+  /** 页面/文档标题；标题缺失时用 id 兜底。 */
+  title: string
+  /** 可点击链接；服务端没给就只有标题。 */
+  url?: string
+  /** 命中的片段，截断到 300 字符。 */
   excerpt: string
 }
 
@@ -1317,11 +1417,12 @@ export interface AiBudgetEstimate {
 }
 
 /**
- * `queued` / `indexing` 只携带 `detail` 文案，不改变终态：旧监听方按未知阶段忽略即可，
- * 界面拿它们解释「为什么还没开始出字」，不拿它们推断成败。
+ * `queued` / `indexing` / `verifying` 只携带 `detail` 文案，不改变终态：旧监听方按未知阶段忽略即可，
+ * 界面拿它们解释「为什么还没开始出字」或「字出完了为什么还没结束」，不拿它们推断成败。
+ * `verifying` 在正文流完之后才开始：结论逐条跟原文比对，读者看到它在收尾，而不是卡住。
  */
 export type AiRequestStage =
-  | 'preparing' | 'queued' | 'indexing' | 'rewriting' | 'searching' | 'requesting' | 'saving'
+  | 'preparing' | 'queued' | 'indexing' | 'rewriting' | 'searching' | 'requesting' | 'verifying' | 'saving'
 
 export interface AiStageEvent {
   jobId: string
@@ -1332,6 +1433,8 @@ export interface AiStageEvent {
   citations?: AiCitation[]
   /** 与 citations 同时推送的已读夹紧截止。 */
   uptoChapterId?: string
+  /** 外部 MCP 来源（Craft 等），与 citations 并列。 */
+  externalSources?: ExternalSource[]
 }
 
 export interface AiBudgetEvent {
@@ -1340,18 +1443,142 @@ export interface AiBudgetEvent {
   budget: AiBudgetEstimate
 }
 
+/**
+ * 一条结论与它引用的原文。
+ *
+ * `quote` 是「从 citationIds 指向的 excerpt 里逐字抄下来的那一句」：它让界面外的东西
+ * （引文校验、批量 judge）能真的核一遍，而不是只听模型说「我引用了第 3 段」。
+ * 旧模型可能完全不返回 quote，所以它是可选的——缺省表示这条结论没有逐字引文。
+ */
+export interface AiEvidenceClaim {
+  text: string
+  citationIds: string[]
+  quote?: string
+}
+
+/**
+ * 一条回答的可信度结论，只由后端判定，界面不自己推：
+ * - `verified`：所有结论都给出了逐字引文，且批量 judge 认为原文支持它们（一条都没删）；
+ * - `partial`：judge 跑成了，但有结论被删掉（引文对不上或原文不支持）；
+ * - `not_run`：本该核验却没跑成（请求失败、judge 返回非法格式），结论原样留下，但不代表可信；
+ * - `disabled`：读者在设置里主动关掉了「回答后核对原文」，这一轮压根没发核验请求。
+ *   `not_run` 是「出故障」，`disabled` 是「你自己选的」——两者文案绝不能混，
+ *   否则关掉开关的人会以为核验坏了，跑去反复重试。
+ * 缺省（旧记录）表示不知道——界面不显示任何「已核验」字样。
+ */
+export type AiEvidenceVerification = 'verified' | 'partial' | 'not_run' | 'disabled'
+
+/** 问答回答的知识范围：book 为结合本书已读内容，general 为脱离书籍的字词释义/通识百科。 */
+export type AiChatScope = 'book' | 'general'
+
+/**
+ * 思考链的一步：这一轮「正在怎么干」的工具进度。
+ *
+ * 以前它只活在界面的扩展类型里、不落盘，重开侧栏就没了。现在随消息持久化，
+ * 让读者重开侧栏还能看到这轮回答去了哪些工具（查目录 / 读原文 / 检索 / 看记忆）。
+ * `state` 只有 running/done/error 三种，落盘前都已被收尾成终态。
+ */
+export interface AiChatStep {
+  label: string
+  state: 'running' | 'done' | 'error'
+}
+
+/**
+ * 消息附带的选区锚点：把「这一问基于哪段原文」结构化存下来。
+ *
+ * 以前划词提问只把前后文拼成一次性 prompt 文本，追问时锚点就丢了。现在随消息落盘，
+ * 追问、重开侧栏都能复用同一处原文出处。`start`/`end` 是规范化正文里的字符区间；
+ * `excerpt` 是所选原文摘录，`label` 是气泡里给人看的出处（章节 + 段号）。
+ * 旧记录没有这个字段时照常加载，不崩。
+ */
+export interface AiChatContextAnchor {
+  kind: 'selection'
+  chapterId: string
+  chapterTitle: string
+  start?: number
+  end?: number
+  excerpt: string
+  label: string
+}
+
 export interface AiEvidenceChatMessage {
   role: 'user' | 'assistant'
   content: string
   citations?: AiCitation[]
-  claims?: Array<{ text: string; citationIds: string[] }>
+  claims?: AiEvidenceClaim[]
+  verification?: AiEvidenceVerification
+  /** 本轮因引文对不上或 judge 判不支持而删掉的结论条数；界面用它解释 partial。 */
+  droppedClaims?: number
   uptoChapterId?: string
   stopped?: boolean
+  /** 回答所属范围：general 表示纯字词/通识百科回答（未引用本书内容）。 */
+  scope?: AiChatScope
+  /**
+   * 外部 MCP 来源（Craft 等）。与 citations 并列、互不污染：MCP 来源没有章节坐标，
+   * 塞进 citations 会被 isChatCitation 拒掉整轮消息。缺省（旧记录）表示没有。
+   */
+  externalSources?: ExternalSource[]
+  /** 这一轮的工具进度（思考链），随消息落盘，重开侧栏后可回放。缺省（旧记录）表示没有。 */
+  steps?: AiChatStep[]
+  /** 这条消息附带的选区锚点，追问可复用原文出处。缺省（旧记录）表示没有。 */
+  context?: AiChatContextAnchor[]
 }
 
-/** ai.getChat 的兼容响应：旧 handler 可暂不返回 version，消息字段保持可读。 */
+/**
+ * ai.getChat 的兼容响应：旧 handler 可暂不返回 version，消息字段保持可读。
+ * `threadId` 是主进程实际解析到的会话线程；省略 threadId 时它告诉渲染层「当前 active 是哪条」，
+ * 一本书还没有任何会话时为空串（欢迎态，首次发送再建）。
+ */
 export type AiGetChatResult =
-  | { ok: true; version?: 1 | 2; messages: AiEvidenceChatMessage[] }
+  | { ok: true; version?: 1 | 2; messages: AiEvidenceChatMessage[]; threadId?: string }
+  | { ok: false; message: string }
+
+/**
+ * ai.listModels 的响应：从已配置端点读到的可选模型名，供侧边栏快速切换。
+ * 读不到时 ok 为 false，界面退回内置候选，不弹错误。
+ */
+export type AiModelsResult =
+  | { ok: true; models: string[] }
+  | { ok: false; message: string }
+
+/** 一条问答线程：同一本书里互不污染的独立会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。 */
+export interface AiChatThread {
+  id: string
+  /** 空串表示「还没起过标题」：界面显示「新会话」，首次提问后由主进程按问题补上。 */
+  title: string
+  createdAt: string
+  updatedAt: string
+  messages: AiEvidenceChatMessage[]
+}
+
+/** 每书 ai/chats.json v1：把原先唯一的 chat.json 变成多条线程的容器。 */
+export interface AiChatThreadsFile {
+  version: 1
+  /** 当前会话；一本书还没有线程时为空串。 */
+  activeThreadId: string
+  threads: AiChatThread[]
+}
+
+/** ai.listThreads 的线程摘要：只带列表要用的字段，不搬消息正文。 */
+export interface AiChatThreadSummary {
+  id: string
+  title: string
+  messageCount: number
+  updatedAt: string
+}
+
+export type AiListThreadsResult =
+  | {
+    ok: true
+    threads: AiChatThreadSummary[]
+    activeThreadId: string
+    /** 历史文件坏掉时的可读提示：仍然返回空列表，侧栏照旧能打开。 */
+    message?: string
+  }
+  | { ok: false; message: string }
+
+export type AiCreateThreadResult =
+  | { ok: true; threadId: string }
   | { ok: false; message: string }
 
 export interface AiStorySoFar {
@@ -1419,24 +1646,36 @@ export type AiDoneEvent =
       stopped?: boolean
       /** 证据问答终态的白名单引用；保存失败时也必须保留。 */
       citations?: AiCitation[]
-      claims?: Array<{ text: string; citationIds: string[] }>
+      claims?: AiEvidenceClaim[]
+      /** 结论的可信度结论（验证/部分/未校验），与 claims 同时下发。 */
+      verification?: AiEvidenceVerification
+      /** 已删除的结论条数；旧监听方忽略即可。 */
+      droppedClaims?: number
       /** 本次回答严格夹紧的已读截止。 */
       uptoChapterId?: string
+      /** 回答所属范围：general 表示纯字词/通识百科回答（未引用本书内容）。 */
+      scope?: AiChatScope
       /** 记忆更新/重建的结构化结果与处理统计。 */
       memoryUpdate?: AiMemoryUpdateResult
       /** 写盘失败后仅当前主进程有效的重试令牌。 */
       saveToken?: string
+      /** 外部 MCP 来源（Craft 等），与 citations 并列。 */
+      externalSources?: ExternalSource[]
     }
   | { jobId: string; ok: false; message: string }
 
-/** 旧 ai/chat.json v1；读取兼容，不含来源。 */
+/**
+ * 旧 ai/chat.json v1；只读兼容，不含来源。
+ * 问答分成多条线程后新数据写 `ai/chats.json`，这份文件不再被写入：
+ * 留着它，旧版本回退时还能看到最后一份状态。
+ */
 export interface AiChatFile {
   version: 1
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
   updatedAt: string
 }
 
-/** 新 ai/chat.json v2；首次成功保存证据问答时升级。 */
+/** 旧 ai/chat.json v2；同样只读兼容，新数据见 `AiChatThreadsFile`。 */
 export interface AiChatFileV2 {
   version: 2
   messages: AiEvidenceChatMessage[]
@@ -1463,11 +1702,14 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   dim: 0,
   hideSiteTail: true,
   hideReaderChrome: true,
+  highlightColor: '#ffe45c',
+  highlightOpacity: 35,
 }
 
 export const DEFAULT_WEB_READING_PREFS: WebReadingPrefs = {
   autoPage: true,
   autoSpeed: 3,
+  columns: 1,
 }
 
 /** 缺省直连：不改变任何现存用户的网络行为。 */
@@ -1522,6 +1764,8 @@ export const DEFAULT_TIER_SENSE_PREFS: TierSensePrefs = {
 export const DEFAULT_AI_PREFS: AiPrefs = {
   provider: 'deepseek',
   thinkingEnabled: true,
+  // 核验默认开启：多花一次小请求换「结论有没有被原文支持」，这是证据问答可信度的下限。
+  verifyEvidenceAnswers: true,
   recapLength: 'standard',
   budgetWarningTokens: 8000,
   trustedCustomOrigins: [],

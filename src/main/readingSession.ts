@@ -1,7 +1,8 @@
 import { session, WebContentsView } from 'electron'
 import type { BrowseChapterLink, BrowseReadingChapter, BrowseReadingPage, SiteRule, WebShelfChapter } from '../shared/types'
 import { discoverChapterLinks, extractBrowseReadingPage } from './browseReading'
-import { extractCatalog, extractPage } from './extract'
+import { extractBookIdentity, extractCatalog, extractPage, findCatalogPageUrls } from './extract'
+import type { BookIdentity } from './extract'
 import { findContinuationUrls } from './paywallUnlock'
 import { findSiteRuleForUrl } from './siteRules'
 import { DOWNLOAD_SESSION_PARTITION, HIDDEN_VIEW_BOUNDS, isDownloadBusy } from './download'
@@ -27,6 +28,8 @@ interface PageBootstrap {
   title: string
   author: string
   coverUrl?: string
+  /** 站点书页上的简介；识别不出为空串。 */
+  description: string
   catalogUrl: string
   chapters: WebShelfChapter[]
 }
@@ -36,7 +39,7 @@ let queue: Promise<unknown> = Promise.resolve()
 let htmlLoaderForTests: ((url: string) => Promise<string>) | null = null
 
 const pageCache = new Map<string, BrowseReadingPage>()
-const catalogCache = new Map<string, WebShelfChapter[]>()
+const catalogCache = new Map<string, { catalogUrl: string; chapters: WebShelfChapter[]; book?: BookIdentity }>()
 
 function isHttpUrl(url: string): boolean {
   if (typeof url !== 'string') return false
@@ -164,9 +167,9 @@ function rememberPage(key: string, page: BrowseReadingPage): void {
   }
 }
 
-function rememberCatalog(key: string, chapters: WebShelfChapter[]): void {
+function rememberCatalog(key: string, snapshot: { catalogUrl: string; chapters: WebShelfChapter[]; book?: BookIdentity }): void {
   catalogCache.delete(key)
-  catalogCache.set(key, chapters)
+  catalogCache.set(key, snapshot)
   while (catalogCache.size > CATALOG_CACHE_LIMIT) {
     const oldest = catalogCache.keys().next()
     if (oldest.done) break
@@ -263,24 +266,58 @@ export async function prefetchReadingPage(url: string): Promise<{ ok: boolean; c
   return { ok: result.ok, cached: false }
 }
 
-export async function loadCatalog(catalogUrl: string): Promise<{ ok: true; catalogUrl: string; chapters: WebShelfChapter[] } | { ok: false; message: string }> {
+export interface CatalogSnapshot {
+  ok: true
+  catalogUrl: string
+  chapters: WebShelfChapter[]
+  /** 目录页上的书写信息（书名 / 作者 / 封面 / 简介）；这一页不是书页时缺省。 */
+  book?: BookIdentity
+}
+
+export async function loadCatalog(catalogUrl: string): Promise<CatalogSnapshot | { ok: false; message: string }> {
   if (!isHttpUrl(catalogUrl)) return { ok: false, message: '目录地址无效' }
   const key = cacheKey(catalogUrl)
   const cached = catalogCache.get(key)
-  if (cached && cached.length) {
+  if (cached && cached.chapters.length) {
     rememberCatalog(key, cached)
-    return { ok: true, catalogUrl, chapters: cached }
+    return { ok: true, ...cached }
   }
   try {
-    const chapters = await enqueue(async () => {
+    const snapshot = await enqueue(async () => {
       const html = await fetchHtml(catalogUrl)
       let rule
       try { rule = await findSiteRuleForUrl(catalogUrl) } catch { rule = undefined }
-      return extractCatalog(html, catalogUrl, rule).map((chapter) => ({ title: chapter.title, url: chapter.url }))
+      const merged = extractCatalog(html, catalogUrl, rule)
+      // 站点把目录切成多页（?page=2 / _2.html / /list/2/）时只取第一页会丢章：
+      // 这里和下载器一样逐页补齐，各自自校验，只有真产出章节才合并，单页失败跳过。
+      //
+      // 只在页面真的露出分页链接时才补：很多站的目录是单页的，
+      // 每本书都盲抓几页会把站点打到限流，反过来让目录整个取不到。
+      const pageUrls = merged.length ? findCatalogPageUrls(html, catalogUrl, 5) : []
+      const seen = new Set(merged.map((chapter) => chapter.url))
+      for (const pageUrl of pageUrls) {
+        try {
+          const pageHtml = await fetchHtml(pageUrl)
+          let pageRule
+          try { pageRule = await findSiteRuleForUrl(pageUrl) } catch { pageRule = undefined }
+          for (const chapter of extractCatalog(pageHtml, pageUrl, pageRule)) {
+            if (seen.has(chapter.url)) continue
+            seen.add(chapter.url)
+            merged.push(chapter)
+          }
+        } catch { /* 续页抓取失败不改判：第一页的目录仍可用 */ }
+      }
+      const identity = extractBookIdentity(html, catalogUrl, rule, { pageKind: 'catalog' })
+      const book = identity.title || identity.author || identity.coverUrl || identity.description ? identity : undefined
+      return {
+        catalogUrl,
+        chapters: merged.map((chapter) => ({ title: chapter.title, url: chapter.url })),
+        book,
+      }
     })
-    if (!chapters.length) return { ok: false, message: '这个页面里没有找到章节目录' }
-    rememberCatalog(key, chapters)
-    return { ok: true, catalogUrl, chapters }
+    if (!snapshot.chapters.length) return { ok: false, message: '这个页面里没有找到章节目录' }
+    rememberCatalog(key, snapshot)
+    return { ok: true, ...snapshot }
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : '目录加载失败' }
   }
@@ -303,17 +340,26 @@ export async function loadPageBootstrap(url: string): Promise<{ ok: true; bootst
   const extracted = extractPage(html, url, undefined, rule)
   const readingPage = extractBrowseReadingPage(html, url, rule)
   const fallbackTitle = readingPage.ok ? readingPage.page.title : ''
+  const isCatalog = extracted.ok && extracted.pageKind === 'catalog'
+  // 章节页的 h1 / <title> 是章名，书名一律按书页口径单独取。
+  const identity = extractBookIdentity(html, url, rule, {
+    pageKind: isCatalog ? 'catalog' : 'chapter',
+    chapterTitle: isCatalog ? '' : fallbackTitle,
+  })
   if (extracted.ok && extracted.bootstrap) {
     const bs = extracted.bootstrap
-    const isCatalog = extracted.pageKind === 'catalog'
+    const pageBookTitle = isCatalog
+      ? bs.bookTitle
+      : bs.bookTitle && bs.bookTitle.trim() !== fallbackTitle.trim() ? bs.bookTitle : ''
     return {
       ok: true,
       bootstrap: {
         pageUrl: url,
         pageKind: isCatalog ? 'catalog' : 'chapter',
-        title: bs.bookTitle || fallbackTitle || '未命名',
-        author: bs.author || '',
-        coverUrl: bs.coverUrl,
+        title: identity.title || pageBookTitle || fallbackTitle || '未命名',
+        author: identity.author || bs.author || '',
+        coverUrl: identity.coverUrl ?? bs.coverUrl,
+        description: identity.description,
         catalogUrl: isCatalog ? url : bs.catalogUrl || url,
         chapters: isCatalog ? bs.chapters.map((chapter) => ({ title: chapter.title, url: chapter.url })) : [],
       },
@@ -325,8 +371,10 @@ export async function loadPageBootstrap(url: string): Promise<{ ok: true; bootst
     bootstrap: {
       pageUrl: url,
       pageKind: 'chapter',
-      title: fallbackTitle,
-      author: '',
+      title: identity.title || fallbackTitle,
+      author: identity.author,
+      coverUrl: identity.coverUrl,
+      description: identity.description,
       catalogUrl: url,
       chapters: [],
     },

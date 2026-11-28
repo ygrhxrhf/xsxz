@@ -1,3 +1,19 @@
+This directory contains a read-only snapshot of dracohu2025-cloud/infinite-reader
+at commit 2b258816463530fdde5fc82ad6314b2bd867b3b2 (2026-11-20 10:00:57 UTC).
+
+Source: https://github.com/dracohu2025-cloud/infinite-reader
+Snapshot date: 2026-11-25
+
+The snapshot includes:
+- web/src/engine/
+- web/src/book/
+- web/src/index.css
+- web/package.json
+
+These files are for reference only and must not be modified.
+
+---
+
 Infinite Reader
 Copyright 2026 the Infinite Reader contributors
 

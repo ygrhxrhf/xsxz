@@ -73,6 +73,33 @@ describe('Library comfortable card contract', () => {
     expect(source).toContain('web-update-badge')
     // 网页书不用 v-html，封面缺图时退回首字
     expect(source).toContain('libraryCoverText(book.title)')
+    // 卡片带站点简介（两行封顶），加入书架时已存盘。
+    expect(source).toContain('v-if="book.description" class="book-intro"')
+    expect(source).toContain(':title="book.description"')
+  })
+
+  it('keeps 最近在读 as one horizontal row shared by library books and web books', async () => {
+    const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
+    // 两种来源一起按 progress.updatedAt 排，网页书也在这一排里；不只留一本。
+    expect(source).toContain("type ContinueItem =")
+    expect(source).toContain("const web: ContinueItem[] = webBooks.value")
+    expect(source).toContain('return [...local, ...web].sort((a, b) => b.at - a.at).slice(0, RECENT_LIMIT)')
+    expect(source).toContain('const RECENT_LIMIT = 20')
+    expect(source).toContain("kicker: '最近在读 · 网页书'")
+    // 一排卡片横向滚动：箭头、滚轮换算、吸附
+    expect(source).toContain('v-if="recentViews.length && !hasActiveFilter"')
+    expect(source).toContain('class="shelf-recent-row"')
+    expect(source).toContain('v-for="(item, index) in recentViews"')
+    expect(source).toContain('@click="openRecentItem(item)"')
+    expect(source).toContain('scrollRecent(-1)')
+    expect(source).toContain('scrollRecent(1)')
+    expect(source).toContain('@wheel="onRecentWheel"')
+    expect(source).toContain('scroll-snap-type: x proximity')
+    // 卡片与顶部「继续读」都走同一个入口，网页书用 open-web-book。
+    expect(source).toContain("if (item.kind === 'library')")
+    expect(source).toContain("if (item.url) emit('open-web-book', item.url)")
+    expect(source).not.toContain('continueBook')
+    expect(source).not.toContain('shelf-continue')
   })
 
   it('keeps title, author, status, progress, and running result text visible', async () => {
@@ -278,6 +305,18 @@ describe('Library comfortable card contract', () => {
     expect(source).toContain('const failedGroups = computed(() => groupFailedChaptersByCode(failedRows.value))')
     expect(source).toContain('<p v-if="failedGroups.length > 1" class="fail-summary">')
     expect(source).toContain('<div v-if="failedRows.length" class="fail-list">')
+    expect(source).not.toContain('v-html')
+  })
+
+  it('shows book synopsis on card hover and hides it on mouseleave', async () => {
+    const source = await readFile(new URL('./Library.vue', import.meta.url), 'utf-8')
+    expect(source).toContain('showHoverOverview(b.title, b.overview?.text, e)')
+    expect(source).toContain('showHoverOverview(book.title, book.description, e)')
+    expect(source).toContain('@mouseleave="hideHoverOverview"')
+    expect(source).toContain('HOVER_OVERVIEW_DELAY_MS')
+    expect(source).toContain('<Transition name="book-hover-overview-fade">')
+    expect(source).toContain('class="book-hover-overview"')
+    expect(source).toContain('role="tooltip"')
     expect(source).not.toContain('v-html')
   })
 })

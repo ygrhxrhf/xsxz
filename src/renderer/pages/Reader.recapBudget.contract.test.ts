@@ -4,11 +4,13 @@ import { describe, expect, it } from 'vitest'
 /** 助手面板的实现搬去了 readerAssistant.ts：这些契约断言看的是「实现里有没有这条」，
  *  所以把 Reader.vue 与该模块拼起来看（模板与接线仍在 Reader.vue 里断言）。 */
 async function readReaderSurface(): Promise<string> {
-  const [reader, assistant] = await Promise.all([
+  const [reader, assistant, selection] = await Promise.all([
     readFile(new URL('./Reader.vue', import.meta.url), 'utf-8'),
     readFile(new URL('./readerAssistant.ts', import.meta.url), 'utf-8'),
+    // 划词菜单的动作表搬到了 readerSelection.ts，断言要与模板一起看。
+    readFile(new URL('./readerSelection.ts', import.meta.url), 'utf-8'),
   ])
-  return reader + assistant
+  return reader + assistant + selection
 }
 
 describe('Reader recap budget confirmation contract', () => {
@@ -36,8 +38,9 @@ describe('Reader recap budget confirmation contract', () => {
     expect(source).not.toContain('spbf:reading-ai')
     expect(source).toContain('本书累计')
     expect(source).toContain('接近 30000 字单次预算')
-    expect(source).toContain('问 AI · 解释这段')
-    expect(source).toContain('这个人物是谁')
-    expect(source).toContain('这件事之前发生了什么')
+    // 划词菜单的 AI 入口：菜单项由 SELECTION_ACTIONS 驱动，文案必须仍包含这几项。
+    expect(source).toContain("'解释这段'")
+    expect(source).toContain("'这个人物是谁'")
+    expect(source).toContain("'这件事之前发生了什么'")
   })
 })

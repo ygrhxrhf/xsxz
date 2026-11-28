@@ -6,10 +6,9 @@
  * 上层的 DOM 层只负责把每一行贴到页面上。纯函数，方便单测。
  */
 
-import type { RealBookNote } from './realBookNotes'
-import type { PageTextureImageBox, PageTextureNoteBox } from './realBookTexture'
+import type { PageTextureImageBox } from './realBookTexture'
 
-export type PageRunRole = 'note-label' | 'note-body' | 'note-tags' | 'image-caption'
+export type PageRunRole = 'image-caption'
 
 /** 一行页内文字：页面逻辑坐标 + alphabetic 基线（与画布同义）。 */
 export interface PageTextRun {
@@ -18,16 +17,6 @@ export interface PageTextRun {
   x: number
   baseline: number
   fontSize: number
-}
-
-export interface PageNoteLayout {
-  id: string
-  note: RealBookNote
-  x: number
-  y: number
-  width: number
-  height: number
-  runs: PageTextRun[]
 }
 
 export interface PageImageLayout {
@@ -50,58 +39,6 @@ export interface PageBlockTools {
   measure: (text: string, fontSize: number) => number
   /** 与纹理同一套断行（`wrapTextureText`），返回至多三行。 */
   wrap: (text: string, fontSize: number, maxWidth: number) => string[]
-}
-
-/**
- * 批注卡：标签、最多三行正文、`#tag` 一行。
- *
- * 所有偏移照抄 `drawPageTexture`：标签基线 `y + 0.8em`，正文首行 `y + 1.55em`、
- * 行距 `0.95em`（这里的 em 是页面正文字号），正文左缩进 10px、右缩进 10px，
- * tag 行贴在卡片底边往上 8px。
- */
-export function noteBlockLayout(
-  box: PageTextureNoteBox,
-  style: PageBlockStyle,
-  tools: PageBlockTools,
-): PageNoteLayout {
-  const base = Math.max(8, style.fontSize)
-  const labelSize = Math.max(8, base * 0.56)
-  const bodySize = Math.max(9, base * 0.82)
-  const tagSize = Math.max(8, base * 0.58)
-  const runs: PageTextRun[] = [{
-    role: 'note-label',
-    text: box.note.source === 'ai' ? '笔记 · AI' : '笔记',
-    x: box.x + 10,
-    baseline: box.y + base * 0.8,
-    fontSize: labelSize,
-  }]
-  tools.wrap(box.note.text, bodySize, box.width - 20).slice(0, 3).forEach((text, index) => {
-    runs.push({
-      role: 'note-body',
-      text,
-      x: box.x + 10,
-      baseline: box.y + base * 1.55 + index * base * 0.95,
-      fontSize: bodySize,
-    })
-  })
-  if (box.note.tags?.length) {
-    runs.push({
-      role: 'note-tags',
-      text: box.note.tags.map((tag) => `#${tag}`).join(' '),
-      x: box.x + 10,
-      baseline: box.y + box.height - 8,
-      fontSize: tagSize,
-    })
-  }
-  return {
-    id: box.note.id,
-    note: box.note,
-    x: box.x,
-    y: box.y,
-    width: box.width,
-    height: box.height,
-    runs,
-  }
 }
 
 /**

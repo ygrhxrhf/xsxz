@@ -38,6 +38,14 @@ describe('local read-range evidence selection', () => {
     expect(payload).not.toContain('真凶')
     expect(payload).not.toContain('王城')
   })
+  it('allowUnread（问答全书范围）只按请求截止章夹紧，能读到未读章节的原文', () => {
+    const result = selectLocalEvidence(chapters, { originalQuestion: '顾清真凶', corePhrase: '顾清', keywords: ['真凶'] }, {
+      requestedUptoChapterId: 'c0003', progressChapterId: 'c0002', currentChapterId: 'c0002', allowUnread: true,
+    })
+    expect(result.uptoChapterId).toBe('c0003')
+    expect(result.citations.map((item) => item.chapterId)).toContain('c0003')
+    expect(JSON.stringify(result.citations)).toContain('真凶')
+  })
 
   it('prioritizes the current chapter while retaining stable paragraph coordinates', () => {
     const result = selectLocalEvidence(chapters, { originalQuestion: '账册', corePhrase: '账册' }, {
@@ -237,7 +245,9 @@ describe('local read-range evidence selection', () => {
       originalQuestion: '账房先生追问', corePhrase: '账房先生追问',
     }, { requestedUptoChapterId: 'c0001', progressChapterId: 'c0001', excerptCharacters: 80 })
     expect(result.citations[0]?.paragraphIndex).toBe(1)
-    expect(result.citations[0]?.excerpt).toContain('她把玉印收进袖中')
+    // 不能把上一段拼到开头：事后按 paragraphIndex 复核段首时会必然对不上，整轮问答作废。
+    expect(result.citations[0]?.excerpt.startsWith('账房先生追问了很久')).toBe(true)
+    expect(result.citations[0]?.excerpt).not.toContain('她把玉印收进袖中')
     expect(result.citations[0]?.excerpt).toContain('第二天码头开船')
   })
 

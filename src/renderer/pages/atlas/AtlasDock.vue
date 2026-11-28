@@ -6,6 +6,9 @@
  * 保留「图片地图」和「文字地点」两半胶囊、迷你 3D 面板、放大/收起、
  * 按 Esc 关闭、左右方向键交给阅读器翻页；去掉参考站的账号/云同步与原文锚点跳转，
  * 数据直接复用 spbf 的 `map.getImage` / `map.getPlaces`。
+ *
+ * 图片那一半先按字节指纹比对精选地图，没命中就用 `map.getRecognition` 读上次
+ * 保存的自动识别结论——只读，不会在这里触发任何模型调用。
  */
 import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import type { AiPlaceGeo } from '@shared/types'
@@ -46,6 +49,8 @@ const focusPlace = computed(() => {
 })
 const hasAny = computed(() => Boolean(textMap.value) || Boolean(imageMap.value))
 const mini = computed(() => view.value === 'image' || view.value === 'text')
+/** 展开后才有左侧地点栏：收起时宽度只够地图本身。 */
+const showPlacesAside = computed(() => expanded.value && mini.value && Boolean(activeMap.value?.places.length))
 
 function toggle(target: 'image' | 'text'): void {
   if (target === 'text' && !textMap.value) return
@@ -108,7 +113,9 @@ async function load(): Promise<void> {
       if (token !== loadToken) return
       if (response.ok) {
         const matched = await identifyBookMap(await response.blob())
-        if (token === loadToken) imageMap.value = matched
+        if (token !== loadToken) return
+        // 精选清单没命中时，用上次保存的模型结论（只读，不重新识别）。
+        imageMap.value = matched ?? await savedImageMap(token)
       }
     } else {
       imageUrl.value = ''
@@ -119,6 +126,20 @@ async function load(): Promise<void> {
     imageMap.value = null
   } finally {
     // 识别失败只影响图片那一半；文字地点仍可用。
+  }
+}
+
+/** 上次保存的识别结论里那张图：给左下角胶囊沿用，不会因为重开应用而消失。 */
+async function savedImageMap(token: number): Promise<BookMap | null> {
+  if (!props.bookId) return null
+  try {
+    const res = await window.api.map.getRecognition(props.bookId)
+    if (token !== loadToken) return null
+    if (!res.ok || !res.recognition) return null
+    const map = res.recognition.map
+    return res.recognition.status === 'recognized' && map?.places.length ? map : null
+  } catch {
+    return null
   }
 }
 
@@ -182,6 +203,16 @@ const imageOptions = computed(() => (imageMap.value ? [imageMap.value] : []))
         <button type="button" class="atlas-dock-more" @click="emit('open-map-page')">打开书中地图页</button>
       </div>
       <div v-else class="atlas-dock-body">
+        <aside v-if="showPlacesAside" class="atlas-reference atlas-dock-places" aria-label="图中地点">
+          <button
+            v-for="place in activeMap!.places"
+            :key="place.id"
+            type="button"
+            :aria-pressed="selected === place.id"
+            :class="{ selected: selected === place.id }"
+            @click="selected = place.id"
+          >{{ place.name }}</button>
+        </aside>
         <AtlasMap
           v-if="activeMap"
           :atlas="activeMap"
@@ -218,6 +249,26 @@ const imageOptions = computed(() => (imageMap.value ? [imageMap.value] : []))
 </template>
 
 <style scoped>
+.atlas-dock-places {
+  display: flex;
+  flex: 0 0 clamp(140px, 16%, 190px);
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  padding: 8px 6px;
+  border-right: 1px solid #334d3d20;
+}
+.atlas-dock-places button {
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #3d493a;
+}
+.atlas-dock-places button:hover,
+.atlas-dock-places button.selected {
+  background: #dce3d780;
+}
 .atlas-dock-list {
   display: flex;
   flex-direction: column;

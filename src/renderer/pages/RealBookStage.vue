@@ -57,6 +57,9 @@ import {
   type RealBookDesk,
   type RealBookEndpaper,
 } from './realBookWebGLModel'
+import { localOfMerged, windowIndexOf, type RealBookWindow, type RealBookWindowChapter } from './realBookWindow'
+import { readerWheelIntent } from './realBookViewGestures'
+import { canPageFrom, pageKeyDirection } from './realBookReaderKeyboard'
 
 interface HighlightSpan {
   /** 段落下标（原始下标，与经典模式一致） */
@@ -130,8 +133,21 @@ const props = withDefaults(defineProps<{
   bookAuthor?: string
   /** 书 id：章内图片按它拼 spbf-image:// 协议地址。 */
   bookId?: string
+  /** 高亮色带颜色（十六进制） */
+  highlightColor?: string
+  /** 高亮色带透明度 0–100 */
+  highlightOpacity?: number
   /** 书页模式每页栏数：1 单栏、2 双栏；书台版式忽略。 */
   columns?: number
+  /**
+   * 整本连排：true 时 paragraphs/paragraphIndexes 是「窗口内所有章节首尾相接」的合并数组，
+   * 页下标就是合并下标；窗口各章的边界由 windowChapters 给出，进度/锚点据此回落到正确章。
+   */
+  continuous?: boolean
+  /** 连排窗口各章：paragraphs/paragraphIndexes 里每章的段落范围 + 章元信息（含 meta.id）。 */
+  windowChapters?: RealBookWindowChapter[]
+  /** 连排时「当前章」的 meta.id：批注露出等只针对当前章，据此把原始段落定位到合并下标。 */
+  currentChapterId?: string
   /** 新写或刚编辑的批注 id：重排后跳到它所在页 */
   revealNoteId?: string
   /** 每次要求露出批注时递增 */
@@ -162,7 +178,10 @@ const props = withDefaults(defineProps<{
   bookTitle: '',
   bookAuthor: '',
   bookId: '',
-  columns: 1,
+columns: 1,
+continuous: false,
+windowChapters: () => [],
+currentChapterId: '',
   totalChars: 0,
   bookProgressStep: 0,
   revealNoteId: '',
@@ -188,6 +207,59 @@ const emit = defineEmits<{
   /** 左上角圆形返回键：回到书库 */
   (event: 'back'): void
 }>()
+
+// 整本连排：窗口各章拼成 RealBookWindow；非连续时 null，连排分支落回旧单章路径。
+const continuousWindow = computed<RealBookWindow | null>(() => {
+  const chapters = props.windowChapters
+  if (!props.continuous || !chapters || !chapters.length) return null
+  let length = 0
+  for (const c of chapters) length = c.start + c.total
+  return { chapters, currentIndex: -1, length }
+})
+
+// 合并段落下标 → 页眉/页脚要印的章节标题（连排时各章不同）。
+function chapterTitleForMergedIndex(mergedIndex: number): string {
+  const win = continuousWindow.value
+  if (!win) return props.chapterTitle
+  const w = localOfMerged(win, mergedIndex).win
+  const chapter = win.chapters[w]
+  return chapter ? chapter.meta.title : props.chapterTitle
+}
+
+// 锚点（章内局部段落 + chapterId）→ 合并段落下标；找不到该章返回 -1。
+function mergedIndexOfAnchor(paragraph: number, chapterId?: string): number {
+  const win = continuousWindow.value
+  if (!win || !chapterId) return -1
+  const w = win.chapters.findIndex((c) => c.meta.id === chapterId)
+  if (w < 0) return -1
+  return win.chapters[w]!.start + paragraph
+}
+
+// 合并段落下标 → 该页在所属章里的局部段落下标（进度/已读上界用）。
+function localParagraphOf(mergedIndex: number): number {
+  const win = continuousWindow.value
+  if (!win) return mergedIndex
+  return localOfMerged(win, mergedIndex).local
+}
+
+// 合并段落下标 → 所属章 id（进度写盘用）。
+function chapterIdOf(mergedIndex: number): string | undefined {
+  const win = continuousWindow.value
+  if (!win) return undefined
+  const w = localOfMerged(win, mergedIndex).win
+  return win.chapters[w]?.meta.id
+}
+// 某章的「原始段落下标」→ 合并下标（连排时批注/划线按原始下标定位，需换算到合并数组）。
+function mergedIndexForOriginal(paragraph: number, chapterId?: string): number {
+  const win = continuousWindow.value
+  if (!win || !chapterId) return -1
+  const w = win.chapters.findIndex((c) => c.meta.id === chapterId)
+  if (w < 0) return -1
+  const chapter = win.chapters[w]!
+  const local = chapter.paragraphIndexes.indexOf(paragraph)
+  if (local < 0) return -1
+  return chapter.start + local
+}
 
 /**
  * 真实书籍的专属色板：浅暖桌面 + 暖象牙纸 + 深灰绿布壳。
@@ -645,7 +717,8 @@ async function rebuildReferencePages(): Promise<void> {
   const previousAnchor = pendingRestore ? null : anchorOf(pages.value[currentPage.value])
   try {
     const { pages: nextPages } = await paginateReferenceChapter({
-      chapterTitle: props.chapterTitle,
+      chapterTitle: continuousWindow.value ? props.bookTitle || props.chapterTitle : props.chapterTitle,
+      chapterOpenings: chapterOpenings.value,
       paragraphs: props.paragraphs,
       paragraphIndexes: props.paragraphIndexes,
       notes: props.showNotes ? props.notes : [],
@@ -677,7 +750,9 @@ async function rebuildReferencePages(): Promise<void> {
     if (pendingRestore) {
       applyRestore()
     } else if (previousAnchor) {
-      const input = inputIndexOf(previousAnchor.paragraph)
+      const input = continuousWindow.value
+        ? mergedIndexOfAnchor(previousAnchor.paragraph, previousAnchor.chapterId)
+        : inputIndexOf(previousAnchor.paragraph)
       const target = input >= 0
         ? findPageForInput(pages.value, input, previousAnchor.offset)
         : currentPage.value
@@ -752,6 +827,13 @@ function inputIndexOf(paragraph: number): number {
 
 function anchorOf(page: RealBookPage | undefined): RealBookAnchor | null {
   if (!page || !page.items.length) return null
+  const win = continuousWindow.value
+  if (win) {
+    // 连排：page.paragraph 是合并下标 → 回落到所属章的局部段落 + chapterId。
+    const { win: w, local } = localOfMerged(win, page.paragraph)
+    const chapter = win.chapters[w]
+    return { paragraph: local, offset: page.offset, chapterId: chapter?.meta.id }
+  }
   const original = props.paragraphIndexes[page.paragraph]
   if (original === undefined) return null
   return { paragraph: original, offset: page.offset }
@@ -1023,7 +1105,10 @@ function instantFlip(): boolean {
 /** 按锚点跳页：真实书籍与经典模式互转位置的唯一接口。 */
 function goToAnchor(anchor: RealBookAnchor | null): void {
   if (!anchor) return
-  const inputIndex = inputIndexOf(anchor.paragraph)
+  // 连排：anchor.paragraph 是所属章的局部段落 + chapterId；单章：原始段落下标。
+  const inputIndex = continuousWindow.value
+    ? mergedIndexOfAnchor(anchor.paragraph, anchor.chapterId)
+    : inputIndexOf(anchor.paragraph)
   if (inputIndex < 0) return
   const created = paginator.value
   if (created) {
@@ -1047,7 +1132,9 @@ function applyReveal(): void {
   if (!props.showNotes) return
   const note = props.notes.find((item) => item.id === props.revealNoteId)
   if (!note) return
-  const inputIndex = inputIndexOf(note.paragraph)
+  const inputIndex = continuousWindow.value
+    ? mergedIndexForOriginal(note.paragraph, props.currentChapterId)
+    : inputIndexOf(note.paragraph)
   if (inputIndex < 0) return
   const created = paginator.value
   if (created) {
@@ -1069,22 +1156,19 @@ function clampZoom(value: number): number {
 }
 
 function onWheel(e: WheelEvent): void {
-  // WebGL 复刻沿用参考站：滚轮缩放，翻页交给按钮/方向键/拖页。
-  if (effectiveRenderer.value) {
-    const delta = Math.max(-120, Math.min(120, e.deltaY))
-    zoom.value = clampZoom(zoom.value * Math.exp(-delta * 0.001))
+  const host = hostRef.value
+  if (!host) return
+  const viewport = { clientWidth: host.clientWidth, clientHeight: host.clientHeight }
+  const intent = readerWheelIntent(e, viewport)
+  if (intent.kind === 'zoom') {
+    zoom.value = clampZoom(zoom.value * intent.factor)
     e.preventDefault()
     return
   }
-  if (e.ctrlKey) {
-    // CSS 3D 回退：双指捏合在桌面端会带 ctrlKey；这是缩放，不翻页。
-    zoom.value = clampZoom(zoom.value - e.deltaY * 0.002)
-    e.preventDefault()
-    return
-  }
-  if (Math.abs(e.deltaY) < 8) return
+  // pan: on desktop, wheel without modifier pans (turns pages)
+  if (Math.abs(intent.y) < 8) return
   e.preventDefault()
-  if (e.deltaY > 0) nextPage()
+  if (intent.y > 0) nextPage()
   else prevPage()
 }
 
@@ -1455,10 +1539,11 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
   const page = pages.value[index]
   if (!page) return null
   if (page.special) {
-    return { pageNumber: index + 1, chapterTitle: '', header: '', special: page.special, label: '', items: [] }
+    return { pageNumber: index + 1, chapterTitle: '', header: '', special: page.special, label: '', items: [], source: page.source }
   }
   if (!page.items.length) return null
   const items: Array<RealBookTexturePage['items'][number]> = []
+  const sourceMarks: Array<{ start: number; end: number; color: string }> = []
   for (const item of page.items) {
     if (item.kind === 'image') {
       items.push({
@@ -1473,7 +1558,18 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
     }
     if (item.kind === 'note') {
       const note = props.notes.find((candidate) => candidate.id === item.noteId)
-      if (note) items.push({ kind: 'note', note, height: item.height })
+      // 便签片段数据（lines/continued/continues/textColor）原样透传，纹理层交给上游 renderPage 内联绘制。
+      if (note) {
+        items.push({
+          kind: 'note',
+          note,
+          height: item.height,
+          continued: item.continued,
+          continues: item.continues,
+          lines: item.lines,
+          textColor: item.textColor,
+        })
+      }
       continue
     }
     const paragraphText = props.paragraphs[item.paragraph] ?? ''
@@ -1495,10 +1591,16 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
       .filter((highlight) => highlight.index === original)
       .map((highlight) => ({ start: highlight.start, end: highlight.end, color: highlight.color }))
     const noteMarks = (noteMarksByParagraph.value.get(original) ?? []).map((mark) => mark.offset)
+    const base = page.paragraphStarts?.get(item.paragraph)
+    if (base !== undefined) {
+      for (const highlight of highlights) sourceMarks.push({ start: base + highlight.start, end: base + highlight.end, color: highlight.color })
+    }
     items.push({
       kind: 'text',
       text: props.paragraphs[item.paragraph] ?? '',
       originalIndex: original,
+      // 章内字符坐标：纹理层据此把这一段的每一行对到参考站排出的真实位置。
+      chapterStart: base,
       start: item.start,
       end: item.end,
       continued: item.continued,
@@ -1510,15 +1612,40 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
   return {
     pageNumber: index + 1,
     chapterTitle: props.chapterTitle,
-    header,
+    // 章首页不印页眉：参考站由 chapterStart 隐去，否则大标题上方还会重复一行章名。
+    header: page.source?.chapterStart ? '' : header,
     label: page.label,
     items,
+    source: page.source,
+    sourceMarks,
   }
 }
 
 /** 参考站的书页页眉：左页印书名，右页印章节名；手机单页印章节名。 */
-const leftHeader = computed(() => props.bookTitle || props.chapterTitle)
-const rightHeader = computed(() => props.chapterTitle)
+// 连排时页眉随页所在章变（同一本物理书翻到不同章印不同章名）；单章则左书名、右章名。
+/**
+ * 章首标题块：每个章的第一个输入段落前插一条 h1。
+ *
+ * 参考站的章首页是「大留白 + 居中大字」，靠的是 `chapterHeading`/`h1` 块，
+ * 而 spbf 的章节正文只有段落、标题存在章元信息里。不注入这一块，章首页
+ * 就只剩顶格正文——参考图里最像「书」的那一页反而没有了。
+ * 单章一本时只有第 0 段；整本连排时每章各一个（窗口章的 start）。
+ */
+const chapterOpenings = computed<Array<{ paragraph: number; title: string }>>(() => {
+  const win = continuousWindow.value
+  if (!win) {
+    return props.chapterTitle.trim() ? [{ paragraph: 0, title: props.chapterTitle }] : []
+  }
+  return win.chapters
+    .filter((chapter) => chapter.total > 0 && chapter.meta.title.trim().length > 0)
+    .map((chapter) => ({ paragraph: chapter.start, title: chapter.meta.title }))
+})
+const leftHeader = computed(() => (continuousWindow.value
+  ? chapterTitleForMergedIndex(leftViewIndex.value)
+  : props.bookTitle || props.chapterTitle))
+const rightHeader = computed(() => (continuousWindow.value
+  ? chapterTitleForMergedIndex(phone.value ? slotPage.value : rightViewIndex.value)
+  : props.chapterTitle))
 const webglLeftPage = computed(() => (phone.value ? null : texturePageOf(leftViewIndex.value, leftHeader.value)))
 const webglRightPage = computed(() => (phone.value
   ? texturePageOf(slotPage.value, rightHeader.value)
@@ -1532,7 +1659,8 @@ const webglRightPage = computed(() => (phone.value
 /** WebGL 的整本页纹理源：BookModel 按页号取，不再只喂当前左右两页。 */
 const webglPageAt = computed(() => (index: number) => texturePageOf(
   index,
-  phone.value || index % 2 === 0 ? rightHeader.value : leftHeader.value,
+  // 连排：每张纸印自己所属章的章名；单章：手机/右页印章名、左页印书名。
+  continuousWindow.value ? chapterTitleForMergedIndex(index) : (phone.value || index % 2 === 0 ? rightHeader.value : leftHeader.value),
 ))
 /** 当前摊开的叶序号：双页模式 currentPage 是右页，除以 2 就是左侧页数。 */
 const webglTurned = computed(() => (phone.value ? currentPage.value : Math.floor(currentPage.value / 2)))
@@ -2012,6 +2140,23 @@ onMounted(() => {
     retry(0)
   }
   document.fonts?.addEventListener?.('loadingdone', fontListener)
+
+  // Keyboard navigation (ArrowLeft/Right, PageUp/Down, Space)
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (!canPageFrom(e.target, e.key)) return
+    const dir = pageKeyDirection(e.key, e.shiftKey)
+    if (dir === 1) {
+      e.preventDefault()
+      nextPage()
+    } else if (dir === -1) {
+      e.preventDefault()
+      prevPage()
+    }
+  }
+  window.addEventListener('keydown', onKeyDown)
+  ;(hostRef.value as HTMLElement | null)?.addEventListener('keydown', onKeyDown)
+  // Store cleanup
+  ;(window as unknown as { __rbKeydown?: typeof onKeyDown }).__rbKeydown = onKeyDown
 })
 
 onBeforeUnmount(() => {
@@ -2023,6 +2168,11 @@ onBeforeUnmount(() => {
   fontReloadTimer = 0
   stopFlipAnimation()
   for (const id of [...runTimers.keys()]) clearRunTimer(id)
+  const kd = (window as unknown as { __rbKeydown?: (e: KeyboardEvent) => void }).__rbKeydown
+  if (kd) {
+    window.removeEventListener('keydown', kd)
+    ;(hostRef.value as HTMLElement | null)?.removeEventListener('keydown', kd)
+  }
 })
 
 /** 已读上界：右页最后一段的末尾（段落下标 + 段内偏移），与经典模式同构。 */
@@ -2035,6 +2185,10 @@ function readEnd(): { paragraphIndex: number; characterOffset: number } | null {
   if (!page || !page.items.length) return null
   const last = [...page.items].reverse().find((item) => item.kind === 'text')
   if (!last) return null
+  if (continuousWindow.value) {
+    // 连排：last.paragraph 是合并下标 → 回落到所属章的局部段落，进度据此写到正确章。
+    return { paragraphIndex: localParagraphOf(last.paragraph), characterOffset: last.end }
+  }
   const original = props.paragraphIndexes[last.paragraph]
   if (original === undefined) return null
   return { paragraphIndex: original, characterOffset: last.end }
@@ -2061,7 +2215,7 @@ defineExpose({
 </script>
 
 <template>
-  <div ref="hostRef" :class="['real-book-stage', { 'is-sheet': variant === 'sheet', 'is-phone': phone }]" :style="stageStyle" @mouseup="onStageMouseup">
+  <div ref="hostRef" :class="['real-book-stage', { 'is-sheet': variant === 'sheet', 'is-phone': phone, 'is-webgl': effectiveRenderer }]" :style="stageStyle" @mouseup="onStageMouseup">
     <!-- 离屏量测容器：宽度与版心一致，量出来的断行与真实渲染一致 -->
     <div ref="measureRef" class="real-book-measure" :style="measureStyle" aria-hidden="true"></div>
     <!-- 批注卡量高：与真实卡片同一套宽度、字体与三行截断，只把结果交给分页器。 -->
@@ -2192,6 +2346,8 @@ defineExpose({
         :book-title="bookTitle || chapterTitle"
         :book-author="bookAuthor"
         :book-id="bookId"
+        :highlight-color="highlightColor"
+        :highlight-opacity="highlightOpacity"
         @update:pitch="setPitch"
         @update:open="onWebglOpen"
         @spread-changed="onWebglSpreadChanged"
@@ -2204,6 +2360,7 @@ defineExpose({
         @peel-end="onPeelEnd"
         @edit-note="emit('edit-note', $event)"
         @select-range="emit('select-range', $event)"
+        @select="onStageMouseup"
         @cross-turn="onWebglCrossTurn"
         @unsupported="handleWebglUnsupported"
       />
@@ -2694,6 +2851,23 @@ defineExpose({
 }
 
 .real-book-stage.is-sheet .real-book-viewport { padding-bottom: 0; }
+
+/* WebGL 真实书籍是整屏的书桌照：参考站的画布铺满窗口，桌面不能有外壳内边距，
+   也不能把 CSS 3D 用来躲页堆的那两段上下留白再让出来，否则书会被压小一圈、
+   四周露出一圈浅色底（顶部那条空白就是这么来的）。 */
+.real-book-stage.is-webgl {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0;
+  background: transparent;
+}
+.real-book-stage.is-webgl .real-book-viewport {
+  flex: 1 1 0;
+  height: 100%;
+  padding-top: 0;
+  padding-bottom: 0;
+}
 
 .real-book-book {
   /* 透视提到书体层：缩放、俯仰与两页的 V 形折角都在同一层，页面（子级）才吃得到同一个透视。

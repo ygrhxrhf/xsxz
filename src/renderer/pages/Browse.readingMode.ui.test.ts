@@ -21,6 +21,29 @@ describe('Browse web reading mode contract', () => {
     expect(source).toContain('scrollTopForVisualPage(next, el.scrollHeight, el.clientHeight)')
   })
 
+  it('offers scroll, single-column and double-column page layouts', async () => {
+    const source = await browseSource()
+    // 排版面板里的三种翻页方式
+    expect(source).toContain("setPageLayout('scroll')")
+    expect(source).toContain("setPageLayout('single')")
+    expect(source).toContain("setPageLayout('double')")
+    expect(source).toContain("setWebReading('columns'")
+    // 单栏/双栏用同一套横向分栏：一屏一页，栏距取两倍留白使翻页按屏对齐
+    expect(source).toContain('reading-columns-2')
+    expect(source).toContain('column-count: 2')
+    expect(source).toContain('column-gap: calc(var(--web-col-pad) * 2)')
+    // 页码、翻页、吸附都走横向滚动容器
+    expect(source).toContain('columnPageCount(el.scrollWidth')
+    expect(source).toContain('columnPageIndex(el.scrollLeft')
+    expect(source).toContain('el.scrollTo({ left: columnScrollLeft(next, width), behavior })')
+    expect(source).toContain('snapColumnPage()')
+    expect(source).toContain("el.scrollTo({ left: columnScrollLeft(columnPageForOffset(offset, width), width), behavior })")
+    // 分栏模式下触控板横扫与自动翻页也得能用
+    expect(source).toContain('Math.abs(event.deltaX) > Math.abs(event.deltaY)')
+    expect(source).toContain('function startColumnAutoPage')
+    expect(source).toContain('turnReadingPage(1, { keepAuto: true })')
+  })
+
   it('ships catalog, auto scroll, TTS and shelf entries inside reading mode', async () => {
     const source = await browseSource()
     expect(source).toContain('class="web-reading-catalog"')
@@ -43,7 +66,7 @@ describe('Browse web reading mode contract', () => {
     expect(source).toContain('window.api.browse.saveReadingPos({')
     expect(source).toContain('readingSaveTimer = setTimeout(write, 800)')
     expect(source).toContain('prefetchNeighborChapter')
-    expect(source).toContain('window.api.browse.prefetchChapter(next)')
+    expect(source).toContain('window.api.browse.prefetchChapter(next.url)')
   })
 
   it('wires keyboard, auto continue and reading preference separation', async () => {
@@ -53,8 +76,9 @@ describe('Browse web reading mode contract', () => {
     expect(source).toContain("if (key === 'm' || key === 'M') { event.preventDefault(); toggleReadingToolsLock(); return }")
     expect(source).toContain('setWebReading(\'autoSpeed\'')
     expect(source).toContain('setWebReading(\'autoPage\'')
-    // 自动续章只在开着「自动续章」且还有下一章时触发
-    expect(source).toContain('if (!webReading.value.autoPage || !nextChapterUrlFor(readingPage.value)) return false')
+    // 滚到章末附近自动接上下一章，并且只有还有下一章时才接
+    expect(source).toContain('if (el.scrollHeight - el.scrollTop - el.clientHeight > 260) return')
+    expect(source).toContain('if (!readingTailNext.value) return')
     expect(source).toContain('void appendNextSection()')
     // 滚动偏好只写 reader，自动滚动偏好只写 webReading
     expect(source).toContain('void window.api.settings.set({ reader: { [key]: value } })')
@@ -66,23 +90,16 @@ describe('Browse web reading mode contract', () => {
     // 同屏多章：整卷排进同一个正文容器，只有当前章叠加划线/搜索/行焦点
     expect(source).toContain('v-for="section in readingSections"')
     expect(source).toContain(':data-section="section.url"')
-    // 双栏 / 翻页也接章：末页之后接上下一章再翻过去；「下一章」也优先接在同屏末尾
-    expect(source).toContain('function sectionAtColumnPage')
-    expect(source).toContain('function continueIntoNextChapter')
-    expect(source).toContain('nextChapterUrlFor(readingTail.value) === target')
-    // 双栏定位当前章必须用「内容里的绝对位置」，用视口内偏移会滚回卷首
-    expect(source).toContain('scroller.scrollLeft + anchor.getBoundingClientRect().left')
+    // 章末接着排下一章：接章、按视口认当前章、不无限堆 DOM
     expect(source).toContain('function appendNextSection')
     expect(source).toContain('function maybeAppendNextSection')
-    expect(source).toContain('function trackReadingSection')
-    expect(source).toContain('function activateReadingSection')
+    expect(source).toContain('function sectionAtViewport')
+    expect(source).toContain('function activateSection')
     expect(source).toContain('readingSections.value = [...readingSections.value, res.page]')
     // 当前章由视口位置决定，章末自动接章，并且不会无限堆 DOM
     expect(source).toContain('const readingSections = ref<BrowseReadingPage[]>([])')
-    expect(source).toContain('const READING_SECTION_LIMIT = 8')
-    expect(source).toContain('trimReadingSections()')
-    // 目录是下一章的兜底：站点页面没给链接也能接着读
-    expect(source).toContain('return index >= 0 ? catalogChapters.value[index + 1]?.url ?? null : null')
+    expect(source).toContain('const READING_SECTION_LIMIT = 4')
+    expect(source).toContain('slice(-READING_SECTION_LIMIT)')
   })
 
   it('starts reading mode from a prefilled web-shelf url', async () => {

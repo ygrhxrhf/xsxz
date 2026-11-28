@@ -12,6 +12,7 @@ import { canonicalizeUrl, isPathLikeHash } from '../shared/urlHash'
 import { injectImageTokens } from '../shared/chapterImageSource'
 import { bodyText, cleanBodyText, effectiveLength, linkDensity, looksGarbled, visibleText } from './bodyText'
 import { unlockAllowed, unlockPaywalledBody } from './paywallUnlock'
+import type { CatalogDetect } from './browseReading'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -73,7 +74,117 @@ function sameDomain(a: string, b: string): boolean {
 
 const SITE_SUFFIX_RE = /[-_|—]\s*[^-\s|_—]{2,30}\s*$/
 
+/**
+ * 站点声明的书名 / 简介。章节页的 `<title>` 和 h1 往往是章名，
+ * 这几个 meta 才是书页信息（`og:novel:*` 是国内小说站的通行写法）。
+ */
+const BOOK_TITLE_META = [
+  'meta[property="og:novel:book_name"]',
+  'meta[name="og:novel:book_name"]',
+  'meta[property="og:book:title"]',
+  'meta[property="og:novel:title"]',
+  'meta[name="book_name"]',
+  'meta[name="bookName"]',
+]
+
+const BOOK_TITLE_SELECTORS = [
+  '#info h1',
+  '.book-info h1',
+  '.bookinfo h1',
+  '.book-detail h1',
+  'h1.book-name',
+  'h1.bookname',
+  '#bookName',
+  '#bookname',
+]
+
+const BOOK_AUTHOR_SELECTORS = [
+  '#info .author',
+  '.book-info .author',
+  '.bookinfo .author',
+  '.book-detail .author',
+  '.author',
+  '#author',
+]
+
+const BOOK_COVER_SELECTORS = [
+  '#fmimg img',
+  '.book-cover img',
+  '.book-cover-image img',
+  '.cover img',
+  '#cover img',
+  'img.book-cover',
+  '.bookinfo img',
+  '.book-info img',
+]
+
+/** 明确的「简介」容器：章节页上也常见，不会和章首正文混淆。 */
+const BOOK_INTRO_STRONG_SELECTORS = [
+  '#intro',
+  '#bookIntro',
+  '#bookintro',
+  '#book-intro',
+  '#bookSummary',
+  '#booksummary',
+  '.book-intro',
+  '.bookintro',
+  '.book-intro-content',
+  '.bookdesc',
+  '.book-desc',
+  '.book-description',
+  '.intro',
+]
+
+/** 泛用容器只在书页上用：章节页的 `.summary` / `.description` 可能是别的模块。 */
+const BOOK_INTRO_WEAK_SELECTORS = [
+  '#description',
+  '.description',
+  '.summary',
+  '.book-summary',
+  '.book-summary-content',
+  '.content-intro',
+]
+
+const MAX_INTRO_CHARS = 800
+
+function metaContent(doc: Document, selectors: string[]): string {
+  for (const selector of selectors) {
+    const el = querySafe(doc, selector)
+    const text = (el?.getAttribute('content') ?? '').replace(/\s+/g, ' ').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function stripBookMarks(text: string): string {
+  return text.replace(/\s+/g, ' ').replace(/^[《【\[]\s*/, '').replace(/\s*[》】\]]$/, '').trim()
+}
+
+function isHiddenElement(el: Element): boolean {
+  if (el.closest('[hidden], [aria-hidden="true"]')) return true
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const style = (node as HTMLElement).style
+    if (style && (style.display === 'none' || style.visibility === 'hidden')) return true
+  }
+  return false
+}
+
+function firstSelectorText(doc: Document, selectors: string[], min = 2, max = 120): string {
+  for (const selector of selectors) {
+    const el = querySafe(doc, selector)
+    if (!el || isHiddenElement(el)) continue
+    const text = stripBookMarks(visibleText(el))
+    if (text.length >= min && text.length <= max) return text
+  }
+  return ''
+}
+
 function extractBookTitle(doc: Document): string {
+  // 站点声明的书名比 og:title / h1 可靠：章节页的 h1 是章名。
+  const novel = metaContent(doc, BOOK_TITLE_META)
+  if (novel) return stripBookMarks(novel)
+  const container = firstSelectorText(doc, BOOK_TITLE_SELECTORS, 2, 80)
+  if (container) return container
   // og:title
   const og = doc.querySelector('meta[property="og:title"]')
   if (og) return og.getAttribute('content')?.replace(SITE_SUFFIX_RE, '').trim() || ''
@@ -117,6 +228,221 @@ function bookTitleWithRule(doc: Document, rule?: SiteRule): string {
 
 function authorWithRule(doc: Document, rule?: SiteRule): string {
   return textFromRuleSelector(doc, rule?.author) || extractAuthor(doc)
+}
+
+// ---------------------------------------------------------------------------
+// book identity：书名 / 作者 / 封面 / 简介
+// ---------------------------------------------------------------------------
+
+/** 这一页的书写信息。网页书架按它建卡片，字段口径和书库一致。 */
+export interface BookIdentity {
+  title: string
+  author: string
+  coverUrl?: string
+  description: string
+}
+
+export interface BookIdentityOptions {
+  /** 页面被识别成正文页时的章节标题：书名不能取它。 */
+  chapterTitle?: string
+  /** 缺省按正文页处理：不用泛用简介容器，避免把正文当简介。 */
+  pageKind?: 'catalog' | 'chapter'
+}
+
+/** 章名特征：`第12章`、`第 12 章`、`001 背叛`、`chapter 5`、`楔子 / 番外`。 */
+const CHAPTER_TITLE_SPACED_RE = /第\s*[0-9一二三四五六七八九十百千万零〇两壹贰叁肆伍陆柒捌玖拾佰仟]+\s*[章节卷回部集话回]/
+export function looksLikeChapterTitle(text: string): boolean {
+  const value = (text ?? '').replace(/\s+/g, ' ').trim()
+  if (!value) return false
+  return CHAPTER_TITLE_SPACED_RE.test(value) || CHAPTER_RE.test(value) || SEQ_RE.test(value)
+}
+
+/** 章节标题里真正是章名的那一段：`第 2 章 起风 - 万古神帝` 只取前一段。 */
+function chapterTitleCore(chapterTitle: string): string {
+  const value = (chapterTitle ?? '').replace(/\s+/g, ' ').trim()
+  if (!value) return ''
+  if (looksLikeChapterTitle(value) && !/[-–—_|｜]/.test(value)) return value
+  const segments = value.split(/\s*[-–—_|｜]\s*/).map((segment) => segment.trim()).filter(Boolean)
+  return segments.find((segment) => looksLikeChapterTitle(segment)) ?? ''
+}
+
+/** `<title>` 里属于站点名的段落：「某小说网」「笔趣阁」这类。 */
+const TITLE_SITE_JUNK_RE = /(?:小说网|小说阅读|阅读网|文学网|书城|笔趣|顶点|新笔趣|全文阅读|无弹窗|手机版)/i
+/** 判重前先从段尾剥掉的目录/站点后缀。 */
+const TITLE_TAIL_JUNK_RE = /(?:最新章节列表|最新章节|章节目录|目录|全文阅读|无弹窗|免费阅读|在线阅读|txt下载|小说)+$/i
+/** 目录 / 导航链接文字里的词，不是书名。 */
+const BOOK_LINK_JUNK_RE = /^(?:加入书架|加书架|书架|目录|章节目录|作品目录|返回目录|回目录|返回书目|全部章节|查看目录|章节列表|最新章节|书页|返回书页|首页|上一章|下一章|上一页|下一页|投推荐票|投月票|推荐本书|下载本书|手机阅读|电脑阅读|开始阅读|继续阅读|TOC|Chapter List)$/i
+
+function usableBookTitle(candidate: string | undefined | null, chapterTitle: string): string {
+  const text = stripBookMarks((candidate ?? '').replace(/\s+/g, ' '))
+  if (text.length < 2 || text.length > 80) return ''
+  if (looksLikeChapterTitle(text)) return ''
+  const chapter = chapterTitleCore(chapterTitle)
+  if (chapter && (chapter.includes(text) || text.includes(chapter))) return ''
+  return text
+}
+
+/** 从 `<title>` 里挑书名：丢掉章名、站点名和「目录」这类后缀。 */
+function bookTitleFromDocumentTitle(rawTitle: string, pageUrl: string, chapterTitle: string): string {
+  const raw = (rawTitle ?? '').replace(/\s+/g, ' ').trim()
+  if (!raw) return ''
+  let host = ''
+  try { host = new URL(pageUrl).hostname.replace(/^www\./i, '') } catch { host = '' }
+  const hostLabel = host.split('.')[0] ?? ''
+  const segments = raw.split(/\s*[-–—_|｜]\s*/).map((segment) => segment.trim()).filter(Boolean)
+  for (const segment of segments) {
+    const trimmed = segment.replace(TITLE_TAIL_JUNK_RE, '').trim()
+    const usable = usableBookTitle(trimmed, chapterTitle)
+    if (!usable) continue
+    if (TITLE_SITE_JUNK_RE.test(usable)) continue
+    if (host && usable.toLowerCase().includes(host.toLowerCase())) continue
+    if (hostLabel && usable.toLowerCase() === hostLabel.toLowerCase()) continue
+    return usable
+  }
+  return ''
+}
+
+/** 章节页面包屑里指回目录页的那个链接，文字通常就是书名。 */
+function bookTitleFromCatalogLink(doc: Document, pageUrl: string): string {
+  const catalogUrl = findCatalogLink(doc, pageUrl)
+  if (!catalogUrl) return ''
+  const key = catalogSeenKey(catalogUrl)
+  for (const anchor of [...doc.querySelectorAll('a[href]')] as HTMLAnchorElement[]) {
+    const href = resolveCatalogHref((anchor.getAttribute('href') || '').trim(), pageUrl, anchor.href)
+    if (catalogSeenKey(href) !== key) continue
+    const text = stripBookMarks(visibleText(anchor))
+    if (text.length < 2 || text.length > 60) continue
+    if (BOOK_LINK_JUNK_RE.test(text) || looksLikeChapterTitle(text)) continue
+    return text
+  }
+  return ''
+}
+
+/**
+ * 找不到「目录」链接时，退一步看页面里指向上级路径的链接：
+ * `/book/123/456.html` 上的 `/book/123/` 通常就挂着书名。
+ */
+function bookTitleFromParentLink(doc: Document, pageUrl: string): string {
+  let target: URL
+  try { target = new URL(pageUrl) } catch { return '' }
+  const targetPath = target.pathname.replace(/\/+$/, '') || '/'
+  if (targetPath === '/') return ''
+  let best: { depth: number; title: string } | null = null
+  for (const anchor of [...doc.querySelectorAll('a[href]')] as HTMLAnchorElement[]) {
+    let href: URL
+    try { href = new URL(anchor.getAttribute('href') || '', pageUrl) } catch { continue }
+    if (href.origin !== target.origin) continue
+    const path = href.pathname.replace(/\/+$/, '') || '/'
+    if (path === '/' || path === targetPath) continue
+    if (!targetPath.startsWith(`${path}/`) && !targetPath.startsWith(`${path}.`)) continue
+    const text = stripBookMarks(visibleText(anchor))
+    if (text.length < 2 || text.length > 60) continue
+    if (BOOK_LINK_JUNK_RE.test(text) || looksLikeChapterTitle(text) || TITLE_SITE_JUNK_RE.test(text)) continue
+    const depth = path.split('/').length
+    if (!best || depth > best.depth) best = { depth, title: text }
+  }
+  return best?.title ?? ''
+}
+
+const INTRO_LABEL_RE = /^\s*(?:内容简介|作品简介|书籍简介|小说简介|内容介绍|故事简介|作品介绍|简介|文案)\s*[:：]\s*/
+const INTRO_AUTHOR_LINE_RE = /^\s*(?:作者|小说作者)\s*[:：]\s*[^\s]{1,20}\s+/
+const INTRO_META_JUNK_RE = /(?:最新章节|章节目录|无弹窗|全文阅读|免费阅读|请收藏|首发域名)/
+
+function cleanIntro(text: string): string {
+  return text
+    .replace(INTRO_LABEL_RE, '')
+    .replace(INTRO_AUTHOR_LINE_RE, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function bookDescription(doc: Document, pageKind: 'catalog' | 'chapter'): string {
+  const selectors = pageKind === 'catalog'
+    ? [...BOOK_INTRO_STRONG_SELECTORS, ...BOOK_INTRO_WEAK_SELECTORS]
+    : BOOK_INTRO_STRONG_SELECTORS
+  for (const selector of selectors) {
+    const el = querySafe(doc, selector)
+    if (!el || isHiddenElement(el)) continue
+    const text = cleanIntro(bodyText(el))
+    if (text.length >= 20) return text.slice(0, MAX_INTRO_CHARS)
+  }
+  if (pageKind !== 'catalog') return ''
+  const meta = cleanIntro(metaContent(doc, [
+    'meta[property="og:description"]',
+    'meta[name="description"]',
+    'meta[name="Description"]',
+  ]))
+  // 站点会把「本站提供 xx 小说全文阅读」这类说明写进 meta，长度够也不是简介。
+  if (meta.length >= 20 && !INTRO_META_JUNK_RE.test(meta)) return meta.slice(0, MAX_INTRO_CHARS)
+  return ''
+}
+
+function bookCoverUrl(doc: Document, pageUrl: string): string | undefined {
+  const meta = metaContent(doc, [
+    'meta[property="og:image"]',
+    'meta[name="og:image"]',
+    'meta[property="twitter:image"]',
+    'meta[name="twitter:image"]',
+  ])
+  let raw = meta
+  if (!raw) {
+    for (const selector of BOOK_COVER_SELECTORS) {
+      const img = querySafe(doc, selector)
+      if (!img || isHiddenElement(img)) continue
+      raw = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || ''
+      if (raw.trim()) break
+    }
+  }
+  if (!raw.trim()) return undefined
+  try {
+    const url = new URL(raw.trim(), pageUrl)
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function bookAuthor(doc: Document, rule?: SiteRule): string {
+  const author = textFromRuleSelector(doc, rule?.author)
+    || metaContent(doc, ['meta[property="og:novel:author"]', 'meta[name="og:novel:author"]'])
+    || firstSelectorText(doc, BOOK_AUTHOR_SELECTORS, 1, 60)
+  return stripBookMarks(author.replace(/^\s*(?:作者|小说作者|作\s*者)\s*[:：]\s*/, ''))
+}
+
+function bookIdentityFromDoc(doc: Document, pageUrl: string, rule?: SiteRule, options: BookIdentityOptions = {}): BookIdentity {
+  const chapterTitle = (options.chapterTitle ?? '').replace(/\s+/g, ' ').trim()
+  const pageKind = options.pageKind ?? 'chapter'
+  const titleCandidates = [
+    textFromRuleSelector(doc, rule?.title),
+    metaContent(doc, BOOK_TITLE_META),
+    firstSelectorText(doc, BOOK_TITLE_SELECTORS, 2, 80),
+    bookTitleFromCatalogLink(doc, pageUrl),
+    bookTitleFromParentLink(doc, pageUrl),
+    bookTitleFromDocumentTitle(doc.title, pageUrl, chapterTitle),
+    extractBookTitle(doc),
+  ]
+  let title = ''
+  for (const candidate of titleCandidates) {
+    title = usableBookTitle(candidate, chapterTitle)
+    if (title) break
+  }
+  return {
+    title,
+    author: bookAuthor(doc, rule),
+    coverUrl: bookCoverUrl(doc, pageUrl),
+    description: bookDescription(doc, pageKind),
+  }
+}
+
+/** 取这一页的书写信息。章节页不会把章名当书名，简介只认明确的简介容器。 */
+export function extractBookIdentity(
+  html: string,
+  pageUrl: string,
+  rule?: SiteRule,
+  options: BookIdentityOptions = {},
+): BookIdentity {
+  const doc = new JSDOM(html, { url: pageUrl }).window.document
+  return bookIdentityFromDoc(doc, pageUrl, rule, options)
 }
 
 interface CatalogHit {
@@ -390,10 +716,26 @@ const NAV_PARAGRAPHS = [
   /^(?:章节错误|内容有误|举报本章|报错|意见反馈|商务合作|广告投放)[:：]?\s*.{0,40}$/,
   // 章节页的分页标记：「第190章 先生早晨(第1/2页)」整段只是标题+页码时删掉
   /^[^\n]{0,60}[（(]\s*第\s*\d+\s*\/\s*\d+\s*页\s*[）)]$/,
+  // 站点把面包屑和正文粘成一段：「笔趣阁 > 书名\n加入书架 手机阅读」。
+  // 只在整段很短时生效（isNoise 已限 160 字），长段落里的同样字样是真正文。
+  /^[\s\S]{0,40}>[\s\S]{0,40}$/,
+  // 字号 / 护眼 / 关灯这类排版控件被当成段落：「字体：\n大\n中\n小\n护眼\n关灯」。
+  /^(?:字体|字号|背景)[:：]?[\s\S]{0,60}$/,
 ]
 
 /** 完全相同的长段落只留一次：站点把正文连发两遍时清掉重复。 */
 const REPEAT_PARAGRAPH_MIN_LENGTH = 12
+
+/**
+ * 分段页残句：「(第1/3页),点击下一页继续阅读」「（本章未完，请翻页）」。
+ *
+ * 站点常把这类字样粘在正文中间，整段删会带走剧情，所以只在句内切掉；
+ * 连同紧邻的括号 / 逗号一起吃掉，避免留下半个标点。
+ */
+const PAGER_FRAGMENT_RES: RegExp[] = [
+  /[（(【\[]?\s*第\s*\d+\s*\/\s*\d+\s*页\s*[）)】\]]?[，,、]?\s*(?:点击|按|点)?\s*(?:下一页|下页|继续阅读)[。！!]?/g,
+  /[（(【\[]?\s*(?:本章未完|未完待续)[，,]?\s*(?:请翻页|点击下一页|下一页继续阅读)[）)】\]]?[。！!]?/g,
+]
 const BODY_CLEAN_LINE_LIMIT = 200
 const BODY_CLEAN_MAX_LINES = 20
 
@@ -445,10 +787,17 @@ function cleanAdParagraphs(raw: string, rule?: SiteRule): string {
     seen.add(text)
     return true
   })
-  if (deduped.length === paragraphs.length) return base
-  if (deduped.length === base.split(/\n{2,}/).length) return base
-  const cleaned = deduped.join('\n\n').trim()
-  return effectiveLength(cleaned) >= 80 ? cleaned : base
+  const dedupedChanged = deduped.length !== paragraphs.length && deduped.length !== base.split(/\n{2,}/).length
+  const joined = dedupedChanged ? deduped.join('\n\n').trim() : base
+  // 分段页残句：只在句内切除，删完还剩正文才算数。
+  const stripped = joined.split(/\n{2,}/)
+    .map((paragraph) => PAGER_FRAGMENT_RES.reduce((text, re) => text.replace(re, ''), paragraph))
+    .map((paragraph) => paragraph.replace(/\s{2,}/g, ' ').trim())
+    .filter((paragraph) => paragraph.length > 0)
+    .join('\n\n')
+  if (stripped && effectiveLength(stripped) >= 80 && stripped !== joined) return stripped
+  if (!dedupedChanged) return base
+  return effectiveLength(joined) >= 80 ? joined : base
 }
 
 /** 文本从哪来的：正文容器里的截断章文才能用弱档付费词。 */
@@ -959,4 +1308,30 @@ export function extractBody(html: string, pageUrl: string, rule?: SiteRule): Ext
   }
   if (wall) return bodyWallFail(wall, unlockOut.reason)
   return { body: cleanAdParagraphs(body, rule), bodyRaw: body, ok: true }
+}
+
+/**
+ * 供浏览阅读模式用的目录探测：回答「这一页骨子里是不是书页」。
+ *
+ * 只暴露两个布尔判断，不导出内部启发式；调用方拿到 false 就继续当章节读。
+ */
+export const catalogDetect: CatalogDetect = {
+  hasCatalog(doc, url, rule) {
+    const ruled = tryCatalogFromRule(doc, url, rule)
+    if (ruled && ruled.chapters.length >= 2) return true
+    const generic = tryCatalogFromDoc(doc, url)
+    return Boolean(generic && generic.chapters.length >= 5)
+  },
+  hasChapterLinks(doc, url) {
+    let count = 0
+    for (const a of doc.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+      const raw = (a.getAttribute('href') || '').trim()
+      if (shouldSkipCatalogHref(raw, a.href)) continue
+      if (!sameDomain(a.href, url)) continue
+      if (!isChapterLink(a)) continue
+      count += 1
+      if (count >= 2) return true
+    }
+    return false
+  },
 }

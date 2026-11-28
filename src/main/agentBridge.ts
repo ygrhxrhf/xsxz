@@ -59,6 +59,11 @@ const FORBIDDEN_SETTING_KEYS = [
   'ttsApiKey',
   'tierSenseApiKey',
   'proxyPassword',
+  // 外部服务凭据（Craft MCP 地址、ima 客户端 ID 与 Key）：设置页保存的口径是
+  // 「UI 里配」，与上面几条一样不允许 agent 通过 settings_set 递交或清除。
+  'craftMcpUrl',
+  'imaClientId',
+  'imaApiKey',
 ]
 
 const handlerRegistry = new Map<string, unknown>()

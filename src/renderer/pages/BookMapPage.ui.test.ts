@@ -70,6 +70,8 @@ interface MapApiOverrides {
   searchPlaceCandidates?: ReturnType<typeof vi.fn>
   choosePlaceCandidate?: ReturnType<typeof vi.fn>
   addManualPlace?: ReturnType<typeof vi.fn>
+  recognize?: ReturnType<typeof vi.fn>
+  getRecognition?: ReturnType<typeof vi.fn>
 }
 
 function installMapApi(key: string, overrides: MapApiOverrides = {}) {
@@ -86,6 +88,8 @@ function installMapApi(key: string, overrides: MapApiOverrides = {}) {
         searchPlaceCandidates: overrides.searchPlaceCandidates ?? vi.fn(async () => ({ ok: false, message: '测试桩：不搜候选' })),
         choosePlaceCandidate: overrides.choosePlaceCandidate ?? vi.fn(async () => ({ ok: false, message: '测试桩：不选候选' })),
         addManualPlace: overrides.addManualPlace ?? vi.fn(async () => ({ ok: false, message: '测试桩：不手工标注' })),
+        recognize: overrides.recognize ?? vi.fn(async () => ({ ok: false, message: '测试桩：不识别' })),
+        getRecognition: overrides.getRecognition ?? vi.fn(async () => ({ ok: true, recognition: null })),
       },
       dialog: { openFile: overrides.openFile ?? vi.fn(async () => ({ filePaths: [] })) },
       ai: { extractPlaces: overrides.extractPlaces ?? vi.fn(async () => ({ ok: false, message: '测试桩：不抽取' })) },
@@ -495,6 +499,179 @@ describe('BookMapPage（书中地图页）', () => {
     await flush(); await nextTick()
 
     expect(document.querySelector('.book-map-manual .book-map-budget')?.textContent).toContain('纬度须在 -90 到 90 之间')
+    app.unmount()
+  })
+
+  it('未收录的原图：先读上次结论，只有点「识别地图」才调用模型', async () => {
+    const recognize = vi.fn(async () => ({
+      ok: true,
+      recognition: {
+        status: 'recognized' as const,
+        message: '地图已自动识别。地名坐标来自 Natural Earth。',
+        model: 'deepseek-flash',
+        recognizedAt: Date.now(),
+        cached: false,
+        map: {
+          id: 'auto-bytes',
+          title: '东线战场',
+          period: '1941',
+          number: '3',
+          bounds: [[-12, 35], [16, 64]] as [[number, number], [number, number]],
+          center: [2, 49] as [number, number],
+          image: { sha256: 'f'.repeat(64), bytes: 321 },
+          places: [{
+            id: 'london',
+            name: '伦敦',
+            modernName: 'London',
+            coordinates: [-0.118668, 51.501941] as [number, number],
+            imagePoint: [0.5, 0.4] as [number, number],
+          }],
+          recognition: { model: 'deepseek-flash', unresolved: ['不明小镇'] },
+        },
+      },
+    }))
+    const getImage = vi.fn(async () => ({ ok: true, url: 'file:///tmp/book/map/original.png' }))
+    const getRecognition = vi.fn(async () => ({ ok: true, recognition: null }))
+    installMapApi('', { recognize, getImage, getRecognition })
+    const { app } = await mountPage()
+    await nextTick(); await flush()
+
+    // 打开地图页只做字节比对与读旧结论，绝不自动花钱。
+    expect(getRecognition).toHaveBeenCalledWith('book-1')
+    expect(recognize).not.toHaveBeenCalled()
+    // jsdom 里没有 spbf-map 协议，读到的是「读不到字节」或「未收录」——两种状态都不得自动识别。
+    const prompt = document.querySelector('.book-map-original')?.textContent ?? ''
+    expect(prompt).toMatch(/这张地图未收录|暂时读不到原图字节/)
+    const button = [...document.querySelectorAll<HTMLButtonElement>('.book-map-original button')]
+      .find((item) => item.textContent === '识别地图')
+    expect(button).not.toBeUndefined()
+
+    button?.click()
+    await flush(); await nextTick()
+    expect(recognize).toHaveBeenCalledWith('book-1', false)
+    expect(document.querySelector('.book-map-recognized')?.textContent).toContain('东线战场')
+    expect(document.querySelector('.book-map-original')?.textContent).toContain('暂未匹配：不明小镇')
+    // 识别结果已作为当前地图：地点列表与「在 3D 地图查看」入口都在。
+    expect(document.querySelector('.book-map-atlas-places')?.textContent).toContain('伦敦')
+    const open = [...document.querySelectorAll<HTMLButtonElement>('.book-map-original button')]
+      .find((item) => item.textContent === '在 3D 地图查看')
+    expect(open).not.toBeUndefined()
+    app.unmount()
+  })
+
+  it('已保存的识别结论：打开地图页直接复用，不再调用模型', async () => {
+    const recognize = vi.fn()
+    const saved = {
+      status: 'recognized' as const,
+      message: '地图已自动识别。',
+      model: 'deepseek-flash',
+      recognizedAt: Date.now() - 1000,
+      cached: true,
+      map: {
+        id: 'auto-saved',
+        title: '西欧',
+        period: '1940',
+        number: '1',
+        bounds: [[-12, 35], [16, 64]] as [[number, number], [number, number]],
+        center: [2, 49] as [number, number],
+        image: { sha256: 'e'.repeat(64), bytes: 200 },
+        places: [{
+          id: 'paris',
+          name: '巴黎',
+          modernName: 'Paris',
+          coordinates: [2.352992, 48.858092] as [number, number],
+          imagePoint: [0.6, 0.6] as [number, number],
+        }],
+        recognition: { model: 'deepseek-flash', unresolved: [] },
+      },
+    }
+    installMapApi('', {
+      getImage: vi.fn(async () => ({ ok: true, url: 'file:///tmp/book/map/original.png' })),
+      getRecognition: vi.fn(async () => ({ ok: true, recognition: saved })),
+      recognize,
+    })
+    const { app } = await mountPage()
+    await nextTick(); await flush()
+
+    expect(recognize).not.toHaveBeenCalled()
+    expect(document.querySelector('.book-map-recognized')?.textContent).toContain('西欧')
+    expect(document.querySelector('.book-map-original')?.textContent).toContain('巴黎')
+    app.unmount()
+  })
+
+  it('没有图内坐标的地点不画到原图上，仍进左侧列表', async () => {
+    const saved = {
+      status: 'recognized' as const,
+      message: '地图已自动识别。',
+      model: 'auto/glm-5.3-flash',
+      recognizedAt: Date.now(),
+      cached: true,
+      map: {
+        id: 'auto-no-anchor',
+        title: '东线战场',
+        period: '1941',
+        number: '2',
+        bounds: [[-12, 35], [16, 64]] as [[number, number], [number, number]],
+        center: [2, 49] as [number, number],
+        image: { sha256: 'd'.repeat(64), bytes: 300 },
+        places: [
+          {
+            id: 'london',
+            name: '伦敦',
+            modernName: 'London',
+            coordinates: [-0.118668, 51.501941] as [number, number],
+            imagePoint: [0.5, 0.4] as [number, number],
+          },
+          {
+            id: 'nowhere',
+            name: '不明小镇',
+            modernName: 'Unknown',
+            coordinates: [10, 50] as [number, number],
+            imagePoint: null,
+          },
+        ],
+        recognition: { model: 'auto/glm-5.3-flash', unresolved: [] },
+      },
+    }
+    installMapApi('', {
+      getImage: vi.fn(async () => ({ ok: true, url: 'file:///tmp/book/map/original.png' })),
+      getRecognition: vi.fn(async () => ({ ok: true, recognition: saved })),
+    })
+    const { app } = await mountPage()
+    await nextTick(); await flush()
+
+    // 只有带图内坐标的地点才画点：画到 (0,0) 会把地名错标到左上角。
+    expect(document.querySelectorAll('.book-map-atlas-pin')).toHaveLength(1)
+    // 两个地名都进左侧列表，都能切到 3D 地图。
+    const listed = [...document.querySelectorAll('.book-map-atlas-place')].map((item) => item.textContent)
+    expect(listed).toEqual(['伦敦', '不明小镇'])
+    app.unmount()
+  })
+
+  it('识别失败：保留原图与中文原因，可重新识别', async () => {
+    const recognize = vi.fn(async () => ({ ok: false, message: '地图识别等待超时，请稍后重试。' }))
+    installMapApi('', {
+      getImage: vi.fn(async () => ({ ok: true, url: 'file:///tmp/book/map/original.png' })),
+      recognize,
+    })
+    const { app } = await mountPage()
+    await nextTick(); await flush()
+
+    const trigger = [...document.querySelectorAll<HTMLButtonElement>('.book-map-original button')]
+      .find((item) => item.textContent === '识别地图')
+    trigger?.click()
+    await flush(); await nextTick()
+
+    expect(recognize).toHaveBeenCalledWith('book-1', false)
+    expect(document.querySelector('.book-map-original')?.textContent).toContain('地图识别等待超时')
+    expect(document.querySelector('.book-map-original-image')).not.toBeNull()
+    // 识别失败后给的是「重新识别」，用同一颗按钮继续。
+    const retry = [...document.querySelectorAll<HTMLButtonElement>('.book-map-original button')]
+      .find((item) => item.textContent === '重新识别')
+    expect(retry).not.toBeUndefined()
+    retry?.click()
+    await flush(); await nextTick()
+    expect(recognize).toHaveBeenLastCalledWith('book-1', true)
     app.unmount()
   })
 })

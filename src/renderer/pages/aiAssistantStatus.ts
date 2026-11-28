@@ -33,6 +33,8 @@ const STAGE_LABELS: Record<AiRequestStage, string> = {
   rewriting: '正在改写检索问题…',
   searching: '正在检索本地已读内容…',
   requesting: '正在请求模型服务…',
+  // 正文已经出完了还在跑：不写这一句，读者会以为卡住了。
+  verifying: '正在核对结论与原文…',
   saving: '正在保存到本地书库…',
 }
 

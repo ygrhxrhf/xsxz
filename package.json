@@ -28,21 +28,29 @@
     "dist:local": "set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/&& npm run typecheck && electron-vite build && electron-builder",
     "e2e:download-images": "node scripts/download-images-e2e.mjs",
     "e2e:realbook-webgl": "node scripts/realbook-webgl-e2e.mjs",
-    "e2e:auto-update": "node scripts/auto-update-e2e.mjs"
+    "e2e:auto-update": "node scripts/auto-update-e2e.mjs",
+    "e2e:mindmap-fullscreen": "node scripts/mindmap-fullscreen-e2e.mjs"
   },
   "dependencies": {
     "@ghostery/adblocker": "^2.18.2",
+    "@mariozechner/pi-agent-core": "^0.73.1",
+    "@mariozechner/pi-ai": "^0.73.1",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@mozilla/readability": "^0.6.0",
+    "highlight.js": "^11.12.0",
     "jsdom": "^30.0.1",
     "jszip": "^3.10.1",
     "lxgw-wenkai-screen-webfont": "^1.7.0",
     "maplibre-gl": "^6.15.0",
+    "remark-gfm": "^4.0.0",
+    "remark-parse": "^11.0.0",
     "tesseract.js": "^7.0.0",
-    "three": "^0.187.0"
+    "three": "^0.187.0",
+    "unified": "^11.0.0"
   },
   "devDependencies": {
     "@types/jsdom": "^30.0.0",
+    "@types/mdast": "^4.0.0",
     "@types/node": "^26.2.0",
     "@types/three": "^0.187.0",
     "@vitejs/plugin-vue": "^6.0.8",

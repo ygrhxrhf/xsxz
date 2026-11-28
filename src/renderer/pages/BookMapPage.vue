@@ -8,6 +8,7 @@
  */
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { AiPlace, AiPlaceCandidate, AiPlaceGeo, AiPlaceKind, MapManualPlaceInput } from '@shared/types'
+import type { AtlasRecognition } from '@shared/atlas'
 import { BOOK_MAPS, identifyBookMap } from './atlas/catalog'
 import { textBookMap } from './atlas/mapPins'
 import type { BookMap } from './atlas/types'
@@ -42,17 +43,25 @@ const atlasSelected = ref<string | null>(null)
 /** 书里已定位的地名汇总成一张「文字地点」地图；没有已定位地名时为 null。 */
 const textMap = computed(() => textBookMap(places.value))
 const atlasOptions = computed(() => {
-  const options = [...BOOK_MAPS]
+  const recognized = atlasMatch.value.map
+  // 自动识别出的图不在精选清单里：放进下拉，选中后 3D 区域才能指向它。
+  const options = [...BOOK_MAPS, ...(recognized && !BOOK_MAPS.some((item) => item.id === recognized.id) ? [recognized] : [])]
   if (textMap.value) options.push(textMap.value)
   return options
 })
 const atlasMap = computed(() => atlasOptions.value.find((item) => item.id === atlasId.value)
   ?? textMap.value
   ?? BOOK_MAPS[0]!)
-const atlasMatch = ref<{ status: 'none' | 'checking' | 'matched' | 'unmatched' | 'unavailable'; map: BookMap | null }>({
+const atlasMatch = ref<{
+  status: 'none' | 'checking' | 'matched' | 'unmatched' | 'unavailable' | 'recognizing' | 'failed'
+  map: BookMap | null
+}>({
   status: 'none',
   map: null,
 })
+/** 最近一次自动识别的说明与未匹配地名；只作提示，不参与落点。 */
+const atlasRecognition = ref<{ message: string; model: string; cached: boolean; unresolved: string[] } | null>(null)
+const atlasRecognizing = ref(false)
 const atlasFocus = computed(() => {
   const place = atlasMap.value.places.find((item) => item.id === atlasSelected.value)
   return place ? { id: place.id, coordinates: place.coordinates } : null
@@ -497,13 +506,16 @@ async function loadMapImage(): Promise<void> {
 }
 
 /**
- * 原图识别：读原图字节的 SHA-256，与精选地图的指纹精确比对。
+ * 原图识别（两段）：先按图片字节的 SHA-256 与精选地图精确比对（不花钱、不联网），
+ * 不命中时读上次保存的模型结论；都没有就停在「未收录」，由用户点「识别地图」
+ * 显式发起一次识别——打开地图页、翻页、换图都不会自动花钱。
  *
  * 生产构建是 file://，`fetch(file://)` 会被拦；主进程的 `spbf-map://m/<bookId>`
  * 从书目录读原图。图片只在字节完全一致时才算识别，不做文件名/页号猜测。
  */
 async function recognizeOriginalMap(): Promise<void> {
   const token = ++recognizeToken
+  atlasRecognition.value = null
   if (!props.bookId || !mapImageUrl.value) {
     atlasMatch.value = { status: 'none', map: null }
     return
@@ -511,16 +523,87 @@ async function recognizeOriginalMap(): Promise<void> {
   atlasMatch.value = { status: 'checking', map: null }
   try {
     const response = await fetch(`spbf-map://m/${encodeURIComponent(props.bookId)}`)
-    if (!response.ok) {
-      if (token === recognizeToken) atlasMatch.value = { status: 'unavailable', map: null }
+    if (token !== recognizeToken) return
+    if (response.ok) {
+      const matched = await identifyBookMap(await response.blob())
+      if (token !== recognizeToken) return
+      if (matched) {
+        atlasMatch.value = { status: 'matched', map: matched }
+        atlasId.value = matched.id
+        return
+      }
+    }
+    // 精选清单没有命中（或本机读不到字节）：看上次有没有保存的模型结论（只读，不调用模型）。
+    if (await applySavedRecognition(token)) return
+    atlasMatch.value = { status: response.ok ? 'unmatched' : 'unavailable', map: null }
+  } catch {
+    if (token !== recognizeToken) return
+    if (await applySavedRecognition(token)) return
+    if (token === recognizeToken) atlasMatch.value = { status: 'unavailable', map: null }
+  }
+}
+
+/** 读上次保存的识别结论；返回是否真的找到了一个可用的结论。 */
+async function applySavedRecognition(token: number): Promise<boolean> {
+  if (!props.bookId) return false
+  try {
+    const res = await window.api.map.getRecognition(props.bookId)
+    if (token !== recognizeToken) return false
+    if (!res.ok || !res.recognition) return false
+    applyRecognition(token, res.recognition)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 把一次识别结论映到页面状态：成功就选中它的地图，失败保留原图与说明。 */
+function applyRecognition(token: number, result: AtlasRecognition | null): void {
+  if (token !== recognizeToken || !result) return
+  atlasRecognition.value = {
+    message: result.message,
+    model: result.model,
+    cached: result.cached,
+    unresolved: result.map?.recognition?.unresolved ?? [],
+  }
+  if (result.status === 'recognized' && result.map?.places.length) {
+    atlasMatch.value = { status: 'matched', map: result.map }
+    atlasId.value = result.map.id
+    return
+  }
+  atlasMatch.value = { status: result.status === 'not_map' ? 'unmatched' : 'failed', map: null }
+}
+
+/**
+ * 用户显式发起识别（可能产生模型账单）。refresh 为 true 时绕过缓存重新识别。
+ * 只把这张原图与书名发给模型；原图换了以后旧结论由主进程按指纹作废。
+ */
+async function recognizeByModel(refresh = false): Promise<void> {
+  if (!props.bookId || atlasRecognizing.value || !mapImageUrl.value) return
+  const token = ++recognizeToken
+  atlasRecognizing.value = true
+  atlasMatch.value = { status: 'recognizing', map: null }
+  atlasRecognition.value = null
+  try {
+    const res = await window.api.map.recognize(props.bookId, refresh)
+    if (token !== recognizeToken) return
+    if (!res.ok) {
+      atlasMatch.value = { status: 'failed', map: null }
+      atlasRecognition.value = { message: res.message, model: '', cached: false, unresolved: [] }
       return
     }
-    const matched = await identifyBookMap(await response.blob())
+    applyRecognition(token, res.recognition)
+  } catch (error) {
     if (token !== recognizeToken) return
-    atlasMatch.value = matched ? { status: 'matched', map: matched } : { status: 'unmatched', map: null }
-    if (matched) atlasId.value = matched.id
-  } catch {
-    if (token === recognizeToken) atlasMatch.value = { status: 'unavailable', map: null }
+    atlasMatch.value = { status: 'failed', map: null }
+    atlasRecognition.value = {
+      message: error instanceof Error ? error.message : '地图识别失败',
+      model: '',
+      cached: false,
+      unresolved: [],
+    }
+  } finally {
+    if (token === recognizeToken) atlasRecognizing.value = false
   }
 }
 
@@ -629,13 +712,17 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="mapImageUrl" class="book-map-original-frame">
         <img :src="mapImageUrl" class="book-map-original-image" alt="书中原图">
+        <!--
+          只画有图内坐标的地点：imagePoint 为 null 表示模型没能定位它在原图上的位置，
+          画到 (0,0) 会把地名错标到左上角，比不画更误导。
+        -->
         <button
-          v-for="place in atlasMatch.map?.places ?? []"
+          v-for="place in atlasMatch.map?.places.filter((item) => item.imagePoint) ?? []"
           :key="place.id"
           type="button"
           class="book-map-atlas-pin"
           :class="{ selected: atlasSelected === place.id }"
-          :style="{ left: `${(place.imagePoint?.[0] ?? 0) * 100}%`, top: `${(place.imagePoint?.[1] ?? 0) * 100}%` }"
+          :style="{ left: `${(place.imagePoint![0] ?? 0) * 100}%`, top: `${(place.imagePoint![1] ?? 0) * 100}%` }"
           :title="place.name"
           :aria-label="`在 3D 地图查看${place.name}`"
           @click="openAtlasPlace(place.id)"
@@ -643,13 +730,51 @@ onBeforeUnmount(() => {
       </div>
       <p v-else class="book-map-empty">尚未选择书中地图图片。支持 jpg、png、webp，最大 8MB。</p>
       <p v-if="imageMessage" class="book-map-budget" role="status">{{ imageMessage }}</p>
-      <p v-if="atlasMatch.status === 'checking'" class="book-map-budget" role="status">正在识别书中地图…</p>
+      <p v-if="atlasMatch.status === 'checking'" class="book-map-budget" role="status">正在比对书中地图…</p>
+      <p v-else-if="atlasMatch.status === 'recognizing'" class="book-map-budget" role="status">正在读图并匹配地名…</p>
       <p v-else-if="atlasMatch.status === 'matched' && atlasMatch.map" class="book-map-recognized" role="status">
         已识别：{{ atlasMatch.map.title }}{{ atlasMatch.map.period ? ` · ${atlasMatch.map.period}` : '' }}
         <button type="button" class="book-map-button" @click="openAtlas">在 3D 地图查看</button>
+        <button
+          v-if="!atlasRecognizing"
+          type="button"
+          class="book-map-button"
+          :disabled="!props.bookId"
+          @click="recognizeByModel(true)"
+        >重新识别</button>
       </p>
       <p v-else-if="atlasMatch.status === 'unmatched'" class="book-map-empty" role="status">
-        这张地图未收录：按图片字节精确匹配，不做猜测。
+        这张地图未收录，也未保存过识别结果。可以按原图自动识别，或继续用文字地名与 2D 底图。
+        <button
+          type="button"
+          class="book-map-button"
+          :disabled="!props.bookId || atlasRecognizing"
+          @click="recognizeByModel(false)"
+        >{{ atlasRecognizing ? '识别中…' : '识别地图' }}</button>
+      </p>
+      <p v-else-if="atlasMatch.status === 'failed'" class="book-map-empty" role="status">
+        {{ atlasRecognition?.message || '这次没有识别出可用的地图。' }}
+        <button
+          type="button"
+          class="book-map-button"
+          :disabled="!props.bookId || atlasRecognizing"
+          @click="recognizeByModel(true)"
+        >{{ atlasRecognizing ? '识别中…' : '重新识别' }}</button>
+      </p>
+      <p v-else-if="atlasMatch.status === 'unavailable'" class="book-map-empty" role="status">
+        暂时读不到原图字节，无法按指纹比对。主进程仍可直接读这张图来识别，或重新选择图片后再试。
+        <button
+          type="button"
+          class="book-map-button"
+          :disabled="!props.bookId || atlasRecognizing"
+          @click="recognizeByModel(false)"
+        >{{ atlasRecognizing ? '识别中…' : '识别地图' }}</button>
+      </p>
+      <p v-if="atlasRecognition && atlasMatch.status === 'matched'" class="book-map-empty" role="status">
+        {{ atlasRecognition.message }}地名坐标来自 Natural Earth 城市库；区域与图中标记为 AI 估计，请对照原图核对。
+      </p>
+      <p v-if="atlasRecognition?.unresolved.length" class="book-map-empty" role="status">
+        暂未匹配：{{ atlasRecognition.unresolved.join('、') }}。这些地名尚未标到地球上。
       </p>
       <div
         v-if="atlasMatch.status === 'matched' && atlasMatch.map?.places.length"

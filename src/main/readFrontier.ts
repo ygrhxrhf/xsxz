@@ -214,14 +214,16 @@ export async function readClippedChapter(bookId: string, chapterId: string, fron
   return { body: clipReadBody(file.body, position), full: isFullyRead(file.body, position) }
 }
 
-export async function readableCitations(bookId: string, citations: readonly AiCitation[], frontier?: ReadFrontier): Promise<AiCitation[]> {
-  const current = frontier ?? await getReadFrontier(bookId)
+export async function readableCitations(bookId: string, citations: readonly AiCitation[], frontier?: ReadFrontier, options: { fullBook?: boolean } = {}): Promise<AiCitation[]> {
+  const current = options.fullBook ? null : frontier ?? await getReadFrontier(bookId)
   const bodies = new Map<string, string>()
   const accepted: AiCitation[] = []
   for (const citation of citations) {
     if (!bodies.has(citation.chapterId)) {
-      const clipped = await readClippedChapter(bookId, citation.chapterId, current).catch(() => ({ body: '' }))
-      bodies.set(citation.chapterId, clipped.body)
+      const body = options.fullBook
+        ? await readChapter(bookId, citation.chapterId).then((file) => file.body).catch(() => '')
+        : await readClippedChapter(bookId, citation.chapterId, current ?? undefined).then((clipped) => clipped.body).catch(() => '')
+      bodies.set(citation.chapterId, body)
     }
     const body = bodies.get(citation.chapterId) ?? ''
     const paragraph = renderedParagraphs(body)[citation.paragraphIndex]

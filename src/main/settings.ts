@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { atomicWriteText } from './atomicFile'
 import type {
   AiPrefs,
+  AtlasVisionPrefs,
   AutoUpdateCheckPrefs,
   CoverGenPrefs,
   ProxyPrefs,
@@ -40,6 +41,7 @@ import {
   DEFAULT_TIER_SENSE_PREFS,
   DEFAULT_PROXY_PREFS,
   COVER_GEN_SIZES,
+  DEFAULT_ATLAS_VISION_PREFS,
   DEFAULT_COVER_GEN_PREFS,
 } from '../shared/types'
 import { defaultLibraryPath } from './libraryPath'
@@ -164,6 +166,12 @@ export function normalizeAiPrefs(value: unknown): AiPrefs {
     provider: readEnum(ai.provider, AI_PROVIDERS, DEFAULT_AI_PREFS.provider),
     thinkingEnabled:
       typeof ai.thinkingEnabled === 'boolean' ? ai.thinkingEnabled : DEFAULT_AI_PREFS.thinkingEnabled,
+    // 核验开关：只认真正的布尔。缺字段的老设置文件、被手改成字符串或数字的脏值一律按开启处理——
+    // 这里默认值选错的方向不是「省钱」而是「静默关掉安全网」，所以只允许显式 false 关掉。
+    verifyEvidenceAnswers:
+      typeof ai.verifyEvidenceAnswers === 'boolean'
+        ? ai.verifyEvidenceAnswers
+        : DEFAULT_AI_PREFS.verifyEvidenceAnswers,
     recapLength: readEnum(ai.recapLength, AI_RECAP_LENGTHS, DEFAULT_AI_PREFS.recapLength),
     budgetWarningTokens: typeof ai.budgetWarningTokens === 'number' && Number.isSafeInteger(ai.budgetWarningTokens)
       ? Math.max(1000, Math.min(50000, ai.budgetWarningTokens))
@@ -257,6 +265,19 @@ export function normalizeCoverGenPrefs(value: unknown): CoverGenPrefs {
   }
 }
 
+export function normalizeAtlasVisionPrefs(value: unknown): AtlasVisionPrefs {
+  const prefs = readRecord(value)
+  // 从没写过这项配置时用本机 magpie；显式写空串才是「回退聊天 AI」。
+  const configured = Object.prototype.hasOwnProperty.call(prefs, 'baseUrl')
+  return {
+    baseUrl: configured ? normalizeCoverGenBaseUrl(prefs.baseUrl) : DEFAULT_ATLAS_VISION_PREFS.baseUrl,
+    model:
+      typeof prefs.model === 'string' && prefs.model.trim()
+        ? prefs.model.trim().slice(0, 100)
+        : DEFAULT_ATLAS_VISION_PREFS.model,
+  }
+}
+
 export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
   const reader = readRecord(value)
   const theme = READER_THEMES.includes(reader.theme as ReaderTheme)
@@ -321,6 +342,11 @@ export function normalizeReaderPrefs(value: unknown): ReaderPrefs {
       typeof reader.hideReaderChrome === 'boolean'
         ? reader.hideReaderChrome
         : DEFAULT_READER_PREFS.hideReaderChrome!,
+    highlightColor:
+      typeof reader.highlightColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(reader.highlightColor)
+        ? reader.highlightColor
+        : DEFAULT_READER_PREFS.highlightColor!,
+    highlightOpacity: Math.round(readFiniteClamped(reader.highlightOpacity, 0, 100, DEFAULT_READER_PREFS.highlightOpacity!)),
   }
 }
 
@@ -329,6 +355,8 @@ export function normalizeWebReadingPrefs(value: unknown): WebReadingPrefs {  con
   return {
     autoPage: typeof prefs.autoPage === 'boolean' ? prefs.autoPage : DEFAULT_WEB_READING_PREFS.autoPage,
     autoSpeed: Math.round(readFiniteClamped(prefs.autoSpeed, 1, 5, DEFAULT_WEB_READING_PREFS.autoSpeed)),
+    // 只认 1 / 2：旧文件没有这个字段时按单栏，未知值也回单栏。
+    columns: prefs.columns === 2 ? 2 : 1,
   }
 }
 
@@ -469,7 +497,7 @@ export async function getSettings(): Promise<Settings> {
   const appearance = (raw.appearance as Partial<AppearancePrefs>) || {}
   const backup = readRecord(raw.autoBackup)
   // 每把 Key 只解一次：getSettings 在主进程里被高频调用，重复解密会把 DPAPI 往返翻倍。
-  const [apiKeyUsable, embeddingKeyUsable, tierSenseKeyUsable, ttsKeyUsable, tencentMapKeyUsable, coverGenKeyUsable] =
+  const [apiKeyUsable, embeddingKeyUsable, tierSenseKeyUsable, ttsKeyUsable, tencentMapKeyUsable, coverGenKeyUsable, craftMcpUrlUsable, imaClientUsable, imaKeyUsable] =
     await Promise.all([
       hasUsableEncryptedKey(raw.apiKeyEnc),
       hasUsableEncryptedKey(raw.embeddingApiKeyEnc),
@@ -477,6 +505,9 @@ export async function getSettings(): Promise<Settings> {
       hasUsableEncryptedKey(raw.ttsApiKeyEnc),
       hasUsableEncryptedKey(raw.tencentMapKeyEnc),
       hasUsableEncryptedKey(raw.coverGenApiKeyEnc),
+      hasUsableEncryptedKey(raw.craftMcpUrlEnc),
+      hasUsableEncryptedKey(raw.imaClientIdEnc),
+      hasUsableEncryptedKey(raw.imaApiKeyEnc),
     ])
   return {
     libraryPath:
@@ -521,8 +552,14 @@ export async function getSettings(): Promise<Settings> {
     },
     autoUpdateCheck: normalizeAutoUpdateCheckPrefs(raw.autoUpdateCheck),
     coverGen: normalizeCoverGenPrefs(raw.coverGen),
+    atlasVision: normalizeAtlasVisionPrefs(raw.atlasVision),
     coverGenKeyConfigured: coverGenKeyUsable,
     coverGenKeyUnreadable: hasEncryptedKey(raw.coverGenApiKeyEnc) && !coverGenKeyUsable,
+    craftMcpUrlConfigured: craftMcpUrlUsable,
+    craftMcpUrlUnreadable: hasEncryptedKey(raw.craftMcpUrlEnc) && !craftMcpUrlUsable,
+    imaConfigured: imaClientUsable && imaKeyUsable,
+    imaUnreadable: (hasEncryptedKey(raw.imaClientIdEnc) || hasEncryptedKey(raw.imaApiKeyEnc)) && !(imaClientUsable && imaKeyUsable),
+    imaKnowledgeBaseId: typeof raw.imaKnowledgeBaseId === 'string' ? raw.imaKnowledgeBaseId : '',
   }
 }
 
@@ -550,6 +587,42 @@ export async function getCoverGenApiKey(): Promise<string> {
   const raw = await loadRaw()
   if (typeof raw.coverGenApiKeyEnc !== 'string' || !raw.coverGenApiKeyEnc) return ''
   return decryptCipher(raw.coverGenApiKeyEnc)
+}
+
+/** Craft MCP 端点明文（含 linkid，是凭据）；只供主进程 craft provider 用，绝不进 getSettings。 */
+export async function getCraftMcpUrl(): Promise<string> {
+  const raw = await loadRaw()
+  if (typeof raw.craftMcpUrlEnc !== 'string' || !raw.craftMcpUrlEnc) return ''
+  return decryptCipher(raw.craftMcpUrlEnc)
+}
+
+/** ima OpenAPI 凭据（Client ID + API Key）；只供主进程 ima 客户端用，绝不进 getSettings。 */
+export async function getImaCredentials(): Promise<{ clientId: string; apiKey: string } | null> {
+  const raw = await loadRaw()
+  if (typeof raw.imaClientIdEnc !== 'string' || !raw.imaClientIdEnc) return null
+  if (typeof raw.imaApiKeyEnc !== 'string' || !raw.imaApiKeyEnc) return null
+  const clientId = await decryptCipher(raw.imaClientIdEnc)
+  const apiKey = await decryptCipher(raw.imaApiKeyEnc)
+  if (!clientId || !apiKey) return null
+  return { clientId, apiKey }
+}
+
+/**
+ * Craft MCP 端点校验：只认 https + 白名单 host，且不允许 userinfo（凭据隐藏面）与根路径。
+ * 不复用 normalizeCustomOrigin —— 它拒绝含 userinfo 的 URL，但这里要给出明确中文错误。
+ */
+export function normalizeCraftMcpUrl(value: string): string {
+  let url: URL
+  try {
+    url = new URL(value.trim())
+  } catch {
+    throw new Error('Craft MCP 端点不是合法 URL')
+  }
+  if (url.protocol !== 'https:') throw new Error('Craft MCP 端点必须是 https')
+  if (url.host !== 'mcp.craft.do') throw new Error('Craft MCP 端点必须来自 mcp.craft.do')
+  if (url.username || url.password) throw new Error('Craft MCP 端点不能带账号密码')
+  if (url.pathname.length <= 1) throw new Error('Craft MCP 端点不能是根路径')
+  return url.toString()
 }
 
 export function normalizeSettingsUpdatePayload(value: unknown): SettingsUpdate {
@@ -628,6 +701,40 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
       raw.coverGenApiKeyEnc = (await safeStorage.encryptStringAsync(coverKey)).toString('base64')
     } else delete raw.coverGenApiKeyEnc
   }
+  if (typeof patch.craftMcpUrl === 'string') {
+    const craftUrl = patch.craftMcpUrl.trim()
+    if (craftUrl) {
+      const normalized = normalizeCraftMcpUrl(craftUrl)
+      await requireEncryptionAvailable()
+      raw.craftMcpUrlEnc = (await safeStorage.encryptStringAsync(normalized)).toString('base64')
+    } else delete raw.craftMcpUrlEnc
+  }
+  if (typeof patch.imaClientId === 'string' || typeof patch.imaApiKey === 'string') {
+    const clientId = typeof patch.imaClientId === 'string' ? patch.imaClientId.trim() : undefined
+    const apiKey = typeof patch.imaApiKey === 'string' ? patch.imaApiKey.trim() : undefined
+    // 两个字段必须成对：只改一个时保留已存的另一个，两边都空才清除。
+    if (clientId !== undefined || apiKey !== undefined) {
+      if (clientId === '' || apiKey === '') {
+        delete raw.imaClientIdEnc
+        delete raw.imaApiKeyEnc
+      } else {
+        if (clientId !== undefined) {
+          await requireEncryptionAvailable()
+          raw.imaClientIdEnc = (await safeStorage.encryptStringAsync(clientId)).toString('base64')
+        }
+        if (apiKey !== undefined) {
+          await requireEncryptionAvailable()
+          raw.imaApiKeyEnc = (await safeStorage.encryptStringAsync(apiKey)).toString('base64')
+        }
+      }
+    }
+  }
+  if (typeof patch.imaKnowledgeBaseId === 'string') {
+    // 非凭据，直接明文存；空串表示只用笔记检索。
+    const kb = patch.imaKnowledgeBaseId.trim()
+    if (kb) raw.imaKnowledgeBaseId = kb
+    else delete raw.imaKnowledgeBaseId
+  }
   if (patch.appearance) {
     const next = { ...readRecord(raw.appearance), ...readRecord(patch.appearance) }
     if ('skin' in next) next.skin = normalizeSkin(next.skin)
@@ -702,6 +809,18 @@ export async function updateSettings(update: SettingsUpdate | null | undefined):
         typeof incoming.style === 'string' && incoming.style.trim()
           ? incoming.style.trim().slice(0, 200)
           : previous.style,
+    }
+  }
+  if (patch.atlasVision) {
+    // 与封面生成同一套规则：显式空串 = 清掉、回退聊天 AI 地址；非法地址也回退。
+    const previous = normalizeAtlasVisionPrefs(raw.atlasVision)
+    const incoming = readRecord(patch.atlasVision)
+    raw.atlasVision = {
+      baseUrl: 'baseUrl' in incoming ? normalizeCoverGenBaseUrl(incoming.baseUrl) : previous.baseUrl,
+      model:
+        typeof incoming.model === 'string' && incoming.model.trim()
+          ? incoming.model.trim().slice(0, 100)
+          : previous.model,
     }
   }
   await saveRaw(raw)

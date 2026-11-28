@@ -62,10 +62,24 @@ interface BookOptions {
   getTexture: (page: number) => THREE.Texture
   cover: CoverSet
   endpaper?: RealBookEndpaper
+  /**
+   * 纸色（主题 paper）。纸面纹理只画墨迹、底色是白的，纸色与纤维、中缝、
+   * 曲率压暗一起进着色器，才会随 3D 法线一起变形；平铺进纹理的纸色是死的。
+   */
+  paperColor?: string
 }
 
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v))
 const smooth = (x: number) => x * x * (3 - 2 * x)
+/** sRGB 十六进制 → 线性空间颜色：着色器里的 paperTint 是线性乘数。 */
+function linearColor(hex: string | undefined, fallback: number): THREE.Color {
+  if (!hex) return new THREE.Color(fallback)
+  try {
+    return new THREE.Color(hex).convertSRGBToLinear()
+  } catch {
+    return new THREE.Color(fallback)
+  }
+}
 // Moving and resting leaves sample the curved gutter at different x positions. Keep their linear
 // mesh segments separated as well as their vertices, especially when a thick book has very thin leaves.
 const TURN_CLEARANCE = 0.004
@@ -106,6 +120,8 @@ export class BookModel {
   private used = new Map<number, LeafMesh>()
   private tmpSim: LeafSim
   private getTexture: (page: number) => THREE.Texture
+  /** 主题纸色（线性空间）：每张纸叶创建时写进 uPaperTint。 */
+  private readonly paperTint: THREE.Color
 
   psi: number
   psiTarget: number
@@ -129,6 +145,7 @@ export class BookModel {
     const { W, H, OH, tb } = this
     this.N = opts.leafCount
     this.getTexture = opts.getTexture
+    this.paperTint = linearColor(opts.paperColor, 0xf4ecd8)
     const block = clamp(this.N * 0.0105, 0.14, 1.15)
     this.t = block / this.N
     this.zh = tb + block / 2
@@ -190,6 +207,12 @@ export class BookModel {
   /** Both inner faces and their exposed margins share this material; no texture allocation on a tint change. */
   setEndpaper(id: RealBookEndpaper) {
     this.innerMat.color.set(ENDPAPER_PALETTES[id].swatch)
+  }
+
+  /** 换主题纸色：所有已建好的纸叶都换乘数，不必重建书体。 */
+  setPaperColor(hex: string | undefined): void {
+    this.paperTint.copy(linearColor(hex, 0xf4ecd8))
+    for (const [, leaf] of this.used) leaf.uniforms.uPaperTint.value.copy(this.paperTint)
   }
 
   private fixBoardUV(geo: THREE.BufferGeometry, width: number) {
@@ -265,8 +288,10 @@ export class BookModel {
     lm.mesh.visible = true
     lm.key = k
     lm.uniforms.uLightDirV.value.copy(this.lightDirV)
-    // spbf 的页面纹理已经把纸色和中缝阴影画进去了；不再让 shader 叠一层中缝压暗。
-    lm.uniforms.uGutter.value = 0
+    // 中缝压暗交给着色器（与参考站同为 0.14）：它按页宽方向指数衰减，会跟着纸的曲率
+    // 和法线一起变化。画进 2D 纹理时它是一条静止的灰带，纸一卷就被摊平。
+    lm.uniforms.uGutter.value = 0.14
+    lm.uniforms.uPaperTint.value.copy(this.paperTint)
     if (this.singlePage) { lm.uniforms.uShowThrough.value = 0; lm.uniforms.uPhone.value = 1 }
     lm.setTextures(this.getTexture(2 * k), this.getTexture(2 * k + 1))
     this.used.set(k, lm)

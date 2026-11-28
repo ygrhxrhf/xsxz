@@ -30,7 +30,6 @@ function makeMarks(overrides: Partial<ReaderMarksDeps> = {}) {
     currentChapterId: () => 'c0001',
     normalizedBody: () => BODY,
     chapterOrder: () => new Map([['c0001', 0], ['c0002', 1]]),
-    memoryCharacters: () => [],
     notify: (kind, text) => notices.push(`${kind}:${text}`),
     ...overrides,
   })

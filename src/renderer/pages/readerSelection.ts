@@ -1,6 +1,6 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { selectionRangeOffsets } from './selectionOffsets'
-import { fixedSelectionPopupPosition, selectionPopupPosition } from './readerHelpers'
+import { selectionPopupPosition } from './readerHelpers'
 
 /**
  * 阅读器的「选区工具条」域：选中正文后浮出的那条工具条，以及选区 → 规范化坐标的接线。
@@ -18,8 +18,8 @@ export interface ReaderSelectionDeps {
   /** 正文容器是否就绪：没就绪就不认选区 */
   hasContent: () => boolean
   /**
-   * 几何是否不可信（真实书籍俯仰时）。为真则工具条改贴视口底部居中，
-   * 不再读选区矩形——那条矩形在 3D 变换下最多偏一整行。
+   * @deprecated 已不再使用：俯仰时也把工具条放在选区下方。
+   * 保留参数是为了不打断既有调用方，行为已改为统一读选区几何。
    */
   fixedAnchor?: () => boolean
   /** naive-ui 的 message API：同形注入，搬来的代码不用改调用姿势 */
@@ -31,31 +31,121 @@ export interface ReaderSelectionDeps {
   }
 }
 
+/** 划词菜单可用的动作 id。 */
+export type SelectionActionId =
+  | 'ask' | 'copy' | 'highlight' | 'note' | 'read'
+  | 'explainWord' | 'explain-text' | 'translate'
+  | 'who' | 'backstory' | 'chat'
+
+export interface SelectionAction {
+  id: SelectionActionId
+  label: string
+  /** 工具栏上的短标题，无文字时用 aria-label */
+  aria: string
+}
+
+/**
+ * 划词菜单里的动作。工具栏只展示被「钉住」的那几项，其余收在「⋯」菜单里。
+ * 这是 Sider 的行为：菜单项右侧图钉可切换，钉住后直接出现在划词工具条上。
+ */
+export const SELECTION_ACTIONS: readonly SelectionAction[] = [
+  { id: 'ask', label: '询问 AI', aria: '询问 AI' },
+  { id: 'copy', label: '复制', aria: '复制' },
+  { id: 'highlight', label: '高亮', aria: '高亮' },
+  { id: 'note', label: '批注', aria: '批注' },
+  { id: 'read', label: '朗读', aria: '朗读' },
+  { id: 'explainWord', label: '解释字词', aria: '解释字词' },
+  { id: 'explain-text', label: '解释这段', aria: '解释这段' },
+  { id: 'translate', label: '翻译成简体中文', aria: '翻译' },
+  { id: 'who', label: '这个人物是谁', aria: '这个人是谁' },
+  { id: 'backstory', label: '这件事之前发生了什么', aria: '之前发生了什么' },
+  { id: 'chat', label: '继续追问', aria: '继续追问' },
+]
+
+/** 默认钉住「询问 AI」与翻译、继续追问：第一个按钮就是行内问答入口。 */
+export const DEFAULT_PINNED: readonly SelectionActionId[] = ['ask', 'translate', 'chat']
+
+const SEL_PIN_STORAGE_KEY = 'spbf:selection-pinned'
+
+function readPinned(): SelectionActionId[] {
+  try {
+    const raw = localStorage.getItem(SEL_PIN_STORAGE_KEY)
+    if (!raw) return [...DEFAULT_PINNED]
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return [...DEFAULT_PINNED]
+    const known = new Set(SELECTION_ACTIONS.map((action) => action.id))
+    const kept = parsed.filter((id): id is SelectionActionId => typeof id === 'string' && known.has(id as SelectionActionId))
+    return kept.length ? kept : [...DEFAULT_PINNED]
+  } catch {
+    return [...DEFAULT_PINNED]
+  }
+}
+
+
+
 export function useReaderSelection(deps: ReaderSelectionDeps) {
   const { paragraphStarts, normalizedBody, hasContent, message, marks } = deps
-  const fixedAnchor = deps.fixedAnchor ?? (() => false)
 
+// 钉住是「这个阅读器实例」的状态：多个 Reader 实例（多窗口、测试）不能共享一份。
+const pinnedActions = ref<SelectionActionId[]>(readPinned())
+
+/** 钉住是个人偏好：写盘失败不影响当前会话，下次启动回退到默认。 */
+watch(pinnedActions, (value) => {
+  try { localStorage.setItem(SEL_PIN_STORAGE_KEY, JSON.stringify(value)) } catch { /* 配额或隐私模式 */ }
+}, { deep: true })
+
+function isPinned(id: SelectionActionId): boolean {
+  return pinnedActions.value.includes(id)
+}
+
+/**
+ * 钉住/取消。返回 false 表示操作被拒绝（至少得留一项，否则工具栏会变成空条）。
+ * 提示文案由调用方发，这个模块不直接依赖注入的 message。
+ */
+function togglePinned(id: SelectionActionId): boolean {
+  if (pinnedActions.value.includes(id)) {
+    if (pinnedActions.value.length === 1) return false
+    pinnedActions.value = pinnedActions.value.filter((item) => item !== id)
+    return true
+  }
+  pinnedActions.value = [...pinnedActions.value, id]
+  return true
+}
+
+/**
+ * 拖动重排工具栏：from / to 都是 pinnedActions 的下标（调用方从菜单的 SELECTION_ACTIONS 下标映射过来）。
+ * 越界、非整数、原地拖动一律拒绝，保证这个入口不会把工具栏清空（togglePinned 之外的第二个写入口）。
+ * 赋值新数组即可，持久化由上面的 deep watch 负责。
+ */
+function reorderPinned(from: number, to: number): boolean {
+  const list = pinnedActions.value
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return false
+  if (from === to) return false
+  if (from < 0 || to < 0 || from >= list.length || to >= list.length) return false
+  const next = [...list]
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved!)
+  pinnedActions.value = next
+  return true
+}
 const selPopupX = ref(0)
 const selPopupY = ref(0)
+/**
+ * 划词工具条的实际尺寸（取自 Sider 注入工具条的真实 DOM：191×30）。
+ * 定位要按真实尺寸算，否则会偏左、并多让出一段空白。
+ */
+const SEL_BAR_SIZE = { width: 191, height: 30 }
 const lastSelRect = ref({ top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 })
 
+/**
+ * 工具条总在所划文字的**下方**：从选区底边往下放，水平居中于选区。
+ * 下方放不下时才翻到上方——那是边界情况，不是默认。
+ */
 function applySelPopupPosition(popup: { width: number; height: number }) {
-  // 俯仰状态下选区矩形会随透视偏移（实测最多一整行），工具条改用固定落点：
-  // 贴在视口底部居中，不读选区几何，也就不会被变换带偏。
-  if (fixedAnchor()) {
-    const fixed = fixedSelectionPopupPosition({
-      viewport: { width: window.innerWidth, height: window.innerHeight },
-      popup,
-    })
-    selPopupX.value = fixed.x
-    selPopupY.value = fixed.y
-    return
-  }
-  const pos = selectionPopupPosition({
-    range: lastSelRect.value,
-    viewport: { width: window.innerWidth, height: window.innerHeight },
-    popup,
-  })
+  const viewport = { width: window.innerWidth, height: window.innerHeight }
+  const pos = selectionPopupPosition({ range: lastSelRect.value, viewport, popup, gap: 8, margin: 8 })
+  // selectionPopupPosition 默认优先放在下方，只有下方确实放不下才返回 'above'；
+  // 这里不覆盖它的返回值，保证「下方优先」的语义由同一个纯函数决定。
   selPopupX.value = pos.x
   selPopupY.value = pos.y
 }
@@ -64,6 +154,7 @@ const selectedExcerpt = ref('')
 const selectedRange = ref<{ start: number; end: number; text: string } | null>(null)
 const showDirectNote = ref(false)
 const directNoteDraft = ref('')
+
 
 function selectionOffsets(): { start: number; end: number; text: string } | null {
   if (!hasContent()) return null
@@ -87,7 +178,7 @@ function onContentMouseup(_e: MouseEvent) {
     lastSelRect.value = rect
       ? { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height }
       : { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 }
-    applySelPopupPosition({ width: 360, height: 88 })
+    applySelPopupPosition(SEL_BAR_SIZE)
     showSelPopup.value = true
   }, 0)
 }
@@ -164,6 +255,11 @@ async function addHighlight() {
     selPopupY,
     lastSelRect,
     applySelPopupPosition,
+    SELECTION_ACTIONS,
+    pinnedActions,
+    isPinned,
+    togglePinned,
+    reorderPinned,
     showSelPopup,
     selectedExcerpt,
     selectedRange,

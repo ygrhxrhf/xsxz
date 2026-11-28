@@ -8,6 +8,8 @@
  * 的句组 level=2。默认只展开到 level 2，超长章不会一次展开无限深度。
  */
 
+import type { AiMindmapNode } from '@shared/mindmap'
+
 export interface MindmapAnchor {
   paragraphIndex: number
   paragraphOffset: number
@@ -146,6 +148,31 @@ export function setAllCollapsed(root: MindmapNode, collapsed: boolean): void {
     for (const child of node.children) visit(child)
   }
   visit(root)
+}
+
+/** 将 infinite-reader 格式的 AI 导图树转为渲染层使用的 MindmapNode 树。 */
+export function convertAiMindmapTree(
+  aiRoot: AiMindmapNode,
+  options: MindmapBuildOptions = {},
+): MindmapNode {
+  const expandedThroughLevel = Number.isFinite(options.expandedThroughLevel)
+    ? Math.max(0, Math.floor(options.expandedThroughLevel as number))
+    : DEFAULT_EXPANDED_LEVEL
+  const maxLabelLength = Number.isFinite(options.maxLabelLength) && (options.maxLabelLength as number) > 0
+    ? Math.floor(options.maxLabelLength as number)
+    : DEFAULT_MAX_LABEL_LENGTH
+
+  const walk = (node: AiMindmapNode, id: string, level: number): MindmapNode => ({
+    id,
+    label: labelOf(node.text, maxLabelLength),
+    level,
+    children: node.children.map((child, index) => walk(child, `${id}-${index}`, level + 1)),
+    collapsed: false,
+  })
+
+  const root = walk(aiRoot, 'ai-root', 0)
+  applyDefaultExpansion(root, expandedThroughLevel)
+  return root
 }
 
 /** 节点 → 正文锚点；根节点没有可跳转位置。 */

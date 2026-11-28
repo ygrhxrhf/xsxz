@@ -75,7 +75,7 @@
 
 ## 网页书架
 
-网页小说不下载正文，只在本机保存书名、作者、目录快照与阅读位置；磁盘见 `docs/disk-schema.md` 的 `web-shelf.json`。
+网页小说不下载正文，只在本机保存书名、作者、封面、简介、目录快照与阅读位置；磁盘见 `docs/disk-schema.md` 的 `web-shelf.json`。章节页加入书架时书名与简介按书页口径取（章名不会当书名），书架「最近在读」和书库书一起按阅读时间排序。
 
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
@@ -135,6 +135,8 @@
 `BookListItem.overview` 是列表读取时附加的可选视图状态，包含 `status`、可选 `text` 和 `message`。状态为 `off | waiting | pending | running | ready | failed`；`ready` 表示磁盘上已有概览，直接读文件，不再发起模型调用。`bookOverview.retry` 只在生成曾经失败时清除失败标记并唤醒后台队列；自动生成设置关闭时不发起模型调用。
 
 `Settings.ai.autoBookOverview` 缺省为 `true`，用户可在设置页关闭。开启后只处理「加入书架时登记过」的书：下载确认与导入各登记一本，成功生成后全部从盘读，不因章节变化重新生成；失败要等 `bookOverview.retry`。存量旧书不会被自动排进生成队列（启动只续做带 `requested` 标记但未完成的书）。无 API Key 或自定义服务地址未获信任时等待。概览使用全书正文，可能包含未读剧情与结局；各次 AI 调用计入该书用量。
+
+`Settings.ai.verifyEvidenceAnswers` 缺省为 `true`：证据问答在生成结论后，会用一次小请求核对「引用的原文是否支持这条结论」。缺字段或非布尔一律按 `true` 处理；用户关掉后不再发起核对请求，回答的可信度标记为 `disabled`（与 `not_run` 区分：后者是本该核验却没跑成）。
 
 `Settings.ai.autoReadingFollow` 缺省为 `false`，同样只能由用户显式开启。`Settings.ai.followMaxChaptersPerRun` 缺省 `12`，是增量记忆与自动追剧单次运行最多处理的章节数（记忆仍按每 5 章一批送模型），主进程只接受 `1..50` 的安全整数，其它值回退缺省。两者都由 `normalizeAiPrefs` 白名单补齐；设置页保存时省略这两个键表示保持磁盘上的原值，不得当成 `false` / 缺省清零。
 
@@ -261,7 +263,9 @@
 
 `Settings.browseFavorites` / `SettingsUpdate.browseFavorites` 是浏览页的「常用网站」，同样走现有 `settings.get` / `settings.set`，不新增频道：`{ url: string; title: string; addedAt: string }[]`。主进程只收 `http` / `https` 绝对地址（`URL.toString()` 规范化），按地址去重，最多 40 条；`title` 去空白后截到 60 字，为空时退回去掉 `www.` 的域名。同一域名在界面里只算一个站点，站内翻章不会重复收藏。
 
-**书中地图（腾讯地图 Key）**：`settings.set` 的 `tencentMapKey` 落盘经 `safeStorage`（空串清除），`settings.get` 只给 `tencentMapKeyConfigured` / `tencentMapKeyUnreadable`，不返回明文。地图页打开时经 `map.getKey` 按需取解密后的 Key 拼脚本地址；未配置或本机解不开时返回空串。渲染层不缓存 Key、不写日志，Key 不进入书库与备份。
+**书中地图（腾讯地图 Key 与识别服务）**：`settings.set` 的 `tencentMapKey` 落盘经 `safeStorage`（空串清除），`settings.get` 只给 `tencentMapKeyConfigured` / `tencentMapKeyUnreadable`，不返回明文。地图页打开时经 `map.getKey` 按需取解密后的 Key 拼脚本地址；未配置或本机解不开时返回空串。渲染层不缓存 Key、不写日志，Key 不进入书库与备份。
+
+`map.recognize` 的视觉服务走 `settings.set` 的 `atlasVision: { baseUrl: string; model: string }`，不新增频道。默认 `http://127.0.0.1:3425/v1` + `auto/glm-5.3-flash`（本机 magpie 网关，**不需要 Key**）。`baseUrl` 只接受 `http` / `https` 根地址（去掉尾部斜杠，拒绝带账号密码的地址）；**显式空串表示回退聊天 AI 的服务地址与 Key**，非法地址也按回退处理。地址已配置时直接用它；没配置时先探一次本机网关（`GET /models`，3 秒超时、不带凭据），可用就用本机，否则才回退聊天 AI。网关无需鉴权，主进程不发明空 `Authorization` 头。
 
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
@@ -274,6 +278,8 @@
 | `map.searchPlaceCandidates` | invoke | `{ bookId: string; placeId: string }` | `{ ok: true; view: AiPlaceCandidateView } \| { ok: false; message: string }` |
 | `map.choosePlaceCandidate` | invoke | `{ bookId: string; placeId: string; candidate: { latitude: number; longitude: number } }` | `{ ok: true; places: AiPlaceGeo[] } \| { ok: false; message: string }` |
 | `map.addManualPlace` | invoke | `{ bookId: string; name: string; latitude: number; longitude: number; kind?: AiPlaceKind; paragraphIndex?: number; paragraphOffset?: number }` | `{ ok: true; places: AiPlaceGeo[] } \| { ok: false; message: string }` |
+| `map.getRecognition` | invoke | `{ bookId: string }` | `{ ok: true; recognition: AtlasRecognition \| null } \| { ok: false; message: string }` |
+| `map.recognize` | invoke | `{ bookId: string; refresh?: boolean }` | `{ ok: true; recognition: AtlasRecognition } \| { ok: false; message: string }` |
 
 `map.getImage` / `map.setImage` 管理每本书的「书中原图」：图片存到书目录 `map/original.<ext>`，只接受 jpg/png/webp、最大 8MB，返回 `file://` URL；不写入 book.json，缺图为空态。`map.getPlaces` 读取按书缓存的地名词条（含已解析坐标）。`map.geocodePlaces` 用腾讯 WebService 地理编码把尚未定位的地名补上坐标：同名地点只请求一次，已解析与已判定“未找到”的条目直接复用缓存（`retryNotFound: true` 时重试“未找到”，已忽略的永不重试）。解析走回退链：地理编码 → 行政区划 → 加省/市后缀 → 国家中心点；国名结果标为低可信度待确认。Key 须在腾讯控制台开启 WebService API，未配置时返回中文提示。坐标只来自腾讯返回，模型不产出；请求失败不会回显带 Key 的 URL。腾讯可信度低于 6 的地点标为 `ambiguous`（坐标保留但需在列表里确认），`map.confirmPlace` 确认后改为 `resolved`，忽略则撤掉坐标并记为 `ignored`，两态都不会再重复请求。
 
@@ -452,6 +458,41 @@
 - `sync.signOut` 只清本机令牌，不动云端已存的数据。
 - 登录与同步状态落盘在 `%APPDATA%/spbf/sync-account.json`（与 `settings.json` 同目录）。
 
+## Crafty 联动
+
+把一本书的**读书产物**推成 Crafty（`ygrhxrhf/craft`）里的一篇文档。**书库正文永不上传**：
+只推全书概览、人物与关系、伏笔、关键事件、章节笔记、划线批注。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `craft.status` | invoke | 无 | `{ ok: true; state: CraftState }` |
+| `craft.configure` | invoke | `{ endpoint?: string; token?: string }` | `{ ok: true; state: CraftState } \| { ok: false; message: string }` |
+| `craft.push` | invoke | `{ bookId: string }` | `{ ok: true; result: CraftPushResult } \| { ok: false; message: string }` |
+
+- `CraftState` 只有 `{ configured, endpoint, tokenConfigured, tokenUnreadable? }`：**令牌永不返回渲染层**。
+- 令牌与地址落 `%APPDATA%/spbf/craft-push.json`，令牌走 `safeStorage`（与 `apiKeyEnc` 同规格）；`token: ''` 等于清除。
+- `endpoint` 必须是 `http(s)` 地址；直接粘对端完整导入地址（`…/api/v1/import/markdown`）也认。
+- 推送走 `POST <endpoint>/api/v1/import/markdown`，头 `Authorization: Bearer <写入令牌>`；对端只读令牌回 403、`documentId` 不存在回 404。
+- 幂等：每本书的 `ai/craft-link.json` 记 `{ docId, endpoint, contentHash, pushedAt }`；第二次推同一本带 `documentId` 更新上次那篇，对端 404 时自动退回新建一次。
+- 单篇上限 450000 字符（对端上限 500000）；超限直接拒绝，不发请求。
+
+## Craft MCP 与 ima 客户端
+
+设置页两处外部服务的探测：Craft MCP 端点（`mcp.*`）与 ima 知识库（`ima.*`）。凭据都存在设置里，
+主进程只回布尔位与列表，**不回传凭据明文**。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `mcp.testConnection` | invoke | 无 | `{ ok: true; tools: number } \| { ok: false; message: string }` |
+| `mcp.listTools` | invoke | 无 | `{ ok: true; tools: Array<{ toolName: string; title: string; description: string; readOnly: boolean }> } \| { ok: false; message: string }` |
+| `mcp.disconnect` | invoke | 无 | `{ ok: true }` |
+| `ima.testConnection` | invoke | 无 | `{ ok: true; knowledgeBases: Array<{ id: string; name: string }> } \| { ok: false; message: string }` |
+| `ima.listKnowledgeBases` | invoke | 无 | `{ ok: true; knowledgeBases: Array<{ id: string; name: string }> } \| { ok: false; message: string }` |
+
+- `mcp.disconnect` 只丢缓存会话，下次访问按设置里的地址重建，不改配置与令牌。
+- `ima.testConnection` 用一次不会命中的笔记搜索证明凭据可用，不写任何数据。
+- 改了 `craftMcpUrl` 会先断开旧会话，避免继续用指向旧端点的连接。
+
 ## 付费墙自动解锁
 
 下载与预览共用，实现在 `src/main/paywallUnlock.ts`，只处理「正文已经发到浏览器、只是被页面挡住」的情况。
@@ -507,15 +548,22 @@
 |---|---|---|---|
 | `ai.clean` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean }` | `{ ok: true; result: AiCleanResult; budget: AiBudgetEstimate } \| { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate } \| { ok: false; stopped?: boolean; message: string }` |
 | `ai.test` | invoke | `{ baseUrl?: string; model?: string; apiKey?: string; provider?: AiProvider; thinkingEnabled?: boolean }`（均可空，空则用已保存设置） | `{ ok: true; text: string } \| { ok: false; message: string }` |
+| `ai.listModels` | invoke | `{ baseUrl?: string }`（可空，空则用已保存设置） | `{ ok: true; models: string[] } \| { ok: false; message: string }` |
 | `ai.summarizeChapter` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.chapterNote` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean; overwriteUserNote?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate } \| { ok:false; userNoteConfirmedRequired:true; message:string } \| { ok:false; message:string }` |
 | `ai.chapterNotes` | invoke | `{ bookId: string; chapterId?: string }` | `AiChapterNotesResult`（`notes` 按章节序、只含仍在目录里的章；`current` 仅对请求的 `chapterId` 给出 `stale`） |
 | `ai.saveChapterNote` | invoke | `{ bookId: string; chapterId: string; text: string }` | `{ ok: true; note: AiChapterNote } \| { ok: false; message: string }` |
 | `ai.storySoFar` | invoke | `{ bookId: string; uptoChapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.getSummaries` | invoke | `{ bookId: string }` | `{ ok: true; summaries: AiSummaries } \| { ok: false; message: string }` |
-| `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[] }` | `AiJobStart`（已读证据问答，最后一条 user 消息即问题） |
-| `ai.getChat` | invoke | `{ bookId: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省） |
-| `ai.clearChat` | invoke | `{ bookId: string }` | `{ ok: true } \| { ok: false; message: string }` |
+| `ai.chatStream` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[]; threadId?: string }` | `AiJobStart`（已读证据问答，最后一条 user 消息即问题；省略 `threadId` 写当前会话） |
+| `ai.agentChat` | invoke | `{ bookId: string; chapterId: string; messages: AiChatMessage[]; threadId?: string; recallScope?: 'book' \| 'progress' }` | `AiJobStart`（pi 内核的多轮对话 agent；`recallScope` 默认 `'book'` 可读全书并允许未读章节，`'progress'` 只读已读前沿以内的正文；省略 `threadId` 写当前会话） |
+| `ai.generalChat` | invoke | `{ bookId: string; messages: AiChatMessage[]; threadId?: string }` | `AiJobStart`（「字词 / 百科」模式：不挂查书工具、不校验阅读进度，最后一条 user 消息即问题；省略 `threadId` 写当前会话） |
+| `ai.getChat` | invoke | `{ bookId: string; threadId?: string }` | `AiGetChatResult`（兼容 v1/v2；`version` 过渡期可缺省；返回的 `threadId` 是实际解析到的会话，省略入参时读当前会话） |
+| `ai.listThreads` | invoke | `{ bookId: string }` | `{ ok: true; threads: AiChatThreadSummary[]; activeThreadId: string; message?: string } \| { ok: false; message: string }`（线程按 `updatedAt` 倒序；历史文件损坏时仍返回空列表，原因写在 `message`） |
+| `ai.createThread` | invoke | `{ bookId: string; title?: string }` | `{ ok: true; threadId: string } \| { ok: false; message: string }`（新建空会话并设为当前会话；每书上限 20 条，超限返回可读原因） |
+| `ai.deleteThread` | invoke | `{ bookId: string; threadId: string }` | `{ ok: true } \| { ok: false; message: string }`（删的若是当前会话，`activeThreadId` 回退到 `updatedAt` 最新的剩余会话；删空则为空串） |
+| `ai.clearChat` | invoke | `{ bookId: string; threadId?: string }` | `{ ok: true } \| { ok: false; message: string }`（只清这条会话的消息，会话本身保留；省略 `threadId` 清当前会话） |
+| `ai.replaceChat` | invoke | `{ bookId: string; messages: AiEvidenceChatMessage[]; threadId?: string }` | `{ ok: true } \| { ok: false; message: string }`（整段覆盖而非追加：重问 / 编辑重发 / 删除某一轮都用它，只覆盖指定会话；单次 ≤ 200 条，每条正文 ≤ 20000 字，`citations`/`claims` 各 ≤ 50 条，`claims[].text` ≤ 1000 字） |
 | `ai.translateStream` | invoke | `{ text: string; bookId?: string }` | `AiJobStart`；传入书籍 ID 时计入每书用量 |
 | `ai.explainSelection` | invoke | `{ text: string; bookId?: string }` | `AiJobStart`；「解释这段」，与 `ai.translateStream` 同形但提示词不同，供网页阅读模式无书场景使用 |
 | `ai.getMemory` | invoke | `{ bookId: string }` | `{ ok: true; memory: AiMemoryFile \| CharacterCard \| null } \| { ok: false; message: string }` |
@@ -536,6 +584,8 @@
 | `ai.resumeCard` | invoke | `{ bookId: string }` | `{ ok: true; view: AiResumeCardView } \| { ok: false; message: string }` |
 | `ai.generateResumeCard` | invoke | `{ bookId: string; confirmOverBudget?: boolean }` | `{ ok: true; card: AiResumeCard; budget: AiBudgetEstimate } \| { ok: false; message: string }` |
 | `ai.extractPlaces` | invoke | `{ bookId: string; confirmOverBudget?: boolean }` | `{ ok: true; view: AiPlaceExtractionView; usage?: AiUsage; budget: AiBudgetEstimate } \| { ok: false; message: string; confirmationRequired?: boolean; budget?: AiBudgetEstimate }` |
+| `ai.getMindmap` | invoke | `{ bookId: string; chapterId: string }` | `{ ok: true; result: AiMindmap \| null } \| { ok: false; message: string }` |
+| `ai.generateMindmap` | invoke | `{ bookId: string; chapterId: string; force?: boolean }` | `{ ok: true; result: AiMindmap; cached?: boolean } \| { ok: false; code?: string; message: string }` |
 | `ai.timeline` | invoke | `{ bookId: string }` | `{ ok: true; timeline: AiTimelineView } \| { ok: false; message: string }` |
 | `ai.retrySave` | invoke | `{ saveToken: string }` | `{ ok: true } \| { ok: false; message: string }` |
 | `ai.cancel` | invoke | `{ jobId?: string }` | `{ ok: true }` |
@@ -543,6 +593,7 @@
 | `ai.stage` | 主→渲染 | — | `AiStageEvent` |
 | `ai.budget` | 主→渲染 | — | `AiBudgetEvent`（增量兼容；仅含 jobId、任务 `recap \| chapterSummary \| chapterNote \| memory \| qa` 和估算，不含 prompt、Key 或正文。`ai.summarizeChapter` 报 `chapterSummary`，`ai.chapterNote` 报 `chapterNote`） |
 | `ai.done` | 主→渲染 | — | `AiDoneEvent` |
+| `ai.externalSources` | 主→渲染 | — | `{ jobId: string; externalSources: ExternalSource[] }`（本轮问答引用的外部材料；ima 知识库来源，问答结束后随流推送）
 
 未配置 Key 或网络失败：返回 `{ ok: false; message }`，不得影响浏览/下载/阅读。
 
@@ -550,7 +601,13 @@
 
 `ai.test` 发一条最小 chat completions 探活。401/403、429、超时、5xx 返回中文分级文案。
 
+`ai.listModels` 读 `GET {baseUrl}/models` 给侧边栏模型选择器做候选，同样走可信端点校验。只读、不排队：失败（离线 / HTTP 错误 / 非 JSON / 空列表 / 超时）一律返回 `ok:false`，界面回退内置候选，不弹错误、不阻塞面板。
+
 `ai.extractPlaces` 只扫描已读边界内的正文：模型只允许引用候选段落 id 并给出逐字引文，段号与段内偏移由主进程按引文在段内的真实位置计算，模型不返回坐标；引文不在原文、地点名不在引文、候选 id 不认识的条目直接丢弃。结果按书落盘到书目录 `ai/places.json`，供书中地图页列出地名、后续地理编码与跳回原文复用，不重复花模型配额；达到输入预算提醒阈值时先返回 `confirmationRequired`。
+
+`ai.getMindmap` 只读取本章已生成并保存的思维导图；`ai.generateMindmap` 按本章正文生成并落盘，默认命中缓存（`cached: true`），`force: true` 才绕过缓存重新请求模型。
+
+**书中原图自动识别**：`map.recognize` 把书目录里的原图（`map/original.<ext>`，只接受 jpeg/png/gif/webp，上限 6 MB）与书名发给设置里的聊天模型，读图名、年代、区域与图中清晰可读的地名，再由 `resources/atlas-cities.json`（Natural Earth 1:10m 城座标库，7342 条）按「国家 + 规范化名称」唯一匹配落坐标；模型给出的经纬度一律不采信，匹配不到的条目只是 `map.recognition.unresolved` 里的提示。结果按书缓存在 `ai/atlas-recognition.json`，缓存键包含原图 SHA-256 与识别版本：成功的识别 30 天、不确定结果 1 天、确定的「不是地图」长期有效；失败与输出截断的结果不缓存，`refresh: true` 绕过缓存重新识别。缓存命中不调用模型，也不产生用量记录。`map.getRecognition` 只读上次结论（不调用模型），供打开地图页与左下角胶囊恢复状态；没有保存过结论时返回 `recognition: null`。
 
 `ai.findScenes` 在本书明确开启语义索引后，将已读原文向量与本地字面结果合并，服务失败时返回本地结果。索引按本书增量建立，缺 Key、损坏或暂停原因由状态频道显示。`ai.resumeCard` 只在上次阅读间隔至少 24 小时且附近有读完章节时提供缓存或生成入口；`ai.generateResumeCard` 由读者手动触发，来源变化时缓存过期。`ai.timeline` 读取现有记忆更新顺带记录的人物与伏笔状态，来源变化的条目隐藏并提示重建。问答 `AiDoneEvent.claims` 与聊天 v2 的 `claims` 逐条列结论和引用 ID；引用坐标经主进程校验，语义支持关系仍需读者核查。
 
@@ -574,7 +631,9 @@
 
 `ai.chatStream`（已读证据问答）成功时通过 `ai.done` 同时返回 `text`、候选白名单内的 `citations`、`uptoChapterId` 与 `stopped`。保存失败仍保留这些字段并追加 `saveToken`；重开后 `ai.getChat` 返回 `AiGetChatResult`，v1 消息按无来源兼容读取，v2 消息保留引用、已读截止和停止状态。
 
-`ai.chatStream` 的回答按 `ai.chunk` 流式推送：任务要求 `response_format` 为 JSON，因此只转发 `answer` 字段中已完成解码的部分（不完整的 `\`、`\uXXXX` 或代理对必须挂起等后续帧），改写与检索阶段不发 `ai.chunk`；服务不守 JSON 约定时不转发任何字符，改由 `ai.done.text` 一次性给出，两种路径下终态文本必须一致。用户在任意时刻停止（阶段之间或流中途 abort）时，`ai.done` 仍必须恰好一个：已流出非空正文时走 `ok:true` 分支，携带 `stopped:true`、停止前的 `text`、当次候选 `citations` 与 `uptoChapterId`，并把这条部分回答写进 `chat.json`；只有正文为空才允许 `text:''` 且不留空消息。
+`ai.chatStream` 的回答按 `ai.chunk` 流式推送：任务要求 `response_format` 为 JSON，因此只转发 `answer` 字段中已完成解码的部分（不完整的 `\`、`\uXXXX` 或代理对必须挂起等后续帧），改写与检索阶段不发 `ai.chunk`；服务不守 JSON 约定时不转发任何字符，改由 `ai.done.text` 一次性给出，两种路径下终态文本必须一致。用户在任意时刻停止（阶段之间或流中途 abort）时，`ai.done` 仍必须恰好一个：已流出非空正文时走 `ok:true` 分支，携带 `stopped:true`、停止前的 `text`、当次候选 `citations` 与 `uptoChapterId`，并把这条部分回答写进该会话（`ai/chats.json`）；只有正文为空才允许 `text:''` 且不留空消息。
+
+`ai.chatStream` / `ai.agentChat` / `ai.getChat` / `ai.clearChat` / `ai.replaceChat` 的 `threadId` 一律可省略，省略即作用于当前 active 会话——旧调用方（划词提问、行内卡片）不必改。显式传了不存在的 `threadId` 则报错，**不静默落回**当前会话：否则读者以为写进了 A 会话，其实进了 B。发起一轮问答时会话自动成为 active，并在它还没有标题时用问题前 24 个字补上（已有标题不覆盖）。
 
 `ai.chatStream` 先用原始问题做本地检索，命中足够（不少于 3 段可核验依据，且最强候选的打分达到字面命中线）时跳过 `queryRewrite` 这次模型往返，`ai.stage` 只出现一次 `searching` 就进 `requesting`；不足才改写并二次检索，二次依据更少时沿用原句结果，改写失败同样只退回原句结果、不再重复检索。跳过与否不新增 `AiRequestStage` 取值，也不放松引用白名单：最终 `citations` 仍只能取自当次候选。
 
@@ -608,16 +667,19 @@ window.api = {
   download: { preview, confirm, redownloadChapter, cancel, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAll, cancelCheckAll, onProgress, onBlocked, onCheckAllProgress },
   mirror: { start, cancel, state, onProgress },
   settings: { get, set },
-  map: { getKey, getImage, setImage, getPlaces, geocodePlaces, confirmPlace, searchPlaceCandidates, choosePlaceCandidate, addManualPlace },
+  map: { getKey, getImage, setImage, getPlaces, geocodePlaces, confirmPlace, searchPlaceCandidates, choosePlaceCandidate, addManualPlace, recognize, getRecognition },
   proxy: { test, scan, subscribe, parseSubscription, selectNode, kernelState, installKernel, stopKernel, autoUpdateState, setAutoUpdate, refreshSubscription, speedTest },
   ruleMarket: { list, apply, subscribe, unsubscribe },
   sync: { status, signIn, signOut, run },
+  craft: { status, configure, push },
+  mcp: { testConnection, listTools, disconnect },
+  ima: { testConnection, listKnowledgeBases },
   backup: { create, restore, runAuto },
   ocr: { status },
   annotations: { list, add, update, remove },
   webAnnotations: { list, add, update, remove },
   siteRules: { list, preview, upsert, remove },
-  ai: { clean, getChat, clearChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
+  ai: { clean, getChat, listThreads, createThread, deleteThread, clearChat, replaceChat, test, listModels, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, agentChat, generalChat, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, getMindmap, generateMindmap, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onExternalSources, onDone },
 }
 ```
 

@@ -93,6 +93,30 @@ interface BookZone {
 const COVER_FONT = '"LXGW WenKai Screen", "Noto Serif SC", "EB Garamond", serif'
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value))
 
+/*
+ * 台灯下的大半径投影需要比 three 默认更密的采样。
+ *
+ * three 的 PCF 只取 5 个 Vogel 点（每个点再做一次硬件 2×2），配 `shadow.radius = 11`
+ * 时边缘会读成一圈颗粒状的硬边——书看上去是「贴」在桌面上的。参考站把这段
+ * ShaderChunk 换成 12 点采样，半影才散得开。这里补上同一处注入；three 版本变了、
+ * 找不到原来的分支文本时保持原样（不注入也不会报错，只是阴影硬一点）。
+ */
+{
+  const src = THREE.ShaderChunk.shadowmap_pars_fragment
+  // 从 PCF 的 getShadow 定义处开始找，避免命中别的分支里同名的 `shadow = (`。
+  const pcf = src.indexOf('float getShadow( sampler2DShadow shadowMap')
+  const a = pcf >= 0 ? src.indexOf('shadow = (', pcf) : -1
+  const b = a >= 0 ? src.indexOf('* 0.2;', a) : -1
+  if (a > 0 && b > a) {
+    THREE.ShaderChunk.shadowmap_pars_fragment = src.slice(0, a)
+      + `float pcfAcc = 0.0;
+				for ( int i = 0; i < 12; i ++ ) pcfAcc += texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( i, 12, phi ) * radius, shadowCoord.z ) );
+				shadow = pcfAcc / 12.0;`
+      + src.slice(b + '* 0.2;'.length)
+  }
+}
+
+
 export class RealBookWebGLScene {
   private readonly host: HTMLElement
   private readonly renderer: THREE.WebGLRenderer
@@ -219,6 +243,7 @@ export class RealBookWebGLScene {
       getTexture: (page) => this.pageTexture(page),
       cover: this.cover,
       endpaper: this.endpaperId,
+      paperColor: this.style.paper,
     })
     book.onSettle = (turned, open) => {
       this.turned = turned
@@ -309,7 +334,9 @@ export class RealBookWebGLScene {
   }
 
   setPages(_pages: RealBookScenePages, style = this.style): void {
+    const paperChanged = style.paper !== this.style.paper
     this.style = style
+    if (paperChanged) this.book?.setPaperColor(style.paper)
     this.book?.refreshTextures()
   }
 

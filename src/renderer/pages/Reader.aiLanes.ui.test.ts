@@ -46,7 +46,7 @@ function installApi(fixture: Fixture) {
       set: async () => ({}),
     },
     ai: {
-      onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {},
+      onChunk: () => () => {}, onStage: () => () => {}, onExternalSources: () => () => {}, onBudget: () => () => {}, onDone: () => () => {},
       getMemory: async () => ({ ok: true, memory: null }),
       getSummaries: async () => ({ ok: true, summaries: {} }),
       getChat: async () => ({ ok: true, version: 2, messages: [] }),
@@ -65,6 +65,7 @@ function installApi(fixture: Fixture) {
           paragraphCount: 20, batchCount: 1, range: '第一章' },
       }),
       chatStream: async () => { fixture.chatStarts += 1; return { ok: true, jobId: 'qa-1' } },
+      agentChat: async () => { fixture.chatStarts += 1; return { ok: true, jobId: 'qa-1' } },
     },
   } })
 }
@@ -81,13 +82,12 @@ async function mountReader() {
   app.mount(host)
   await vi.waitFor(() => expect(document.querySelector('.reader-content')?.textContent).toContain('c1正文。'))
   document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
-  await vi.waitFor(() => expect(findButton('AI 助手')).toBeTruthy())
+  await vi.waitFor(() => expect(document.body.textContent).toContain('读完一章后整理'))
   return {
     app,
     bodyText: () => document.body.textContent ?? '',
     paneText: () => document.querySelector('.reader-content')?.textContent ?? '',
     async openAssistant() {
-      findButton('AI 助手')!.click()
       await vi.waitFor(() => expect(document.body.textContent).toContain('读完一章后整理'))
       await nextTick()
     },
@@ -96,17 +96,19 @@ async function mountReader() {
       if (!item) throw new Error(`找不到按钮「${label}」`)
       return item
     },
-    async clickTab(label: '前情' | '记忆' | '问答' | '输出') {
-      const tab = [...document.querySelectorAll<HTMLElement>('.n-tabs-tab')]
+    async clickTab(label: '前情' | '记忆' | '问答' | '结果') {
+      const tab = [...document.querySelectorAll<HTMLElement>('.ai-top-switch button')]
         .find((item) => item.textContent?.trim() === label)
       if (!tab) throw new Error(`找不到 tab「${label}」`)
       tab.click()
       await nextTick()
     },
-    activeTab: () => document.querySelector<HTMLElement>('.n-tabs-tab--active')?.textContent?.trim() ?? '',
+    activeTab: () => {
+      return document.querySelector<HTMLElement>('.ai-top-switch button.is-on')?.textContent?.trim() ?? ''
+    },
     async closeToolPanel() {
       document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
-      await vi.waitFor(() => expect(document.querySelector('.tool-panel')).toBeNull())
+      await vi.waitFor(() => expect(document.body.textContent).not.toContain('读完一章后整理'))
     },
     chatField: () => document.querySelector<HTMLTextAreaElement>('.chat-input-row textarea'),
     sendButton: () => [...document.querySelectorAll<HTMLButtonElement>('.chat-input-row button')]
@@ -154,7 +156,7 @@ describe('Reader AI 壳的分任务忙闲', () => {
     try {
       reader.button('清正文').click()
       await vi.waitFor(() => expect(reader.bodyText()).toContain('干净正文'))
-      expect(reader.activeTab(), '一次性结果应停在输出 tab').toBe('输出')
+      expect(reader.activeTab(), '一次性结果应停在结果分段').toBe('结果')
       expect(reader.bodyText()).toContain('预计发送：1 章 / 20 段')
       expect(document.querySelectorAll('.n-drawer'), '不该再有第二个 AI 抽屉').toHaveLength(1)
 
@@ -178,7 +180,7 @@ describe('Reader AI 壳的分任务忙闲', () => {
       await vi.waitFor(() => expect(reader.bodyText()).not.toContain('读完一章后整理'))
 
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }))
-      await vi.waitFor(() => expect(reader.bodyText()).toContain('只发送本章正文和本章的划线批注'))
+      await vi.waitFor(() => expect(reader.bodyText()).toContain('划线与释义'))
       expect(reader.activeTab()).toBe('笔记')
     } finally { reader.app.unmount() }
   })

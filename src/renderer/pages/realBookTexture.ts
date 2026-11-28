@@ -9,7 +9,7 @@
  * 分页结果如何落到纹理坐标，而不需要 WebGL 上下文。
  */
 
-import type { RealBookLine } from './realBookPager'
+import type { RealBookLine, RealBookNoteLine } from './realBookPager'
 import type { RealBookNote } from './realBookNotes'
 import { drawPlanInk } from './referenceBook/drawPlanInk'
 
@@ -37,6 +37,12 @@ export interface RealBookTextureTextItem {
   text: string
   /** 原始段落下标，供后续命中/批注定位 */
   originalIndex: number
+  /**
+   * 这一段在章内字符坐标里的起点（参考站 `Page.start` 同一套坐标）。
+   * 有它才能把每一行对到参考站排出的真实 y/x——章首标题、引文缩进、
+   * 段前后距都会让「顺序累加」算出来的位置与纸上的墨迹错开。
+   */
+  chapterStart?: number
   start: number
   end: number
   continued: boolean
@@ -51,6 +57,15 @@ interface RealBookTextureNoteItem {
   note: RealBookNote
   /** 分页器为其预留的高度（含段间距） */
   height: number
+  /** 上游 PlacedInlineNote 片段：是否由上一页延续而来 */
+  continued: boolean
+  /** 上游 PlacedInlineNote 片段：是否还有后续片段 */
+  continues: boolean
+  /** 片段的行级墨迹数据，交给上游 renderPage 内联绘制 */
+  lines: readonly RealBookNoteLine[]
+  textColor: string
+  /** 分页时算好的页内 y（相对版心顶部）；缺省按流式累加 */
+  y?: number
 }
 
 /** 页内图片块：正文里以 `[图]` 标记占位，纹理层按版心宽度画出来。 */
@@ -80,6 +95,10 @@ export interface RealBookTexturePage {
   /** 参考站页码标签；缺省用 pageNumber。 */
   label?: string
   items: readonly RealBookTextureItem[]
+  /** 参考站 layout 原始页：有它时墨迹层原样交给上游 renderPage。 */
+  source?: import('./referenceBook/layout').Page
+  /** 高亮的章内字符偏移（与 source 的 Word.s/e 同一坐标）。 */
+  sourceMarks?: ReadonlyArray<{ start: number; end: number; color: string }>
 }
 
 export interface RealBookTextureStyle {
@@ -148,6 +167,11 @@ export interface PageTextureNoteBox {
   y: number
   width: number
   height: number
+  // 与上游 PlacedInlineNote 一致的片段字段（必填）
+  continued: boolean
+  continues: boolean
+  lines: readonly RealBookNoteLine[]
+  textColor: string
 }
 
 export interface PageTexturePlan {
@@ -174,6 +198,9 @@ export interface PageTexturePlan {
   notes: PageTextureNoteBox[]
   images: PageTextureImageBox[]
   side: 'left' | 'right'
+  /** 透传自 RealBookTexturePage.source。 */
+  source?: import('./referenceBook/layout').Page
+  sourceMarks?: ReadonlyArray<{ start: number; end: number; color: string }>
 }
 
 export interface PageTextureImageBox {
@@ -251,6 +278,31 @@ export function buildPageTexturePlan(
   const lines: PageTextureLine[] = []
   const notes: PageTextureNoteBox[] = []
   const images: PageTextureImageBox[] = []
+  /*
+   * 参考站已经排好的页：正文/图/注的真实位置都在 `page.source` 里。
+   *
+   * 顺序累加只在「纯正文、无标题、无引文」时与参考站一致。一旦章首页有大标题
+   * （before 70px、1.75 倍行高）、引文缩进或段前距，累加出来的 y/x 就和纸上的
+   * 墨迹错开——透明选字层与跨页选区的框会整块漂移。有 source 就按字符偏移
+   * 把每一行对到它自己那一行上去。
+   */
+  const sourceLines = page.source?.lines ?? null
+  const absoluteOf = (item: RealBookTextureTextItem, offset: number): number =>
+    (item.chapterStart ?? 0) + offset
+  const lineAt = (from: number, to: number): { y: number; x: number; height: number } | null => {
+    if (!sourceLines) return null
+    for (const line of sourceLines) {
+      let x0 = Infinity
+      let hit = false
+      for (const word of line.words) {
+        if (word.s < 0 || word.e <= from || word.s >= to) continue
+        hit = true
+        x0 = Math.min(x0, word.x)
+      }
+      if (hit) return { y: line.y, x: x0, height: line.h }
+    }
+    return null
+  }
   let y = marginTop
   let firstItem = true
 
@@ -273,14 +325,19 @@ export function buildPageTexturePlan(
       continue
     }
     if (item.kind === 'note') {
-      const noteHeight = Math.max(24, item.height)
-      if (y + noteHeight > height - marginBottom) break
+      // 高度与位置沿用分页器按上游 placeNote 算好的值，不再二次推算。
+      const noteHeight = item.height
+      if (y + noteHeight > height - marginBottom + 0.5) break
       notes.push({
         note: item.note,
         x: marginX,
         y,
         width: contentWidth,
         height: noteHeight,
+        continued: item.continued,
+        continues: item.continues,
+        lines: item.lines,
+        textColor: item.textColor,
       })
       y += noteHeight
       firstItem = false
@@ -294,23 +351,27 @@ export function buildPageTexturePlan(
     for (let index = 0; index < itemLines.length; index += 1) {
       const line = itemLines[index]!
       const text = item.text.slice(line.start, line.end)
-      if (y + lineHeight > contentBottom + 0.5) break
       const firstLine = index === 0 && !item.continued
+      // 参考站排过这一页就用它的真实行位；没有时退回顺序累加。
+      const placed = lineAt(absoluteOf(item, line.start), absoluteOf(item, line.end))
+      const lineY = placed ? marginTop + placed.y : y
+      const lineX = placed ? marginX + placed.x : marginX + (firstLine ? Math.min(style.fontSize * 2, contentWidth * 0.18) : 0)
+      if (lineY + (placed?.height ?? lineHeight) > contentBottom + 0.5) break
       const lineInfo = lineMarksWithText(line, text, item, style)
       lines.push({
         text,
         start: line.start,
         end: line.end,
         paragraphIndex: item.originalIndex,
-        x: marginX + (firstLine ? Math.min(style.fontSize * 2, contentWidth * 0.18) : 0),
-        y,
-        height: lineHeight,
+        x: lineX,
+        y: lineY,
+        height: placed?.height ?? lineHeight,
         firstLine,
         continued: item.continued,
         marks: lineInfo.marks,
         noteMarks: lineInfo.noteMarks,
       })
-      y += lineHeight
+      y = lineY + (placed?.height ?? lineHeight)
     }
     firstItem = false
   }
@@ -320,6 +381,8 @@ export function buildPageTexturePlan(
     height,
     marginX,
     special: page.special,
+    source: page.source,
+    sourceMarks: page.sourceMarks,
     marginTop,
     marginBottom,
     headHeight,
@@ -443,24 +506,27 @@ export function drawPageTexture(
   const muted = style.muted || 'rgba(36,28,21,0.52)'
   const useReference = style.referencePageRender !== false
 
-  ctx.fillStyle = style.paper || '#f4ecd8'
+  /*
+   * 参考站路径铺白底，纸色交给纸张着色器（uPaperTint）。
+   *
+   * 纸的「样子」不只是一块颜色：纤维噪点、纸口压暗、书脊中缝的指数衰减、
+   * 翘起处的曲率压暗，全部在 realBookPaperMaterial 的片元里按 3D 法线算。
+   * 一旦把纸色平铺进纹理，这些细节就被涂死了——纸看起来是一张打满光的卡纸，
+   * 无论翻页几何多准都读不出「真书」。所以这里只留白，便于墨迹 multiply。
+   */
+  const paperFill = useReference ? '#ffffff' : (style.paper || '#f4ecd8')
+  ctx.fillStyle = paperFill
   ctx.fillRect(0, 0, plan.width, plan.height)
 
-  // 纸纤维：确定性噪点，不依赖随机种子，翻页时不会闪烁。
-  for (let i = 0; i < 430; i += 1) {
-    const x = (i * 73.13 + (i % 17) * 19.7) % plan.width
-    const y = (i * 41.77 + (i % 23) * 11.3) % plan.height
-    ctx.fillStyle = i % 3 === 0 ? 'rgba(255,255,255,0.05)' : 'rgba(84,68,42,0.035)'
-    ctx.fillRect(x, y, 1, i % 5 === 0 ? 2 : 1)
-  }
-
-  // 书脊侧的柔和压暗：左页阴影在右边，右页阴影在左边。
-  const gutter = ctx.createLinearGradient(plan.side === 'right' ? 0 : plan.width, 0, plan.side === 'right' ? plan.marginX * 1.9 : plan.width - plan.marginX * 1.9, 0)
-  gutter.addColorStop(0, 'rgba(52,37,20,0.17)')
-  gutter.addColorStop(0.48, 'rgba(52,37,20,0.045)')
-  gutter.addColorStop(1, 'rgba(52,37,20,0)')
-  ctx.fillStyle = gutter
-  ctx.fillRect(0, 0, plan.width, plan.height)
+  /*
+   * 只铺纸色，不在这里画纸纤维、中缝暗带和纸口压暗。
+   *
+   * 这三样都是「纸的形状」而不是墨迹：中缝要沿着书脊的曲率指数衰减
+   * （着色器里 exp(-u·14)），纤维要随 3D 法线吃顶光，纸口要按曲率变化。
+   * 在 2D 画布上画成一条线性渐变，卷曲时它会跟着纸一起被压平，
+   * 书脊就永远是一条静止的灰带——那正是「纸板感」的来源。
+   * 这里把平面留给墨迹，形状交给 realBookPaperMaterial 的片元着色器。
+   */
 
   // 页眉页脚：参考站是正体小字，不用斜体；两侧由页面自己决定印书名还是章节名。
   // 走 DOM 的页面（静态页、顶层飞页）不再画进纹理，否则纹理里会留下一层糊字。
@@ -586,27 +652,7 @@ export function drawPageTexture(
     }
   }
 
-  // 页内批注卡：保留纸张的轻量层次，不用高对比色块抢正文。
-  for (const box of plan.notes) {
-    ctx.fillStyle = 'rgba(83,67,42,0.055)'
-    ctx.fillRect(box.x, box.y + 3, box.width, Math.max(18, box.height - 6))
-    ctx.fillStyle = 'rgba(120,82,47,0.55)'
-    ctx.fillRect(box.x, box.y + 6, 1.5, Math.max(10, box.height - 12))
-    ctx.fillStyle = muted
-    ctx.font = `500 ${Math.max(8, fontSize * 0.56)}px ${family}`
-    ctx.fillText(box.note.source === 'ai' ? '笔记 · AI' : '笔记', box.x + 10, box.y + fontSize * 0.8)
-    ctx.fillStyle = ink
-    ctx.font = `440 ${Math.max(9, fontSize * 0.82)}px ${family}`
-    const lines = wrapTextureText(ctx, box.note.text, box.width - 20).slice(0, 3)
-    lines.forEach((text, index) => {
-      ctx.fillText(text, box.x + 10, box.y + fontSize * 1.55 + index * fontSize * 0.95)
-    })
-    if (box.note.tags?.length) {
-      ctx.fillStyle = muted
-      ctx.font = `440 ${Math.max(8, fontSize * 0.58)}px ${family}`
-      ctx.fillText(box.note.tags.map((tag) => `#${tag}`).join(' '), box.x + 10, box.y + box.height - 8)
-    }
-  }
+  // 便签不在这里画：统一由 drawPlanInk 交给上游 renderPage 内联绘制（含跨页片段与「笔记 · 续」）。
   }
 
   // 页脚页码也由 DOM 文本层画（见上方页眉页脚段），这里不再重复。
@@ -633,6 +679,8 @@ export function textureStyleSignature(page: RealBookTexturePage, style: RealBook
         return [
           'text',
           item.originalIndex,
+          // 行位是否取自参考站排好的页，会改变 DOM 选字框与纸上的墨迹是否对齐。
+          item.chapterStart ?? -1,
           item.start,
           item.end,
           item.continued,
@@ -645,7 +693,21 @@ export function textureStyleSignature(page: RealBookTexturePage, style: RealBook
       if (item.kind === 'image') {
         return ['image', item.file, item.width, item.height, item.caption, Math.round(item.displayHeight)]
       }
-      return ['note', item.note.id, item.note.text, item.note.tags ?? [], item.height]
+      return [
+        'note',
+        item.note.id,
+        item.note.text,
+        item.note.tags ?? [],
+        item.height,
+        item.continued,
+        item.continues,
+        item.textColor,
+        item.lines.map((line) => [
+          Math.round(line.y),
+          Math.round(line.h),
+          line.words.map((word) => word.text).join(''),
+        ]),
+      ]
     }),
     imageEpoch: style.imageEpoch ?? 0,
     bookTitle: style.bookTitle,

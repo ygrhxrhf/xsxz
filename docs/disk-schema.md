@@ -25,7 +25,8 @@
       bookOverview.json     # AI 全书概览与逐章处理缓存；可含未读剧情和结局
       characters.json      # 旧 AI 人物卡 / 伏笔追踪；兼容保留
       memory.json          # 可核验小说记忆 v1（用户触发后生成）
-      chat.json            # 聊天 v1 / 证据问答 v2
+      chats.json          # 问答会话容器 v1（多条线程），见「ai/chats.json」
+      chat.json            # 旧聊天 v1 / 证据问答 v2；只读兼容，不再写入
       notes.json           # AI 生成或读者手写的本章笔记，见「ai/notes.json」
       follow.json          # 自动追剧的队列与进度真源，见「ai/follow.json」
       monthly-usage.json   # 每书每月自动任务额度与预留
@@ -254,7 +255,53 @@
 
 ---
 
-## ai/chat.json
+## ai/chats.json
+
+问答会话容器，版本 1，对齐 `AiChatThreadsFile`。一本书可以有多条互不污染的会话（问人物线 / 问这卷剧情 / 问伏笔各一条）：
+
+```json
+{
+  "version": 1,
+  "activeThreadId": "th_9f2c1a4b8d3e6075",
+  "threads": [
+    {
+      "id": "th_9f2c1a4b8d3e6075",
+      "title": "玉印后来去了哪里？",
+      "createdAt": "ISO-8601",
+      "updatedAt": "ISO-8601",
+      "messages": [
+        { "role": "user", "content": "玉印后来去了哪里？" },
+        {
+          "role": "assistant",
+          "content": "她把玉印交了出去。",
+          "uptoChapterId": "c0012",
+          "citations": [
+            {
+              "id": "ev-c0012-p8",
+              "chapterId": "c0012",
+              "chapterTitle": "第十二章 旧宅",
+              "paragraphIndex": 8,
+              "excerpt": "她推开积灰的书房门，想起父亲信中反复提到的那本旧账。"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `activeThreadId` 是当前会话；没有会话时为空串（界面回到欢迎态，首次发送再建）。线程被删或被裁掉后 active 不能悬空，读写两侧都会把它落到 `updatedAt` 最新的那条。
+- 线程顺序以 `updatedAt` 倒序为准；同一份文件最多 **20 条**会话（超过就删旧的），再多会话栏就滚不动了。
+- **每条线程内部的消息沿用 `trimChatPairs` 的 40 条规则**：一问一答算一个单位，从最新往后按单位累加，超出 40 条就丢掉最旧的完整单位——永远不会留下没有对应问题的孤立 assistant。裁剪只在读取与写入时统一做一次。
+- 消息字段与旧 `chat.json` v2 完全相同；逐条宽容解析，单条脏记录只丢那一条，不会让整条会话打不开。
+- `chats.json` 声称有线程却一条都解析不出来、版本不是 1、或是坏 JSON：一律按「没有会话」读，`ai.listThreads` 仍返回空列表并在 `message` 里说明原因。
+- 写入：只改指定线程的消息与 `updatedAt`，其余线程原样保留；整文件经同目录临时文件 fsync/close 后 rename 原子替换，失败保留旧文件。读写都是 read-modify-write，所以同一本书内加了锁，两个会话同时保存不会互相丢更新。
+- 会话 ID 收紧到 `[A-Za-z0-9_-]{1,64}`；第一条隐式会话固定用 `default`，让迁移与回退指向同一条。
+
+## ai/chat.json（只读兼容）
+
+**新数据不再写这里**。问答分成多条会话后，存储迁到 `ai/chats.json`；这份文件原样留着，供旧版本回退时看到最后一份状态。读顺序是「有 `chats.json` 就只读它，没有才回落到 `chat.json`」。
 
 旧版对齐 `AiChatFile` v1；新版证据问答对齐 `AiChatFileV2`：
 
@@ -283,11 +330,11 @@
 }
 ```
 
-- v1 消息无 `citations` / `uptoChapterId` / `stopped`，按“旧版回答，无来源”读取；首次成功保存证据问答时升级为 v2。
+- v1 消息无 `citations` / `uptoChapterId` / `stopped`，按“旧版回答，无来源”读取。
 - 每书独立保存，不含 system、reasoning 或 API Key。
-- 最多 40 条；超限时删除最旧的完整问答，不能留下没有对应问题的孤立 assistant。
-- v2 正式写入必须同目录临时文件完成 fsync/close 后 rename 原子替换；失败保留旧正式文件。缺失或损坏按空历史读取。
-
+- 最多 40 条；超限时删除最旧的完整问答，不能留下没有对应问题的孤立 assistant（与 `chats.json` 每条线程一致）。
+- 缺失或损坏按空历史读取。
+- **迁移只在内存里发生**：读到 `chat.json` 就当成一条 id 为 `default`、标题为「默认会话」的线程展示，打开侧栏不产生任何写盘；下一次写操作才整体落成 `chats.json`。因此迁移幂等，重启不会长出第二条默认会话。
 ---
 
 ## annotations.json
@@ -524,7 +571,7 @@
 - 同级 `browse-state.json` 保存最近网页 `{ url, ratio, updatedAt }` 与按规范化域名映射的缩放比例；不属于书库备份。缺失或损坏时按无恢复位置、默认 100% 缩放读取。
 - `browse-state.json` 另存 `readingByUrl`：按 `canonicalizeUrl` 归一后的网页地址映射到阅读模式的 `{ paragraphIndex, scrollRatio, updatedAt }`，最多 200 条（超出按 `updatedAt` 淘汰最旧）。缺这个字段或条目非法时按无位置读取，不影响 `last` 与 `zoomByHost`。
 - 同级 `mirror-state.json` 保存最近一次整站镜像任务（`MirrorProgress`：种子地址、状态、已下/跳过/失败/总数、已扫描页数、发现阶段的书目计划 `plan` 与逐本结果），不属于书库备份。`plan` 让取消或进程中断后能从同一列表页继续；书是否已入库以书库为准，文件里不存「已下过」快照。缺失或损坏时按无历史任务读取，不影响镜像功能；读到遗留的 `running` 时启动阶段降级为 `cancelled` 并标 `interrupted`（界面据 `plan` 与逐本 `results` 决定是否给「继续上次」，该字段只作展示）。写入走原子写：这个文件的唯一用途就是崩溃后续跑，截断的 JSON 等于丢掉整份 `plan`。
-- `settings.json` 的 `webReading` 保存网页阅读模式偏好：`autoSpeed` 为 1–5 的整数（默认 3，越界夹紧、非数值回退默认），`autoPage` 为布尔值（默认 `true`）。缺失或损坏时补默认，不丢弃其他设置。
+- `settings.json` 的 `webReading` 保存网页阅读模式偏好：`autoSpeed` 为 1–5 的整数（默认 3，越界夹紧、非数值回退默认），`autoPage` 为布尔值（默认 `true`），`columns` 为翻页模式的栏数（`1` 单栏 / `2` 双栏，默认 1；其它值回退 1）。缺失或损坏时补默认，不丢弃其他设置。
 - `autoBackup.destDir` 为空表示关闭；主进程启动时距上次成功满七天则创建 `spbf-auto-*.zip`，仅保留最近五份自动备份。旧设置缺失时按关闭读取。备份包不含设置与 API Key。
 - `autoUpdateCheck` 保存自动追更偏好：`enabled` 默认 `true`，`intervalHours` 为 1–720 的整数小时（默认 24，越界夹紧、非数值回退）。`lastCheckedAt` 为空或时间戳损坏都视为到期，不会永久不再检查；`lastSummary` 是上次检查的中文摘要，供书库页展示。下载任务在跑、书库正在恢复或已有批量检查时不写时间戳，留给下次启动重试。只检查 `importType === 'download'` 且带 `sourceUrl` 的书；检查会把新章直接补下来。
 - `coverGen` 保存 AI 封面生成偏好：`enabled`（默认 `true`）与 `autoOnImport`（默认 `true`）只接受布尔值；`baseUrl` 只接受 http(s) 并去掉尾部斜杠，留空或非法即「沿用 AI 的地址」；`model` 为非空字符串（默认 `gpt-image-1`，超长截断到 100 字符）；`size` 只接受 `1024x1536` / `1024x1024` / `768x1024`（默认 `1024x1536`）；`style` 默认给一段竖版构图说明，超长截断到 200 字符。保存时逐字段合并，非法值回退**当前有效值**而不是默认值。图片 Key 可选 `coverGenApiKeyEnc`（`coverGenApiKey` 提交后加密落盘，空串清除），未配置时回退 AI 的 `apiKeyEnc`；两者都只在主进程解密，`getSettings` 只回 `coverGenKeyConfigured` 布尔。图片请求只发提示词（书名/题材/梗概），不带正文全文；本字段只影响封面，不影响其他 AI 功能。
@@ -633,6 +680,7 @@
       "title": "示例书名",
       "author": "示例作者",
       "coverUrl": "https://example.com/cover.jpg",
+      "description": "站点书页上的简介，最多 800 字；抓不到为空串。",
       "catalogUrl": "https://example.com/book/65/",
       "lastChapter": { "title": "第 12 章 起风", "url": "https://example.com/book/65/12.html" },
       "chapters": [
@@ -650,6 +698,7 @@
 ```
 
 - 网页书只保存书目、目录快照与阅读位置，**不保存正文**；打开与续读都在内置浏览器里进行。
+- 书目字段（`title` / `author` / `coverUrl` / `description`）按「书页」口径取：章节页上的章名不会写成书名（`og:novel:book_name`、书页容器、目录链接文字、`<title>` 里剥掉章名与站点名）；加入时优先用目录页的书目信息，刷新目录时补齐旧的缺字段条目。
 - 上限：最多 500 本；每本 `chapters` 最多 3000 条，超出时保留靠前的 3000 条并把目录标为截断。
 - `chapters` 允许为空数组（抓不到目录的站），此时书架显示「目录待识别」，跳章依赖页面里的上一章 / 下一章。
 - `id` 由 host + 规范化 `catalogUrl` 生成，同一本书重复加入时更新原条目而不新增。

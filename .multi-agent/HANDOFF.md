@@ -21,6 +21,47 @@
 - 下一步第一条命令：提交在分支 `slim/deadcode` 上（本 worktree 原来是 detached HEAD）。
   在主检出里 `git checkout master && git merge --ff-only slim/deadcode`，再 `git push origin master`（需用户点头）。
 
+## 章节导图：整屏查看 + 可读缩放（2026-11-28，本轮完成）
+
+- 做到哪：抽屉里 560px 宽的导图「适应」后只有 20%，标签溢出节点框，用户反馈根本看不清。
+  现在工具栏有「全屏」：导图 Teleport 到 body 铺满窗口，Esc 只退全屏（window 捕获阶段拦下，
+  不连带关抽屉），退出回到抽屉并解锁页面滚动。
+- 可读性：标签按全角/半角宽度折成最多 3 行（完整文案在 `<title>` 与 aria-label 里），
+  节点高度随行数变化，树布局改成按子树高度自底向上排，折行后父节点不压兄弟；
+  缩放下限 2%（「适应」能把上万像素高的整棵树塞进框），复位改成以视口中心回 100%，
+  视口尺寸变化在未手动调整时自动重适应，双击空白处也适应窗口。
+- 与主分支的关系：本分支变基到 master `0f6aa88`。master 上那版导图改动（2 行折行、固定 64px 节点、
+  无门槛重适应）被本分支的实现取代；其中 `MIN_MAP_ZOOM = 0.5` 是「适应窗口缩不下去」的直接原因。
+  `readerAssistant.ts` 里章节导图的两个 IPC 包装在 master 已存在，本分支不再重复补。
+- 验证：`npm run typecheck` 0；`npm run build` 0；导图三个测试文件 42 用例绿；
+  `npm run e2e:mindmap-fullscreen` **16 项通过 0 失败**（161 节点长章：全屏铺满 1229×671、
+  100% 下 80 个节点文字零溢出、适应后整树进框、Esc 只退全屏）；截图在 `~/.capy/work/mindmap-shots/`。
+- master 既有失败（与本分支无关，均未触碰对应文件）：`Reader.pagination.contract`（`window.api.ai.test`
+  不在白名单）、`aiRecapIpc.contract`（`readChapter(` 源码锁定）、`aiAssistantBudget.ipc.contract`、
+  atlas 两条图幅定位、`aiEvidenceIndex` 预算用例超时，以及 `Reader.mindmap.ui.test`
+  7 条因 master 的 Reader.vue 新增 `ai.onExternalSources` 而测试桩没跟上。
+- 未验证：超长章（2000 段）只走了 jsdom；触屏捏合未在真机试。
+- 下一步第一条命令：在主目录 `git merge --ff-only feat/mindmap-fullscreen`（需用户点头，之后再 `git push`）。
+## Crafty 联动：把读书笔记推成文档（2026-11-28，本轮完成）
+
+- 做到哪：新增 `craft.status` / `craft.configure` / `craft.push` 三频道。一本书的全书概览、人物与关系、
+  伏笔、关键事件、章节笔记、划线批注拼成一篇 Markdown，走 `POST <endpoint>/api/v1/import/markdown`
+  推成 Crafty（`ygrhxrhf/craft`）里的一篇文档；**书库正文不上传**。
+- 幂等：每本书 `<bookDir>/ai/craft-link.json` 记 `{docId, endpoint, contentHash, pushedAt}`，
+  第二次推同一本带 `documentId` 更新上次那篇；对端回 404（那篇被删）时自动退回新建一次。
+  换了站点不复用旧 docId。
+- 令牌：`userData/craft-push.json`，令牌走 `safeStorage`（与 `apiKeyEnc` 同规格），渲染层只拿布尔位；
+  `token: ''` 等于清除。对端读令牌在本机先挡住（对端还会回 403）。
+- 入口：设置页「Crafty 联动」面板（地址 / 令牌 / 状态）；书库书卡「⋯ → 推送到 Crafty」。
+- 契约：`agentCapabilities.ts` 三条（status=读、configure=破+令牌确认、push=写）、
+  `docs/agent-integration-design.md` §4.12.2、`docs/ipc-contract.md`「Crafty 联动」与 preload 形状段。
+  频道数 163 → 166，脚本复核 `code=166 doc=181`、`sec4Rows=166 unique=166`。
+- 验证：`npm run typecheck` 0；craft 相关单测 24 条全绿（craftMarkdown 7 / craftPush 12 / craftIpc 5）；
+  契约测试 4 组全绿（agentCapabilities / ipcChannels / preload / libraryCard）；
+  `npm test` 2384 passed / 4 failed，4 条红 `git stash` 后在 HEAD 上重现，与本轮无关。
+- 下一步第一条命令：`npx vitest run src/main/craftMarkdown.test.ts src/main/craftPush.test.ts src/main/craftIpc.test.ts`
+- 未验证：真机对端联调（本机到 github/craft 的代理不通，没起 Crafty 实例）；`npm run build` 未跑。
+
 ## 工作区收口 + 启动自动追更（2026-11-21，本轮完成）
 
 - 做到哪：清掉约 930MB 未跟踪产物（`.multi-agent/tmp/` 483M、`.multi-agent/visual/` 451M 的截图与探针 exe），

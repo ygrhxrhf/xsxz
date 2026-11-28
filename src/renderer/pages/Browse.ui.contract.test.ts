@@ -10,7 +10,9 @@ describe('Browse toolbar and drawer contract', () => {
     expect(source).toContain('aria-label="网页地址"')
     expect(source).toContain('<span>{{ siteLabel }}</span>')
     expect(source).toContain("return host ? `当前站点：${host}` : '尚未打开网页'")
-    expect(source.match(/class="browser-icon-button"/g)).toHaveLength(3)
+    // 起始页 / 后退 / 前进 / 刷新：起始页那颗是常用网站的唯一常驻入口
+    expect(source.match(/class="browser-icon-button"/g)).toHaveLength(4)
+    expect(source).toContain('aria-label="回到起始页"')
     expect(source).toContain('type="primary"')
     expect(source).toContain('size="small" secondary')
     expect(source).toContain('class="browser-more"')
@@ -23,19 +25,19 @@ describe('Browse toolbar and drawer contract', () => {
 
   it('keeps frequently used sites in settings and offers a start page', async () => {
     const source = await readFile(new URL('./Browse.vue', import.meta.url), 'utf-8')
-    // 星标在地址栏内，收藏条在工具条第二行，起始页盖在网页视图的位置上
+    // 星标在地址栏内，收藏卡片在起始页底部，起始页盖在网页视图的位置上
     expect(source).toContain('class="address-field"')
-    expect(source).toContain('class="favorite-star"')
-    expect(source).toContain('class="browser-favorites"')
-    expect(source).toContain('class="browse-home"')
-    expect(source).toContain('class="home-grid"')
+    expect(source).toContain('class="address-star"')
+    expect(source).toContain('class="start-fav"')
+    expect(source).toContain('class="start-fav-grid"')
     // 常用网站沿用 settings.get / settings.set，不为收藏另开 IPC 频道
     expect(source).toContain('window.api.settings.set({ browseFavorites: next })')
     expect(source).toContain('settings.browseFavorites ?? []')
     expect(source).not.toContain('window.api.browseFavorites')
-    // 起始页与原生网页视图互斥：进起始页藏视图，恢复页面时让出视图
-    expect(source).toContain('window.api.browse.setVisible(!start && props.active)')
-    expect(source).toContain('if (res.restored) showStartPage.value = false')
+    // 起始页与原生网页视图互斥：起始页在场时藏视图，打开新地址时让出视图
+    expect(source).toContain('props.active && browsing.value && !readingPage.value && !startPageVisible.value')
+    expect(source).toContain('watch([browsing, () => props.active, readingPage, startPageVisible], syncNativeVisibility)')
+    expect(source).toContain('showStartPage.value = false')
   })
 
   it('routes one-shot errors through Naive UI messages instead of alerts', async () => {
