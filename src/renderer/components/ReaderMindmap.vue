@@ -62,6 +62,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: 'select', anchor: MindmapAnchor, node: MindmapNode): void
   (event: 'generate', force: boolean): void
+  /** 整屏查看开关：外层据此让开抽屉的焦点陷阱（全屏后控件已经不在抽屉的 DOM 里）。 */
+  (event: 'fullscreen-change', on: boolean): void
 }>()
 
 const tree = ref<MindmapNode | null>(props.root)
@@ -363,11 +365,18 @@ function onViewportKeydown(event: KeyboardEvent): void {
 // ---------------------------------------------------------------------------
 const fullscreen = ref(false)
 
+const fullscreenButton = ref<HTMLButtonElement | null>(null)
+
 function setFullscreen(on: boolean): void {
   if (fullscreen.value === on) return
   fullscreen.value = on
   document.documentElement.style.overflow = on ? 'hidden' : ''
-  void nextTick(fitView)
+  emit('fullscreen-change', on)
+  void nextTick(() => {
+    fitView()
+    // 退出全屏时焦点留在原地会掉到 body 上：还给这个按钮，键盘用户不用再 Tab 找回来。
+    if (!on) fullscreenButton.value?.focus()
+  })
 }
 
 function toggleFullscreen(): void {
@@ -500,6 +509,7 @@ function nodeClass(item: PositionedNode): string {
       <button type="button" class="reader-mindmap-control" aria-label="放大" :disabled="camera.scale >= MAX_MAP_ZOOM" @click="zoomBy(1.2)">＋</button>
       <button type="button" class="reader-mindmap-control" aria-label="适应窗口" @click="fitView">适应</button>
       <button
+        ref="fullscreenButton"
         type="button"
         class="reader-mindmap-control reader-mindmap-fullscreen-toggle"
         :aria-label="fullscreen ? '退出全屏' : '全屏查看'"

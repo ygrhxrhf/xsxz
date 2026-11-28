@@ -1,4 +1,4 @@
-import type { AiChatContextAnchor, AiChatStep, AiEvidenceChatMessage, AiEvidenceClaim, AiEvidenceVerification } from '../shared/types'
+import type { AiChatContextAnchor, AiChatStep, AiEvidenceChatMessage, AiEvidenceClaim, AiEvidenceVerification, ExternalSource } from '../shared/types'
 
 /**
  * `ai.replaceChat` 的入参校验。
@@ -23,6 +23,8 @@ export const REPLACE_CHAT_MAX_STEPS = 40
 export const REPLACE_CHAT_MAX_STEP_LABEL = 120
 /** 选区锚点条数上限：一条消息通常最多一两个出处，留余量。 */
 export const REPLACE_CHAT_MAX_CONTEXT = 5
+/** 一轮回答的外部来源条数上限：与证据上限同量级，防止一次写盘撑大 chat.json。 */
+export const REPLACE_CHAT_MAX_SOURCES = 20
 /** 选区摘录上限：与 selectionContext 的截断长度对齐。 */
 export const REPLACE_CHAT_MAX_EXCERPT = 2000
 /**
@@ -142,6 +144,34 @@ function parseMessage(value: unknown, index: number): AiEvidenceChatMessage {
       throw new Error(`${at}的问答范围标记无效`)
     }
     message.scope = value.scope
+  }
+  // 外部来源（Craft 等）必须跟着消息落盘：编辑或删除另一轮时会整段重写历史，
+  // 在这里丢掉，读者保留下来的那条回答就再也点不回出处了。
+  if (value.externalSources !== undefined) {
+    if (!Array.isArray(value.externalSources)) throw new Error(`${at}的外部来源列表格式无效`)
+    if (value.externalSources.length > REPLACE_CHAT_MAX_SOURCES) {
+      throw new Error(`${at}的外部来源超过 ${REPLACE_CHAT_MAX_SOURCES} 条`)
+    }
+    message.externalSources = value.externalSources.map((source, sourceIndex): ExternalSource => {
+      const where = `${at}第 ${sourceIndex + 1} 条外部来源`
+      if (!isRecord(source)) throw new Error(`${where}格式无效`)
+      if (
+        typeof source.id !== 'string'
+        || typeof source.providerName !== 'string'
+        || typeof source.title !== 'string'
+        || typeof source.excerpt !== 'string'
+      ) {
+        throw new Error(`${where}缺少必填字段`)
+      }
+      const parsed: ExternalSource = {
+        id: source.id,
+        providerName: source.providerName,
+        title: source.title,
+        excerpt: source.excerpt,
+      }
+      if (typeof source.url === 'string') parsed.url = source.url
+      return parsed
+    })
   }
   if (value.steps !== undefined) {
     if (!Array.isArray(value.steps)) throw new Error(`${at}的思考链格式无效`)

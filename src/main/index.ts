@@ -1438,11 +1438,15 @@ function registerIpc(): void {
       // 设置里的视觉服务可用就直接用；没填地址时用本机 magpie；两者都不可用才回退聊天 AI。
       const vision = settings.atlasVision ?? DEFAULT_ATLAS_VISION_PREFS
       const configuredUrl = vision.baseUrl
+      const builtInLocal = DEFAULT_ATLAS_VISION_PREFS.baseUrl
       let visionUrl = ''
       let visionModel = vision.model
-      if (configuredUrl) {
+      if (configuredUrl && configuredUrl !== builtInLocal) {
+        // 用户填的地址：直接用它。
         visionUrl = configuredUrl
-      } else if (await localVisionAvailable()) {
+      } else if (configuredUrl === builtInLocal && (await localVisionAvailable())) {
+        // 没改过的默认值就是本机 magpie 网关。装了才走它，没装就落到聊天视觉——
+        // 否则没装 magpie 的机器会一直往 127.0.0.1 打，回退分支永远到不了。
         visionUrl = ATLAS_LOCAL_VISION.baseUrl
         visionModel = ATLAS_LOCAL_VISION.model
       }

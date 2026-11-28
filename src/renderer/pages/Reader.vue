@@ -198,6 +198,8 @@ const resumeCardView = ref<AiResumeCardView | null>(null)
 const resumeCardLoading = ref(false)
 const resumeCardWarning = ref('')
 const showDrawer = ref(false)
+// 导图整屏时控件被 Teleport 到 body：抽屉的焦点陷阱会让让位，否则 Tab 会被拽回抽屉。
+const mindmapFullscreen = ref(false)
 /** 书中地图抽屉；两种阅读模式共用同一份入口与内容。 */
 const showMap = ref(false)
 /** 章节抽屉的两个视图：目录（章节列表）与导图（本章结构）。 */
@@ -3893,6 +3895,12 @@ async function refreshImaState() {
     imaConfigured.value = settings.imaConfigured === true
     imaUnreadable.value = settings.imaUnreadable === true
     imaKnowledgeBaseId.value = settings.imaKnowledgeBaseId ?? ''
+    // 重开阅读器时选择器要有选项：只恢复了 configured 与选中 id 的话，下拉框里
+    // 只剩「只用笔记检索」，读者没法换库，也没法把清掉的选项恢复回来。
+    if (imaConfigured.value) {
+      const bases = await window.api.ima.listKnowledgeBases()
+      if (bases.ok) imaKnowledgeBases.value = bases.knowledgeBases
+    }
   } catch {
     // 读设置失败不打断侧栏。
   }
@@ -4030,6 +4038,10 @@ const readUptoTitle = computed(() => {
  */
 /** 问答列表里真正能滚的容器：body 自己 overflow:hidden，得往上找第一个真会滚的祖先。 */
 function chatScrollContainer(): HTMLElement | null {
+  // 真正滚动的是消息列表：输入行在 .sider-bottom-dock 里，和消息区是兄弟，
+  // 从输入行往上找永远找不到滚动容器。
+  const list = document.querySelector<HTMLElement>('.chat-messages')
+  if (list) return list
   let el = document.querySelector('.chat-input-row')?.parentElement ?? null
   while (el && el !== document.body) {
     if (el.scrollHeight > el.clientHeight + 4 && getComputedStyle(el).overflowY !== 'visible') break
@@ -4055,11 +4067,12 @@ async function pinChatToBottom() {
  * 用户主动上滚翻历史就不打断他，免得回答一出来就被拽回底部。
  */
 async function followChatIfAtBottom() {
-  await nextTick()
   const el = chatScrollContainer()
-  if (!el || chatNearBottom(el)) {
-    if (el) el.scrollTop = el.scrollHeight
-  }
+  // 先记下更新前的状态：nextTick 之后再量，新增内容已经把「离底部多远」算进去了，
+  // 本来停在底部的人会被判成「在翻历史」，拖着不跟着滚。
+  const stick = el ? chatNearBottom(el) : false
+  await nextTick()
+  if (el && stick) el.scrollTop = el.scrollHeight
 }
 watch(showAiAssistant, (open) => { if (open) void pinChatToBottom() })
 watch(aiAssistantTab, (tab) => { if (tab === 'qa' && showAiAssistant.value) void pinChatToBottom() })
@@ -4901,6 +4914,7 @@ onUnmounted(() => {
         :width="drawerTab === 'mindmap' ? 560 : 320"
         :theme="realBookDrawerTheme"
         :theme-overrides="realBookDrawerThemeOverrides"
+        :trap-focus="!mindmapFullscreen"
       >
         <n-config-provider abstract :theme="realBookDrawerTheme" :theme-overrides="realBookDrawerThemeOverrides">
         <n-drawer-content :class="{ 'reader-drawer-realbook': isRealBook }" :title="drawerTab === 'mindmap' ? '章节导图' : '目录'">
@@ -4953,6 +4967,7 @@ onUnmounted(() => {
             :can-generate="canGenerateAiMindmap"
             @select="jumpToTextAnchor"
             @generate="generateChapterAiMindmap"
+            @fullscreen-change="(on) => (mindmapFullscreen = on)"
           />
         </n-drawer-content>
         </n-config-provider>

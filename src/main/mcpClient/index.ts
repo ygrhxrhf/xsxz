@@ -43,6 +43,13 @@ export async function ensureCraftSession(): Promise<CraftSession> {
     }
   })()
   connectingByUrl.set(url, pending)
+  // 这次尝试落定就摘掉：失败时如果把它留在表里，之后每次调用都会拿到同一个拒绝，
+  // 网络恢复或设置页重存地址也不会重试。
+  pending
+    .catch(() => {})
+    .finally(() => {
+      if (connectingByUrl.get(url) === pending) connectingByUrl.delete(url)
+    })
   return pending
 }
 
@@ -81,6 +88,7 @@ export async function listCraftTools(): Promise<
 
 /** 断开连接（设置页「断开」或退出时用）。 */
 export async function disconnectCraft(): Promise<void> {
+  connectingByUrl.clear()
   if (session) {
     await session.disconnect().catch(() => {})
     session = null

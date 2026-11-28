@@ -24,6 +24,8 @@ import type {
   ChapterMeta,
   ChapterStatus,
   ExternalSource,
+  AiChatContextAnchor,
+  AiChatStep,
   FailCode,
   ImportType,
   ReadingProgress,
@@ -1095,7 +1097,48 @@ function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | 
     message.scope = value.scope
   }
   message.externalSources = parseExternalSources(value.externalSources)
+  // 思考链与选区锚点同样要跟着回放：丢了它们，重开侧栏后回答看不出跑过哪些工具，
+  // 追问也找不到原文出处。
+  const steps = parseChatSteps(value.steps)
+  if (steps) message.steps = steps
+  const context = parseChatContext(value.context)
+  if (context) message.context = context
   return message
+}
+
+/** 思考链的宽容读取：坏掉的单步丢掉，绝不让整条消息作废。 */
+function parseChatSteps(value: unknown): AiChatStep[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const steps: AiChatStep[] = []
+  for (const step of value) {
+    if (!isRecord(step)) continue
+    if (typeof step.label !== 'string' || !step.label) continue
+    if (step.state !== 'running' && step.state !== 'done' && step.state !== 'error') continue
+    steps.push({ label: step.label, state: step.state })
+  }
+  return steps.length ? steps : undefined
+}
+
+/** 选区锚点的宽容读取；一条都不合法时返回 undefined（与旧记录同义）。 */
+function parseChatContext(value: unknown): AiChatContextAnchor[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const anchors: AiChatContextAnchor[] = []
+  for (const item of value) {
+    if (!isRecord(item) || item.kind !== 'selection') continue
+    if (typeof item.chapterId !== 'string' || typeof item.chapterTitle !== 'string') continue
+    if (typeof item.excerpt !== 'string' || typeof item.label !== 'string') continue
+    const anchor: AiChatContextAnchor = {
+      kind: 'selection',
+      chapterId: item.chapterId,
+      chapterTitle: item.chapterTitle,
+      excerpt: item.excerpt,
+      label: item.label,
+    }
+    if (typeof item.start === 'number') anchor.start = item.start
+    if (typeof item.end === 'number') anchor.end = item.end
+    anchors.push(anchor)
+  }
+  return anchors.length ? anchors : undefined
 }
 
 /**

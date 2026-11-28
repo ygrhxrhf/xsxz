@@ -10,6 +10,7 @@ const EXISTING_API_CHANNELS = new Set([
   'window.api.ai.test',
   'window.api.ai.onExternalSources',
   'window.api.ima.testConnection',
+  'window.api.ima.listKnowledgeBases',
   'window.api.mcp.testConnection',
   'window.api.mcp.listTools',
   'window.api.mcp.disconnect',
