@@ -6,6 +6,7 @@ import type { TtsPosition } from '../shared/types'
 import { atomicWriteText } from './atomicFile'
 import { bookDir } from './library'
 import { getSettings, getTtsApiKey } from './settings'
+import { aiFetch } from './aiFetch'
 
 const MAX_CACHE_BYTES = 500 * 1024 * 1024
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -84,7 +85,7 @@ async function synthesizeTtsInner(text: string, controller: AbortController): Pr
   } catch { /* cache miss */ }
 
   try {
-    const response = await fetch(endpoint, {
+    const response = await aiFetch(endpoint, {
       method: 'POST', redirect: 'error', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify({ model: prefs.onlineModel, voice: prefs.onlineVoice, input: text, response_format: 'mp3' }),

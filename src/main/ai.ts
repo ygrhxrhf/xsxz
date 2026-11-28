@@ -10,6 +10,7 @@ import type {
   ChapterStatus,
 } from '../shared/types'
 import { BUILTIN_AI_PROMPTS } from '../shared/aiPrompts'
+import { aiFetch } from './aiFetch'
 import {
   AI_INPUT_CHARACTER_BUDGET,
   CLEAN_PARAGRAPH_SEGMENT_LIMIT,
@@ -412,9 +413,10 @@ function buildRequestBody(
     if (allowExtensions && policy.mode === 'high' && config.thinkingEnabled !== false) {
       body.reasoning_effort = 'high'
     }
-    if (allowExtensions && policy.structured) body.response_format = { type: 'json_object' }
-    if (allowExtensions && stream) body.stream_options = { include_usage: true }
   }
+  // JSON 模式与 usage 回传是所有 OpenAI 兼容端点的通用参数；个别服务不认时会被 400/422 降级路径摘掉。
+  if (allowExtensions && policy.structured) body.response_format = { type: 'json_object' }
+  if (allowExtensions && stream) body.stream_options = { include_usage: true }
   return body
 }
 
@@ -463,7 +465,7 @@ function hasCompatibilityExtensions(body: Record<string, unknown>): boolean {
 }
 
 function isTransientStatus(status: number): boolean {
-  return status === 429 || status === 500 || status === 503
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504
 }
 
 function finishResult(
@@ -547,7 +549,7 @@ export async function runAiTaskCompletion(
   if (options.advisor?.consult) {
     try {
       const prompt = messages.map((m) => m.content).join('\n')
-      const advice = await options.advisor.consult({ prompt, task: options.task, signal })
+      const advice = await options.advisor.consult({ prompt, task: options.task, signal, messages })
       if (advice) {
         if (advice.skip) {
           return {
@@ -570,7 +572,7 @@ export async function runAiTaskCompletion(
   try {
     while (true) {
       const body = buildRequestBody(config, messages, policy, stream, !compatibilityDowngraded)
-      const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      const response = await aiFetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
         body: JSON.stringify(body),
@@ -936,8 +938,10 @@ export async function cleanChapterBody(
   signal?: AbortSignal,
   plan = planCleanChapterRequest(chapterTitle, body, taskInstruction),
   onUsage?: (usage: AiUsage | undefined) => Promise<void>,
+  onBatch?: (done: number, total: number) => void,
 ): Promise<AiCleanResult> {
   const cleanedBatches: string[] = []
+  let done = 0
   for (const batch of plan.batches) {
     const result = await runAiTaskCompletion(
       config,
@@ -951,6 +955,8 @@ export async function cleanChapterBody(
     await onUsage?.(result.usage)
     if (result.truncated) throw new Error('模型输出被截断，未生成可应用的清理预览')
     cleanedBatches.push(result.text.trim())
+    done += 1
+    onBatch?.(done, plan.batches.length)
   }
   return { original: body, cleaned: cleanedBatches.join('\n\n') }
 }

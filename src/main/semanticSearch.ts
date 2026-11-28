@@ -1,19 +1,22 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { renderedParagraphs } from '../shared/aiText'
+import { renderedParagraphs, retrievalTerms } from '../shared/aiText'
 import type { AiCitation, AiUsage, Book } from '../shared/types'
 import { estimateAiTokens } from './aiBudget'
 import { reserveAutomaticTokens } from './aiMonthlyBudget'
 import type { AiQueue } from './aiScheduler'
+import { aiFetch } from './aiFetch'
 import { selectLocalEvidence } from './aiEvidenceSearch'
+import { planEvidenceReads } from './aiEvidenceIndex'
 import { atomicWriteText, bookDir, getBook, readChapter, withBookLock } from './library'
 import { clipReadBody, getReadFrontier } from './readFrontier'
 import { assertTrustedAiEndpoint, getEmbeddingApiKey, getSettings } from './settings'
 
 interface SemanticChunk { id: string; chapterId: string; paragraphIndex: number; text: string; hash: string; vector: number[] }
-interface SemanticFile { version: 1; modelKey: string; chunks: SemanticChunk[] }
+interface SemanticFile { version: 1; modelKey: string; chunks: SemanticChunk[]; total?: number; updatedAt?: string }
 const errors = new Map<string, string>()
+const building = new Set<string>()
 let queue: AiQueue | null = null
 const LIMIT = 20_000
 
@@ -51,7 +54,7 @@ async function embeddings(texts: string[], signal?: AbortSignal): Promise<{ vect
   const apiKey = await getEmbeddingApiKey()
   if (!embedding?.baseUrl || !embedding.model || !apiKey) throw new Error('请先在设置中配置向量服务地址、模型和 Key')
   assertTrustedAiEndpoint(embedding.baseUrl, { ...settings.ai!, provider: 'custom' })
-  const response = await fetch(`${embedding.baseUrl.replace(/\/+$/, '')}/embeddings`, {
+  const response = await aiFetch(`${embedding.baseUrl.replace(/\/+$/, '')}/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ model: embedding.model, input: texts }),
@@ -101,6 +104,9 @@ async function build(bookId: string, signal: AbortSignal): Promise<void> {
     const cached = old.get(chunk.id)
     return cached?.hash === chunk.hash ? cached : chunk
   })
+  // 总段数落盘：状态查询不再为了算进度把全书正文读一遍。
+  file.total = wanted.length
+  file.updatedAt = new Date().toISOString()
   await saveIndex(bookId, file)
   for (let index = 0; index < file.chunks.length; index += 8) {
     if (signal.aborted || !await readEnabled(bookId)) return
@@ -123,9 +129,11 @@ async function build(bookId: string, signal: AbortSignal): Promise<void> {
 export function configureSemanticQueue(value: AiQueue): void { queue = value }
 export function wakeSemanticIndex(bookId: string): void {
   if (!queue) return
+  building.add(bookId)
   queue.start(async (_jobId, signal) => {
     try { await build(bookId, signal) }
     catch (error) { errors.set(bookId, error instanceof Error ? error.message : String(error)) }
+    finally { building.delete(bookId) }
   }, { lane: 'background', cls: 'semanticIndex', bookId, dedupeKey: `semantic:${bookId}` })
 }
 
@@ -151,7 +159,8 @@ export async function semanticStatus(bookId: string): Promise<{ enabled: boolean
   const config = settings.embedding
   const key = config?.baseUrl && config.model ? modelKey(config.baseUrl, config.model) : ''
   const file = await readIndex(bookId, key)
-  const total = enabled ? await desiredChunks(await getBook(bookId)).then((chunks) => chunks.length).catch(() => 0) : 0
+  // 旧索引没有 total 字段：退化成已落盘段数，最多少报未索引部分，不再触发全量读盘。
+  const total = enabled ? (file.total ?? file.chunks.length) : 0
   const indexed = file.chunks.filter((chunk) => chunk.vector.length).length
   // 未开启时不回报「建立中/已损坏」这类旧错误（那是上次开启留下的），但配置提示仍要给：
   // 用户要开索引，第一步就是去配向量服务。
@@ -159,7 +168,9 @@ export async function semanticStatus(bookId: string): Promise<{ enabled: boolean
     ? '向量服务尚未配置'
     : !enabled
       ? '语义索引未开启'
-      : errors.get(bookId) ?? (indexed < total ? '正在建立或等待更新索引' : '语义索引已就绪')
+      : errors.get(bookId) ?? (indexed < total
+        ? (building.has(bookId) ? '正在建立索引' : '索引待更新：继续阅读后自动补齐')
+        : '语义索引已就绪')
   return { enabled, indexed, total, message }
 }
 
@@ -170,14 +181,33 @@ export async function findScenes(bookId: string, rawQuestion: string): Promise<{
   const frontier = await getReadFrontier(bookId)
   const progressChapterId = book.progress?.chapterId
   if (!progressChapterId) throw new Error('还没有阅读进度')
+  const chapterIndex = new Map(book.chapters.map((chapter) => [chapter.id, chapter.index]))
+  const currentIndex = chapterIndex.get(progressChapterId) ?? -1
+  // 按问句词形剪枝读盘：与证据问答共用一套「只读可能命中的章」预算，不再把全书正文拉进内存。
+  const refs = book.chapters
+    .filter((meta) => frontier.chapters[meta.id] && meta.status === 'ready')
+    .map((meta) => ({ id: meta.id, index: meta.index, file: meta.file }))
+  const terms = retrievalTerms(question)
+  const mandatory = new Set<string>([progressChapterId])
+  for (const meta of book.chapters) {
+    const titleTerms = retrievalTerms(meta.title)
+    for (const term of terms) {
+      if (titleTerms.has(term)) {
+        mandatory.add(meta.id)
+        break
+      }
+    }
+  }
+  const readPlan = await planEvidenceReads({ bookId, refs, terms, mandatory, currentIndex, maxRead: 24 })
   const searchChapters = await Promise.all(book.chapters.map(async (meta) => ({
     id: meta.id, index: meta.index, title: meta.title, status: meta.status,
-    body: frontier.chapters[meta.id] ? clipReadBody((await readChapter(bookId, meta.id)).body, frontier.chapters[meta.id]) : '',
+    body: readPlan.readIds.has(meta.id) && frontier.chapters[meta.id]
+      ? clipReadBody((await readChapter(bookId, meta.id)).body, frontier.chapters[meta.id])
+      : '',
   })))
   const local = selectLocalEvidence(searchChapters, { originalQuestion: question }, {
     requestedUptoChapterId: progressChapterId, progressChapterId, currentChapterId: progressChapterId, maxResults: 5,
   }).citations
-  const currentIndex = book.chapters.find((chapter) => chapter.id === progressChapterId)?.index ?? -1
   if (!await readEnabled(bookId)) return { hits: local, mode: 'local', message: '语义索引未开启，当前为本地字面检索' }
   const settings = await getSettings()
   const config = settings.embedding
@@ -188,12 +218,24 @@ export async function findScenes(bookId: string, rawQuestion: string): Promise<{
     const { vectors } = await embeddings([question])
     const query = vectors[0]!
     const title = new Map(book.chapters.map((chapter) => [chapter.id, chapter.title]))
-    const valid = index.chunks.filter((chunk) => chunk.vector.length === query.length &&
-      searchChapters.some((chapter) => chapter.id === chunk.chapterId && chapter.index <= currentIndex &&
-        renderedParagraphs(chapter.body)[chunk.paragraphIndex]?.includes(chunk.text)))
-    const semantic = valid.map((chunk) => ({ chunk, score: chunk.vector.reduce((sum, value, i) => sum + value * query[i]!, 0) }))
-      .sort((a, b) => b.score - a.score).slice(0, 8)
-      .map(({ chunk }) => ({ id: `scene-${chunk.id}`, chapterId: chunk.chapterId, chapterTitle: title.get(chunk.chapterId) ?? '', paragraphIndex: chunk.paragraphIndex, excerpt: chunk.text.slice(0, 160) }))
+    const scored = index.chunks
+      .filter((chunk) => chunk.vector.length === query.length && (chapterIndex.get(chunk.chapterId) ?? Infinity) <= currentIndex)
+      .map((chunk) => ({ chunk, score: chunk.vector.reduce((sum, value, i) => sum + value * query[i]!, 0) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 8)
+    // 只为最终候选读正文复核；索引里最多 8 条，读盘量不随书长大。
+    const planned = new Map(searchChapters.filter((chapter) => chapter.body).map((chapter) => [chapter.id, chapter.body]))
+    const semantic: AiCitation[] = []
+    for (const { chunk } of scored) {
+      let body = planned.get(chunk.chapterId)
+      if (body === undefined) {
+        const position = frontier.chapters[chunk.chapterId]
+        body = position ? clipReadBody((await readChapter(bookId, chunk.chapterId)).body, position) : ''
+        planned.set(chunk.chapterId, body)
+      }
+      if (!renderedParagraphs(body)[chunk.paragraphIndex]?.includes(chunk.text)) continue
+      semantic.push({ id: `scene-${chunk.id}`, chapterId: chunk.chapterId, chapterTitle: title.get(chunk.chapterId) ?? '', paragraphIndex: chunk.paragraphIndex, excerpt: chunk.text.slice(0, 160) })
+    }
     const hits = [...semantic, ...local].filter((hit, index, all) => all.findIndex((item) => item.chapterId === hit.chapterId && item.paragraphIndex === hit.paragraphIndex) === index).slice(0, 5)
     return { hits, mode: 'semantic', message: '已结合语义与本地字面检索' }
   } catch (error) {

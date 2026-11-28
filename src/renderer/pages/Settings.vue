@@ -909,10 +909,6 @@ async function testAi() {
   if (!trustedOrigins) return
   testing.value = true
   try {
-    if (trustedOrigins.length !== trustedCustomOrigins.value.length) {
-      settings.value = await window.api.settings.set({ ai: { trustedCustomOrigins: trustedOrigins } })
-      trustedCustomOrigins.value = [...trustedOrigins]
-    }
     const res = await window.api.ai.test({
       baseUrl: baseUrl.value,
       model: model.value,
@@ -921,6 +917,11 @@ async function testAi() {
       thinkingEnabled: thinkingEnabled.value,
     })
     if (res.ok) {
+      // 只有真的连通才把地址写进信任列表：连不上就写入，等于用一次失败的测试换掉用户的信任边界。
+      if (trustedOrigins.length !== trustedCustomOrigins.value.length) {
+        settings.value = await window.api.settings.set({ ai: { trustedCustomOrigins: trustedOrigins } })
+        trustedCustomOrigins.value = [...trustedOrigins]
+      }
       msg.value = '连接成功'
       msgType.value = 'success'
       // 结果原先只落在卡片最底部那行小字上，离按钮隔着一整块设置，用户容易以为没反应。

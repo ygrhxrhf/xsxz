@@ -48,10 +48,13 @@ describe('long chapter cleaning plan', () => {
         choices: [{ message: { content: `清理结果${request}` }, finish_reason: 'stop' }],
       }), { status: 200 })
     }))
+    const progress: string[] = []
     const result = await cleanChapterBody({
       baseUrl: 'https://custom.example/v1', model: 'model', apiKey: 'key', provider: 'custom',
-    }, '长章', paragraphs(8, 7_000), undefined, undefined, plan)
+    }, '长章', paragraphs(8, 7_000), undefined, undefined, plan, undefined,
+    (done, total) => { progress.push(`${done}/${total}`) })
     expect(request).toBe(plan.batches.length)
+    expect(progress).toEqual(Array.from({ length: plan.batches.length }, (_, index) => `${index + 1}/${plan.batches.length}`))
     expect(result.cleaned).toBe(Array.from({ length: request }, (_, index) => `清理结果${index + 1}`).join('\n\n'))
   })
 

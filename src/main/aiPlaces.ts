@@ -8,6 +8,7 @@
  */
 import { renderedParagraphs } from '../shared/aiText'
 import type { AiPlace, AiPlaceKind } from '../shared/types'
+import { AI_INPUT_CHARACTER_BUDGET, countTextCharacters } from './aiBudget'
 import { getBook } from './library'
 import { getReadFrontier, readClippedChapter } from './readFrontier'
 
@@ -92,6 +93,28 @@ export function buildPlaceCandidates(chapterId: string, chapterTitle: string, bo
   return candidates
 }
 
+/** 至少留一条候选；系统提示 + 候选 JSON 必须塞进 30000 字硬预算。 */
+export function fitPlaceCandidatesToBudget(
+  candidates: readonly PlaceCandidate[],
+): { candidates: PlaceCandidate[]; user: string; truncated: boolean } {
+  const available = AI_INPUT_CHARACTER_BUDGET - countTextCharacters(PLACE_SYSTEM_PROMPT)
+  let user = buildPlaceUserPrompt(candidates)
+  if (countTextCharacters(user) <= available) return { candidates: [...candidates], user, truncated: false }
+  if (!candidates.length) throw new Error('AI 请求固定内容过长，无法在 30000 字预算内发送')
+  let low = 1
+  let high = candidates.length - 1
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    const probe = buildPlaceUserPrompt(candidates.slice(0, middle))
+    if (countTextCharacters(probe) <= available) low = middle
+    else high = middle - 1
+  }
+  const fitted = candidates.slice(0, low)
+  user = buildPlaceUserPrompt(fitted)
+  if (countTextCharacters(user) > available) throw new Error('AI 请求固定内容过长，无法在 30000 字预算内发送')
+  return { candidates: fitted, user, truncated: true }
+}
+
 export function buildPlaceUserPrompt(candidates: readonly PlaceCandidate[]): string {
   return JSON.stringify(candidates.map((candidate) => ({
     id: candidate.id,
@@ -134,15 +157,17 @@ export async function placeExtractionPlan(bookId: string): Promise<PlaceExtracti
     candidates.push(...selected)
   }
 
+  const fitted = fitPlaceCandidatesToBudget(candidates)
+  const keptChapterIds = new Set(fitted.candidates.map((candidate) => candidate.chapterId))
   return {
     bookId,
     bookTitle: book.title,
-    chapters,
-    candidates,
-    paragraphCount: candidates.length,
-    truncated,
+    chapters: chapters.filter((chapter) => keptChapterIds.has(chapter.id)),
+    candidates: fitted.candidates,
+    paragraphCount: fitted.candidates.length,
+    truncated: truncated || fitted.truncated,
     system: PLACE_SYSTEM_PROMPT,
-    user: buildPlaceUserPrompt(candidates),
+    user: fitted.user,
   }
 }
 

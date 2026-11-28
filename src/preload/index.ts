@@ -500,8 +500,8 @@ const api = {
       ipcRenderer.invoke('siteRules.remove', { host }) as Promise<{ ok: true } | { ok: false; message: string }>,
   },
   ai: {
-    clean: (bookId: string, chapterId: string, confirmOverBudget = false) =>
-      ipcRenderer.invoke('ai.clean', { bookId, chapterId, confirmOverBudget }) as Promise<
+    clean: (bookId: string, chapterId: string, confirmOverBudget = false, jobId?: string) =>
+      ipcRenderer.invoke('ai.clean', { bookId, chapterId, confirmOverBudget, ...(jobId ? { jobId } : {}) }) as Promise<
         | { ok: true; result: AiCleanResult; budget: AiBudgetEstimate }
         | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
         | { ok: false; stopped?: boolean; message: string }

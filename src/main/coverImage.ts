@@ -6,6 +6,7 @@ import { imageBytesInfo } from '../shared/imageBytes'
 import { DEFAULT_AI_PREFS, DEFAULT_COVER_GEN_PREFS, type Book, type CoverGenPrefs } from '../shared/types'
 import { bookDir, getBook, readChapter, setCover } from './library'
 import { assertTrustedAiEndpoint, getApiKey, getCoverGenApiKey, getSettings } from './settings'
+import { aiFetch } from './aiFetch'
 
 /**
  * AI 封面生成：没有封面的书，按「书名 + 作者 + 题材 + 梗概」画一张竖版封面。
@@ -192,7 +193,7 @@ async function readImageBytesFromUrl(url: string): Promise<Uint8Array> {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new CoverGenError('bad-image', '图片服务返回的地址不是 http(s)')
   }
-  const response = await fetch(url, { signal: AbortSignal.timeout(IMAGE_DOWNLOAD_TIMEOUT_MS) })
+  const response = await aiFetch(url, { signal: AbortSignal.timeout(IMAGE_DOWNLOAD_TIMEOUT_MS) })
   if (!response.ok) throw new CoverGenError('http', describeHttpFailure(response.status, ''))
   const length = Number(response.headers.get('content-length') || '0')
   if (length > MAX_IMAGE_BYTES) throw new CoverGenError('bad-image', '封面图超过 8MB，已放弃')
@@ -222,7 +223,7 @@ async function requestImageBytes(input: {
   prompt: string
 }): Promise<Uint8Array> {
   for (let attempt = 0; ; attempt += 1) {
-    const response = await fetch(input.endpoint, {
+    const response = await aiFetch(input.endpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
