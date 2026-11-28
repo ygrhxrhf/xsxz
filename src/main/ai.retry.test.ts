@@ -63,6 +63,22 @@ describe('bounded transient retries', () => {
     expect(signals[1]).toBe(signals[2])
   })
 
+  it.each([502, 504])('retries gateway status %s', async (status) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('bad gateway', { status }))
+      .mockResolvedValueOnce(new Response('bad gateway', { status }))
+      .mockResolvedValueOnce(success())
+    vi.stubGlobal('fetch', fetchMock)
+    const delays: number[] = []
+    const result = await runAiTaskCompletion(config, messages, {
+      task: 'memory',
+      hooks: { random: () => 0, sleep: async (delayMs) => { delays.push(delayMs) } },
+    })
+    expect(result.json).toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(delays).toEqual([1_000, 2_000])
+  })
+
   it('stops after two retries for 503', async () => {
     const fetchMock = vi.fn(async () => new Response('unavailable', { status: 503 }))
     vi.stubGlobal('fetch', fetchMock)

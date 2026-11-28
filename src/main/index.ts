@@ -58,7 +58,7 @@ import {
 } from './library'
 import { importTxt } from './importTxt'
 import { importEpub } from './importEpub'
-import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, getTencentMapKey, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider, getProxyPassword } from './settings'
+import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTierSenseApiKey, getTencentMapKey, normalizeCustomOrigin, normalizeSettingsUpdatePayload, resolveEffectiveAiProvider, getProxyPassword } from './settings'
 import { parsePlaceExtraction, placeExtractionPlan } from './aiPlaces'
 import { choosePlaceCandidate, confirmPlace as confirmMapPlace, geocodePlaces, readPlaces, savePlaces, searchPlaceCandidates } from './mapPlaces'
 import { getMapImage, setMapImage } from './mapImage'
@@ -161,6 +161,7 @@ import { describeMaterialCoverage, preserveUserMemoryCorrections, seedMemoryBefo
 import {
   buildEvidenceAnswerMessages, buildEvidenceQueryRewriteMessages, executeEvidenceQaPipeline,
   planEvidenceChapterReads, selectReaderAnnotations, type EvidenceAnswerNote,
+  type EvidenceConversationTurn,
 } from './aiEvidenceQa'
 // 只借类型：核验回调的可选形参在流水线里已经推到闭包外的条件 spread，不标注就成了隐式 any。
 import type { buildEvidenceVerifyMessages } from './aiEvidenceVerify'
@@ -456,6 +457,9 @@ async function applySavedProxy(): Promise<void> {
     if (!prefs) return
     const res = await applyProxyToSession(novelSession(), prefs)
     if (!res.ok) console.warn(`代理未应用：${res.message}`)
+    // AI / 向量 / TTS 走主进程 net.fetch，认 defaultSession 的代理；与浏览共用同一份设置。
+    const defaultRes = await applyProxyToSession(session.defaultSession, prefs)
+    if (!defaultRes.ok) console.warn(`AI 请求代理未应用：${defaultRes.message}`)
   } catch (e) {
     console.warn('应用代理设置失败：', e)
   }
@@ -2837,6 +2841,7 @@ function registerIpc(): void {
     bookId: string
     chapterId: string
     confirmOverBudget?: boolean
+    jobId?: string
   }) => {
     try {
       const settings = await getSettings()
@@ -2856,6 +2861,7 @@ function registerIpc(): void {
       }
       const apiKey = await getApiKey()
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const cleanJobId = typeof args.jobId === 'string' && args.jobId.trim() ? args.jobId.trim().slice(0, 80) : ''
       const exclusive = await aiExclusive({
         lane: 'interactive', cls: 'clean', bookId: args.bookId,
         dedupeKey: `clean:${args.bookId}:${args.chapterId}`,
@@ -2869,6 +2875,9 @@ function registerIpc(): void {
             signal,
             plan,
             async (usage) => { await persistAiUsage(args.bookId, usage) },
+            (done, total) => {
+              if (cleanJobId) sendAiStage(cleanJobId, 'requesting', `清理第 ${done}/${total} 批`)
+            },
           )
         } catch (error) {
           if (signal.aborted) throw new DOMException('aborted', 'AbortError')
@@ -2997,6 +3006,12 @@ function registerIpc(): void {
       if (latest?.role !== 'user' || latest.content !== question) {
         persistedMessages.push({ role: 'user', content: question })
       }
+      // 追问要能还原「他 / 这里 / 后来」：把之前的问答作为不可信上下文带上，证据仍只取本次检索。
+      const history: EvidenceConversationTurn[] = args.messages
+        .slice(0, -1)
+        .filter((message): message is { role: 'user' | 'assistant'; content: string } =>
+          (message.role === 'user' || message.role === 'assistant') && Boolean(message.content.trim()))
+        .map((message) => ({ role: message.role, content: message.content }))
       return aiStart({
         lane: 'interactive', cls: 'qa', bookId: args.bookId,
         dedupeKey: `qa:${args.bookId}:${args.chapterId}:${question}`,
@@ -3043,10 +3058,14 @@ function registerIpc(): void {
           // 批注只在已读范围内才有资格：未读章的划线进 prompt 等于把未读正文送出机器。
           const readableIds = new Set(readPlan.ordered.slice(0, readPlan.progressPosition + 1)
             .filter((chapter) => Boolean(frontier.chapters[chapter.id])).map((chapter) => chapter.id))
-          const clippedBodies = new Map<string, string>()
-          for (const chapterId of readableIds) clippedBodies.set(chapterId, (await readClippedChapter(args.bookId, chapterId, frontier)).body)
-          const readerAnnotations = selectReaderAnnotations(await listAnnotations(args.bookId), readableIds)
-            .filter((annotation) => (clippedBodies.get(annotation.chapterId) ?? '').includes(annotation.excerpt.trim()))
+          // 只读「有划线、且划线落在已读范围」的那几章：全书预读会让剪枝形同虚设。
+          const annotated = selectReaderAnnotations(await listAnnotations(args.bookId), readableIds)
+          const annotatedBodies = new Map<string, string>()
+          for (const chapterId of new Set(annotated.map((annotation) => annotation.chapterId))) {
+            annotatedBodies.set(chapterId, (await readClippedChapter(args.bookId, chapterId, frontier)).body)
+          }
+          const readerAnnotations = annotated
+            .filter((annotation) => (annotatedBodies.get(annotation.chapterId) ?? '').includes(annotation.excerpt.trim()))
           const readerNotes: EvidenceAnswerNote[] = readerAnnotations.map((item) => ({
             chapterTitle: book.chapters.find((chapter) => chapter.id === item.chapterId)?.title ?? '',
             excerpt: item.excerpt,
@@ -3070,6 +3089,7 @@ function registerIpc(): void {
             question,
             taskInstruction,
             readerNotes,
+            history,
             stopped: () => signal.aborted,
             onStage: (stage) => sendAiStage(jobId, stage),
             onRewriteStarted: (messages) => sendAiBudget(jobId, 'qa', promptBudget(
@@ -3130,9 +3150,9 @@ function registerIpc(): void {
               candidateCitations = citations
               upto = uptoChapterId
               sendAiEvidence(jobId, citations, uptoChapterId)
-              const rewriteMessages = buildEvidenceQueryRewriteMessages(question)
+              const rewriteMessages = buildEvidenceQueryRewriteMessages(question, history)
               const answerMessages = citations.length
-                ? buildEvidenceAnswerMessages(question, citations, taskInstruction)
+                ? buildEvidenceAnswerMessages(question, citations, taskInstruction, [], history)
                 : []
               const citedChapterIds = new Set(citations.map((citation) => citation.chapterId))
               const citedChapters = book.chapters
@@ -3243,10 +3263,16 @@ function registerIpc(): void {
         const providedModel = typeof payload?.model === 'string' ? payload.model.trim() : ''
         const baseUrl = providedBaseUrl || settings.baseUrl
         const model = providedModel || settings.model
+        // 「测试连接」本身就是用户对这个地址的临时授权：只在本次调用里信任，失败不落盘。
+        const origin = normalizeCustomOrigin(baseUrl)
+        const aiPrefs = settings.ai ?? DEFAULT_AI_PREFS
+        const testSettings = origin && !aiPrefs.trustedCustomOrigins.includes(origin)
+          ? { ...settings, ai: { ...aiPrefs, trustedCustomOrigins: [...aiPrefs.trustedCustomOrigins, origin] } }
+          : settings
         const exclusive = await aiExclusive(
           { lane: 'interactive', cls: 'test' },
           () => testConnection(
-            trustedAiConfig(settings, apiKey, {
+            trustedAiConfig(testSettings, apiKey, {
               baseUrl,
               model,
               provider: payload?.provider,

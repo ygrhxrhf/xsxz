@@ -157,15 +157,19 @@ export async function startFromSubscription(
       const ses = session.fromPartition('persist:novel')
       // 走 applyProxyToSession 而不是裸 setProxy：它带着「先等再断连」的保护，
       // 否则内核刚换过时留在死端口上的连接会把 network service 打崩。
-      const applied = await applyProxyToSession(ses as never, {
+      const kernelPrefs = {
         ...DEFAULT_PROXY_PREFS,
-        mode: 'manual',
-        protocol: 'http',
+        mode: 'manual' as const,
+        protocol: 'http' as const,
         host: '127.0.0.1',
         port,
         bypass: '',
-      })
+      }
+      const applied = await applyProxyToSession(ses as never, kernelPrefs)
       if (!applied.ok) throw new Error(applied.message ?? '切换代理失败')
+      // 主进程 net.fetch（AI / 向量 / TTS）走 defaultSession，和浏览共用同一个内核出口。
+      const defaultApplied = await applyProxyToSession(session.defaultSession as never, kernelPrefs)
+      if (!defaultApplied.ok) throw new Error(defaultApplied.message ?? '切换代理失败')
     } catch (e) {
       await stopSubscriptionProxy()
       const message = `内核已启动但会话没能切过去：${e instanceof Error ? e.message : String(e)}`

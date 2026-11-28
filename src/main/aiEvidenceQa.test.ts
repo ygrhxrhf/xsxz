@@ -34,6 +34,32 @@ describe('evidence QA prompts and citation whitelist', () => {
     expect(messages[0]!.content).toContain('citationIds 只能取支持这一条结论的候选 id')
   })
 
+  it('carries prior turns as untrusted conversation so follow-ups can resolve references', () => {
+    const messages = buildEvidenceAnswerMessages('他为什么离开？', [citation], '仅根据证据回答。', [], [
+      { role: 'user', content: '顾清在哪里找到账册？' },
+      { role: 'assistant', content: '在码头。' },
+    ])
+    const payload = JSON.parse(messages[1]!.content) as Record<string, unknown>
+    expect(payload.conversation).toEqual([
+      { role: 'user', content: '顾清在哪里找到账册？' },
+      { role: 'assistant', content: '在码头。' },
+    ])
+    expect(messages[0]!.content).toContain('conversation 是之前的问答')
+    expect(messages[0]!.content).toContain('不是证据')
+  })
+
+  it('clips history to the newest bounded turns', () => {
+    const history = Array.from({ length: 12 }, (_, index) => ({
+      role: index % 2 ? 'assistant' as const : 'user' as const,
+      content: `第${index}轮${'长'.repeat(800)}`,
+    }))
+    const messages = buildEvidenceAnswerMessages('继续问', [citation], '规则', [], history)
+    const payload = JSON.parse(messages[1]!.content) as { conversation: Array<{ content: string }> }
+    expect(payload.conversation).toHaveLength(8)
+    expect(payload.conversation[0]!.content.startsWith('第4轮')).toBe(true)
+    expect(payload.conversation.every((turn) => Array.from(turn.content).length === 500)).toBe(true)
+  })
+
   it('rejects fabricated ids, missing claims, and empty citation lists while accepting the legacy shape', () => {
     // v2 契约：逐条结论各自带 citationIds
     expect(() => parseEvidenceAnswer({ answer: '回答', claims: [{ text: '回答', citationIds: ['invented'] }] }, [citation]))

@@ -4,19 +4,20 @@ import { describe, expect, it, vi } from 'vitest'
 const setProxyCalls: unknown[] = []
 const closeCalls: { n: number } = { n: 0 }
 
-vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp/spbf-proxy-runtime-test' },
-  session: {
-    fromPartition: () => ({
-      setProxy: async (config: unknown) => {
-        setProxyCalls.push(config)
-      },
-      closeAllConnections: async () => {
-        closeCalls.n++
-      },
-    }),
-  },
-}))
+vi.mock('electron', () => {
+  const fakeSession = () => ({
+    setProxy: async (config: unknown) => {
+      setProxyCalls.push(config)
+    },
+    closeAllConnections: async () => {
+      closeCalls.n++
+    },
+  })
+  return {
+    app: { getPath: () => '/tmp/spbf-proxy-runtime-test' },
+    session: { fromPartition: () => fakeSession(), defaultSession: fakeSession() },
+  }
+})
 
 import { buildSingBoxConfig, parseSubscription } from './subscription'
 import {

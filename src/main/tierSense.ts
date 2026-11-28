@@ -29,6 +29,8 @@ export interface AiRequestAdvisor {
     prompt: string
     task: AiTaskKind
     signal?: AbortSignal
+    /** 原始消息：压缩只能改带正文的那条，不能把 system 规则整段丢掉。 */
+    messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
   }): Promise<{
     messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
     maxTokensOverride?: number
@@ -195,7 +197,7 @@ function createTierSenseAdvisor(
   if (!client || !TIER_SENSE_TASKS.has(task)) return undefined
 
   return {
-    async consult({ prompt, signal }) {
+    async consult({ prompt, signal, messages }) {
       let difficultyResult: TierSenseDifficulty | null = null
       let compressionResult: TierSenseCompression | null = null
 
@@ -207,8 +209,19 @@ function createTierSenseAdvisor(
         )
       }
 
-      const split = splitCompressibleBody(prompt)
-      if (split) {
+      let target: { index: number; head: string; body: string } | null = null
+      for (const [index, message] of (messages ?? []).entries()) {
+        const split = splitCompressibleBody(message.content)
+        if (!split) continue
+        target = { index, ...split }
+        break
+      }
+      if (!target) {
+        const split = splitCompressibleBody(prompt)
+        if (split) target = { index: -1, ...split }
+      }
+      if (target) {
+        const split = target
         compressionResult = await client.compress(split.body, task, signal)
         if (compressionResult) {
           report(
@@ -235,8 +248,11 @@ function createTierSenseAdvisor(
         }
       }
 
-      if (compressionResult && split) {
-        result.messages = [{ role: 'user', content: split.head + compressionResult.compressed }]
+      if (compressionResult && target) {
+        const compressed = target.head + compressionResult.compressed
+        result.messages = target.index >= 0 && messages
+          ? messages.map((message, index) => index === target.index ? { ...message, content: compressed } : message)
+          : [{ role: 'user', content: compressed }]
       }
 
       return result

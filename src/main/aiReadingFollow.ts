@@ -156,6 +156,8 @@ export class AiReadingFollowService {
   private readonly pending = new Set<string>()
   private readonly explicit = new Set<string>()
   private readonly streaks = new Map<string, number>()
+  /** 因为没 Key 停下的书：设置变更时只把它们捡回来，不必每次保存设置都扫全库。 */
+  private readonly stalled = new Set<string>()
   private readonly hooks: AiFollowHooks
 
   constructor(private readonly queue: AiQueue, hooks: Partial<AiFollowHooks> = {}) {
@@ -185,6 +187,7 @@ export class AiReadingFollowService {
     const running = this.drainPromise
     this.pending.clear()
     this.explicit.clear()
+    this.stalled.clear()
     this.activeBookId = ''
     await running?.catch(() => {})
   }
@@ -200,7 +203,11 @@ export class AiReadingFollowService {
   }
 
   settingsChanged(): Promise<void> {
-    return this.wake()
+    // 补 Key 后只把因此停下的书捡回队列；普通偏好保存不该触发全库扫描。
+    if (!this.stalled.size) return Promise.resolve()
+    for (const bookId of this.stalled) this.pending.add(bookId)
+    this.stalled.clear()
+    return this.drain()
   }
 
   private async discover(): Promise<void> {
@@ -379,9 +386,17 @@ export class AiReadingFollowService {
     // 自动触发受设置页总开关约束；用户点了「继续 / 现在整理」才算当场授权。
     if (!settings.ai?.autoReadingFollow && !this.explicit.has(bookId)) return 'stopped'
     if (file.paused) return this.reviveIfMaterialChanged(bookId, file)
-    if (!settings.apiKeyConfigured) return 'yielded'
+    // 没 Key 不是「等一会儿就会好」：让队列停下并记下来，设置变更时再试一次。
+    if (!settings.apiKeyConfigured) {
+      this.stalled.add(bookId)
+      return 'stopped'
+    }
     const apiKey = await getApiKey()
-    if (!apiKey) return 'yielded'
+    if (!apiKey) {
+      this.stalled.add(bookId)
+      return 'stopped'
+    }
+    this.stalled.delete(bookId)
     const book = await getBook(bookId)
     this.activeBookId = bookId
     try {
@@ -541,8 +556,9 @@ export class AiReadingFollowService {
       if (chapter.body.trim() && isFullyRead(chapter.body, frontier.chapters[meta.id])) ordered.push({ ...meta, body: chapter.body })
     }
     if (!ordered.length) {
-      await this.markMemoryApplied(book.id, chapterIds, false)
-      return 'progress'
+      // 这几种章此刻不可整理（正文失效 / 未读完）。不要盖章，也不要空转：
+      // 留在待整理里，等下一次读完新章或用户点「继续」时再试。
+      return 'idle'
     }
     const existing = await visibleMemory(book.id, await readAiMemory(book.id))
     const instruction = resolveAiTaskInstruction(settings.ai ?? DEFAULT_AI_PREFS, 'memory')
@@ -582,7 +598,8 @@ export class AiReadingFollowService {
       const first = chapterIds[0]!
       return this.handleFailure(book.id, first, file.done[first]?.sig ?? '', job.message)
     }
-    await this.markMemoryApplied(book.id, chapterIds, true)
+    // 只标记真的进了这次请求的章：正文失效/未读完的章留在待整理里，不能被一起盖章丢记忆。
+    await this.markMemoryApplied(book.id, ordered.map((chapter) => chapter.id), true)
     return 'progress'
   }
 

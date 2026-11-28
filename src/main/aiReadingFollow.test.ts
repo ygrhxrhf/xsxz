@@ -353,6 +353,35 @@ describe('自动追剧', () => {
     reopened.stop()
   })
 
+  it('记忆批次只标记真正送进模型的章，正文失效的章留在待整理', async () => {
+    const bookId = await seed(5, 5)
+    let summaries = 0
+    mocks.complete.mockImplementation(async (_config, _messages, options: { task?: string }) => {
+      if (options?.task === 'memory') {
+        return {
+          text: '', truncated: false, usage: { inputTokens: 5, outputTokens: 3 },
+          json: { characters: [], relations: [], foreshadows: [], events: [], reviewDecisions: [] },
+        }
+      }
+      summaries += 1
+      if (summaries === 5) {
+        // 第 5 章摘要回来时让第 2 章正文失效，模拟重下过程中的一批 5 章。
+        await writeChapterFile(bookId, chapterId(2), { title: '第2章', body: '', status: 'empty' })
+      }
+      return { text: '本章整理结果', truncated: false, usage: { inputTokens: 9, outputTokens: 4 } }
+    })
+    service.start()
+    await service.setMode(bookId, 'auto', true)
+    for (let index = 1; index <= 5; index += 1) await service.chapterFinished(bookId, chapterId(index), 1)
+    await service.wake(bookId)
+
+    const coverage = await service.coverage(bookId)
+    expect(coverage.organizedChapters).toBe(5)
+    // 没送进模型的那一章仍记在待整理里，不能被整批 markMemoryApplied 一起盖章。
+    expect(coverage.queuedChapters).toBe(1)
+    expect((await readAiMemory(bookId))?.uptoChapterId).toBe(chapterId(5))
+  })
+
   it('退出取消打断记忆批次时保留原记忆，章仍是待推进而不是已完成', async () => {
     const bookId = await seed(5, 5)
     await writeAiMemory(bookId, seededMemory())
