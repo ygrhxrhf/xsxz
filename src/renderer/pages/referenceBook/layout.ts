@@ -283,7 +283,7 @@ export function measure(font: string, text: string) {
   return w
 }
 
-function fontString(cfg: LayoutConfig, size: number, run: { bold?: boolean; italic?: boolean; mono?: boolean; weight?: number }) {
+export function fontString(cfg: LayoutConfig, size: number, run: { bold?: boolean; italic?: boolean; mono?: boolean; weight?: number }) {
   const weight = run.weight ?? (run.bold ? 650 : 440)
   const fam = run.mono ? 'ui-monospace, "SF Mono", Menlo, monospace' : cfg.family
   return `${run.italic ? 'italic ' : ''}${weight} ${size}px ${fam}`
