@@ -1068,7 +1068,13 @@ function parseChatClaims(value: unknown): AiEvidenceClaim[] | undefined {
 function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | null {
   if (!isRecord(value) || (value.role !== 'user' && value.role !== 'assistant') || typeof value.content !== 'string') return null
   const message: AiEvidenceChatMessage = { role: value.role, content: value.content }
-  if (!v2 || value.role !== 'assistant') return message
+  if (!v2) return message
+  // 选区锚点挂在**用户**那条消息上（这一问基于哪段原文），所以不能跟着助手的早退一起丢。
+  const userContext = parseChatContext(value.context)
+  if (value.role !== 'assistant') {
+    if (userContext) message.context = userContext
+    return message
+  }
   if ('citations' in value) {
     if (!Array.isArray(value.citations) || !value.citations.every(isChatCitation)) return null
     message.citations = value.citations
@@ -1101,8 +1107,7 @@ function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | 
   // 追问也找不到原文出处。
   const steps = parseChatSteps(value.steps)
   if (steps) message.steps = steps
-  const context = parseChatContext(value.context)
-  if (context) message.context = context
+  if (userContext) message.context = userContext
   return message
 }
 

@@ -374,8 +374,9 @@ function setFullscreen(on: boolean): void {
   emit('fullscreen-change', on)
   void nextTick(() => {
     fitView()
-    // 退出全屏时焦点留在原地会掉到 body 上：还给这个按钮，键盘用户不用再 Tab 找回来。
-    if (!on) fullscreenButton.value?.focus()
+    // 进全屏时把焦点带进这块范围（焦点留在抽屉里就会落在被遮住的控件上）；
+    // 退出时焦点留在原地会掉到 body 上：还给全屏按钮，键盘用户不用再 Tab 找回来。
+    fullscreenButton.value?.focus()
   })
 }
 
@@ -388,12 +389,45 @@ function toggleFullscreen(): void {
  * 这里在 window 的捕获阶段最先把事件吃掉，否则一按 Esc 连抽屉带导图一起关掉。
  * 没有全屏时完全不插手，Esc 照旧关抽屉。
  */
+const rootEl = ref<HTMLElement | null>(null)
+
+/**
+ * 全屏时的 Tab 收口。
+ *
+ * 全屏控件被 Teleport 到 body，外层抽屉的焦点陷阱已经让开（否则 Tab 会被拽回被遮住的抽屉）；
+ * 让开之后总得有人兜住，不然 Tab 到最后一个控件就会跑到背景里的抽屉页签上。
+ */
 function onWindowKeydown(event: KeyboardEvent): void {
-  if (!fullscreen.value || event.key !== 'Escape') return
-  event.preventDefault()
-  event.stopPropagation()
-  event.stopImmediatePropagation()
-  setFullscreen(false)
+  if (!fullscreen.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    event.stopImmediatePropagation()
+    setFullscreen(false)
+    return
+  }
+  if (event.key !== 'Tab') return
+  const root = rootEl.value
+  if (!root) return
+  const focusables = [...root.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex="-1"])',
+  )]
+  if (!focusables.length) return
+  const first = focusables[0]!
+  const last = focusables[focusables.length - 1]!
+  const active = document.activeElement as HTMLElement | null
+  if (!active || !root.contains(active)) {
+    event.preventDefault()
+    first.focus()
+    return
+  }
+  if (event.shiftKey && active === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
 onMounted(() => {
@@ -480,6 +514,7 @@ function nodeClass(item: PositionedNode): string {
 <template>
   <Teleport to="body" :disabled="!fullscreen">
   <section
+    ref="rootEl"
     class="reader-mindmap"
     :class="{ 'is-fullscreen': fullscreen }"
     :data-map-theme="theme.id"

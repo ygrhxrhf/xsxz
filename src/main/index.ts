@@ -1447,8 +1447,9 @@ function registerIpc(): void {
       } else if (configuredUrl === builtInLocal && (await localVisionAvailable())) {
         // 没改过的默认值就是本机 magpie 网关。装了才走它，没装就落到聊天视觉——
         // 否则没装 magpie 的机器会一直往 127.0.0.1 打，回退分支永远到不了。
+        // 模型跟着用户的选择走：只有没填模型时才用网关的默认款。
         visionUrl = ATLAS_LOCAL_VISION.baseUrl
-        visionModel = ATLAS_LOCAL_VISION.model
+        visionModel = visionModel.trim() || ATLAS_LOCAL_VISION.model
       }
       const apiKey = visionUrl ? '' : await getApiKey()
       if (!visionUrl && !apiKey) {

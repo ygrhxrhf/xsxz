@@ -23,8 +23,11 @@ export const REPLACE_CHAT_MAX_STEPS = 40
 export const REPLACE_CHAT_MAX_STEP_LABEL = 120
 /** 选区锚点条数上限：一条消息通常最多一两个出处，留余量。 */
 export const REPLACE_CHAT_MAX_CONTEXT = 5
-/** 一轮回答的外部来源条数上限：与证据上限同量级，防止一次写盘撑大 chat.json。 */
-export const REPLACE_CHAT_MAX_SOURCES = 20
+/**
+ * 一轮回答的外部来源条数上限：一次 Craft 检索能返回几十篇文档标题，正常历史就会超过 20——
+ * 上限只防把 chat.json 撑爆，不能拒掉应用自己刚写下的记录。
+ */
+export const REPLACE_CHAT_MAX_SOURCES = 200
 /** 选区摘录上限：与 selectionContext 的截断长度对齐。 */
 export const REPLACE_CHAT_MAX_EXCERPT = 2000
 /**

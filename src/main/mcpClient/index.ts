@@ -88,7 +88,8 @@ export async function listCraftTools(): Promise<
 
 /** 断开连接（设置页「断开」或退出时用）。 */
 export async function disconnectCraft(): Promise<void> {
-  connectingByUrl.clear()
+  // 不动 connectingByUrl 里在途的尝试：它们各自会在落定后把自己摘掉，
+  // 这里清表反而会让同一地址出现两条并发的建会话路径。
   if (session) {
     await session.disconnect().catch(() => {})
     session = null
