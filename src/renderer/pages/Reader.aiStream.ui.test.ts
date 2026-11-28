@@ -104,7 +104,7 @@ async function mountAssistant(
     ai: {
       onChunk: (fn: (event: AiChunkEvent) => void) => { handlers.chunk = fn; return () => { handlers.chunk = undefined } },
       onStage: (fn: (event: AiStageEvent) => void) => { handlers.stage = fn; return () => { handlers.stage = undefined } },
-      onBudget: (fn: (event: never) => void) => { handlers.budget = fn as Handlers['budget']; return () => { handlers.budget = undefined } },
+      onExternalSources: () => () => {}, onBudget: (fn: (event: never) => void) => { handlers.budget = fn as Handlers['budget']; return () => { handlers.budget = undefined } },
       onDone: (fn: (event: AiDoneEvent) => void) => { handlers.done = fn; return () => { handlers.done = undefined } },
       chatStream: async () => { chatStarts.count += 1; return { ok: true, jobId: 'qa-1' } },
       agentChat: async () => { chatStarts.count += 1; return { ok: true, jobId: 'qa-1' } },

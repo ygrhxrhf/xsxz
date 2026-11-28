@@ -27,6 +27,7 @@ vi.mock('electron', () => ({
 import {
   DEFAULT_AI_PLACEHOLDER,
   DEFAULT_AI_PREFS,
+  DEFAULT_ATLAS_VISION_PREFS,
   DEFAULT_PROXY_PREFS,
   DEFAULT_READER_PREFS,
   DEFAULT_COVER_GEN_PREFS,
@@ -148,6 +149,29 @@ describe('settings atomic persistence', () => {
     expect(JSON.parse(await readFile(SETTINGS_FILE, 'utf8'))).not.toHaveProperty('libraryPath')
     expect((await getSettings()).libraryPath).toBe(defaultLibraryPath())
   })
+  it('地图识别服务：未写过时用本机 magpie，保存后能读回，显式空串才回退聊天 AI', async () => {
+    expect((await getSettings()).atlasVision).toEqual(DEFAULT_ATLAS_VISION_PREFS)
+
+    await updateSettings({ atlasVision: { baseUrl: 'http://127.0.0.1:3425/v1', model: ' auto/glm-5.3-flash ' } })
+    resetSettingsCacheForTests()
+    expect((await getSettings()).atlasVision).toEqual({
+      baseUrl: 'http://127.0.0.1:3425/v1',
+      model: 'auto/glm-5.3-flash',
+    })
+
+    // 显式空串 = 「回退聊天 AI」，与「没写过」不是同一件事。
+    await updateSettings({ atlasVision: { baseUrl: '' } })
+    resetSettingsCacheForTests()
+    expect((await getSettings()).atlasVision?.baseUrl).toBe('')
+    // 模型名没提交时保留上一次的有效值。
+    expect((await getSettings()).atlasVision?.model).toBe('auto/glm-5.3-flash')
+
+    // 非法地址也按回退处理，且不允许带账号密码。
+    await updateSettings({ atlasVision: { baseUrl: 'ftp://x.test/v1' } })
+    resetSettingsCacheForTests()
+    expect((await getSettings()).atlasVision?.baseUrl).toBe('')
+  })
+
   it('全书概览模型默认沿用全局模型，只接受去空白后的名字', async () => {
     expect((await getSettings()).ai?.overviewModel).toBe('')
     await updateSettings({ ai: { overviewModel: '  deepseek-v4-flash  ' } })

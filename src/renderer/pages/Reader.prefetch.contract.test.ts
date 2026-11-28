@@ -115,7 +115,7 @@ function installReaderApi() {
       ai: {
         onChunk: () => () => {},
         onStage: () => () => {},
-        onBudget: () => () => {},
+        onExternalSources: () => () => {}, onBudget: () => () => {},
         onDone: () => () => {},
         getMaterialCoverage: async () => ({ ok: true, coverage: null }),
         getUsage: async () => ({ ok: true, usage: { calls: 0, inputTokens: 0, outputTokens: 0 } }),

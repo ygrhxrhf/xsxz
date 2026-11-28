@@ -1,4 +1,4 @@
-import type { AiEvidenceChatMessage, AiEvidenceClaim, AiEvidenceVerification } from '../shared/types'
+import type { AiChatContextAnchor, AiChatStep, AiEvidenceChatMessage, AiEvidenceClaim, AiEvidenceVerification, ExternalSource } from '../shared/types'
 
 /**
  * `ai.replaceChat` 的入参校验。
@@ -17,6 +17,19 @@ export const REPLACE_CHAT_MAX_CLAIMS = 50
 export const REPLACE_CHAT_MAX_CLAIM_TEXT = 1000
 /** 与证据流水线的解析上限一致：超过它就不是逐字引文，而是一段重写的正文。 */
 export const REPLACE_CHAT_MAX_QUOTE = 500
+/** 思考链步数上限：一轮回答的工具调用远少于消息上限，够用且防止把 chat.json 撑大。 */
+export const REPLACE_CHAT_MAX_STEPS = 40
+/** 每步 label 上限：工具名与提示不会很长，超了就当无效。 */
+export const REPLACE_CHAT_MAX_STEP_LABEL = 120
+/** 选区锚点条数上限：一条消息通常最多一两个出处，留余量。 */
+export const REPLACE_CHAT_MAX_CONTEXT = 5
+/**
+ * 一轮回答的外部来源条数上限：一次 Craft 检索能返回几十篇文档标题，正常历史就会超过 20——
+ * 上限只防把 chat.json 撑爆，不能拒掉应用自己刚写下的记录。
+ */
+export const REPLACE_CHAT_MAX_SOURCES = 200
+/** 选区摘录上限：与 selectionContext 的截断长度对齐。 */
+export const REPLACE_CHAT_MAX_EXCERPT = 2000
 /**
  * 可信度标签的合法取值：渲染层算不出来，也不能让它写入未知值。
  * `disabled` 是「读者自己关掉了原文核验」，跟故障性的 `not_run` 是两回事，必须都能存回去——
@@ -134,6 +147,89 @@ function parseMessage(value: unknown, index: number): AiEvidenceChatMessage {
       throw new Error(`${at}的问答范围标记无效`)
     }
     message.scope = value.scope
+  }
+  // 外部来源（Craft 等）必须跟着消息落盘：编辑或删除另一轮时会整段重写历史，
+  // 在这里丢掉，读者保留下来的那条回答就再也点不回出处了。
+  if (value.externalSources !== undefined) {
+    if (!Array.isArray(value.externalSources)) throw new Error(`${at}的外部来源列表格式无效`)
+    // 超上限只截断、不拒绝：正常问答保存本来就不限量，这里拒绝会让「删一轮」直接存不回去。
+    message.externalSources = value.externalSources
+      .slice(0, REPLACE_CHAT_MAX_SOURCES)
+      .map((source, sourceIndex): ExternalSource => {
+      const where = `${at}第 ${sourceIndex + 1} 条外部来源`
+      if (!isRecord(source)) throw new Error(`${where}格式无效`)
+      if (
+        typeof source.id !== 'string'
+        || typeof source.providerName !== 'string'
+        || typeof source.title !== 'string'
+        || typeof source.excerpt !== 'string'
+      ) {
+        throw new Error(`${where}缺少必填字段`)
+      }
+      const parsed: ExternalSource = {
+        id: source.id,
+        providerName: source.providerName,
+        title: source.title,
+        excerpt: source.excerpt,
+      }
+      if (typeof source.url === 'string') parsed.url = source.url
+      return parsed
+    })
+  }
+  if (value.steps !== undefined) {
+    if (!Array.isArray(value.steps)) throw new Error(`${at}的思考链格式无效`)
+    if (value.steps.length > REPLACE_CHAT_MAX_STEPS) {
+      throw new Error(`${at}的思考链超过 ${REPLACE_CHAT_MAX_STEPS} 步`)
+    }
+    message.steps = value.steps.map((step, stepIndex): AiChatStep => {
+      const where = `${at}第 ${stepIndex + 1} 步`
+      if (!isRecord(step)) throw new Error(`${where}格式无效`)
+      if (typeof step.label !== 'string') throw new Error(`${where}缺少名称`)
+      if (step.label.length > REPLACE_CHAT_MAX_STEP_LABEL) throw new Error(`${where}的名称过长`)
+      if (step.state !== 'running' && step.state !== 'done' && step.state !== 'error') {
+        throw new Error(`${where}的状态无效`)
+      }
+      return { label: step.label, state: step.state }
+    })
+  }
+  if (value.context !== undefined) {
+    if (!Array.isArray(value.context)) throw new Error(`${at}的选区锚点格式无效`)
+    if (value.context.length > REPLACE_CHAT_MAX_CONTEXT) {
+      throw new Error(`${at}的选区锚点超过 ${REPLACE_CHAT_MAX_CONTEXT} 条`)
+    }
+    message.context = value.context.map((anchor, anchorIndex): AiChatContextAnchor => {
+      const where = `${at}第 ${anchorIndex + 1} 条选区锚点`
+      if (!isRecord(anchor)) throw new Error(`${where}格式无效`)
+      if (anchor.kind !== 'selection') throw new Error(`${where}的类型无效`)
+      if (typeof anchor.chapterId !== 'string') throw new Error(`${where}缺少章节 ID`)
+      if (typeof anchor.chapterTitle !== 'string') throw new Error(`${where}缺少章节标题`)
+      if (typeof anchor.excerpt !== 'string') throw new Error(`${where}缺少原文摘录`)
+      if (anchor.excerpt.length > REPLACE_CHAT_MAX_EXCERPT) {
+        throw new Error(`${where}的原文摘录过长`)
+      }
+      if (typeof anchor.label !== 'string') throw new Error(`${where}缺少出处说明`)
+      const parsed: AiChatContextAnchor = {
+        kind: 'selection',
+        chapterId: anchor.chapterId,
+        chapterTitle: anchor.chapterTitle,
+        excerpt: anchor.excerpt,
+        label: anchor.label,
+      }
+      // 区间是可选的（旧记录只有摘录没有区间）；给了就必须是非负整数。
+      if (anchor.start !== undefined) {
+        if (!Number.isSafeInteger(anchor.start) || (anchor.start as number) < 0) {
+          throw new Error(`${where}的区间起点无效`)
+        }
+        parsed.start = anchor.start as number
+      }
+      if (anchor.end !== undefined) {
+        if (!Number.isSafeInteger(anchor.end) || (anchor.end as number) < 0) {
+          throw new Error(`${where}的区间终点无效`)
+        }
+        parsed.end = anchor.end as number
+      }
+      return parsed
+    })
   }
   return message
 }

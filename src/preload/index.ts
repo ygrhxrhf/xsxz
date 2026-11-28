@@ -11,6 +11,7 @@ import type {
   AiChatThreadSummary,
   AiCreateThreadResult,
   AiListThreadsResult,
+  AiModelsResult,
   AiChunkEvent,
   AiCleanResult,
   AiDoneEvent,
@@ -256,6 +257,26 @@ const api = {
   settings: {
     get: () => ipcRenderer.invoke('settings.get') as Promise<Settings>,
     set: (update: SettingsUpdate) => ipcRenderer.invoke('settings.set', update) as Promise<Settings>,
+  },
+  mcp: {
+    testConnection: () => ipcRenderer.invoke('mcp.testConnection') as Promise<
+      { ok: true; tools: number } | { ok: false; message: string }
+    >,
+    listTools: () => ipcRenderer.invoke('mcp.listTools') as Promise<
+      | { ok: true; tools: Array<{ toolName: string; title: string; description: string; readOnly: boolean }> }
+      | { ok: false; message: string }
+    >,
+    disconnect: () => ipcRenderer.invoke('mcp.disconnect') as Promise<{ ok: true }>,
+  },
+  ima: {
+    testConnection: () => ipcRenderer.invoke('ima.testConnection') as Promise<
+      | { ok: true; knowledgeBases: Array<{ id: string; name: string }> }
+      | { ok: false; message: string }
+    >,
+    listKnowledgeBases: () => ipcRenderer.invoke('ima.listKnowledgeBases') as Promise<
+      | { ok: true; knowledgeBases: Array<{ id: string; name: string }> }
+      | { ok: false; message: string }
+    >,
   },
   map: {
     /** 打开地图页时按需取解密后的 Key；未配置或本机解不开时返回空串。 */
@@ -507,6 +528,8 @@ const api = {
       thinkingEnabled?: boolean
     }) =>
       ipcRenderer.invoke('ai.test', opts) as Promise<{ ok: boolean; text?: string; message?: string }>,
+    listModels: (baseUrl?: string) =>
+      ipcRenderer.invoke('ai.listModels', { baseUrl }) as Promise<AiModelsResult>,
     summarizeChapter: (bookId: string, chapterId: string, confirmOverBudget = false) =>
       ipcRenderer.invoke('ai.summarizeChapter', { bookId, chapterId, confirmOverBudget }) as Promise<
         AiJobStart | { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate }
@@ -637,6 +660,9 @@ const api = {
     cancel: (jobId?: string) => ipcRenderer.invoke('ai.cancel', { jobId }) as Promise<{ ok: true }>,
     onChunk: (handler: (payload: AiChunkEvent) => void) => on('ai.chunk', handler),
     onStage: (handler: (payload: AiStageEvent) => void) => on('ai.stage', handler),
+    /** 外部 MCP 来源（Craft 等）：与 citations 并列，独立事件避免干扰阶段状态机。 */
+    onExternalSources: (handler: (payload: { jobId: string; externalSources: import('../shared/types').ExternalSource[] }) => void) =>
+      on('ai.externalSources', handler),
     onBudget: (handler: (payload: AiBudgetEvent) => void) => on('ai.budget', handler),
     onDone: (handler: (payload: AiDoneEvent) => void) => on('ai.done', handler),
   },

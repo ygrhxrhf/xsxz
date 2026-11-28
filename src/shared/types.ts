@@ -940,6 +940,25 @@ export interface CoverGenPrefs {
   style: string
 }
 
+/**
+ * 书中地图识别用的视觉服务。
+ *
+ * 与聊天模型分开：识别只需要「看图 + 返回严格 JSON」，用本机 magpie 这类网关既快又不花钱。
+ * `baseUrl` 留空表示回退到聊天 AI 的服务地址与 Key（旧行为）。
+ */
+export interface AtlasVisionPrefs {
+  /** OpenAI 兼容根，例如 `http://127.0.0.1:3425/v1`；空串表示回退聊天 AI 配置。 */
+  baseUrl: string
+  /** 视觉模型名，例如 `auto/glm-5.3-flash`。 */
+  model: string
+}
+
+export const DEFAULT_ATLAS_VISION_PREFS: AtlasVisionPrefs = {
+  // 本机 magpie 网关：不需要 Key，`auto/glm-5.3-flash` 支持图像输入并稳定返回 JSON。
+  baseUrl: 'http://127.0.0.1:3425/v1',
+  model: 'auto/glm-5.3-flash',
+}
+
 export interface AutoUpdateCheckPrefs {
   enabled: boolean
   /** 两次自动检查的最小间隔（小时），1–720。 */
@@ -988,10 +1007,22 @@ export interface Settings {
   proxy?: ProxyPrefs
   /** 封面生成偏好；主进程始终补齐，缺省按默认值读取。 */
   coverGen?: CoverGenPrefs
+  /** 书中地图识别用的视觉服务；主进程始终补齐，缺省走本机 magpie。 */
+  atlasVision?: AtlasVisionPrefs
   /** 图片服务独立 Key 是否已配置；渲染层只拿布尔值。未配置时回退 AI 的 Key。 */
   coverGenKeyConfigured?: boolean
   /** 有密文但本机解不开；界面据此提示「重新填写」。 */
   coverGenKeyUnreadable?: boolean
+  /** Craft MCP 端点是否已配置（渲染层只拿布尔值，不回传含 linkid 的 URL）。 */
+  craftMcpUrlConfigured?: boolean
+  /** 有密文但本机解不开；界面据此提示「重新填写」。 */
+  craftMcpUrlUnreadable?: boolean
+  /** ima OpenAPI 凭据是否已配置；渲染层只拿布尔值，不回传明文。 */
+  imaConfigured?: boolean
+  /** 有密文但本机解不开。 */
+  imaUnreadable?: boolean
+  /** 选定的 ima 知识库（非凭据，可直接下发）；空串表示只用笔记检索。 */
+  imaKnowledgeBaseId?: string
 }
 
 export interface SettingsUpdate {
@@ -1027,8 +1058,18 @@ export interface SettingsUpdate {
   proxyPassword?: string
   /** 只合并提交的字段，非法值逐项回退默认。 */
   coverGen?: Partial<CoverGenPrefs>
+  /** 书中地图识别用的视觉服务；`baseUrl` 空串表示回退聊天 AI 配置。 */
+  atlasVision?: Partial<AtlasVisionPrefs>
   /** 图片服务独立的 Key；空字符串清除（清除后回退 AI 的 Key）。 */
   coverGenApiKey?: string
+  /** Craft MCP 端点 URL（含 linkid，是凭据）；空字符串清除。 */
+  craftMcpUrl?: string
+  /** ima OpenAPI 的 Client ID；空字符串清除。 */
+  imaClientId?: string
+  /** ima OpenAPI 的 API Key；空字符串清除。 */
+  imaApiKey?: string
+  /** 选定的 ima 知识库 ID；空字符串表示只用笔记检索。 */
+  imaKnowledgeBaseId?: string
 }
 
 /** 本机按域名的 CSS 规则。不进 Settings / settings.json。 */
@@ -1091,6 +1132,22 @@ export interface AiCitation {
   chapterId: string
   chapterTitle: string
   paragraphIndex: number
+  excerpt: string
+}
+
+/**
+ * 外部 MCP 来源引用（Craft 等）。刻意与 AiCitation 分开：后者是纯书籍坐标类型，
+ * 没有 url；MCP 来源没有章节坐标，硬塞进 citations 会让 isChatCitation 拒掉整轮消息。
+ */
+export interface ExternalSource {
+  /** 稳定 id：`craft:<文档或块 id>`；同一轮内去重靠它。 */
+  id: string
+  providerName: string
+  /** 页面/文档标题；标题缺失时用 id 兜底。 */
+  title: string
+  /** 可点击链接；服务端没给就只有标题。 */
+  url?: string
+  /** 命中的片段，截断到 300 字符。 */
   excerpt: string
 }
 
@@ -1376,6 +1433,8 @@ export interface AiStageEvent {
   citations?: AiCitation[]
   /** 与 citations 同时推送的已读夹紧截止。 */
   uptoChapterId?: string
+  /** 外部 MCP 来源（Craft 等），与 citations 并列。 */
+  externalSources?: ExternalSource[]
 }
 
 export interface AiBudgetEvent {
@@ -1412,6 +1471,36 @@ export type AiEvidenceVerification = 'verified' | 'partial' | 'not_run' | 'disab
 /** 问答回答的知识范围：book 为结合本书已读内容，general 为脱离书籍的字词释义/通识百科。 */
 export type AiChatScope = 'book' | 'general'
 
+/**
+ * 思考链的一步：这一轮「正在怎么干」的工具进度。
+ *
+ * 以前它只活在界面的扩展类型里、不落盘，重开侧栏就没了。现在随消息持久化，
+ * 让读者重开侧栏还能看到这轮回答去了哪些工具（查目录 / 读原文 / 检索 / 看记忆）。
+ * `state` 只有 running/done/error 三种，落盘前都已被收尾成终态。
+ */
+export interface AiChatStep {
+  label: string
+  state: 'running' | 'done' | 'error'
+}
+
+/**
+ * 消息附带的选区锚点：把「这一问基于哪段原文」结构化存下来。
+ *
+ * 以前划词提问只把前后文拼成一次性 prompt 文本，追问时锚点就丢了。现在随消息落盘，
+ * 追问、重开侧栏都能复用同一处原文出处。`start`/`end` 是规范化正文里的字符区间；
+ * `excerpt` 是所选原文摘录，`label` 是气泡里给人看的出处（章节 + 段号）。
+ * 旧记录没有这个字段时照常加载，不崩。
+ */
+export interface AiChatContextAnchor {
+  kind: 'selection'
+  chapterId: string
+  chapterTitle: string
+  start?: number
+  end?: number
+  excerpt: string
+  label: string
+}
+
 export interface AiEvidenceChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -1424,6 +1513,15 @@ export interface AiEvidenceChatMessage {
   stopped?: boolean
   /** 回答所属范围：general 表示纯字词/通识百科回答（未引用本书内容）。 */
   scope?: AiChatScope
+  /**
+   * 外部 MCP 来源（Craft 等）。与 citations 并列、互不污染：MCP 来源没有章节坐标，
+   * 塞进 citations 会被 isChatCitation 拒掉整轮消息。缺省（旧记录）表示没有。
+   */
+  externalSources?: ExternalSource[]
+  /** 这一轮的工具进度（思考链），随消息落盘，重开侧栏后可回放。缺省（旧记录）表示没有。 */
+  steps?: AiChatStep[]
+  /** 这条消息附带的选区锚点，追问可复用原文出处。缺省（旧记录）表示没有。 */
+  context?: AiChatContextAnchor[]
 }
 
 /**
@@ -1433,6 +1531,14 @@ export interface AiEvidenceChatMessage {
  */
 export type AiGetChatResult =
   | { ok: true; version?: 1 | 2; messages: AiEvidenceChatMessage[]; threadId?: string }
+  | { ok: false; message: string }
+
+/**
+ * ai.listModels 的响应：从已配置端点读到的可选模型名，供侧边栏快速切换。
+ * 读不到时 ok 为 false，界面退回内置候选，不弹错误。
+ */
+export type AiModelsResult =
+  | { ok: true; models: string[] }
   | { ok: false; message: string }
 
 /** 一条问答线程：同一本书里互不污染的独立会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。 */
@@ -1553,6 +1659,8 @@ export type AiDoneEvent =
       memoryUpdate?: AiMemoryUpdateResult
       /** 写盘失败后仅当前主进程有效的重试令牌。 */
       saveToken?: string
+      /** 外部 MCP 来源（Craft 等），与 citations 并列。 */
+      externalSources?: ExternalSource[]
     }
   | { jobId: string; ok: false; message: string }
 

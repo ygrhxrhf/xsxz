@@ -599,6 +599,55 @@ describe('BookMapPage（书中地图页）', () => {
     app.unmount()
   })
 
+  it('没有图内坐标的地点不画到原图上，仍进左侧列表', async () => {
+    const saved = {
+      status: 'recognized' as const,
+      message: '地图已自动识别。',
+      model: 'auto/glm-5.3-flash',
+      recognizedAt: Date.now(),
+      cached: true,
+      map: {
+        id: 'auto-no-anchor',
+        title: '东线战场',
+        period: '1941',
+        number: '2',
+        bounds: [[-12, 35], [16, 64]] as [[number, number], [number, number]],
+        center: [2, 49] as [number, number],
+        image: { sha256: 'd'.repeat(64), bytes: 300 },
+        places: [
+          {
+            id: 'london',
+            name: '伦敦',
+            modernName: 'London',
+            coordinates: [-0.118668, 51.501941] as [number, number],
+            imagePoint: [0.5, 0.4] as [number, number],
+          },
+          {
+            id: 'nowhere',
+            name: '不明小镇',
+            modernName: 'Unknown',
+            coordinates: [10, 50] as [number, number],
+            imagePoint: null,
+          },
+        ],
+        recognition: { model: 'auto/glm-5.3-flash', unresolved: [] },
+      },
+    }
+    installMapApi('', {
+      getImage: vi.fn(async () => ({ ok: true, url: 'file:///tmp/book/map/original.png' })),
+      getRecognition: vi.fn(async () => ({ ok: true, recognition: saved })),
+    })
+    const { app } = await mountPage()
+    await nextTick(); await flush()
+
+    // 只有带图内坐标的地点才画点：画到 (0,0) 会把地名错标到左上角。
+    expect(document.querySelectorAll('.book-map-atlas-pin')).toHaveLength(1)
+    // 两个地名都进左侧列表，都能切到 3D 地图。
+    const listed = [...document.querySelectorAll('.book-map-atlas-place')].map((item) => item.textContent)
+    expect(listed).toEqual(['伦敦', '不明小镇'])
+    app.unmount()
+  })
+
   it('识别失败：保留原图与中文原因，可重新识别', async () => {
     const recognize = vi.fn(async () => ({ ok: false, message: '地图识别等待超时，请稍后重试。' }))
     installMapApi('', {

@@ -76,7 +76,7 @@ function installApi(fixture: Fixture) {
     annotations: { list: async () => ({ ok: true, items: [] }) },
     download: { onProgress: () => () => {} },
     ai: {
-      onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {},
+      onChunk: () => () => {}, onStage: () => () => {}, onExternalSources: () => () => {}, onBudget: () => () => {}, onDone: () => () => {},
       getMemory: async () => ({ ok: true, memory: null }),
       getSummaries: async () => ({ ok: true, summaries: {} }),
       getChat: async () => ({ ok: true, version: 2, messages: [] }),

@@ -23,6 +23,9 @@ import type {
   ChapterFile,
   ChapterMeta,
   ChapterStatus,
+  ExternalSource,
+  AiChatContextAnchor,
+  AiChatStep,
   FailCode,
   ImportType,
   ReadingProgress,
@@ -1065,7 +1068,13 @@ function parseChatClaims(value: unknown): AiEvidenceClaim[] | undefined {
 function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | null {
   if (!isRecord(value) || (value.role !== 'user' && value.role !== 'assistant') || typeof value.content !== 'string') return null
   const message: AiEvidenceChatMessage = { role: value.role, content: value.content }
-  if (!v2 || value.role !== 'assistant') return message
+  if (!v2) return message
+  // 选区锚点挂在**用户**那条消息上（这一问基于哪段原文），所以不能跟着助手的早退一起丢。
+  const userContext = parseChatContext(value.context)
+  if (value.role !== 'assistant') {
+    if (userContext) message.context = userContext
+    return message
+  }
   if ('citations' in value) {
     if (!Array.isArray(value.citations) || !value.citations.every(isChatCitation)) return null
     message.citations = value.citations
@@ -1093,7 +1102,71 @@ function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | 
   if (value.scope === 'book' || value.scope === 'general') {
     message.scope = value.scope
   }
+  message.externalSources = parseExternalSources(value.externalSources)
+  // 思考链与选区锚点同样要跟着回放：丢了它们，重开侧栏后回答看不出跑过哪些工具，
+  // 追问也找不到原文出处。
+  const steps = parseChatSteps(value.steps)
+  if (steps) message.steps = steps
+  if (userContext) message.context = userContext
   return message
+}
+
+/** 思考链的宽容读取：坏掉的单步丢掉，绝不让整条消息作废。 */
+function parseChatSteps(value: unknown): AiChatStep[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const steps: AiChatStep[] = []
+  for (const step of value) {
+    if (!isRecord(step)) continue
+    if (typeof step.label !== 'string' || !step.label) continue
+    if (step.state !== 'running' && step.state !== 'done' && step.state !== 'error') continue
+    steps.push({ label: step.label, state: step.state })
+  }
+  return steps.length ? steps : undefined
+}
+
+/** 选区锚点的宽容读取；一条都不合法时返回 undefined（与旧记录同义）。 */
+function parseChatContext(value: unknown): AiChatContextAnchor[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const anchors: AiChatContextAnchor[] = []
+  for (const item of value) {
+    if (!isRecord(item) || item.kind !== 'selection') continue
+    if (typeof item.chapterId !== 'string' || typeof item.chapterTitle !== 'string') continue
+    if (typeof item.excerpt !== 'string' || typeof item.label !== 'string') continue
+    const anchor: AiChatContextAnchor = {
+      kind: 'selection',
+      chapterId: item.chapterId,
+      chapterTitle: item.chapterTitle,
+      excerpt: item.excerpt,
+      label: item.label,
+    }
+    if (typeof item.start === 'number') anchor.start = item.start
+    if (typeof item.end === 'number') anchor.end = item.end
+    anchors.push(anchor)
+  }
+  return anchors.length ? anchors : undefined
+}
+
+/**
+ * 外部 MCP 来源的宽容读取：字段不合法的条目单独丢掉，绝不让整条消息作废。
+ * 旧记录没有这个字段，返回空数组，界面不渲染这一组（与 citations 的「undefined = 旧记录」语义分开）。
+ */
+function parseExternalSources(value: unknown): ExternalSource[] {
+  if (!Array.isArray(value)) return []
+  const sources: ExternalSource[] = []
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.id !== 'string' || !item.id) continue
+    if (typeof item.title !== 'string' || typeof item.providerName !== 'string') continue
+    if (typeof item.excerpt !== 'string') continue
+    sources.push({
+      id: item.id,
+      providerName: item.providerName,
+      title: item.title,
+      // 只放行 http(s)：持久化文件可能被手改，javascript: / 相对路径不能原样进侧栏渲染。
+      ...(typeof item.url === 'string' && /^https?:\/\//i.test(item.url) ? { url: item.url } : {}),
+      excerpt: item.excerpt.slice(0, 300),
+    })
+  }
+  return sources
 }
 
 // ---------------------------------------------------------------------------

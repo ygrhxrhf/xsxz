@@ -12,6 +12,7 @@ import { installFontProtocol, registerFontScheme } from './fontProtocol'
 import { installImageProtocol, registerImageScheme } from './imageProtocol'
 import { installMapProtocol, registerMapScheme } from './mapProtocol'
 import {
+
   listBooks,
   getBook,
   readChapter,
@@ -61,11 +62,15 @@ import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTie
 import { parsePlaceExtraction, placeExtractionPlan } from './aiPlaces'
 import { choosePlaceCandidate, confirmPlace as confirmMapPlace, geocodePlaces, readPlaces, savePlaces, searchPlaceCandidates } from './mapPlaces'
 import { getMapImage, setMapImage } from './mapImage'
-import { readMatchingRecognition, recognizeOriginalMap } from './atlasRecognition'
+import { DEFAULT_ATLAS_VISION_PREFS } from '../shared/types'
+import type { ExternalSource } from '../shared/types'
+import { readMatchingRecognition, localVisionAvailable, recognizeOriginalMap, ATLAS_LOCAL_VISION } from './atlasRecognition'
 import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setExternalBusyProbe, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdleSlice, getPausedForHuman } from './download'
 import { atomicWriteText } from './atomicFile'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
 import { applyProxyToSession, judgeProxyProbe } from './proxy'
+import { testCraftConnection, listCraftTools, disconnectCraft, buildAgentToolsForTurn } from './mcpClient'
+import { testImaConnection, listImaKnowledgeBases, buildImaToolsForTurn } from './imaClient'
 import { installKernel, kernelInstalled } from './proxyKernel'
 import { describeScanResult, findOpenProxyPorts } from './proxyScan'
 import {
@@ -144,6 +149,7 @@ import {
   type AiConfig,
   type AiSuccessDoneEvent,
 } from './ai'
+import { listAiModels } from './aiModels'
 import { tierSenseAdvisorFor } from './tierSense'
 import { executeMemoryOrchestration, planMemoryPromptRequests, selectMemoryChapterBatches } from './aiMemoryOrchestrator'
 import { chapterBodyHash, findChapterNote, isChapterNoteStale, listChapterNotes, writeChapterNote } from './aiChapterNotes'
@@ -296,6 +302,11 @@ function sendAiEvidence(jobId: string, citations: AiCitation[], uptoChapterId: s
   mainWindow?.webContents.send('ai.stage', {
     jobId, stage: 'requesting' as AiRequestStage, citations, uptoChapterId,
   })
+}
+
+/** 外部 MCP 来源由工具调用当场算出；走独立事件而不复用 ai.stage，免得把阶段指示倒回 requesting。 */
+function sendAiExternalSources(jobId: string, externalSources: ExternalSource[]): void {
+  mainWindow?.webContents.send('ai.externalSources', { jobId, externalSources })
 }
 
 function sendAiBudget(
@@ -1423,14 +1434,36 @@ function registerIpc(): void {
       const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
       if (!bookId) return { ok: false, message: '缺少书籍标识' }
       const settings = await getSettings()
-      const apiKey = await getApiKey()
-      if (!apiKey) return { ok: false, message: '请先在设置中配置聊天 API Key' }
+      // 识别只要求模型能看图并返回 JSON，不要求聊天 Key：
+      // 设置里的视觉服务可用就直接用；没填地址时用本机 magpie；两者都不可用才回退聊天 AI。
+      const vision = settings.atlasVision ?? DEFAULT_ATLAS_VISION_PREFS
+      const configuredUrl = vision.baseUrl
+      const builtInLocal = DEFAULT_ATLAS_VISION_PREFS.baseUrl
+      let visionUrl = ''
+      let visionModel = vision.model
+      if (configuredUrl && configuredUrl !== builtInLocal) {
+        // 用户填的地址：直接用它。
+        visionUrl = configuredUrl
+      } else if (configuredUrl === builtInLocal && (await localVisionAvailable())) {
+        // 没改过的默认值就是本机 magpie 网关。装了才走它，没装就落到聊天视觉——
+        // 否则没装 magpie 的机器会一直往 127.0.0.1 打，回退分支永远到不了。
+        // 模型跟着用户的选择走：只有没填模型时才用网关的默认款。
+        visionUrl = ATLAS_LOCAL_VISION.baseUrl
+        visionModel = visionModel.trim() || ATLAS_LOCAL_VISION.model
+      }
+      const apiKey = visionUrl ? '' : await getApiKey()
+      if (!visionUrl && !apiKey) {
+        return { ok: false, message: '地图识别需要视觉模型：本机 magpie 网关不可用，请先启动它，或在设置中填写识别服务地址，或配置聊天 API Key' }
+      }
+      const config: AiConfig = visionUrl
+        ? { baseUrl: visionUrl, model: visionModel, apiKey: '', provider: 'custom' }
+        : trustedAiConfig(settings, apiKey)
       const book = await getBook(bookId)
       const result = await aiExclusive(
         { lane: 'interactive', cls: 'places', bookId, dedupeKey: `atlas:${bookId}` },
         async (signal) => {
           const outcome = await recognizeOriginalMap(bookId, {
-            config: trustedAiConfig(settings, apiKey),
+            config,
             bookTitle: book.title,
             refresh: payload?.refresh === true,
             fetchImpl: (input, init) => {
@@ -1499,8 +1532,19 @@ function registerIpc(): void {
     if (patch.proxy || typeof patch.proxyPassword === 'string') {
       await applySavedProxy()
     }
+    // Craft MCP 端点变更：断开旧会话，下次访问用新 URL 重建（否则老连接还指向旧端点）。
+    if (typeof patch.craftMcpUrl === 'string') {
+      await disconnectCraft()
+    }
     return next
   })
+  // Craft MCP 客户端：连接测试 / 工具列表 / 断开。设置页保存 craftMcpUrl 后先 test 再 list。
+  ipcMain.handle('mcp.testConnection', async () => testCraftConnection())
+  ipcMain.handle('mcp.listTools', async () => listCraftTools())
+  ipcMain.handle('mcp.disconnect', async () => { await disconnectCraft(); return { ok: true } })
+  // ima：凭据存在设置里，这里只做连接测试与知识库列表（都不传凭据明文）。
+  ipcMain.handle('ima.testConnection', async () => testImaConnection())
+  ipcMain.handle('ima.listKnowledgeBases', async () => listImaKnowledgeBases())
 
   /**
    * 拉订阅并启动内置内核。
@@ -2224,6 +2268,17 @@ function registerIpc(): void {
       }, async (jobId, signal) => {
         let partial = ''
         const citations: AiCitation[] = []
+        // 外部只读工具：Craft（MCP）与 ima（OpenAPI）。未配置时各自为空数组，不影响内置工具。
+        const [craftToolsForTurn, imaToolsForTurn] = await Promise.all([
+          buildAgentToolsForTurn({
+            onSources: (sources) => sendAiExternalSources(jobId, sources),
+          }),
+          buildImaToolsForTurn({
+            knowledgeBaseId: settings.imaKnowledgeBaseId,
+            onSources: (sources) => sendAiExternalSources(jobId, sources),
+          }),
+        ])
+        const extraToolsForTurn = { tools: [...craftToolsForTurn.tools, ...imaToolsForTurn.tools] }
         try {
           const result = await runReaderAgent({
             config: { baseUrl: config.baseUrl, model: config.model, apiKey: config.apiKey },
@@ -2231,6 +2286,11 @@ function registerIpc(): void {
               book.title,
               ordered[progressPosition]?.title ?? ordered.find((chapter) => chapter.id === args.chapterId)?.title ?? ordered[0]!.title,
               recallScope,
+              {
+                craft: craftToolsForTurn.tools.length > 0,
+                imaNotes: imaToolsForTurn.tools.length > 0,
+                imaKnowledgeBase: imaToolsForTurn.tools.some((tool) => tool.name === 'ima_search_knowledge'),
+              },
             ),
             history,
             question,
@@ -2241,6 +2301,8 @@ function registerIpc(): void {
             },
             onTool: (event) => sendAiStage(jobId, event.phase === 'start' ? 'indexing' : 'requesting', event.label),
             onCitations: (items) => sendAiEvidence(jobId, items, scopeChapterId),
+            onExternalSources: (sources) => sendAiExternalSources(jobId, sources),
+            extraTools: extraToolsForTurn.tools,
             toolkit: {
               listChapters: async () => Promise.all(ordered.map(async (chapter) => {
                 const body = await readChapter(args.bookId, chapter.id).catch(() => null)
@@ -2301,17 +2363,20 @@ function registerIpc(): void {
             },
           })
           citations.push(...result.citations)
+
           const stopped = result.stopReason === 'stopped'
           const scope: import('../shared/types').AiChatScope =
             result.toolCalls === 0 && result.citations.length === 0 ? 'general' : 'book'
+          const externalSources = result.externalSources
           const answerMessages: import('../shared/types').AiEvidenceChatMessage[] = [
             { role: 'user', content: question },
-            { role: 'assistant', content: result.text, citations: result.citations, scope, uptoChapterId: scopeChapterId, ...(stopped ? { stopped: true } : {}) },
+            { role: 'assistant', content: result.text, citations: result.citations, scope, uptoChapterId: scopeChapterId, ...(externalSources.length ? { externalSources } : {}), ...(stopped ? { stopped: true } : {}) },
           ]
           // 只读回这条会话自己的历史：别的会话的消息不该被并进来。
           const existing = await readChat(args.bookId, threadId)
           await saveAiDone(jobId, {
             jobId, ok: true, text: result.text, citations: result.citations, scope, uptoChapterId: scopeChapterId,
+            ...(externalSources.length ? { externalSources } : {}),
             ...(stopped ? { stopped: true } : {}),
           }, () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }), {
             retrySave: () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }),
@@ -3196,6 +3261,22 @@ function registerIpc(): void {
       }
     },
   )
+
+  /**
+   * 侧边栏模型选择器要的是「这个端点到底有哪些模型」：读 `/models` 拉一次，读不到就让界面退回内置候选。
+   * 端点仍然走 trustedAiConfig 校验，不因为这是只读请求就放宽。
+   */
+  ipcMain.handle('ai.listModels', async (_e, payload?: { baseUrl?: string }) => {
+    try {
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      const providedBaseUrl = typeof payload?.baseUrl === 'string' ? payload.baseUrl.trim() : ''
+      const config = trustedAiConfig(settings, apiKey, providedBaseUrl ? { baseUrl: providedBaseUrl } : {})
+      return await listAiModels({ baseUrl: config.baseUrl, apiKey: config.apiKey })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
 }
 
 app.setName('spbf')
