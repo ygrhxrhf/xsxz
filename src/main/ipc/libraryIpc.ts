@@ -5,6 +5,7 @@ import {
   assertImportable,
   deleteBook,
   getBook,
+  libraryDirState,
   listBooks,
   listTrash,
   purgeTrash,
@@ -61,7 +62,9 @@ export function registerLibraryIpc(register: IpcRegistrar, deps: LibraryIpcDeps)
 
   register('library.list', async () => {
     const books = await listBooks()
-    return { books: await bookOverview.decorate(books, await getSettings()) }
+    // 带上目录状态：目录读不到和“目录里没书”必须能分开，否则换路径/掉盘时界面会说“还没有书”。
+    const dir = await libraryDirState()
+    return { books: await bookOverview.decorate(books, await getSettings()), libraryPath: dir.path, readable: dir.readable }
   })
   register('bookOverview.retry', async (_e, payload: { bookId?: string }) => {
     try {

@@ -353,5 +353,52 @@ describe('Reader 阅读界面切换（经典模式 / 书页模式 / 真实书籍
     expect(document.querySelector('.sel-popup')).not.toBeNull()
     app.unmount()
   })
+
+  it('经典模式：启用微信读书式顶栏章名与右侧悬浮栏快捷切换（翻页/夜间）', async () => {
+    installReaderApi('classic')
+    const app = await mountReader()
+
+    expect(document.querySelector('.reader-wrap.is-classic')).not.toBeNull()
+    expect(document.querySelector('.reader-bottombar.is-classic')).not.toBeNull()
+    expect(document.querySelector('.classic-chapter-subtitle')?.textContent?.trim()).toBe('第一章')
+
+    const modeBtn = document.querySelector<HTMLButtonElement>('.classic-rail-mode')
+    expect(modeBtn?.getAttribute('aria-pressed')).toBe('false')
+    modeBtn?.click()
+    await nextTick()
+    expect(modeBtn?.getAttribute('aria-pressed')).toBe('true')
+
+    const themeBtn = document.querySelector<HTMLButtonElement>('.classic-rail-theme')
+    expect(themeBtn?.getAttribute('aria-pressed')).toBe('false')
+    themeBtn?.click()
+    await nextTick()
+    expect(themeBtn?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('.reader-wrap.is-classic.is-night')).not.toBeNull()
+
+    // 再次点击切回浅色模式
+    themeBtn?.click()
+    await nextTick()
+    expect(themeBtn?.getAttribute('aria-pressed')).toBe('false')
+    expect(document.querySelector('.reader-wrap.is-classic.is-night')).toBeNull()
+
+    // 默认启用微信读书式波浪线划线样式，右侧悬浮栏支持单/双栏一键切换
+    expect(document.querySelector('.reader-content.classic-mark-wavy')).not.toBeNull()
+    const columnsBtn = document.querySelector<HTMLButtonElement>('.classic-rail-columns')
+    expect(columnsBtn?.getAttribute('aria-pressed')).toBe('false')
+    columnsBtn?.click()
+    await nextTick()
+    expect(columnsBtn?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('.reader-content.is-classic-double')).not.toBeNull()
+    expect(document.querySelector('.reader-bottombar.is-classic.is-classic-double')).not.toBeNull()
+    columnsBtn?.click()
+    await nextTick()
+    expect(columnsBtn?.getAttribute('aria-pressed')).toBe('false')
+    expect(document.querySelector('.reader-content.is-classic-double')).toBeNull()
+
+    // 单章测试书无上下章：章末导航区不应误渲染上一章或下一章按钮
+    expect(document.querySelector('.classic-chapter-footer')).toBeNull()
+    expect(document.querySelector('.classic-chapter-prev')).toBeNull()
+    app.unmount()
+  })
 })
 

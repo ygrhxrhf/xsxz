@@ -28,6 +28,7 @@ import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
 import ProxySubscriptionPanel from '../components/ProxySubscriptionPanel.vue'
 import RuleMarketPanel from '../components/RuleMarketPanel.vue'
 import SyncPanel from '../components/SyncPanel.vue'
+import CraftPanel from '../components/CraftPanel.vue'
 import {
   AI_CUSTOM_SERVICE_NOTICE,
   customOriginNeedsConfirmation,
@@ -298,6 +299,8 @@ const tencentMapKey = ref('')
 const tencentMapSaving = ref(false)
 const provider = ref<AiProvider>('deepseek')
 const thinkingEnabled = ref(true)
+/** 回答后核对原文：默认开，关掉能省一次请求但回答只能标「未做支持性判断」。 */
+const verifyEvidenceAnswers = ref(DEFAULT_AI_PREFS.verifyEvidenceAnswers)
 const autoBookOverview = ref(true)
 const overviewModel = ref('')
 const autoReadingFollow = ref(false)
@@ -454,6 +457,8 @@ async function load() {
     const ai = settings.value.ai ?? DEFAULT_AI_PREFS
     provider.value = inferAiProvider(settings.value.baseUrl, ai.provider)
     thinkingEnabled.value = ai.thinkingEnabled
+    // 老设置文件没有这个键，主进程已经补成 true，这里直接信任下发值。
+    verifyEvidenceAnswers.value = ai.verifyEvidenceAnswers
     autoBookOverview.value = ai.autoBookOverview
     overviewModel.value = ai.overviewModel ?? ''
     autoReadingFollow.value = ai.autoReadingFollow
@@ -741,6 +746,7 @@ async function saveAi(): Promise<boolean> {
       ai: {
         provider: provider.value,
         thinkingEnabled: thinkingEnabled.value,
+        verifyEvidenceAnswers: verifyEvidenceAnswers.value,
         autoBookOverview: autoBookOverview.value,
         overviewModel: overviewModel.value.trim(),
         autoReadingFollow: autoReadingFollow.value,
@@ -885,9 +891,12 @@ async function testAi() {
     if (res.ok) {
       msg.value = '连接成功'
       msgType.value = 'success'
+      // 结果原先只落在卡片最底部那行小字上，离按钮隔着一整块设置，用户容易以为没反应。
+      message.success('连接成功')
     } else {
       msg.value = res.message || '连接失败'
       msgType.value = 'error'
+      message.error(res.message || '连接失败')
     }
   } catch (e: unknown) {
     msg.value = String(e)
@@ -1185,7 +1194,7 @@ onMounted(async () => {
       >
         {{ skin === 'light' ? '切换到深色' : '切换到浅色' }}
       </button>
-      <p class="field-help">外观只在这里切换，浏览、书库和阅读共用这一项。</p>
+      <p class="field-help">外观只在这里切换，浏览、书库和阅读共用这一项。字体、行距、主题和列宽在阅读器的「外观 / 排版」面板里调，不在这里另开一份。</p>
     </n-card>
 
     <n-card v-show="activeSection === 'library'" title="书库" class="settings-card">
@@ -1511,6 +1520,14 @@ onMounted(async () => {
         </div>
         <div class="switch-row">
           <div>
+            <div class="field-label">回答后核对原文</div>
+            <!-- 文案必须把代价说在前面：这是省钱的开关，不能让读者以为关掉之后质量不变。 -->
+            <div class="field-help">每条结论会用一次小请求确认原文是否支持；关掉可省一次调用，但回答只标「未给出逐字原文」，不会标成已核验。</div>
+          </div>
+          <n-switch v-model:value="verifyEvidenceAnswers" aria-label="回答后核对原文" />
+        </div>
+        <div class="switch-row">
+          <div>
             <div class="field-label">自动生成全书概览（含剧透）</div>
             <div class="field-help">默认开启：书加入书架后自动生成一次全书概览，之后一直读取已保存的结果；章节变化也不会重新生成。生成时会把全部章节正文发送给当前 AI 服务，长篇会产生多次调用并消耗额度。</div>
           </div>
@@ -1784,6 +1801,10 @@ onMounted(async () => {
       <!-- 账号与云同步：只同步设置与站点规则，正文与 API Key 不上云。 -->
       <n-divider style="margin:20px 0 12px" title-placement="left">账号与云同步</n-divider>
       <SyncPanel />
+
+      <!-- Crafty 联动：把读书笔记推成 Crafty 文档，正文不上传。 -->
+      <n-divider style="margin:20px 0 12px" title-placement="left">Crafty 联动</n-divider>
+      <CraftPanel />
     </n-card>
 
     <n-card v-show="activeSection === 'backup'" title="备份与恢复" class="settings-card">
@@ -1844,6 +1865,11 @@ onMounted(async () => {
 
     <n-card v-show="activeSection === 'appearance'" title="阅读偏好" class="settings-card">
       <p style="color:var(--text-muted);font-size:13px">字体、行距、主题和列宽请在阅读器的“外观”面板中调整。</p>
+      <ul class="reader-pref-hints">
+        <li>默认 18px / 1.8 行高，一行约 38 字。长篇小说其实不用改。</li>
+        <li>夜里把主题切到「夜间」，再用「屏幕压暗」压一档，比单纯调暗屏幕护眼。</li>
+        <li>觉得滚动费劲，就把阅读方式换成「屏幕翻页」，左右方向键翻页。</li>
+      </ul>
     </n-card>
 
     <n-card v-show="activeSection === 'about'" title="关于" class="settings-card">
@@ -2233,6 +2259,9 @@ onMounted(async () => {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+.reader-pref-hints { margin: 10px 0 0; padding-left: 18px; color: var(--text-muted); font-size: 12.5px; line-height: 1.9; }
+.reader-pref-hints li { margin: 0; }
 
 .form-msg {
   margin-top: 8px;

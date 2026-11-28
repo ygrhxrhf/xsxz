@@ -792,7 +792,10 @@ describe('Reader 真实书籍模式接线', () => {
     para.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300 }))
     await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
 
-    buttonByText(document.querySelector('.sel-popup')!, '批注')?.click()
+    // 图标条先展开「⋯」菜单，批注在菜单里。
+    document.querySelector<HTMLButtonElement>('.sel-popup [aria-label="更多操作"]')?.click()
+    await nextTick()
+    document.querySelector<HTMLButtonElement>('.sel-menu [data-action="note"]')?.click()
     await nextTick()
     const editor = document.querySelector<HTMLElement>('.direct-note-editor')!
     const textarea = editor.querySelector<HTMLTextAreaElement>('textarea')!
@@ -828,7 +831,10 @@ describe('Reader 真实书籍模式接线', () => {
     para.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300 }))
     await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))
 
-    buttonByText(document.querySelector('.sel-popup')!, '批注')?.click()
+    // 图标条先展开「⋯」菜单，批注在菜单里。
+    document.querySelector<HTMLButtonElement>('.sel-popup [aria-label="更多操作"]')?.click()
+    await nextTick()
+    document.querySelector<HTMLButtonElement>('.sel-menu [data-action="note"]')?.click()
     await nextTick()
     const editor = document.querySelector<HTMLElement>('.direct-note-editor')!
     const textarea = editor.querySelector<HTMLTextAreaElement>('textarea')!

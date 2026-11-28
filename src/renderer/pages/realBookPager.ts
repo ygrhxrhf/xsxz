@@ -52,10 +52,10 @@ export interface RealBookTextItem {
 }
 
 /**
- * 页内的一张批注卡片。
+ * 页内的一张批注片段（对应上游 PlacedInlineNote）。
  *
- * 卡片是原子块：要么整张落在同一页，要么整体移到下一页；高度由渲染层按真实
- * 版心与三行截断量出，分页器只负责占位。
+ * 便签在正文流里排版，可跨页拆分为多个 fragment；每个 fragment 带
+ * continued/continues 标记与完整的行级墨迹数据（含 noteDecoration）。
  */
 export interface RealBookNoteItem {
   kind: 'note'
@@ -65,8 +65,58 @@ export interface RealBookNoteItem {
   paragraph: number
   /** 锚定段落内的结束偏移，用于批注页页首的恢复锚点 */
   anchorOffset: number
-  /** 卡片占高（px，含与上文之间的间距） */
+  /** 该 fragment 占高（px） */
   height: number
+  /** 是否为上一页延续下来的片段 */
+  continued: boolean
+  /** 是否还有后续片段 */
+  continues: boolean
+  /** 该 fragment 的行级墨迹数据（含 noteDecoration） */
+  lines: readonly RealBookNoteLine[]
+  /** 便签文字颜色（对应上游 NoteTextColor） */
+  textColor: string
+}
+
+/** 便签 fragment 的一行墨迹。 */
+export interface RealBookNoteLine {
+  y: number
+  h: number
+  baseline: number
+  words: readonly RealBookNoteWord[]
+  noteDecoration?: RealBookNoteDecoration
+}
+
+/** 便签墨迹里的一个词。 */
+export interface RealBookNoteWord {
+  text: string
+  x: number
+  w: number
+  font: string
+  size: number
+  s: number
+  e: number
+  space?: boolean
+  spaceW?: number
+  noteLink?: string
+  noteStrike?: boolean
+  noteCode?: boolean
+  noteTag?: string
+  cjk?: boolean
+  breakAfter?: boolean
+  gap?: number
+  hang?: boolean
+  sup?: boolean
+  smallcaps?: boolean
+}
+
+/** 便签行的装饰（引文竖线、表格、背景等）。 */
+export interface RealBookNoteDecoration {
+  quoteX?: number
+  rule?: { x: number; w: number }
+  background?: { x: number; w: number }
+  cells?: readonly { x: number; w: number }[]
+  tableTop?: boolean
+  tableBottom?: boolean
 }
 
 /** 参考站 layout 产出的图片块：沿用同样的页内顺序。 */
@@ -88,15 +138,23 @@ export interface RealBookImageItem {
 
 export type RealBookPageItem = RealBookTextItem | RealBookNoteItem | RealBookImageItem
 
-/** 渲染层量好高度后交给分页器的批注块。 */
+/** 渲染层量好高度后交给分页器的批注块（对应上游 PlacedInlineNote）。 */
 export interface RealBookNoteBlock {
   id: string
   /** 放在这个输入段落的最后一个文本片段之后 */
   paragraph: number
   /** 锚定段落内的结束偏移 */
   anchorOffset: number
-  /** 卡片占高（px，含与上文之间的间距） */
+  /** 该 fragment 占高（px） */
   height: number
+  /** 是否为上一页延续下来的片段 */
+  continued?: boolean
+  /** 是否还有后续片段 */
+  continues?: boolean
+  /** 该 fragment 的行级墨迹数据（含 noteDecoration） */
+  lines?: readonly RealBookNoteLine[]
+  /** 便签文字颜色（对应上游 NoteTextColor） */
+  textColor?: string
 }
 
 export interface RealBookPage {
@@ -108,6 +166,13 @@ export interface RealBookPage {
   special?: 'title' | 'blank'
   /** 参考站的页码标签（正文页从 1 开始，标题/空白页为空）。 */
   label?: string
+  /**
+   * 参考站 layout 产出的原始页（行/词/引用装饰/tone/rules/chapterStart 全量）。
+   * 纹理层据此原样交给上游 renderPage，不再从 spbf 的段落行反推。
+   */
+  source?: import('./referenceBook/layout').Page
+  /** 原始页里章内字符偏移 → spbf 段落：para 段在章文本中的起点。 */
+  paragraphStarts?: ReadonlyMap<number, number>
 }
 
 /** 位置锚点：段落下标 + 段内字符偏移。 */
@@ -191,11 +256,10 @@ export function createRealBookPaginator(
   }
 
   /**
-   * 放一个批注块。
+   * 放一个批注 fragment（对应上游 PlacedInlineNote）。
    *
-   * 卡片不拆：当前页剩余高度不够就先把当前页封掉，让卡片从下一页开头出现。
-   * 极端情况下卡片比整页还高（字体异常放大），仍强行放一页，避免死循环；
-   * 真实渲染层的三行截断会把卡片高度控制在版心以内。
+   * 便签在正文流里排版，可跨页拆分为多个 fragment；每个 fragment 带
+   * continued/continues 标记与完整的行级墨迹数据。
    */
   function placeNote(note: RealBookNoteBlock): void {
     if (pageItems.length && used + note.height > pageHeight) flush()
@@ -205,6 +269,10 @@ export function createRealBookPaginator(
       paragraph: note.paragraph,
       anchorOffset: note.anchorOffset,
       height: note.height,
+      continued: note.continued ?? false,
+      continues: note.continues ?? false,
+      lines: note.lines ?? [],
+      textColor: note.textColor ?? 'default',
     })
     used += note.height
     if (used >= pageHeight) flush()

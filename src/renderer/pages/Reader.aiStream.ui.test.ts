@@ -51,11 +51,10 @@ function createNoteFixture(): NoteFixture {
   return { notes: [], current: null, starts: [], startResults: [], saves: [], listCalls: [], cancels: [] }
 }
 
-/** 笔记 pane 用文案认，不靠 naive-ui 生成的 tab id */
+/** 笔记区靠稳定的 data-ai-pane 认，不再依赖 naive-ui 的 tab 容器 */
 function readerNotesPane(): HTMLElement {
-  const pane = [...document.querySelectorAll<HTMLElement>('.n-tab-pane')]
-    .find((item) => item.textContent?.includes('只发送本章正文和本章的划线批注'))
-  if (!pane) throw new Error('笔记 pane 没渲染')
+  const pane = document.querySelector<HTMLElement>('[data-ai-pane="notes"]')
+  if (!pane) throw new Error('笔记区没渲染')
   return pane
 }
 
@@ -108,6 +107,7 @@ async function mountAssistant(
       onBudget: (fn: (event: never) => void) => { handlers.budget = fn as Handlers['budget']; return () => { handlers.budget = undefined } },
       onDone: (fn: (event: AiDoneEvent) => void) => { handlers.done = fn; return () => { handlers.done = undefined } },
       chatStream: async () => { chatStarts.count += 1; return { ok: true, jobId: 'qa-1' } },
+      agentChat: async () => { chatStarts.count += 1; return { ok: true, jobId: 'qa-1' } },
       getChat: async () => ({ ok: true, version: 2, messages: [] }),
       clearChat: async () => ({ ok: true }),
       cancel: async (jobId?: string) => { notes.cancels.push(jobId ?? ''); return { ok: true } },
@@ -144,11 +144,6 @@ async function mountAssistant(
   app.mount(host)
   await vi.waitFor(() => expect(document.querySelector('.reader-content')?.textContent).toContain('c1正文。'))
   document.querySelector<HTMLButtonElement>('[aria-label="AI"]')?.click()
-  await nextTick()
-  const qaButton = [...document.querySelectorAll<HTMLButtonElement>('.tool-panel button')]
-    .find((item) => item.textContent?.includes('聊书'))
-  expect(qaButton, 'AI 面板里的「聊书」入口').toBeTruthy()
-  qaButton?.click()
   await vi.waitFor(() => expect(document.querySelector('.chat-input-row textarea')).toBeTruthy())
   return {
     app,
@@ -157,11 +152,11 @@ async function mountAssistant(
     bodyText: () => document.body.textContent ?? '',
     bubbles: () => [...document.querySelectorAll('.chat-msg.assistant .chat-bubble')].map((el) => el.textContent ?? ''),
     async clickTab(label: string) {
-      const tab = [...document.querySelectorAll<HTMLElement>('.n-tabs-tab')]
+      const tab = [...document.querySelectorAll<HTMLElement>('.ai-top-switch button')]
         .find((item) => item.textContent?.trim() === label)
-      expect(tab, `抽屉里应有「${label}」tab`).toBeTruthy()
+      expect(tab, `抽屉里应有「${label}」开关`).toBeTruthy()
       tab!.click()
-      await vi.waitFor(() => expect(document.body.textContent).toContain('只发送本章正文和本章的划线批注'))
+      await vi.waitFor(() => expect(getComputedStyle(readerNotesPane()).display).not.toBe('none'))
       await nextTick()
     },
     notesPane: readerNotesPane,
@@ -252,6 +247,9 @@ describe('Reader 问答流式呈现', () => {
       await nextTick()
       expect(reader.bubbles()[0]).toBe('她把玉印交给了码头的账房先生。此后她离开了码头。')
       expect(reader.stopButton(), '终态后回到可再次提问').toBeUndefined()
+      // 用量不再常驻：点开状态条的运行信息面板才看得到，避免每次打开侧栏先读一张账单。
+      document.querySelector<HTMLButtonElement>('.ai-status-bar')?.click()
+      await nextTick()
       expect(document.body.textContent).toContain('最近一次：输入 12 / 输出 8 tokens')
       expect(document.body.textContent).not.toContain('服务未返回 token 用量。')
       expect(chatStarts.count).toBe(1)
@@ -297,9 +295,12 @@ describe('Reader 问答流式呈现', () => {
     const reader = await mountAssistant(handlers, chatStarts)
     try {
       await reader.selectText(2, 4)
-      const askButton = [...document.querySelectorAll<HTMLButtonElement>('.sel-popup button')]
-        .find((item) => item.textContent?.includes('问 AI'))
-      expect(askButton, '选区工具条应有「问 AI」入口').toBeTruthy()
+      // 工具条默认是图标条：点「⋯」展开完整菜单，再按文字找入口。
+      document.querySelector<HTMLButtonElement>('.sel-popup [aria-label="更多操作"]')?.click()
+      await nextTick()
+      const askButton = [...document.querySelectorAll<HTMLButtonElement>('.sel-menu button')]
+        .find((item) => item.textContent?.includes('解释这段'))
+      expect(askButton, '选区菜单应有「解释这段」入口').toBeTruthy()
       askButton!.click()
       await vi.waitFor(() => expect(reader.bubbles()).toHaveLength(1))
       expect(chatStarts.count).toBe(1)

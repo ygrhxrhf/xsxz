@@ -33,19 +33,21 @@ describe('evidence QA IPC contract', () => {
 
   it('uses a detached retry snapshot and an empty stopped terminal during save', async () => {
     const block = await chatStreamBlock()
-    expect(block).toContain('const retrySave = () => writeChat(args.bookId, completedMessages)')
+    // 每次写盘都带上解析好的 threadId：漏一次就会把这条会话的回答写进当前 active 的另一条。
+    expect(block).toContain('const retrySave = () => writeChat(args.bookId, completedMessages, { threadId })')
     expect(block).toContain('citations: result.citations')
     expect(block).toContain('uptoChapterId: result.uptoChapterId')
-    expect(block).toContain('{ version: existingChat.version }')
+    // 开跑前先把历史写进这条会话：存储迁到 chats.json 后 readChat 总是 v2，不再需要旧版本号。
+    expect(block).toContain('await writeChat(args.bookId, persistedMessages, { threadId })')
     expect(block).toContain('const persistedMessages: import')
     expect(block).toContain('[...existingChat.messages]')
     expect(block).not.toContain('args.messages.filter(')
     expect(block).toContain("role: 'assistant', content: result.text, citations: result.citations")
     expect(block).toContain('uptoChapterId: result.uptoChapterId, stopped: true')
     expect(block).toContain('stopped: true,')
-    expect(block).toContain('saveStopped: () => writeChat(args.bookId, stoppedMessages)')
+    expect(block).toContain('saveStopped: () => writeChat(args.bookId, stoppedMessages, { threadId })')
     expect(block).toContain('retrySave,')
-    expect(block).toContain('() => writeChat(args.bookId, completedMessages, { signal })')
+    expect(block).toContain('() => writeChat(args.bookId, completedMessages, { signal, threadId })')
   })
 
   it('streams the answer field, pushes citations early, and keeps the partial on both stop paths', async () => {

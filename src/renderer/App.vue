@@ -156,6 +156,33 @@ function openBook(bookId: string) {
   tab.value = 'reader'
 }
 
+/**
+ * 「阅读」入口等于「继续读」：没选书时按最近读过（没进度则按最近加入）挑一本，
+ * 而不是让这个页签只会说一句「从书库打开一本书后在这里阅读」。
+ */
+async function resolveResumeBookId(): Promise<string | undefined> {
+  try {
+    const { books } = await window.api.library.list()
+    const withProgress = books.filter((b) => b.progress)
+    if (withProgress.length) {
+      withProgress.sort((a, b) => (b.progress!.updatedAt || '').localeCompare(a.progress!.updatedAt || ''))
+      return withProgress[0].id
+    }
+    const newest = [...books].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+    return newest[0]?.id
+  } catch {
+    return undefined
+  }
+}
+
+async function goTab(next: Tab) {
+  if (next === 'reader' && !currentBookId.value) {
+    const resumeId = await resolveResumeBookId()
+    if (resumeId) currentBookId.value = resumeId
+  }
+  tab.value = next
+}
+
 function backToLibrary() {
   tab.value = 'library'
 }
@@ -230,7 +257,7 @@ onUnmounted(() => {
               type="button"
               :title="item.label"
               :aria-current="tab === item.id ? 'page' : undefined"
-              @click="tab = item.id"
+              @click="goTab(item.id)"
             >
               <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path v-for="path in item.iconPaths" :key="path" :d="path" />
@@ -266,6 +293,7 @@ onUnmounted(() => {
             @open-book="openBook"
             @go-browse="goBrowse"
             @open-web-book="openWebBook"
+            @go-settings="tab = 'settings'"
           />
           <ReaderPage
             v-show="tab === 'reader'"

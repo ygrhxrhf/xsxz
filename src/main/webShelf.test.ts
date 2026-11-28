@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   bootstrap: vi.fn(),
   catalog: vi.fn(),
+  readingPos: vi.fn(),
 }))
 
 vi.mock('electron', () => ({
@@ -15,6 +16,10 @@ vi.mock('electron', () => ({
 vi.mock('./readingSession', () => ({
   loadPageBootstrap: (url: string) => mocks.bootstrap(url),
   loadCatalog: (url: string) => mocks.catalog(url),
+}))
+
+vi.mock('./browseState', () => ({
+  getReadingPos: (url: string) => mocks.readingPos(url),
 }))
 
 import {
@@ -51,6 +56,8 @@ let dir = ''
 beforeEach(async () => {
   mocks.bootstrap.mockReset()
   mocks.catalog.mockReset()
+  mocks.readingPos.mockReset()
+  mocks.readingPos.mockResolvedValue(null)
   dir = await mkdtemp(join(tmpdir(), 'spbf-web-shelf-'))
   setWebShelfDirForTests(dir)
 })
@@ -132,6 +139,87 @@ describe('web shelf storage', () => {
     const res = await addWebShelf({ url: PAGE_URL })
     expect(res.ok).toBe(false)
     expect(await listWebShelf()).toEqual([])
+  })
+
+  it('章节页加入书架用书页书名和简介，不把章名存成书名', async () => {
+    const chapterUrl = 'https://example.com/book/65/c2.html'
+    mocks.bootstrap.mockResolvedValue({
+      ok: true,
+      bootstrap: {
+        pageUrl: chapterUrl,
+        pageKind: 'chapter',
+        title: '第 2 章 起风',
+        author: '',
+        catalogUrl: PAGE_URL,
+        chapters: [],
+        description: '',
+      },
+    })
+    mocks.catalog.mockResolvedValue({
+      ...catalogResult(chapters(3)),
+      book: { title: '示例书', author: '示例作者', coverUrl: 'https://example.com/cover.jpg', description: '站点书页上的简介' },
+    })
+    const res = await addWebShelf({ url: chapterUrl })
+    if (!res.ok) throw new Error(res.message)
+    expect(res.book.title).toBe('示例书')
+    expect(res.book.author).toBe('示例作者')
+    expect(res.book.coverUrl).toBe('https://example.com/cover.jpg')
+    expect(res.book.description).toBe('站点书页上的简介')
+    const stored = await getWebShelfBook(res.book.id)
+    expect(stored).toMatchObject({ title: '示例书', description: '站点书页上的简介' })
+  })
+
+  it('接住加书架前已经存下的阅读位置，加入即可续读', async () => {
+    const chapterUrl = 'https://example.com/book/65/c2.html'
+    mocks.bootstrap.mockResolvedValue({
+      ok: true,
+      bootstrap: {
+        pageUrl: chapterUrl,
+        pageKind: 'chapter',
+        title: '示例书',
+        author: '示例作者',
+        catalogUrl: PAGE_URL,
+        chapters: [],
+        description: '',
+      },
+    })
+    mocks.catalog.mockResolvedValue(catalogResult(chapters(3)))
+    mocks.readingPos.mockResolvedValue({ url: chapterUrl, paragraphIndex: 9, scrollRatio: 0.3, updatedAt: new Date().toISOString() })
+    const res = await addWebShelf({ url: chapterUrl })
+    if (!res.ok) throw new Error(res.message)
+    expect(res.book.progress).toMatchObject({ paragraphIndex: 9, scrollRatio: 0.3 })
+    expect(res.book.lastChapter.url).toBe(chapterUrl)
+  })
+
+  it('刷新目录时把旧的章名书名换成书名，并补上简介', async () => {
+    await writeFile(join(dir, 'web-shelf.json'), JSON.stringify({
+      version: 1,
+      books: [{
+        id: 'site-legacy',
+        host: 'example.com',
+        title: '第 2 章 起风',
+        author: '',
+        catalogUrl: PAGE_URL,
+        lastChapter: chapters(1)[0],
+        chapters: chapters(2),
+        chaptersFetchedAt: '',
+        addedChapters: 0,
+        lastRefreshedAt: '',
+        progress: null,
+        createdAt: '2026-10-01T00:00:00.000Z',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      }],
+    }), 'utf-8')
+    const legacy = await getWebShelfBook('site-legacy')
+    expect(legacy?.description).toBe('')
+    mocks.catalog.mockResolvedValue({
+      ...catalogResult(chapters(3)),
+      book: { title: '示例书', author: '示例作者', coverUrl: 'https://example.com/cover.jpg', description: '站点书页上的简介' },
+    })
+    const res = await refreshOk('site-legacy')
+    expect(res.book.title).toBe('示例书')
+    expect(res.book.author).toBe('示例作者')
+    expect(res.book.description).toBe('站点书页上的简介')
   })
 })
 

@@ -14,18 +14,20 @@ async function readReaderSurface(): Promise<string> {
 describe('Reader unified AI assistant shell', () => {
   it('has one AI assistant drawer with the five fixed tabs', async () => {
     const source = await readReaderSurface()
-    expect(source.match(/<n-drawer v-model:show="showAiAssistant"/g)).toHaveLength(1)
+    // 侧栏可拖宽后属性分行写，匹配要允许换行；约束仍是「有且只有一个 AI 抽屉」。
+    expect(source.match(/<n-drawer\s+v-model:show="showAiAssistant"/g)).toHaveLength(1)
     expect(source).not.toContain('v-model:show="showChat"')
     expect(source).not.toContain('v-model:show="showRecap"')
     // 一次性结果并入「输出」tab，不再开第二个 AI 抽屉。
     expect(source).not.toContain('v-model:show="showAiResult"')
     expect(source).toContain('<n-drawer-content title="AI 助手"')
-    expect(source).toContain('<n-tab-pane name="recap" tab="前情">')
-    expect(source).toContain('<n-tab-pane name="memory" tab="记忆">')
-    expect(source).toContain('<n-tab-pane name="qa" tab="问答">')
-    expect(source).toContain('<n-tab-pane name="notes" tab="笔记">')
-    expect(source).toContain('<n-tab-pane name="output" tab="输出">')
-    expect(source.match(/<n-tab-pane /g)).toHaveLength(5)
+    // 骨架拍平为单层四色页签：问答 · 前情 · 记忆 · 笔记（有一次性输出时浮出「结果」）。
+    expect(source).toContain('class="ai-top-switch"')
+    expect(source).not.toContain('class="ai-read-switch"')
+    for (const label of ['问答', '前情', '记忆', '笔记']) expect(source).toContain(`>${label}</button>`)
+    // 「结果」只在真有一次性的清正文/翻译输出时才出现，不占常驻分段。
+    expect(source).toContain('v-if="aiResult"')
+    expect(source).not.toContain('<n-tab-pane')
     expect(source).toContain('清正文、翻译这类一次性结果会显示在这里。')
     // 人物卡生成侧已下线：旧卡只经 ai.getMemory 兼容读取，不再有自己的频道、按钮与文案。
     expect(source).not.toContain('人物卡')
@@ -45,7 +47,8 @@ describe('Reader unified AI assistant shell', () => {
     expect(block).toContain('Promise.allSettled([')
     expect(block).toContain('loadStoredRecap()')
     expect(block).toContain('loadStoredMemory()')
-    expect(block).toContain('window.api.ai.getChat(book.value.id)')
+    // 多会话之后，打开面板先列会话、再按当前会话取历史；仍只读本地磁盘，不触发模型。
+    expect(block).toContain('reloadChatThreads()')
     expect(block).not.toContain('storySoFar(')
     expect(block).not.toContain('updateMemory(')
     expect(block).not.toContain('sendChat(')
@@ -56,24 +59,21 @@ describe('Reader unified AI assistant shell', () => {
     expect(source).not.toContain('function askSuggested(')
   })
 
-  it('生词本只是已有标记的视图，不开新频道', async () => {
+  it('划线与释义只是已有标记的视图，不混入人物且不开新频道', async () => {
     const source = await readReaderSurface()
     // 视图与接线仍在 Reader.vue
-    expect(source).toContain('<strong>生词本</strong>')
-    expect(source).toContain('这里只汇总你自己的划线和已核实的记忆，不另外存一份。')
-    expect(source).toContain('memoryData.value?.characters ?? []')
+    expect(source).toContain('<strong>划线与释义</strong>')
     expect(source).toContain('@click="jumpToAnnotation(term)"')
     expect(source).toContain(`noteSource === 'ai'`)
 
-    // 标记域（含生词本这几个纯视图 computed）搬到了 readerMarks.ts：不变量不变——
-    // 这一层只读已有数据，不新开频道、不碰 IPC。
+    // 标记域（含划线与释义这几个纯视图 computed）搬到了 readerMarks.ts：不变量不变——
+    // 这一层只读已有划线数据，不混入记忆人物、不新开频道、不碰 IPC。
     const marks = await readFile(new URL('./readerMarks.ts', import.meta.url), 'utf-8')
     const start = marks.indexOf('const WORDBOOK_TERM_LIMIT')
     expect(start).toBeGreaterThanOrEqual(0)
     const block = marks.slice(start, marks.indexOf('async function reload', start))
     expect(block).toContain('WORDBOOK_TERM_LIMIT = 60')
     expect(block).toContain("item.kind === 'highlight' && item.excerpt.trim()")
-    expect(block).toContain("item.accuracy === 'normal'")
     expect(block).toContain('wordbookHighlights.value.slice(0, WORDBOOK_TERM_LIMIT)')
     expect(block, '纯视图不该碰 IPC').not.toContain('window.api')
 
@@ -107,21 +107,19 @@ describe('Reader unified AI assistant shell', () => {
     expect(helpers).toContain("if (opts.key.toLowerCase() === 'n') return 'open-note'")
   })
 
-  it('把高频阅读任务放到工作台，快捷问题只填草稿不直接计费', async () => {
+  it('欢迎态只留问候与四张彩色快捷问题卡，快捷问题只填草稿不直接计费', async () => {
     const source = await readReaderSurface()
-    expect(source).toContain('aria-label="AI 阅读工作台"')
-    for (const label of ['接着读', '找人物与伏笔', '带依据地问', '记住本章']) {
-      expect(source).toContain(label)
-    }
+    expect(source).not.toContain('class="sider-welcome-links"')
+    expect(source).not.toContain('class="sider-welcome-find"')
     expect(source).toContain('const QUICK_READING_QUESTIONS = [')
     expect(source).toContain('有哪些已经出现但尚未回收的伏笔？')
     const start = source.indexOf('function prepareQuickQuestion')
-    const block = source.slice(start, source.indexOf('async function sendChat', start))
+    // 真正发请求的是 startChatFrom：快捷问题这一段必须在它之前就结束，否则会把请求代码算进来。
+    const block = source.slice(start, source.indexOf('async function startChatFrom', start))
     expect(block).toContain("aiAssistantTab.value = 'qa'")
     expect(block).toContain('chatInput.value = question')
     expect(block).not.toContain('window.api')
     expect(block).not.toContain('sendChat()')
-    expect(source).toContain('确认发送后才调用模型。')
   })
 
   it('人物关系搜索只过滤已加载的本地记忆', async () => {
@@ -133,7 +131,6 @@ describe('Reader unified AI assistant shell', () => {
     expect(block).toContain('visibleMemoryForeshadows')
     expect(block).toContain('visibleMemoryEvents')
     expect(block).not.toContain('window.api')
-    expect(source).toContain('搜索只读取本地记忆，不调用模型。')
     expect(source).toContain('description="本地记忆里没有匹配内容"')
   })
 })

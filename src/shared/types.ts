@@ -539,6 +539,8 @@ export interface WebShelfBook {
   title: string
   author: string
   coverUrl?: string
+  /** 站点书页上的简介；抓不到为空串。口径与书库书目一致。 */
+  description: string
   catalogUrl: string
   /** 最近读到的章节。 */
   lastChapter: WebShelfChapter
@@ -606,6 +608,10 @@ export interface ReaderPrefs {
   hideSiteTail?: boolean
   /** 是否默认收起顶栏与右侧胶囊（字体面板「工具一直显示」的反义）；缺省 true，旧文件缺字段等于 true。 */
   hideReaderChrome?: boolean
+  /** 高亮色带颜色（十六进制，如 #ffe45c）；缺省按主题内置黄色。 */
+  highlightColor?: string
+  /** 高亮色带透明度 0–100；缺省 35。 */
+  highlightOpacity?: number
 }
 
 /** 网页阅读模式（内置浏览器的阅读模式）偏好；与本地阅读器 ReaderPrefs 分开。 */
@@ -614,6 +620,8 @@ export interface WebReadingPrefs {
   autoPage: boolean
   /** 自动滚动/自动翻页速度档，1–5。 */
   autoSpeed: number
+  /** 翻页模式下的版面：1 单栏、2 双栏（左右两页，像翻开的书）。滚动模式下忽略。 */
+  columns: 1 | 2
 }
 
 /**
@@ -780,6 +788,35 @@ export interface SyncBundle {
 }
 
 /**
+ * Crafty 联动（把读书笔记推成文档）的连接状态。
+ *
+ * 只推读书产物：全书概览、人物与伏笔、章节笔记、划线批注。书库正文不上传。
+ * 令牌与云同步的账号令牌分开存，同样走 safeStorage，渲染层只拿布尔位。
+ */
+export interface CraftState {
+  /** 端点可推送：填了 http(s) 地址且令牌已保存。 */
+  configured: boolean
+  /** Crafty 站点根地址，如 https://craft.example.com；未配置为空串。 */
+  endpoint: string
+  tokenConfigured: boolean
+  /** 有密文但本机解不开：界面提示「重新填写」而不是「未配置」。 */
+  tokenUnreadable?: boolean
+}
+
+/** 一次推送的结果。 */
+export interface CraftPushResult {
+  /** Crafty 里的文档 id；下次推同一本书用它做幂等更新。 */
+  docId: string
+  title: string
+  /** true = 新建了一篇；false = 更新了上次推的那篇。 */
+  created: boolean
+  /** 推送的 Markdown 字节数（UTF-8）。 */
+  bytes: number
+  pushedAt: string
+  endpoint: string
+}
+
+/**
  * 站点规则市场里的一条共享规则。
  *
  * 市场的规则是「别人写好的抽取规则」：只含 CSS 选择器，不含任何凭据。
@@ -857,6 +894,12 @@ export interface TierSensePrefs {
 export interface AiPrefs {
   provider: AiProvider
   thinkingEnabled: boolean
+  /**
+   * 回答后核对原文：每条结论额外发一次小请求，让模型判断原文是否真的支持它。
+   * 默认开启——关掉只省一次调用，但回答的可信度就只能如实说「未做支持性判断」。
+   * 字段缺失（老设置文件）时必须按开启处理：核验是这功能的安全网，不能因为没写过这个键就静默退化。
+   */
+  verifyEvidenceAnswers: boolean
   recapLength: 'short' | 'standard' | 'detailed'
   /** 单次预计输入达到此 token 数时，联网前提醒确认。 */
   budgetWarningTokens: number
@@ -1317,11 +1360,12 @@ export interface AiBudgetEstimate {
 }
 
 /**
- * `queued` / `indexing` 只携带 `detail` 文案，不改变终态：旧监听方按未知阶段忽略即可，
- * 界面拿它们解释「为什么还没开始出字」，不拿它们推断成败。
+ * `queued` / `indexing` / `verifying` 只携带 `detail` 文案，不改变终态：旧监听方按未知阶段忽略即可，
+ * 界面拿它们解释「为什么还没开始出字」或「字出完了为什么还没结束」，不拿它们推断成败。
+ * `verifying` 在正文流完之后才开始：结论逐条跟原文比对，读者看到它在收尾，而不是卡住。
  */
 export type AiRequestStage =
-  | 'preparing' | 'queued' | 'indexing' | 'rewriting' | 'searching' | 'requesting' | 'saving'
+  | 'preparing' | 'queued' | 'indexing' | 'rewriting' | 'searching' | 'requesting' | 'verifying' | 'saving'
 
 export interface AiStageEvent {
   jobId: string
@@ -1340,18 +1384,95 @@ export interface AiBudgetEvent {
   budget: AiBudgetEstimate
 }
 
+/**
+ * 一条结论与它引用的原文。
+ *
+ * `quote` 是「从 citationIds 指向的 excerpt 里逐字抄下来的那一句」：它让界面外的东西
+ * （引文校验、批量 judge）能真的核一遍，而不是只听模型说「我引用了第 3 段」。
+ * 旧模型可能完全不返回 quote，所以它是可选的——缺省表示这条结论没有逐字引文。
+ */
+export interface AiEvidenceClaim {
+  text: string
+  citationIds: string[]
+  quote?: string
+}
+
+/**
+ * 一条回答的可信度结论，只由后端判定，界面不自己推：
+ * - `verified`：所有结论都给出了逐字引文，且批量 judge 认为原文支持它们（一条都没删）；
+ * - `partial`：judge 跑成了，但有结论被删掉（引文对不上或原文不支持）；
+ * - `not_run`：本该核验却没跑成（请求失败、judge 返回非法格式），结论原样留下，但不代表可信；
+ * - `disabled`：读者在设置里主动关掉了「回答后核对原文」，这一轮压根没发核验请求。
+ *   `not_run` 是「出故障」，`disabled` 是「你自己选的」——两者文案绝不能混，
+ *   否则关掉开关的人会以为核验坏了，跑去反复重试。
+ * 缺省（旧记录）表示不知道——界面不显示任何「已核验」字样。
+ */
+export type AiEvidenceVerification = 'verified' | 'partial' | 'not_run' | 'disabled'
+
+/** 问答回答的知识范围：book 为结合本书已读内容，general 为脱离书籍的字词释义/通识百科。 */
+export type AiChatScope = 'book' | 'general'
+
 export interface AiEvidenceChatMessage {
   role: 'user' | 'assistant'
   content: string
   citations?: AiCitation[]
-  claims?: Array<{ text: string; citationIds: string[] }>
+  claims?: AiEvidenceClaim[]
+  verification?: AiEvidenceVerification
+  /** 本轮因引文对不上或 judge 判不支持而删掉的结论条数；界面用它解释 partial。 */
+  droppedClaims?: number
   uptoChapterId?: string
   stopped?: boolean
+  /** 回答所属范围：general 表示纯字词/通识百科回答（未引用本书内容）。 */
+  scope?: AiChatScope
 }
 
-/** ai.getChat 的兼容响应：旧 handler 可暂不返回 version，消息字段保持可读。 */
+/**
+ * ai.getChat 的兼容响应：旧 handler 可暂不返回 version，消息字段保持可读。
+ * `threadId` 是主进程实际解析到的会话线程；省略 threadId 时它告诉渲染层「当前 active 是哪条」，
+ * 一本书还没有任何会话时为空串（欢迎态，首次发送再建）。
+ */
 export type AiGetChatResult =
-  | { ok: true; version?: 1 | 2; messages: AiEvidenceChatMessage[] }
+  | { ok: true; version?: 1 | 2; messages: AiEvidenceChatMessage[]; threadId?: string }
+  | { ok: false; message: string }
+
+/** 一条问答线程：同一本书里互不污染的独立会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。 */
+export interface AiChatThread {
+  id: string
+  /** 空串表示「还没起过标题」：界面显示「新会话」，首次提问后由主进程按问题补上。 */
+  title: string
+  createdAt: string
+  updatedAt: string
+  messages: AiEvidenceChatMessage[]
+}
+
+/** 每书 ai/chats.json v1：把原先唯一的 chat.json 变成多条线程的容器。 */
+export interface AiChatThreadsFile {
+  version: 1
+  /** 当前会话；一本书还没有线程时为空串。 */
+  activeThreadId: string
+  threads: AiChatThread[]
+}
+
+/** ai.listThreads 的线程摘要：只带列表要用的字段，不搬消息正文。 */
+export interface AiChatThreadSummary {
+  id: string
+  title: string
+  messageCount: number
+  updatedAt: string
+}
+
+export type AiListThreadsResult =
+  | {
+    ok: true
+    threads: AiChatThreadSummary[]
+    activeThreadId: string
+    /** 历史文件坏掉时的可读提示：仍然返回空列表，侧栏照旧能打开。 */
+    message?: string
+  }
+  | { ok: false; message: string }
+
+export type AiCreateThreadResult =
+  | { ok: true; threadId: string }
   | { ok: false; message: string }
 
 export interface AiStorySoFar {
@@ -1419,9 +1540,15 @@ export type AiDoneEvent =
       stopped?: boolean
       /** 证据问答终态的白名单引用；保存失败时也必须保留。 */
       citations?: AiCitation[]
-      claims?: Array<{ text: string; citationIds: string[] }>
+      claims?: AiEvidenceClaim[]
+      /** 结论的可信度结论（验证/部分/未校验），与 claims 同时下发。 */
+      verification?: AiEvidenceVerification
+      /** 已删除的结论条数；旧监听方忽略即可。 */
+      droppedClaims?: number
       /** 本次回答严格夹紧的已读截止。 */
       uptoChapterId?: string
+      /** 回答所属范围：general 表示纯字词/通识百科回答（未引用本书内容）。 */
+      scope?: AiChatScope
       /** 记忆更新/重建的结构化结果与处理统计。 */
       memoryUpdate?: AiMemoryUpdateResult
       /** 写盘失败后仅当前主进程有效的重试令牌。 */
@@ -1429,14 +1556,18 @@ export type AiDoneEvent =
     }
   | { jobId: string; ok: false; message: string }
 
-/** 旧 ai/chat.json v1；读取兼容，不含来源。 */
+/**
+ * 旧 ai/chat.json v1；只读兼容，不含来源。
+ * 问答分成多条线程后新数据写 `ai/chats.json`，这份文件不再被写入：
+ * 留着它，旧版本回退时还能看到最后一份状态。
+ */
 export interface AiChatFile {
   version: 1
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
   updatedAt: string
 }
 
-/** 新 ai/chat.json v2；首次成功保存证据问答时升级。 */
+/** 旧 ai/chat.json v2；同样只读兼容，新数据见 `AiChatThreadsFile`。 */
 export interface AiChatFileV2 {
   version: 2
   messages: AiEvidenceChatMessage[]
@@ -1463,11 +1594,14 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   dim: 0,
   hideSiteTail: true,
   hideReaderChrome: true,
+  highlightColor: '#ffe45c',
+  highlightOpacity: 35,
 }
 
 export const DEFAULT_WEB_READING_PREFS: WebReadingPrefs = {
   autoPage: true,
   autoSpeed: 3,
+  columns: 1,
 }
 
 /** 缺省直连：不改变任何现存用户的网络行为。 */
@@ -1522,6 +1656,8 @@ export const DEFAULT_TIER_SENSE_PREFS: TierSensePrefs = {
 export const DEFAULT_AI_PREFS: AiPrefs = {
   provider: 'deepseek',
   thinkingEnabled: true,
+  // 核验默认开启：多花一次小请求换「结论有没有被原文支持」，这是证据问答可信度的下限。
+  verifyEvidenceAnswers: true,
   recapLength: 'standard',
   budgetWarningTokens: 8000,
   trustedCustomOrigins: [],

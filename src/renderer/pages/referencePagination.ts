@@ -39,6 +39,8 @@ export interface ReferencePaginationLayout {
 
 export interface ReferencePaginationInput {
   chapterTitle: string
+  /** 章首标题块：在每个给定段落下标前插入一个 `chapterHeading` 块（连续排版时每章各一）。 */
+  chapterOpenings?: ReadonlyArray<{ paragraph: number; title: string }>
   paragraphs: readonly string[]
   paragraphIndexes: readonly number[]
   notes: readonly RealBookNote[]
@@ -47,7 +49,8 @@ export interface ReferencePaginationInput {
 }
 
 interface Meta {
-  kind: 'p' | 'img' | 'caption'
+  /** `heading` 是注入的章首标题：它占版面，但不属于任何源段落。 */
+  kind: 'p' | 'img' | 'caption' | 'heading'
   /** 输入段落下标 */
   para: number
   start: number
@@ -91,9 +94,38 @@ function buildBook(input: ReferencePaginationInput): {
   const blocks: Block[] = []
   const metas: Meta[] = []
   const images = new Map<string, { ref: ChapterImageRef; para: number }>()
+  // 章首标题：参考站的 `chapterHeading` 块让 h1 走「居中、1.5×、下方留白」的章首页版式，
+  // 并把章首页的页眉隐掉。缺了它，章首页就只剩顶格正文——参考图里那种
+  // 「大标题 + 落款 + 正文下沉」的开篇排版整页都不存在。
+  const openings = new Map<number, string>()
+  for (const opening of input.chapterOpenings ?? []) {
+    if (opening.title.trim()) openings.set(opening.paragraph, opening.title.trim())
+  }
   let offset = 0
   input.paragraphs.forEach((raw, para) => {
     const text = raw ?? ''
+    const opening = openings.get(para)
+    /*
+     * 章首标题用 h1 块排（居中、1.75×、章首前留白 ≈70px），页眉再由 chapterStart 隐掉。
+     * 不用 `chapterHeading`：那要求「章号 + 章名」正好两块，单章名会被顶到版心最上沿。
+     *
+     * 抓来的正文常常第一行就是章节标题。这一段自己就是标题时只排一次 h1，
+     * 不再额外插一条，否则章首页会出现「大标题 + 紧接着重复一遍的同一行」。
+     * 它的 meta 仍记成 'p'（段落块），锚点、进度与划线因此保持可映射。
+     */
+    const duplicatesHeading = Boolean(opening) && text.replace(/\s+/g, '') === opening!.replace(/\s+/g, '')
+    if (opening && !duplicatesHeading) {
+      blocks.push({ kind: 'h1', runs: [{ text: opening }], text: opening, start: offset })
+      metas.push({ kind: 'heading', para, start: offset, end: offset + opening.length })
+      // 标题自占一段：参考站按章节字符偏移切页，紧贴着正文会与它共处一行。
+      offset += opening.length + 1
+    }
+    if (duplicatesHeading) {
+      blocks.push({ kind: 'h1', runs: [{ text }], text, start: offset })
+      metas.push({ kind: 'p', para, start: offset, end: offset + text.length })
+      offset += text.length + 1
+      return
+    }
     const image = parseChapterImage(text)
     if (image) {
       blocks.push({
@@ -149,6 +181,9 @@ function metaAt(metas: readonly Meta[], offset: number): Meta | null {
     }
   }
   if (!hit) return null
+  // 注入的章首标题不属于任何源段落：落在它的字符区间里时应归属紧随其后的那一段，
+  // 否则锚点会落到上一段末尾（章首页就会跳到上一章）。
+  if (hit.kind === 'heading') return null
   if (hit.kind === 'img') return offset === hit.start ? hit : null
   return offset <= hit.end ? hit : null
 }
@@ -175,6 +210,10 @@ function noteAnnotations(input: ReferencePaginationInput, metas: readonly Meta[]
       note: {
         text: note.text,
         textColor: 'default',
+        // 上游 placeNote 用 noteFontFamily(a.note.font, cfg.family) 定便签字体；
+        // 缺字段会落到 noteFontIdOf(undefined) = 'inherit'，便签就与正文同体，
+        // 手写感全丢。spbf 没有字体选择 UI，沿用上游默认的霞鹜文楷。
+        font: 'wenkai',
         tags: note.tags?.slice(0, 5),
         x: 0,
         y: 0,
@@ -211,7 +250,15 @@ function convertPage(
   seen: Set<number>,
 ): RealBookPage {
   if (page.special) {
-    return { items: [], paragraph: 0, offset: 0, special: page.special, label: page.label }
+    return { items: [], paragraph: 0, offset: 0, special: page.special, label: page.label, source: page }
+  }
+  const paragraphStarts = new Map<number, number>()
+  for (const line of page.lines) {
+    for (const word of line.words) {
+      if (word.s < 0) continue
+      const meta = metaAt(metas, word.s)
+      if (meta && meta.kind === 'p' && !paragraphStarts.has(meta.para)) paragraphStarts.set(meta.para, meta.start)
+    }
   }
   const events: PageEvent[] = []
   // 同一段落在连续行里合并成一个文本块；遇到图片/换段/空行就断开。
@@ -265,8 +312,11 @@ function convertPage(
     })
   }
   for (const note of page.notes ?? []) {
+    // 对照上游 book/layout.ts placeNote（:667-705）：便签只由 locator 决定落点，不看块类型。
+    // 本地 noteAnnotations 已把锚点限定在段落块内，这里只需定位到该段；
+    // 不再额外丢弃 kind !== 'p' 的命中，避免便签在块边界上消失。
     const meta = metaAt(metas, note.locator.start)
-    if (!meta || meta.kind !== 'p') continue
+    if (!meta) continue
     events.push({
       kind: 'note',
       y: note.y,
@@ -276,6 +326,11 @@ function convertPage(
         paragraph: meta.para,
         anchorOffset: clamp(note.locator.end - meta.start, 0, meta.end - meta.start),
         height: note.h,
+        // Preserve upstream fragment structure for inline note rendering
+        continued: note.continued,
+        continues: note.continues,
+        lines: note.lines,
+        textColor: note.textColor,
       },
     })
   }
@@ -301,7 +356,7 @@ function convertPage(
   }
   const paragraph = firstText?.paragraph ?? 0
   const offset = firstText?.start ?? 0
-  return { items, paragraph, offset, label: page.label }
+  return { items, paragraph, offset, label: page.label, source: page, paragraphStarts }
 }
 
 /** 分页 + 映射成 spbf 的页模型。 */

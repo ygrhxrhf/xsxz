@@ -6,6 +6,7 @@ import { READER_THEME_COLORS } from '@shared/readerTheme'
 import type { BookListItem, BrowseFavorite, BrowseReadingPage, BrowseState, BrowseFindResult, DownloadPreview, DownloadProgress, FailCode, MirrorProgress, PreviewPageKind, ReaderPrefs, WebAnnotation, WebReadingPrefs, WebShelfBook, WebShelfChapter } from '@shared/types'
 import { libraryCoverSrc } from './libraryCard'
 import { adjacentVisualPage, scrollTopForVisualPage, visualPageCount, visualPageIndex, visualPageLabel } from './readerPager'
+import { autoPageIntervalMs, columnPageCount, columnPageForOffset, columnPageIndex, columnScrollLeft } from './readingColumns'
 import { approximateBookRatioFromIndex, clampRatio, paragraphIndexAtViewportCenter, readerScrollBehavior, selectionPopupPosition, shouldAutoHideReaderTools, wheelPageDirection } from './readerHelpers'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
 import { selectionRangeOffsets } from './selectionOffsets'
@@ -94,6 +95,10 @@ let readingToolsLocked = false
 let lastToolActivityAt = Date.now()
 let readingSaveTimer: ReturnType<typeof setTimeout> | null = null
 let readingRestoreTimer: ReturnType<typeof setTimeout> | null = null
+/** 分栏滚动停下后吸回整页的短定时器。 */
+let columnSnapTimer: ReturnType<typeof setTimeout> | null = null
+/** 分栏自动翻页的节拍器。 */
+let autoPageTimer: ReturnType<typeof setTimeout> | null = null
 let readingParagraphIndex = 0
 /** 位置恢复期间不写回，避免把恢复动作当成用户滚动。 */
 let readingRestoring = false
@@ -118,6 +123,8 @@ const readingStyle = computed(() => {
     '--web-outer': colors.outer,
     '--web-font': p.fontFamily === 'serif' ? '"STSong", "Songti SC", "SimSun", serif' : p.fontFamily === 'mono' ? '"Cascadia Mono", "Consolas", monospace' : '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
     '--web-width': p.contentWidth === 'narrow' ? '32em' : p.contentWidth === 'wide' ? '46em' : '38em',
+    // 分栏时版心改由左右留白控制：栏距取两倍留白，翻页步长才恰好等于一屏宽。
+    '--web-col-pad': p.contentWidth === 'narrow' ? 'clamp(40px, 9vw, 120px)' : p.contentWidth === 'wide' ? 'clamp(18px, 3vw, 36px)' : 'clamp(28px, 6vw, 72px)',
     '--web-size': `${p.fontSize}px`,
     '--web-line': String(p.lineHeight),
     '--web-spacing': p.paragraphSpacing === 'compact' ? '0.2em' : p.paragraphSpacing === 'relaxed' ? '0.8em' : '0.45em',
@@ -192,6 +199,8 @@ const inBookFindHits = computed(() => {
     .filter((index) => index >= 0)
 })
 const readingPaged = computed(() => readerPrefs.value.readingMode === 'screen')
+/** 翻页模式下的栏数：1 单栏、2 双栏；滚动模式不分栏。 */
+const readingColumns = computed(() => (readingPaged.value ? webReading.value.columns : 0))
 const readingChapter = computed(() => readingPage.value?.chapter ?? null)
 /** 上一章 / 下一章：阅读页上下文优先，找不到时退回可见网页识别到的链接。 */
 const canPrevChapter = computed(() => Boolean(readingChapter.value?.previous || state.value.previousChapter))
@@ -362,14 +371,16 @@ async function loadStartRecent() {
   let books: BookListItem[] = []
   let shelfBooks: WebShelfBook[] = []
   try {
+    // 三个来源各自兜底：启动瞬间书库还在建索引时，任意一个抛错都会把整排「继续阅读」清空，
+    // 看上去像“书架还是空的”。分开 catch 至少还能显示拿到的那部分。
     const [library, shelf, settings] = await Promise.all([
-      window.api.library.list(),
-      window.api.shelf.list(),
-      window.api.settings.get(),
+      window.api.library.list().catch(() => ({ books: [] as BookListItem[] })),
+      window.api.shelf.list().catch(() => ({ ok: false as const })),
+      window.api.settings.get().catch(() => null),
     ])
-    books = library.books
+    books = library.books ?? []
     if (shelf.ok) shelfBooks = shelf.books
-    if (settings.libraryPath) libraryPath.value = settings.libraryPath
+    if (settings?.libraryPath) libraryPath.value = settings.libraryPath
   } catch {
     return
   }
@@ -497,6 +508,12 @@ function openStartPage(): void {
   showStartPage.value = true
 }
 
+/** 侧栏的「添加」：起始页既是唯一的管理面，就顺手把编辑框打开，少一次点击。 */
+function openFavoriteManager(): void {
+  openStartPage()
+  startFavoriteDraft()
+}
+
 function openFavorite(item: BrowseFavorite): void {
   favoriteDraft.value = null
   showStartPage.value = false
@@ -583,7 +600,9 @@ function restoreProgressDrawer() {
 /** 窗口尺寸变化：网页视图重算边界，阅读模式重算页码。 */
 function onWindowResize() {
   reportBounds()
-  if (readingPage.value) syncReadingPage()
+  if (!readingPage.value) return
+  syncReadingPage()
+  snapColumnPage()
 }
 
 function reportBounds() {
@@ -711,16 +730,92 @@ function activeSectionEl(): HTMLElement | null {
     ?? article.querySelector<HTMLElement>('.web-reading-section')
 }
 
-/** 视口上沿附近是哪一章：连排时章界由滚动位置决定，而不是进场时那一章。 */
+function readingViewportWidth(): number {
+  return Math.max(1, readingViewportEl()?.clientWidth ?? 1)
+}
+
+/** 分栏模式下的总页数：横向内容有几个视口宽。 */
+function readingColumnPageCount(el: HTMLElement): number {
+  return columnPageCount(el.scrollWidth, Math.max(1, el.clientWidth))
+}
+
+/** 把横向滚动吸到整页：分栏排版停在两栏之间会露出半栏文字。 */
+function snapColumnPage(): void {
+  const el = readingViewportEl()
+  if (!el || !readingColumns.value) return
+  const width = Math.max(1, el.clientWidth)
+  const target = columnScrollLeft(columnPageIndex(el.scrollLeft, width), width)
+  if (Math.abs(el.scrollLeft - target) > 1) el.scrollLeft = target
+}
+
+/** 当前屏里阅读顺序最靠前的段落：先左栏，再从上到下。 */
+function columnParagraphIndex(): number {
+  const el = readingViewportEl()
+  const article = activeSectionEl()
+  if (!el || !article) return -1
+  const viewport = el.getBoundingClientRect()
+  const secondColumnFrom = viewport.left + viewport.width / 2
+  let best: { band: number; top: number; index: number } | null = null
+  const paragraphs = [...article.querySelectorAll('p')] as HTMLElement[]
+  paragraphs.forEach((node, index) => {
+    const rect = node.getBoundingClientRect()
+    if (rect.bottom <= viewport.top + 1 || rect.top >= viewport.bottom - 1) return
+    if (rect.right <= viewport.left + 1 || rect.left >= viewport.right - 1) return
+    const band = readingColumns.value === 2 && rect.left >= secondColumnFrom ? 1 : 0
+    const top = Math.max(0, rect.top - viewport.top)
+    if (!best || band < best.band || (band === best.band && top < best.top)) best = { band, top, index }
+  })
+  const index = best?.index ?? -1
+  readingCenterParagraph.value = index
+  return index
+}
+
+/** 当前读到第几段：分栏按屏取，滚动按视口中心取。 */
+function currentReadingAnchor(): number {
+  if (!readingPage.value) return -1
+  if (readingColumns.value) return columnParagraphIndex()
+  if (readingCenterParagraph.value >= 0) return readingCenterParagraph.value
+  return resolveParagraphAnchor()
+}
+
+/** 分栏模式：滚到某一段所在的那一屏。 */
+function scrollToColumnParagraph(index: number, behavior: ScrollBehavior = 'auto'): void {
+  const el = readingViewportEl()
+  if (!el) return
+  const width = Math.max(1, el.clientWidth)
+  const article = activeSectionEl()
+  const target = index >= 0 ? article?.querySelectorAll<HTMLElement>('p')[index] : undefined
+  const articleEl = readingArticleEl()
+  if (!target || !articleEl) {
+    el.scrollTo({ left: 0, behavior })
+    return
+  }
+  const pad = Number.parseFloat(getComputedStyle(articleEl).paddingLeft) || 0
+  const offset = target.getBoundingClientRect().left - el.getBoundingClientRect().left + el.scrollLeft - pad
+  el.scrollTo({ left: columnScrollLeft(columnPageForOffset(offset, width), width), behavior })
+}
+
+/** 当前屏起点附近是哪一章：连排时章界由滚动位置决定，而不是进场时那一章。 */
 function sectionAtViewport(): BrowseReadingPage | null {
   const el = readingViewportEl()
   const article = readingArticleEl()
   if (!el || !article || readingSections.value.length < 1) return readingPage.value
-  const probe = el.getBoundingClientRect().top + Math.min(el.clientHeight * 0.35, 260)
-  let current: HTMLElement | null = article.querySelector<HTMLElement>('.web-reading-section')
-  for (const node of article.querySelectorAll<HTMLElement>('.web-reading-section')) {
-    if (node.getBoundingClientRect().top <= probe) current = node
-    else break
+  const rect = el.getBoundingClientRect()
+  const sections = article.querySelectorAll<HTMLElement>('.web-reading-section')
+  let current: HTMLElement | null = sections[0] ?? null
+  if (readingColumns.value) {
+    // 分栏后章是横向铺开的：看当前屏左侧落在哪一节的横向范围里。
+    const probe = rect.left + Math.min(rect.width * 0.25, 160)
+    for (const node of sections) {
+      if (node.getBoundingClientRect().left <= probe) current = node
+      else break
+    }
+  } else {
+    const probe = rect.top + Math.min(el.clientHeight * 0.35, 260)
+    for (const node of sections) {
+      if (node.getBoundingClientRect().top <= probe) current = node
+      else break
+    }
   }
   const url = current?.dataset.section
   return readingSections.value.find((section) => section.url === url) ?? readingPage.value
@@ -763,13 +858,25 @@ async function appendNextSection(): Promise<void> {
 function syncReadingPage() {
   const el = readingViewportEl()
   if (!el) { readingPageIndex.value = 0; readingPageCount.value = 1; readingRatio.value = 0; return }
+  if (readingColumns.value) {
+    const width = Math.max(1, el.clientWidth)
+    const count = readingColumnPageCount(el)
+    readingPageCount.value = count
+    readingPageIndex.value = Math.min(count - 1, columnPageIndex(el.scrollLeft, width))
+    readingRatio.value = count > 1 ? readingPageIndex.value / (count - 1) : 0
+    return
+  }
   readingPageCount.value = visualPageCount(el.scrollHeight, el.clientHeight)
   readingPageIndex.value = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
   readingRatio.value = clampRatio(el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0)
 }
 
-/** 视口中心最近的段落下标，作为位置记忆的锚点。 */
+/** 视口中心最近的段落下标，作为位置记忆的锚点；分栏时取当前屏最靠前的段落。 */
 function resolveParagraphAnchor(): number {
+  if (readingColumns.value) {
+    const index = columnParagraphIndex()
+    return index >= 0 ? index : 0
+  }
   const el = readingViewportEl()
   const total = readingParagraphs.value.length
   if (!el || total === 0) return 0
@@ -790,6 +897,20 @@ function restoreReadingPosition(position: { paragraphIndex: number; scrollRatio:
   const el = readingViewportEl()
   if (!el) { readingRestoring = false; return }
   readingRestoring = true
+  if (readingColumns.value) {
+    if (position.paragraphIndex >= 0) scrollToColumnParagraph(position.paragraphIndex)
+    else {
+      const count = readingColumnPageCount(el)
+      const page = clampRatio(position.scrollRatio) * Math.max(0, count - 1)
+      el.scrollLeft = columnScrollLeft(Math.round(page), Math.max(1, el.clientWidth))
+    }
+    readingCenterParagraph.value = position.paragraphIndex
+    readingParagraphIndex = position.paragraphIndex
+    syncReadingPage()
+    if (readingRestoreTimer) clearTimeout(readingRestoreTimer)
+    readingRestoreTimer = setTimeout(() => { readingRestoreTimer = null; readingRestoring = false }, 400)
+    return
+  }
   const article = activeSectionEl()
   const paragraphs = article ? [...article.querySelectorAll('p')] : []
   const target = paragraphs[position.paragraphIndex] as HTMLElement | undefined
@@ -831,6 +952,15 @@ function pageByScreen(direction: 1 | -1) {
   const el = readingViewportEl()
   if (!el) return
   const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
+  if (readingColumns.value) {
+    const width = Math.max(1, el.clientWidth)
+    const count = readingColumnPageCount(el)
+    const current = columnPageIndex(el.scrollLeft, width)
+    const next = Math.max(0, Math.min(count - 1, current + direction))
+    el.scrollTo({ left: columnScrollLeft(next, width), behavior })
+    readingPageIndex.value = next
+    return
+  }
   if (readingPaged.value) {
     const count = visualPageCount(el.scrollHeight, el.clientHeight)
     const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
@@ -843,10 +973,19 @@ function pageByScreen(direction: 1 | -1) {
 }
 
 /** 翻页；到本章头尾接着翻章。滚动模式与翻页模式都走真实滚动容器。 */
-function turnReadingPage(delta: number) {
+function turnReadingPage(delta: number, options: { keepAuto?: boolean } = {}) {
   const el = readingViewportEl()
   if (!el) return
-  stopAutoScroll()
+  if (!options.keepAuto) stopAutoScroll()
+  if (readingColumns.value) {
+    const width = Math.max(1, el.clientWidth)
+    const count = readingColumnPageCount(el)
+    const next = columnPageIndex(el.scrollLeft, width) + delta
+    if (next < 0) { void changeChapter('previous'); return }
+    if (next > count - 1) { void changeChapter('next'); return }
+    pageByScreen(delta > 0 ? 1 : -1)
+    return
+  }
   if (readingPaged.value) {
     const count = visualPageCount(el.scrollHeight, el.clientHeight)
     const current = visualPageIndex(el.scrollTop, el.scrollHeight, el.clientHeight)
@@ -864,6 +1003,14 @@ function turnReadingPage(delta: number) {
 
 function onReadingWheel(event: WheelEvent) {
   if (!readingPaged.value || event.ctrlKey || event.metaKey) return
+  // 分栏是横向的：触控板横扫也当翻页，不再只认纵向滚轮。
+  if (readingColumns.value && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+    if (Math.abs(event.deltaX) < 8) return
+    event.preventDefault()
+    stopAutoScroll()
+    turnReadingPage(event.deltaX > 0 ? 1 : -1)
+    return
+  }
   const direction = wheelPageDirection(event.deltaY)
   if (!direction) return
   event.preventDefault()
@@ -877,13 +1024,20 @@ function onReadingScroll() {
   saveReadingPosition()
   if (selPopup.value) closeSelectionTools()
   maybeAppendNextSection()
+  // 手势/触控板把分栏滚到两栏之间时，停下来后吸回整页。
+  if (readingColumns.value) {
+    if (columnSnapTimer) clearTimeout(columnSnapTimer)
+    columnSnapTimer = setTimeout(() => { columnSnapTimer = null; snapColumnPage() }, 180)
+  }
 }
 
 /** 滚到章末附近就把下一章接上来；超过窗口上限时 appendNextSection 自己丢最旧的一章。 */
 function maybeAppendNextSection(): void {
   const el = readingViewportEl()
   if (!el || appendingSection.value) return
-  if (el.scrollHeight - el.scrollTop - el.clientHeight > 260) return
+  if (readingColumns.value) {
+    if (el.scrollWidth - el.scrollLeft - el.clientWidth > 260) return
+  } else if (el.scrollHeight - el.scrollTop - el.clientHeight > 260) return
   if (!readingTailNext.value) return
   void appendNextSection()
 }
@@ -1170,8 +1324,31 @@ function autoScrollStep(timestamp: number) {
   autoScrollRaf = requestAnimationFrame(autoScrollStep)
 }
 
+function clearAutoPageTimer() {
+  if (autoPageTimer) { clearTimeout(autoPageTimer); autoPageTimer = null }
+}
+
+function autoPageDelay(): number {
+  return autoPageIntervalMs(webReading.value.autoSpeed)
+}
+
+/** 分栏模式没有纵向滚动：按节拍翻一页，章末照旧自动续章。 */
+function startColumnAutoPage() {
+  if (!readingPage.value) return
+  autoScrolling.value = true
+  const tick = (): void => {
+    autoPageTimer = null
+    if (!autoScrolling.value) return
+    turnReadingPage(1, { keepAuto: true })
+    saveReadingPosition()
+    if (autoScrolling.value) autoPageTimer = setTimeout(tick, autoPageDelay())
+  }
+  autoPageTimer = setTimeout(tick, autoPageDelay())
+}
+
 function startAutoScroll() {
   if (!readingPage.value || autoScrolling.value) return
+  if (readingColumns.value) { startColumnAutoPage(); return }
   autoScrolling.value = true
   lastAutoTickAt = 0
   autoScroll.start()
@@ -1179,6 +1356,7 @@ function startAutoScroll() {
 }
 
 function stopAutoScroll() {
+  clearAutoPageTimer()
   if (!autoScrolling.value && autoScrollRaf == null) return
   autoScrolling.value = false
   autoScroll.stop()
@@ -1189,11 +1367,16 @@ function stopAutoScroll() {
 function toggleAutoScroll() {
   if (autoScrolling.value) {
     stopAutoScroll()
-    message.info('已暂停自动滚动')
+    message.info(readingColumns.value ? '已暂停自动翻页' : '已暂停自动滚动')
     return
   }
   startAutoScroll()
-  if (autoScrolling.value) message.info(`自动滚动中（${autoScrollSpeed.value} px/秒，速度 ${webReading.value.autoSpeed}）`)
+  if (!autoScrolling.value) return
+  if (readingColumns.value) {
+    message.info(`自动翻页中（每 ${Math.round(autoPageDelay() / 1000)} 秒一页，速度 ${webReading.value.autoSpeed}）`)
+    return
+  }
+  message.info(`自动滚动中（${autoScrollSpeed.value} px/秒，速度 ${webReading.value.autoSpeed}）`)
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,12 +1385,18 @@ function toggleAutoScroll() {
 
 function scrollToParagraph(index: number) {
   const el = readingViewportEl()
+  if (!el) return
+  const behavior = readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true)
+  if (readingColumns.value) {
+    scrollToColumnParagraph(index, behavior)
+    return
+  }
   const article = activeSectionEl()
   const paragraphs = article ? [...article.querySelectorAll('p')] : []
   const target = paragraphs[index] as HTMLElement | undefined
-  if (!el || !target) return
+  if (!target) return
   const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - el.clientHeight * 0.4
-  el.scrollTo({ top: Math.max(0, top), behavior: readerScrollBehavior(window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true) })
+  el.scrollTo({ top: Math.max(0, top), behavior })
 }
 
 const tts = useTts({
@@ -1369,7 +1558,7 @@ async function switchReadingChapter(url: string, options: { keepAutoScroll?: boo
     scheduleReadingTools()
     await nextTick()
     const el = readingViewportEl()
-    if (el) el.scrollTop = 0
+    if (el) { el.scrollTop = 0; el.scrollLeft = 0 }
     syncReadingPage()
     readingRestoring = false
     const saved = await window.api.browse.getReadingPos(url)
@@ -1453,12 +1642,22 @@ async function addCurrentToShelf() {
 }
 
 function setReaderPref<K extends keyof ReaderPrefs>(key: K, value: ReaderPrefs[K]) {
+  const anchor = currentReadingAnchor()
   readerPrefs.value = { ...readerPrefs.value, [key]: value }
   void window.api.settings.set({ reader: { [key]: value } })
   void nextTick(() => {
-    syncReadingPage()
     const el = readingViewportEl()
-    if (el && readingPaged.value) el.scrollTop = scrollTopForVisualPage(readingPageIndex.value, el.scrollHeight, el.clientHeight)
+    if (!el) return
+    if (readingColumns.value) {
+      // 字号 / 行距变了，栏宽跟着变：按段落锚点重新算在第几页。
+      el.scrollTop = 0
+      scrollToColumnParagraph(anchor)
+      syncReadingPage()
+      return
+    }
+    el.scrollLeft = 0
+    syncReadingPage()
+    if (readingPaged.value) el.scrollTop = scrollTopForVisualPage(readingPageIndex.value, el.scrollHeight, el.clientHeight)
   })
   saveReadingPosition()
 }
@@ -1466,7 +1665,28 @@ function setReaderPref<K extends keyof ReaderPrefs>(key: K, value: ReaderPrefs[K
 function setWebReading<K extends keyof WebReadingPrefs>(key: K, value: WebReadingPrefs[K]) {
   webReading.value = { ...webReading.value, [key]: value }
   void window.api.settings.set({ webReading: { [key]: value } })
-  if (key === 'autoSpeed' && autoScrolling.value) message.info(`自动滚动速度 ${value}`)
+  if (key === 'autoSpeed' && autoScrolling.value) message.info(readingColumns.value ? `自动翻页间隔已调（${Math.round(autoPageDelay() / 1000)} 秒一页）` : `自动滚动速度 ${value}`)
+}
+
+/**
+ * 翻页方式：滚动 / 单栏 / 双栏。
+ * 换栏数时先把当前段落记下来，重排后回到同一段，不让读者丢位置。
+ */
+function setPageLayout(mode: 'scroll' | 'single' | 'double') {
+  if (!readingPage.value) return
+  if (mode === 'scroll') {
+    if (!readingPaged.value) return
+    const anchor = currentReadingAnchor()
+    setReaderPref('readingMode', 'scroll')
+    void nextTick(() => scrollToParagraph(anchor))
+    return
+  }
+  const columns: 1 | 2 = mode === 'double' ? 2 : 1
+  if (readingPaged.value && webReading.value.columns === columns) return
+  const anchor = currentReadingAnchor()
+  if (webReading.value.columns !== columns) setWebReading('columns', columns)
+  if (!readingPaged.value) setReaderPref('readingMode', 'screen')
+  else void nextTick(() => { scrollToColumnParagraph(anchor); syncReadingPage() })
 }
 
 /** 聚焦模式：朗读中跟朗读段，否则跟视口中心段。 */
@@ -1878,6 +2098,36 @@ onUnmounted(() => {
           </div>
         </section>
 
+        <section class="side-block side-fav" aria-label="常用网站">
+          <div class="side-head">
+            <span class="side-label">常用网站</span>
+            <span class="side-fav-head-actions">
+              <span v-if="browseFavorites.length" class="side-count">{{ String(browseFavorites.length).padStart(2, '0') }}</span>
+              <button type="button" class="side-fav-add" title="添加常用网站" @click="openFavoriteManager">＋</button>
+            </span>
+          </div>
+          <ul v-if="browseFavorites.length" class="side-fav-list">
+            <li v-for="item in browseFavorites" :key="item.url">
+              <div class="side-fav-row" :class="{ current: currentFavorite?.url === item.url }">
+                <button type="button" class="side-fav-main" :title="item.url" @click="openFavorite(item)">
+                  <span class="side-fav-badge" :style="{ '--fav-color': favoriteColor(item.url) }">{{ favoriteInitial(item) }}</span>
+                  <span class="side-fav-text">
+                    <span class="side-fav-title">{{ item.title }}</span>
+                    <span class="side-fav-host">{{ hostOf(item.url) }}</span>
+                  </span>
+                </button>
+                <span class="side-fav-tools">
+                  <button type="button" title="改名" @click="openStartPage(); startFavoriteDraft(item)">改名</button>
+                  <button type="button" title="移除" @click="removeFavorite(item)">移除</button>
+                </span>
+              </div>
+            </li>
+          </ul>
+          <button v-else type="button" class="side-fav-empty" @click="openFavoriteManager">
+            还没有常用网站<br /><small>点地址栏右侧的星标，或点这里添加</small>
+          </button>
+        </section>
+
         <section class="side-block side-recent">
           <div class="side-head">
             <span class="side-label">继续阅读</span>
@@ -1911,6 +2161,16 @@ onUnmounted(() => {
         <form v-show="!toolbarCollapsed && !readingPage" class="browse-toolbar" @submit="onSubmit">
           <div class="browser-nav-row">
             <div class="nav-group">
+              <button
+                class="browser-icon-button"
+                type="button"
+                title="起始页（常用网站）"
+                aria-label="回到起始页"
+                :disabled="startPageVisible"
+                @click="openStartPage"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20h-5.5v-6h-5v6H4z" /></svg>
+              </button>
               <button class="browser-icon-button" type="button" title="后退" aria-label="后退" :disabled="!state.canGoBack" @click="back">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
               </button>
@@ -2061,7 +2321,7 @@ onUnmounted(() => {
       v-if="readingPage"
       ref="readingStage"
       class="web-reading-stage"
-      :class="{ paged: readingPaged, 'tools-hidden': !readingToolsVisible, 'catalog-open': catalogOpen }"
+      :class="{ paged: readingPaged, 'cols-2': readingColumns === 2, 'tools-hidden': !readingToolsVisible, 'catalog-open': catalogOpen }"
       :style="readingStyle"
       @mousemove="scheduleReadingTools"
       @click.self="readingToolsVisible = !readingToolsVisible"
@@ -2071,17 +2331,24 @@ onUnmounted(() => {
         class="web-reading-chrome top"
         @mouseenter="clearReadingHideTimer"
       >
-        <button type="button" title="返回原网页（Esc）" @click="exitReadingMode">← 返回</button>
+        <button type="button" title="返回原网页（Esc）" @click="exitReadingMode"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg><span>返回</span></button>
         <span class="web-reading-title" :title="readingChapterLabel">{{ readingChapterLabel }}</span>
+        <!-- 图标 + 文字：和书库阅读器的顶栏同一套图形与字号，两个阅读入口看着才是同一个软件。 -->
         <div class="web-chrome-actions">
-          <button type="button" @click="openCatalog">目录</button>
-          <button type="button" @click="openInBookFind">搜索</button>
-          <button type="button" @click="marksOpen = true">标记</button>
-          <button type="button" :class="{ active: autoScrolling }" @click="toggleAutoScroll">{{ autoScrolling ? '暂停' : '自动' }}</button>
-          <button type="button" :class="{ active: ttsSpeaking }" @click="toggleTts">{{ ttsSpeaking ? '停止' : '听书' }}</button>
-          <button type="button" :class="{ active: webAiPanelOpen }" @click="toggleWebAiPanel">AI</button>
-          <button type="button" :disabled="shelfSaving" @click="addCurrentToShelf">加书架</button>
-          <button type="button" :class="{ active: readingPanel }" @click="readingPanel = !readingPanel; webAiPanelOpen = false">排版</button>
+          <button type="button" @click="openCatalog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span>目录</span></button>
+          <button type="button" @click="openInBookFind"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><span>搜索</span></button>
+          <button type="button" @click="marksOpen = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg><span>标记</span></button>
+          <span class="web-chrome-sep" aria-hidden="true"></span>
+          <button type="button" class="secondary" :class="{ active: autoScrolling }" @click="toggleAutoScroll">
+            <svg v-if="autoScrolling" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+            <span>{{ autoScrolling ? '暂停' : '自动' }}</span>
+          </button>
+          <button type="button" class="secondary" :class="{ active: ttsSpeaking }" @click="toggleTts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10z"/><path d="M18 9a5 5 0 0 1 0 6"/></svg><span>{{ ttsSpeaking ? '停止' : '听书' }}</span></button>
+          <button type="button" class="secondary" :class="{ active: webAiPanelOpen }" @click="toggleWebAiPanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg><span>AI</span></button>
+          <span class="web-chrome-sep" aria-hidden="true"></span>
+          <button type="button" :disabled="shelfSaving" @click="addCurrentToShelf"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18v18H6.5A2.5 2.5 0 0 1 4 18.5z"/><path d="M11 9v6M8 12h6"/></svg><span>加书架</span></button>
+          <button type="button" :class="{ active: readingPanel }" @click="readingPanel = !readingPanel; webAiPanelOpen = false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M4 11h16M4 16h12M4 21h8"/></svg><span>排版</span></button>
         </div>
       </header>
 
@@ -2110,19 +2377,23 @@ onUnmounted(() => {
       <div v-if="readingPanel" class="web-reading-panel" role="dialog" aria-label="阅读排版">
         <div class="web-panel-row">
           <span>背景</span>
-          <button type="button" :class="{ active: readerPrefs.theme === 'paper' }" @click="setReaderPref('theme', 'paper')">纸白</button>
-          <button type="button" :class="{ active: readerPrefs.theme === 'sepia' }" @click="setReaderPref('theme', 'sepia')">暖黄</button>
-          <button type="button" :class="{ active: readerPrefs.theme === 'gray' }" @click="setReaderPref('theme', 'gray')">柔灰</button>
-          <button type="button" :class="{ active: readerPrefs.theme === 'night' }" @click="setReaderPref('theme', 'night')">夜间</button>
+          <button type="button" class="swatch swatch-paper" :class="{ active: readerPrefs.theme === 'paper' }" @click="setReaderPref('theme', 'paper')">纸白</button>
+          <button type="button" class="swatch swatch-sepia" :class="{ active: readerPrefs.theme === 'sepia' }" @click="setReaderPref('theme', 'sepia')">暖黄</button>
+          <button type="button" class="swatch swatch-gray" :class="{ active: readerPrefs.theme === 'gray' }" @click="setReaderPref('theme', 'gray')">柔灰</button>
+          <button type="button" class="swatch swatch-night" :class="{ active: readerPrefs.theme === 'night' }" @click="setReaderPref('theme', 'night')">夜间</button>
         </div>
         <div class="web-panel-row">
           <span>字号</span>
           <button type="button" @click="setReaderPref('fontSize', Math.max(12, readerPrefs.fontSize - 1))">A−</button>
           <strong>{{ readerPrefs.fontSize }}</strong>
           <button type="button" @click="setReaderPref('fontSize', Math.min(36, readerPrefs.fontSize + 1))">A＋</button>
-          <button type="button" :class="{ active: readingPaged }" @click="setReaderPref('readingMode', readingPaged ? 'scroll' : 'screen')">
-            {{ readingPaged ? '翻页模式' : '滚动模式' }}
-          </button>
+        </div>
+        <div class="web-panel-row">
+          <span>翻页</span>
+          <button type="button" :class="{ active: !readingPaged }" @click="setPageLayout('scroll')">滚动</button>
+          <button type="button" :class="{ active: readingPaged && readingColumns === 1 }" @click="setPageLayout('single')">单栏</button>
+          <button type="button" :class="{ active: readingPaged && readingColumns === 2 }" @click="setPageLayout('double')">双栏</button>
+          <em class="web-panel-note">翻页时左右整屏换页；双栏像摊开的书，两页一起翻</em>
         </div>
         <div class="web-panel-row">
           <span>版心</span>
@@ -2211,6 +2482,7 @@ onUnmounted(() => {
       <div
         ref="readingViewport"
         class="web-reading-viewport"
+        :class="{ 'reading-columns': readingColumns > 0, 'reading-columns-1': readingColumns === 1, 'reading-columns-2': readingColumns === 2 }"
         @scroll.passive="onReadingScroll"
         @wheel="onReadingWheel"
         @mouseup="onReadingMouseup"
@@ -2541,23 +2813,53 @@ onUnmounted(() => {
   background: var(--web-outer); scrollbar-width: none; overscroll-behavior: contain;
 }
 .web-reading-viewport::-webkit-scrollbar { width: 0; height: 0; }
+/* 与书库阅读器的 .reader-toolbar 同一把尺子：56px 高、24px 内边距、13px 字。
+   两个阅读入口长得像同一家做的，比各写一套更容易维护。 */
 .web-reading-chrome {
-  position: absolute; left: 0; right: 0; z-index: 4;
-  display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 14px;
+  position: absolute; z-index: 4;
+  display: flex; align-items: center; gap: 4px; min-height: 56px; padding: 6px 24px;
   color: var(--web-ink); background: color-mix(in srgb, var(--web-paper) 94%, transparent);
   backdrop-filter: blur(6px); transition: opacity 160ms ease, transform 160ms ease;
 }
-.web-reading-chrome.top { top: 0; border-bottom: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent); }
-.web-reading-chrome.bottom { bottom: 0; justify-content: center; border-top: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent); }
+.web-reading-chrome.top { top: 0; left: 0; right: 0; border-bottom: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent); }
+/* 底栏改成和书库阅读器一样的深色浮层胶囊：同样是「阅读时浮在纸上的控制条」。
+   原来是一条通栏白条，跟另一个阅读器完全不是一套语言。 */
+.web-reading-chrome.bottom {
+  left: 50%; right: auto; transform: translateX(-50%);
+  bottom: 18px; width: max-content; max-width: calc(100% - 32px);
+  min-height: 0; padding: 7px 10px; border: 1px solid rgba(233, 220, 188, 0.16); border-radius: 18px;
+  background: rgba(24, 28, 25, 0.88); color: rgba(244, 235, 211, 0.82);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 245, 216, 0.08);
+  backdrop-filter: blur(14px) saturate(0.82);
+}
 .web-reading-stage.tools-hidden .web-reading-chrome { opacity: 0; pointer-events: none; }
 .web-reading-stage.tools-hidden .web-reading-chrome.top { transform: translateY(-100%); }
-.web-reading-stage.tools-hidden .web-reading-chrome.bottom { transform: translateY(100%); }
+.web-reading-stage.tools-hidden .web-reading-chrome.bottom { transform: translate(-50%, 100%); }
 .web-reading-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .web-chrome-actions { margin-left: auto; display: flex; align-items: center; gap: 2px; }
 .web-reading-chrome button, .web-reading-panel button, .catalog-head button {
-  border: 0; border-radius: 999px; background: transparent; color: inherit;
-  padding: 6px 10px; font-size: 13px; cursor: pointer;
+  border: 0; border-radius: 8px; background: transparent; color: inherit;
+  padding: 6px 10px; font-size: 13px; line-height: 1.4; cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
 }
+.web-reading-chrome button:hover { background: color-mix(in srgb, var(--web-ink) 8%, transparent); }
+.web-reading-chrome.bottom button { color: rgba(244, 235, 211, 0.86); }
+.web-reading-chrome.bottom button:hover { background: rgba(244, 235, 211, 0.12); }
+.web-reading-chrome.bottom button:disabled { color: rgba(244, 235, 211, 0.34); }
+/* 图标 + 文字：尺寸与书库阅读器顶栏一致（16px 图标、4px 间距、13px 字）。 */
+.web-reading-chrome.top button {
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.web-reading-chrome.top button svg {
+  width: 16px; height: 16px; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* 顶栏里的次要动作（自动 / 听书 / 加书架）压一档，别和「目录 / 搜索 / 标记」抢注意力。 */
+.web-reading-chrome.top .web-chrome-actions button.secondary { color: color-mix(in srgb, var(--web-ink) 58%, transparent); }
+.web-reading-chrome.top .web-chrome-actions button.secondary:hover { color: var(--web-ink); }
+/* 分组竖线：导航动作 | 朗读 / 自动 / AI | 书架 / 排版 */
+.web-chrome-sep { width: 1px; height: 16px; margin: 0 6px; background: color-mix(in srgb, var(--web-ink) 14%, transparent); }
 .web-reading-chrome button:hover:not(:disabled), .web-reading-panel button:hover, .catalog-head button:hover { background: color-mix(in srgb, var(--web-ink) 10%, transparent); }
 .web-reading-chrome button.active, .web-reading-panel button.active { background: color-mix(in srgb, var(--web-ink) 18%, transparent); font-weight: 600; }
 .web-reading-chrome button:disabled { opacity: 0.4; cursor: default; }
@@ -2570,6 +2872,7 @@ onUnmounted(() => {
 .web-panel-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .web-panel-row span { width: 36px; font-size: 12px; opacity: 0.7; }
 .web-panel-hint { margin: 0; font-size: 12px; opacity: 0.6; }
+.web-panel-note { flex-basis: 100%; font-size: 11px; font-style: normal; opacity: 0.55; }
 /* AI 面板：文字说明 + 一个主行动，排版沿用 .web-reading-panel 的浮层样式 */
 .web-ai-guide { width: min(460px, calc(100% - 28px)); }
 .web-guide-line { margin: 0; font-size: 13px; line-height: 1.7; opacity: 0.85; }
@@ -2592,15 +2895,45 @@ onUnmounted(() => {
 
 .web-reading-article {
   box-sizing: border-box; width: min(100%, var(--web-width)); margin: 0 auto;
-  min-height: 100%; padding: 56px clamp(28px, 6vw, 72px) 72px;
+  min-height: 100%; padding: 56px clamp(28px, 6vw, 72px) 96px;
   background: var(--web-paper); color: var(--web-ink);
   font: var(--web-size)/var(--web-line) var(--web-font); white-space: pre-wrap; overflow-wrap: anywhere;
 }
+/* 单栏 / 双栏：正文按栏横向铺开，一屏就是一页。
+   栏距取两倍左右留白，于是每栏步长恰好是「一屏宽 ÷ 栏数」，翻页按屏对齐。 */
+.web-reading-viewport.reading-columns { overflow-x: auto; overflow-y: hidden; }
+.web-reading-viewport.reading-columns .web-reading-article {
+  width: 100%; min-height: 0; height: 100%; margin: 0;
+  padding: 56px var(--web-col-pad) 64px;
+  column-gap: calc(var(--web-col-pad) * 2);
+  column-fill: auto;
+}
+.web-reading-viewport.reading-columns-1 .web-reading-article { column-count: 1; }
+/* 一屏一页时也得守版心：原先 width:100% 把行宽拉到整个窗口（18px 下一行 59 字，远超中文舒服的 30~40 字）。
+   左右内边距按「(窗口宽 - 版心宽) / 2」算，翻页步长仍是一屏宽，所以页对齐不受影响。 */
+.web-reading-viewport.reading-columns-1 .web-reading-article {
+  padding-left: max(24px, calc((100% - var(--web-width)) / 2));
+  padding-right: max(24px, calc((100% - var(--web-width)) / 2));
+}
+.web-reading-viewport.reading-columns-2 .web-reading-article { column-count: 2; }
 .web-reading-section + .web-reading-section {
   margin-top: 3em;
   padding-top: 2.4em;
   border-top: 1px solid color-mix(in srgb, var(--web-ink) 12%, transparent);
 }
+/* 背景四个档位的类名（swatch-paper/sepia/gray/night）之前只有类名没有样式，
+   面板上只是四个一样的灰胶囊，点之前看不出纸色。补一枚圆点色卡。 */
+.web-reading-panel .swatch { display: inline-flex; align-items: center; gap: 6px; }
+.web-reading-panel .swatch::before {
+  content: ''; width: 12px; height: 12px; border-radius: 50%;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  flex: 0 0 auto;
+}
+.web-reading-panel .swatch-paper::before { background: #fbf8f0; }
+.web-reading-panel .swatch-sepia::before { background: #f1e2c4; }
+.web-reading-panel .swatch-gray::before { background: #e6e7e3; }
+.web-reading-panel .swatch-night::before { background: #1a211d; }
+
 .web-reading-append-error { color: var(--negative, #d64545); }
 
 .web-reading-article h1 { font-size: 1.35em; font-weight: 600; line-height: 1.5; text-align: center; margin: 0.6em 0 1.6em; }
@@ -2734,6 +3067,148 @@ onUnmounted(() => {
   font: 10px/1 var(--font-mono);
 }
 
+/* 侧栏常用网站：起始页是完整的管理面，这里只保证「收藏完随时能点回去」。 */
+.side-fav {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  max-height: 38%;
+  min-height: 0;
+}
+
+.side-fav-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side-fav-add {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 12px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.side-fav-add:hover {
+  border-color: var(--hover-line);
+  color: var(--text-primary);
+  background: var(--hover);
+}
+
+.side-fav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.side-fav-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 7px;
+  transition: background var(--motion-duration) var(--motion-easing);
+}
+
+.side-fav-row:hover { background: var(--hover); }
+.side-fav-row.current { background: color-mix(in srgb, var(--focus) 10%, transparent); }
+
+.side-fav-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-fav-badge {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fav-color, var(--focus)) 18%, transparent);
+  color: var(--fav-color, var(--focus));
+  font: 600 11px/1 var(--font-mono);
+}
+
+.side-fav-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.side-fav-title,
+.side-fav-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-fav-title { color: var(--text-primary); font-size: 12px; font-weight: 600; }
+.side-fav-host { color: var(--text-muted); font: 10px/1.3 var(--font-mono); }
+
+.side-fav-tools {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  padding-right: 3px;
+  opacity: 0;
+  transition: opacity var(--motion-duration) var(--motion-easing);
+}
+
+.side-fav-row:hover .side-fav-tools,
+.side-fav-row:focus-within .side-fav-tools { opacity: 1; }
+
+.side-fav-tools button {
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.side-fav-tools button:hover { background: var(--hover); color: var(--text-primary); }
+
+.side-fav-empty {
+  width: 100%;
+  padding: 10px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  cursor: pointer;
+}
+
+.side-fav-empty small { font-size: 11px; opacity: 0.8; }
+.side-fav-empty:hover { border-color: var(--hover-line); color: var(--text-secondary); }
+
 .side-recent {
   display: flex;
   flex: 1;
@@ -2781,7 +3256,17 @@ onUnmounted(() => {
 
 .browse-side .browser-more summary {
   width: 100%;
+  /* 它和上面两颗 secondary 按钮同一列，但原来是 11px 等宽字 + 白底描边，
+     看着就像一个输入框。这里拉回按钮的字形字号並补一个展开箭头。 */
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 10px;
+  font: inherit; font-size: 13px;
+  color: var(--text-secondary);
 }
+.browse-side .browser-more summary::after {
+  content: '▾'; font-size: 10px; line-height: 1; opacity: 0.7;
+}
+.browse-side .browser-more[open] summary::after { content: '▴'; }
 
 .browse-side .browser-more-content {
   flex-direction: column;

@@ -33,6 +33,19 @@ Apache License 2.0 使用并修改（类型改从 `./types` 取、去掉 `.ts` �
 React 改 Vue、`identifyBookMap` 支持注入地图清单用于测试、接入 spbf 的 BookMapPage 与阅读器）。
 `atlas/mapPins.ts` 的范围算法取自其 `shared/textAtlas.ts`，只保留本项目需要的部分。
 
+**书中原图自动识别**：`src/shared/atlas.ts`、`src/main/atlasRecognition.ts`、
+`src/main/atlasCities.ts` 与 `resources/atlas-cities.json` 源自其 `shared/atlas.ts`、
+`worker/src/atlas/recognition.ts`、`worker/src/atlas/cache.ts` 与
+`worker/src/atlas/data/cities.json`，同样按 Apache License 2.0 使用并修改：
+
+- Cloudflare Worker 的路由 / R2 缓存 / 限流换成 Electron 主进程的按书落盘缓存与既有 AI 配置；
+- Cloudflare GLM 备用模型没有对应运行时，省略（只用一个模型，参数由本项目配置决定）；
+- 用 `noUncheckedIndexedAccess` 下的手写校验替代 zod，保留同一组约束（上限 24 个落点、
+  最多校验 64 条候选、`bounds` 与 `imagePoint` 的取值域）；
+- 城市库按需从打包资源读取，并支持测试注入。
+
+数据来源与哈希见 `resources/atlas-cities.README.md`。
+
 ## 阅读地图数据
 
 `src/renderer/public/atlas/` 的数据沿用 Infinite Reader 的 `web/public/atlas/`：

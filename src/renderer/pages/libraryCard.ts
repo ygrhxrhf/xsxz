@@ -12,6 +12,7 @@ export type LibraryMenuKey =
   | 'view-failed'
   | 'export-txt'
   | 'export-epub'
+  | 'craft-push'
   | 'trash'
 export type LibraryMenuEntry = LibraryMenuKey | 'divider-export' | 'divider-trash'
 
@@ -91,7 +92,7 @@ export function libraryMenuEntries(
   if (!book.coverPath) entries.push('gen-cover')
   if (isDownloadBook(book)) entries.push('quality', 'check-update')
   if (hasFailedChapters(book)) entries.push('retry-failed', 'view-failed')
-  entries.push('divider-export', 'export-txt', 'export-epub', 'divider-trash', 'trash')
+  entries.push('divider-export', 'export-txt', 'export-epub', 'craft-push', 'divider-trash', 'trash')
   return entries
 }
 
@@ -320,4 +321,47 @@ export function findLibraryDuplicateGroups(books: BookListItem[]): LibraryDuplic
     })
   }
   return groups
+}
+
+export interface HoverOverviewRect {
+  top: number
+  bottom: number
+  left: number
+  right: number
+}
+
+/**
+ * 计算悬浮梗概浮层的视口坐标：优先贴卡片右侧，右侧放不下则贴左侧，
+ * 两侧都放不下则贴下方（必要时上方），并夹在视口安全边距内。
+ */
+export function computeHoverOverviewPosition(
+  card: HoverOverviewRect,
+  viewport: { width: number; height: number },
+  popover: { width: number; height: number } = { width: 320, height: 240 },
+  gap = 12,
+  margin = 12,
+): { top: number; left: number } {
+  const maxLeft = Math.max(margin, viewport.width - popover.width - margin)
+  const maxTop = Math.max(margin, viewport.height - popover.height - margin)
+
+  let left: number
+  let top: number
+
+  if (card.right + gap + popover.width + margin <= viewport.width) {
+    left = card.right + gap
+    top = card.top
+  } else if (card.left - gap - popover.width >= margin) {
+    left = card.left - gap - popover.width
+    top = card.top
+  } else {
+    left = Math.min(Math.max(card.left, margin), maxLeft)
+    top = card.bottom + gap + popover.height + margin <= viewport.height
+      ? card.bottom + gap
+      : Math.max(margin, card.top - gap - popover.height)
+  }
+
+  return {
+    left: Math.round(Math.min(Math.max(left, margin), maxLeft)),
+    top: Math.round(Math.min(Math.max(top, margin), maxTop)),
+  }
 }
