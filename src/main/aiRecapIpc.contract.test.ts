@@ -5,7 +5,7 @@ describe('storySoFar trusted recap contract', () => {
   it('uses saved recap materials without reading chapter bodies', async () => {
     const source = await readFile(new URL('./index.ts', import.meta.url), 'utf-8')
     const start = source.indexOf("ipcMain.handle('ai.storySoFar'")
-    const end = source.indexOf("ipcMain.handle('ai.summarizeChapter'", start)
+    const end = source.indexOf('ipcMain.handle(', start + 1)
     const block = source.slice(start, end)
     expect(block).toContain('parseMemoryRunPayload(unsafePayload)')
     expect(block).toContain('readVisibleSummaries(payload.bookId)')
@@ -20,7 +20,7 @@ describe('storySoFar trusted recap contract', () => {
   it('gates over-budget work before Key and slot, then validates before saving', async () => {
     const source = await readFile(new URL('./index.ts', import.meta.url), 'utf-8')
     const start = source.indexOf("ipcMain.handle('ai.storySoFar'")
-    const end = source.indexOf("ipcMain.handle('ai.summarizeChapter'", start)
+    const end = source.indexOf('ipcMain.handle(', start + 1)
     const block = source.slice(start, end)
     expect(block.indexOf('plan.requiresConfirmation')).toBeLessThan(block.indexOf('getApiKey()'))
     expect(block.indexOf('getApiKey()')).toBeLessThan(block.indexOf('aiStart('))

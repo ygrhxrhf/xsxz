@@ -39,9 +39,10 @@ describe('AI 频道表面必须接得住真实用途', () => {
     const keys = aiPreloadKeys(preload)
     // 防止解析规则被悄悄改坏后这条用例空跑通过
     expect(keys.length).toBeGreaterThanOrEqual(25)
-    const unused = keys.filter((key) =>
-      [...files.values()].every((source) => !source.includes(`window.api.ai.${key}`)),
-    )
+    // 渲染层有时写 `window.api?.ai?.x`（可选链是故意的，避免 preload 未注入时崩），两种写法都算接住了。
+    const calls = (source: string, key: string) =>
+      source.includes(`window.api.ai.${key}`) || source.includes(`window.api?.ai?.${key}`);
+    const unused = keys.filter((key) => [...files.values()].every((source) => !calls(source, key)));
     expect(unused, `这些 AI 频道没有任何渲染层入口：${unused.join(', ')}`).toEqual([])
   })
 
