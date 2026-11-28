@@ -1,5 +1,27 @@
 # HANDOFF
 
+## 章节导图：整屏查看 + 可读缩放（2026-11-28，本轮完成）
+
+- 做到哪：抽屉里 560px 宽的导图「适应」后只有 20%，标签溢出节点框，用户反馈根本看不清。
+  现在工具栏有「全屏」：导图 Teleport 到 body 铺满窗口，Esc 只退全屏（window 捕获阶段拦下，
+  不连带关抽屉），退出回到抽屉并解锁页面滚动。
+- 可读性：标签按全角/半角宽度折成最多 3 行（完整文案在 `<title>` 与 aria-label 里），
+  节点高度随行数变化，树布局改成按子树高度自底向上排，折行后父节点不压兄弟；
+  缩放下限 2%（「适应」能把上万像素高的整棵树塞进框），复位改成以视口中心回 100%，
+  视口尺寸变化在未手动调整时自动重适应，双击空白处也适应窗口。
+- 与主分支的关系：本分支变基到 master `0f6aa88`。master 上那版导图改动（2 行折行、固定 64px 节点、
+  无门槛重适应）被本分支的实现取代；其中 `MIN_MAP_ZOOM = 0.5` 是「适应窗口缩不下去」的直接原因。
+  `readerAssistant.ts` 里章节导图的两个 IPC 包装在 master 已存在，本分支不再重复补。
+- 验证：`npm run typecheck` 0；`npm run build` 0；导图三个测试文件 42 用例绿；
+  `npm run e2e:mindmap-fullscreen` **16 项通过 0 失败**（161 节点长章：全屏铺满 1229×671、
+  100% 下 80 个节点文字零溢出、适应后整树进框、Esc 只退全屏）；截图在 `~/.capy/work/mindmap-shots/`。
+- master 既有失败（与本分支无关，均未触碰对应文件）：`Reader.pagination.contract`（`window.api.ai.test`
+  不在白名单）、`aiRecapIpc.contract`（`readChapter(` 源码锁定）、`aiAssistantBudget.ipc.contract`、
+  atlas 两条图幅定位、`aiEvidenceIndex` 预算用例超时，以及 `Reader.mindmap.ui.test`
+  7 条因 master 的 Reader.vue 新增 `ai.onExternalSources` 而测试桩没跟上。
+- 未验证：超长章（2000 段）只走了 jsdom；触屏捏合未在真机试。
+- 下一步第一条命令：在主目录 `git merge --ff-only feat/mindmap-fullscreen`（需用户点头，之后再 `git push`）。
+
 ## 工作区收口 + 启动自动追更（2026-11-21，本轮完成）
 
 - 做到哪：清掉约 930MB 未跟踪产物（`.multi-agent/tmp/` 483M、`.multi-agent/visual/` 451M 的截图与探针 exe），
