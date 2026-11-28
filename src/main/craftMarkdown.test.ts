@@ -129,7 +129,7 @@ describe('buildCraftNoteMarkdown', () => {
     const first = markdown.indexOf('风从山口压下来')
     const second = markdown.indexOf('铜锁发亮')
     expect(first).toBeLessThan(second)
-    expect(markdown).toContain('> 铜锁发亮')
+    expect(markdown).toContain('> **第二章 铜锁** 铜锁发亮')
     expect(markdown).toContain('这里反复出现（AI 解释）')
     expect(markdown).toContain('#物件')
     expect(markdown).toContain('**第二章 铜锁** 书签：读到这')

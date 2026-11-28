@@ -131,7 +131,7 @@ function marksSection(book: CraftNoteInput['book'], annotations: Annotation[]): 
       lines.push(`- ${head}${head ? ' ' : ''}书签${mark.note ? `：${mark.note}` : ''}`)
       continue
     }
-    lines.push(`> ${mark.excerpt.replace(/\n+/g, ' ').trim()}`)
+    lines.push(`> ${head ? `${head} ` : ''}${mark.excerpt.replace(/\n+/g, ' ').trim()}`)
     if (mark.note) {
       const source = mark.noteSource === 'ai' ? '（AI 解释）' : ''
       lines.push(`${mark.note.trim()}${source}`)
