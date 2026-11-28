@@ -476,6 +476,23 @@
 - 幂等：每本书的 `ai/craft-link.json` 记 `{ docId, endpoint, contentHash, pushedAt }`；第二次推同一本带 `documentId` 更新上次那篇，对端 404 时自动退回新建一次。
 - 单篇上限 450000 字符（对端上限 500000）；超限直接拒绝，不发请求。
 
+## Craft MCP 与 ima 客户端
+
+设置页两处外部服务的探测：Craft MCP 端点（`mcp.*`）与 ima 知识库（`ima.*`）。凭据都存在设置里，
+主进程只回布尔位与列表，**不回传凭据明文**。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `mcp.testConnection` | invoke | 无 | `{ ok: true; tools: number } \| { ok: false; message: string }` |
+| `mcp.listTools` | invoke | 无 | `{ ok: true; tools: Array<{ toolName: string; title: string; description: string; readOnly: boolean }> } \| { ok: false; message: string }` |
+| `mcp.disconnect` | invoke | 无 | `{ ok: true }` |
+| `ima.testConnection` | invoke | 无 | `{ ok: true; knowledgeBases: Array<{ id: string; name: string }> } \| { ok: false; message: string }` |
+| `ima.listKnowledgeBases` | invoke | 无 | `{ ok: true; knowledgeBases: Array<{ id: string; name: string }> } \| { ok: false; message: string }` |
+
+- `mcp.disconnect` 只丢缓存会话，下次访问按设置里的地址重建，不改配置与令牌。
+- `ima.testConnection` 用一次不会命中的笔记搜索证明凭据可用，不写任何数据。
+- 改了 `craftMcpUrl` 会先断开旧会话，避免继续用指向旧端点的连接。
+
 ## 付费墙自动解锁
 
 下载与预览共用，实现在 `src/main/paywallUnlock.ts`，只处理「正文已经发到浏览器、只是被页面挡住」的情况。
@@ -576,6 +593,7 @@
 | `ai.stage` | 主→渲染 | — | `AiStageEvent` |
 | `ai.budget` | 主→渲染 | — | `AiBudgetEvent`（增量兼容；仅含 jobId、任务 `recap \| chapterSummary \| chapterNote \| memory \| qa` 和估算，不含 prompt、Key 或正文。`ai.summarizeChapter` 报 `chapterSummary`，`ai.chapterNote` 报 `chapterNote`） |
 | `ai.done` | 主→渲染 | — | `AiDoneEvent` |
+| `ai.externalSources` | 主→渲染 | — | `{ jobId: string; externalSources: ExternalSource[] }`（本轮问答引用的外部材料；ima 知识库来源，问答结束后随流推送）
 
 未配置 Key 或网络失败：返回 `{ ok: false; message }`，不得影响浏览/下载/阅读。
 
@@ -654,12 +672,14 @@ window.api = {
   ruleMarket: { list, apply, subscribe, unsubscribe },
   sync: { status, signIn, signOut, run },
   craft: { status, configure, push },
+  mcp: { testConnection, listTools, disconnect },
+  ima: { testConnection, listKnowledgeBases },
   backup: { create, restore, runAuto },
   ocr: { status },
   annotations: { list, add, update, remove },
   webAnnotations: { list, add, update, remove },
   siteRules: { list, preview, upsert, remove },
-  ai: { clean, getChat, listThreads, createThread, deleteThread, clearChat, replaceChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, agentChat, generalChat, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, getMindmap, generateMindmap, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
+  ai: { clean, getChat, listThreads, createThread, deleteThread, clearChat, replaceChat, test, listModels, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, agentChat, generalChat, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, getMindmap, generateMindmap, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onExternalSources, onDone },
 }
 ```
 

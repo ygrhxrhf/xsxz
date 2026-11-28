@@ -582,19 +582,27 @@ async function listChatThreads() {
  * 换一条会话就会把后面的句子写进刚切过去的那条，两条记录同时被污染。
  */
 async function switchChatThread(id: string) {
+  if (assistantSaveRetrying.value || chatThreadSaving.value) return
+  // 生成中一律拒绝：流式回答还在往 `chatAssistantIndex` 追加，换一条会话就会把后面的
+  // 句子写进刚切过去的那条，两条记录同时被污染。
+  if (chatLoading.value || chatJobId.value) return
+  chatThreadSaving.value = true
+  try {
+    await loadChatThread(id)
+  } finally {
+    chatThreadSaving.value = false
+  }
+}
+
+/**
+ * 读一条会话的历史并整段覆盖界面。
+ *
+ * 调用方负责串行化（`chatThreadSaving`）与生成中判断：新建、删除会话本来就在持锁状态下
+ * 切过去，再让这里判一次锁会把自己的调用挡掉。
+ */
+async function loadChatThread(id: string) {
   const target = book.value
   if (!target || !id) return
-  if (assistantSaveRetrying.value || chatThreadSaving.value) return
-  // 先取消旧线程并关闭本地写入门槛；迟到的 chunk 仍可能抵达，但不会再命中新线程的消息下标。
-  if (chatJobId.value) {
-    const oldJobId = chatJobId.value
-    void window.api.ai.cancel(oldJobId)
-    chatJobId.value = ''
-    chatAssistantIndex.value = -1
-    chatLoading.value = false
-    agentToolActivity.value = ''
-  }
-  chatThreadSaving.value = true
   try {
     const res = await window.api.ai.getChat(target.id, id)
     if (!res.ok) {
@@ -610,8 +618,6 @@ async function switchChatThread(id: string) {
     agentToolActivity.value = ''
   } catch {
     message.error('读取会话历史失败，请稍后重试')
-  } finally {
-    chatThreadSaving.value = false
   }
 }
 
@@ -628,7 +634,7 @@ async function newChatThread() {
     }
     // 先刷新列表再切：下拉框里得先有这一项，选中态才落得下来。
     await listChatThreads()
-    await switchChatThread(res.threadId)
+    await loadChatThread(res.threadId)
   } catch {
     message.error('新建会话失败，请稍后重试')
   } finally {
@@ -656,7 +662,7 @@ async function removeChatThread(id: string) {
     if (!wasCurrent) return
     // 删的是当前会话：加载剩下的那一条；一条不剩就清空消息，让它自然回到欢迎态。
     if (chatThreadId.value) {
-      await switchChatThread(chatThreadId.value)
+      await loadChatThread(chatThreadId.value)
     } else {
       chatMessages.value = []
       chatInput.value = ''

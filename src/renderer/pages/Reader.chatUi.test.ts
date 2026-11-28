@@ -102,7 +102,7 @@ async function mountReader(options: {
     ai: {
       onChunk: (fn: (event: { jobId: string; delta: string }) => void) => { handlers.chunk = fn; return () => { handlers.chunk = undefined } },
       onStage: (fn: (event: AiStageEvent) => void) => { handlers.stage = fn; return () => { handlers.stage = undefined } },
-      onBudget: () => () => {},
+      onExternalSources: () => () => {}, onBudget: () => () => {},
       onDone: (fn: (event: AiDoneEvent) => void) => { handlers.done = fn; return () => { handlers.done = undefined } },
       agentChat: async (_bookId: string, _chapterId: string, messages: AiEvidenceChatMessage[], threadId?: string) => {
         starts.count += 1
