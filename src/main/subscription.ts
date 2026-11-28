@@ -24,7 +24,7 @@ export interface ParsedNode {
   outbound: SingBoxOutbound
 }
 
-export interface ParseSubscriptionResult {
+interface ParseSubscriptionResult {
   nodes: ParsedNode[]
   /** 被跳过的条目数（协议不支持或格式坏了）。 */
   skipped: number

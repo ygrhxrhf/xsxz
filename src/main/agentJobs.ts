@@ -10,9 +10,9 @@
 import type { WebContents } from 'electron'
 import type { BridgeToolInfo } from './agentBridgeCore'
 
-export type AgentJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
+type AgentJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 
-export interface AgentJobSnapshot {
+interface AgentJobSnapshot {
   jobId: string
   kind: 'ai' | 'download' | 'mirror'
   state: AgentJobState

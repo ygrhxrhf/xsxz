@@ -26,7 +26,7 @@ interface RenderJob {
   lastUsed: number
 }
 
-export interface RasterizerOptions {
+interface RasterizerOptions {
   onReady?: (key: string) => void
   limit?: number
   maxAnisotropy?: number

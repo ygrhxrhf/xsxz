@@ -15,14 +15,9 @@ import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-export interface OcrImage {
+interface OcrImage {
   /** data:image/png;base64,... */
   dataUrl: string
-  detail: string
-}
-
-export interface OcrText {
-  text: string
   detail: string
 }
 
@@ -30,10 +25,10 @@ export interface OcrText {
 export const MAX_OCR_IMAGES = 12
 
 /** 一张图最多多大（base64 字符数，约 2MB 原图）。 */
-export const MAX_OCR_IMAGE_CHARS = 3_000_000
+const MAX_OCR_IMAGE_CHARS = 3_000_000
 
 /** canvas 重绘每块最多这么多字。 */
-export const MAX_CANVAS_CHARS = 800
+const MAX_CANVAS_CHARS = 800
 
 /**
  * 在页面上下文里执行：带 cookie 取回切片图，并把被字体混淆的文本重绘成图。
@@ -282,7 +277,6 @@ async function missingEngineLanguages(worker: OcrWorkerLike): Promise<string[]> 
   }
 }
 
-
 /**
  * OCR 后处理：tesseract 认中文时会在每个字之间插空格（实测「石 阶 尽 头」），
  * 汉字之间的空格要抹掉；英文/数字之间的空格保留。
@@ -318,9 +312,9 @@ async function writeTempPng(dataUrl: string, targetDir: string, index: number): 
 }
 
 /** OCR 认不出来的原因：分清楚是「没引擎」「页面没图」还是「认了但没认出字」。 */
-export type OcrFailureReason = 'no-engine' | 'no-image' | 'all-failed'
+type OcrFailureReason = 'no-engine' | 'no-image' | 'all-failed'
 
-export type OcrImagesResult =
+type OcrImagesResult =
   | { ok: true; text: string; detail: string; failed: number }
   | { ok: false; reason: OcrFailureReason; detail?: string }
 

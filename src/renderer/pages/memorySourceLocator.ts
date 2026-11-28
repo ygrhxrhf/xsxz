@@ -1,4 +1,4 @@
-export type MemorySourceLocation =
+type MemorySourceLocation =
   | { paragraphIndex: number; mode: 'exact' }
   | { paragraphIndex: number; mode: 'relocated' }
   | { paragraphIndex: 0; mode: 'fallback' }

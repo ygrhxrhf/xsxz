@@ -37,7 +37,7 @@ import { makeCover, type CoverSet } from './realBookCover'
 import { createDesk, type DeskHandle } from './realBookDesk'
 import { shadowRig } from './realBookPaperMaterial'
 
-export interface RealBookScenePages {
+interface RealBookScenePages {
   left: RealBookTexturePage | null
   right: RealBookTexturePage | null
 }
@@ -57,7 +57,7 @@ export interface RealBookSceneFlip {
   back: RealBookTexturePage | null
 }
 
-export interface RealBookSceneOptions {
+interface RealBookSceneOptions {
   style: RealBookTextureStyle
   pages: RealBookScenePages
   /** 任意页的纹理页对象：BookModel 会按需取 2k / 2k+1。 */
@@ -75,7 +75,7 @@ export interface RealBookSceneOptions {
   bookAuthor: string
 }
 
-export interface BookScreenRect {
+interface BookScreenRect {
   left: number
   top: number
   width: number
@@ -83,7 +83,7 @@ export interface BookScreenRect {
 }
 
 /** 与参考站 BookModel.zoneAt 的返回值同形。 */
-export interface BookZone {
+interface BookZone {
   zone: 'page' | 'cover'
   side: 1 | -1
   u: number

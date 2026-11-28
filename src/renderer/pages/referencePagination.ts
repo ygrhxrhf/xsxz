@@ -23,7 +23,7 @@ import type {
 } from './realBookPager'
 import type { RealBookNote } from './realBookNotes'
 
-export interface ReferencePaginationLayout {
+interface ReferencePaginationLayout {
   pageWidth: number
   pageHeight: number
   marginTop: number
@@ -37,7 +37,7 @@ export interface ReferencePaginationLayout {
   singlePage: boolean
 }
 
-export interface ReferencePaginationInput {
+interface ReferencePaginationInput {
   chapterTitle: string
   /** 章首标题块：在每个给定段落下标前插入一个 `chapterHeading` 块（连续排版时每章各一）。 */
   chapterOpenings?: ReadonlyArray<{ paragraph: number; title: string }>

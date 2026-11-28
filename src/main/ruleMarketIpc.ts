@@ -24,7 +24,7 @@ import { buildSyncBundle, parseSyncBundle, stripCredentialFields } from './syncC
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 与 ipcMain.handle 的 ...args: any[] 对齐
-export type IpcRegistrar = (channel: string, listener: (...args: any[]) => unknown) => void
+type IpcRegistrar = (channel: string, listener: (...args: any[]) => unknown) => void
 
 /** 一个已订阅的规则清单来源。磁盘格式归 `ruleMarketStore.ts`，这里只当形状用。 */
 export interface MarketSubscription {
@@ -88,7 +88,7 @@ export interface RuleMarketIpcDeps {
  * 并如实返回「同步端点不可达」。要真同步，用 `sync.signIn` 的 `endpoint`
  * 参数指向自己的服务端（自带 HTTP 接口即可）。
  */
-export const DEFAULT_SYNC_ENDPOINT = 'https://sync.spbf.app'
+const DEFAULT_SYNC_ENDPOINT = 'https://sync.spbf.app'
 
 const FILE_VERSION = 1
 
@@ -102,10 +102,6 @@ interface AccountFile {
 
 /** 单测注入目录；null = 用真实的 userData 目录。 */
 let overrideDir: string | null = null
-
-export function setRuleMarketDir(dir: string | null): void {
-  overrideDir = dir
-}
 
 function userDataRoot(): string {
   return overrideDir ?? app.getPath('userData')
@@ -186,7 +182,7 @@ export function createAccountStore(): AccountStore {
 }
 
 /** 内置 HTTP 传输：POST 数据包，拿回云端版本。 */
-export const defaultSyncTransport: SyncTransport = async ({ endpoint, token, bundle }) => {
+const defaultSyncTransport: SyncTransport = async ({ endpoint, token, bundle }) => {
   const base = endpoint.replace(/\/+$/, '')
   let response: Response
   try {

@@ -6,7 +6,7 @@ import type { ReaderTheme } from './types'
  * 之前两个界面各写一份色表，导致同一个「纸白」在两处渲染出不同颜色。
  * 取值以网页阅读模式为准（暖纸），本地阅读器随之统一。
  */
-export interface ReaderThemeColors {
+interface ReaderThemeColors {
   /** 正文纸面底色 */
   paper: string
   /** 正文文字色 */

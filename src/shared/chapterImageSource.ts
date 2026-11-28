@@ -23,7 +23,7 @@ function attr(tag: string, name: string): string | null {
 }
 
 /** 单个 `<img>` 标签 → 可用的图片地址；站标/广告/占位/声明尺寸过小的返回 null。 */
-export function imageCandidateFromTag(tag: string, pageUrl: string): ChapterImageCandidate | null {
+function imageCandidateFromTag(tag: string, pageUrl: string): ChapterImageCandidate | null {
   let base: URL
   try {
     base = new URL(pageUrl)
@@ -69,13 +69,13 @@ export function imageToken(url: string, alt: string): string {
   return `${TOKEN_PREFIX}${encodeURIComponent(url)}|${encodeURIComponent(alt)}]]`
 }
 
-export interface ParsedImageToken {
+interface ParsedImageToken {
   url: string
   alt: string
   raw: string
 }
 
-export function parseImageToken(token: string): ParsedImageToken | null {
+function parseImageToken(token: string): ParsedImageToken | null {
   const match = /^\[\[SPBFIMG\|([^|\]]*)\|([^\]]*)\]\]$/.exec(token)
   if (!match) return null
   try {

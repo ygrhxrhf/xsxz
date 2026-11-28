@@ -35,7 +35,7 @@ export interface RenderOptions {
   highlightOpacity?: number
 }
 
-export const INK = '#241c15'
+const INK = '#241c15'
 
 export type PageCanvas = HTMLCanvasElement | OffscreenCanvas
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
@@ -61,7 +61,7 @@ function wordPrefixWidth(w: Word, n: number) {
   return measure(w.font, w.text.slice(0, n))
 }
 
-export interface MarkRect {
+interface MarkRect {
   x0: number
   x1: number
   line: Line
@@ -119,7 +119,7 @@ export function markUnderPoint(page: Page, x: number, y: number, marks: Annotati
 }
 
 /** Rects (page content coordinates) covered by a chapter-offset range. */
-export function rangeRects(page: Page, start: number, end: number): MarkRect[] {
+function rangeRects(page: Page, start: number, end: number): MarkRect[] {
   const out: MarkRect[] = []
   for (const line of page.lines) {
     let x0 = Infinity
@@ -184,7 +184,7 @@ function drawFrontMatter(c: Ctx, page: Page, o: RenderOptions) {
 }
 
 /** A clause mark rides the text baseline in the seam after one character, in page-content coordinates. */
-export interface JudouAnchor {
+interface JudouAnchor {
     /** bottom end of the slash */
     x: number
     /** top of the slash */
@@ -200,7 +200,7 @@ export interface JudouAnchor {
  * reach about 0.1 em into the next cell, over that glyph's left bearing. A line-final mark may hang
  * at most 0.2 em into the page margin.
  */
-export function judouAnchor(rect: MarkRect, cfg: LayoutConfig): JudouAnchor {
+function judouAnchor(rect: MarkRect, cfg: LayoutConfig): JudouAnchor {
     const size = cfg.fontSize
     const h = size * 0.66
     const lean = h * 0.34
@@ -210,7 +210,7 @@ export function judouAnchor(rect: MarkRect, cfg: LayoutConfig): JudouAnchor {
 }
 
 /** Whether a page-content point falls on the painted slash, with a small finger-sized tolerance. */
-export function judouHit(rect: MarkRect, cfg: LayoutConfig, x: number, y: number) {
+function judouHit(rect: MarkRect, cfg: LayoutConfig, x: number, y: number) {
     const a = judouAnchor(rect, cfg)
     const pad = Math.max(2.5, cfg.fontSize * 0.12)
     return x >= a.x - pad && x <= a.x + a.lean + pad && y >= a.y - pad && y <= a.y + a.h + pad

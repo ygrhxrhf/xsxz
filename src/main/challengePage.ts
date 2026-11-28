@@ -53,9 +53,9 @@ const CHALLENGE_TEXT = [
  * 门槛定在 120：实测挑战页可见正文 77 字，站点的拦截残页 155 字，两者都短，
  * 靠长度分开它们太脆，所以中文标题类判据干脆不收（见 `CHALLENGE_TITLES`）。
  */
-export const CHALLENGE_MAX_TEXT_LENGTH = 120
+const CHALLENGE_MAX_TEXT_LENGTH = 120
 
-export interface ChallengeVerdict {
+interface ChallengeVerdict {
   challenge: boolean
   /** 命中原因，用于日志与测试断言。 */
   reason?: string
@@ -129,7 +129,7 @@ export const CHALLENGE_POLL_BUDGET_MS = 20000
 /** 自动重载的次数上限：一次足够（实测一次即通），多了只是对判死的站反复撞。 */
 export const CHALLENGE_MAX_RELOAD = 1
 
-export interface ChallengeWaitOptions {
+interface ChallengeWaitOptions {
   /** 读当前 partition 是否已有放行 cookie。 */
   hasClearance(): Promise<boolean>
   /** 等待一个时间片；测试可注入立即返回的实现。 */

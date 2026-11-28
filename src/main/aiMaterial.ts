@@ -1,6 +1,6 @@
 import type { AiBookUsage, AiMaterialCoverage, AiMemoryBase, AiMemoryCharacter, AiMemoryFile, AiUsage, ChapterStatus } from '../shared/types'
 
-export interface CoverageChapter {
+interface CoverageChapter {
   id: string
   index: number
   title: string

@@ -8,7 +8,7 @@ export function queueWaitingText(position: number): string {
   return position > 1 ? `已排队，前面还有 ${position - 1} 个任务` : '已排队，正在等待当前任务让路'
 }
 
-export interface StageReadPlan {
+interface StageReadPlan {
   indexed: number
   total: number
   read: number

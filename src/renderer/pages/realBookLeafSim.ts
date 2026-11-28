@@ -21,7 +21,7 @@ export interface SimEnv {
   gravity: number
 }
 
-export interface Pin {
+interface Pin {
   /** material coordinate (0..1 of page width) where the page is held */
   u: number
   /** row (0..1) of the hand */
@@ -34,7 +34,7 @@ export interface Pin {
   shape?: CurlShape
 }
 
-export interface CurlShape {
+interface CurlShape {
   /** chord angle of the leaf from +x (0 = flat right, PI = flat left) */
   phi: number
   fromSide: 1 | -1
@@ -46,9 +46,9 @@ export interface CurlShape {
  * Half-bend (radians) of the sheet at its strongest (chord at 45 degrees from either stack): total bend over the page is twice this
  * (curl radius ~ W / 2A).
  */
-export const CURL_LEAD = 0.4
+const CURL_LEAD = 0.4
 /** how much the rows far from the hand trail the grabbed row (radians at mid-turn) */
-export const ROW_LAG = 0.2
+const ROW_LAG = 0.2
 
 /**
  * Tangent-angle profile of a turning leaf: a single smooth arc (constant curvature) whose chord sits at `phi`.
@@ -63,7 +63,7 @@ export const ROW_LAG = 0.2
  * Rows away from the hand `vg` trail it (towards the start stack) with a smooth falloff and bend a little less.
  * `flex` (paper flex from turning speed) scales the same curve up or down.
  */
-export function curlAngles(phi: number, fromSide: 1 | -1, vg: number, v: number, flex: number) {
+function curlAngles(phi: number, fromSide: 1 | -1, vg: number, v: number, flex: number) {
   const q0 = Math.min(Math.PI, Math.max(0, fromSide === 1 ? phi : Math.PI - phi))
   const dv = (v - vg) / 0.5
   const far = Math.min(dv * dv, 1.2)

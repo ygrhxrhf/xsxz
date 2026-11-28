@@ -16,9 +16,9 @@ import type { ProxyAutoUpdatePrefs } from '../shared/types'
  */
 
 /** 间隔下限（分钟）：一分钟一次已经是最勤的了。 */
-export const MIN_INTERVAL_MINUTES = 1
+const MIN_INTERVAL_MINUTES = 1
 /** 间隔上限（分钟）：一天一次。 */
-export const MAX_INTERVAL_MINUTES = 1440
+const MAX_INTERVAL_MINUTES = 1440
 /** 非法间隔的回退值：默认一小时一次。 */
 export const DEFAULT_INTERVAL_MINUTES = 60
 
@@ -117,7 +117,7 @@ async function defaultFetch(url: string): Promise<string> {
   return await res.text()
 }
 
-export interface ProxyAutoUpdateDeps {
+interface ProxyAutoUpdateDeps {
   /** 状态文件所在目录（主进程给 userData 下的子目录）。 */
   dir: string
   /** 读取已保存的订阅地址。 */

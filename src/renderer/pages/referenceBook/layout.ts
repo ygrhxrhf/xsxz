@@ -32,11 +32,11 @@ export interface LayoutConfig {
   quoteFamily?: string
 }
 
-export const CJK_FAMILIES =
+const CJK_FAMILIES =
   '"Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun", "Noto Serif CJK JP", "Hiragino Mincho ProN", "Noto Serif KR", "Microsoft YaHei", "WenQuanYi Micro Hei", "Droid Sans Fallback"'
-export const SERIF_STACK = `"EB Garamond Variable", "Iowan Old Style", Georgia, ${CJK_FAMILIES}, serif`
+const SERIF_STACK = `"EB Garamond Variable", "Iowan Old Style", Georgia, ${CJK_FAMILIES}, serif`
 
-export const DEFAULT_LAYOUT: LayoutConfig = {
+const DEFAULT_LAYOUT: LayoutConfig = {
   pageW: 640,
   pageH: 920,
   marginTop: 78,
@@ -151,6 +151,7 @@ interface PaginationCache {
   definitions: string
   chapters: ChapterLayout[]
 }
+
 // Keep reusable chapter geometry out of serializable pagination/worker payloads.
 const paginationCaches = new WeakMap<Paginated, PaginationCache>()
 
@@ -186,9 +187,10 @@ const lastCh = (t: string) => {
   const a = Array.from(t)
   return a[a.length - 1]
 }
+
 const isPunctCh = (ch: string) => NO_START.has(ch) || NO_END.has(ch) || FW_PUNCT.test(ch)
 
-export function cjkRatio(text: string) {
+function cjkRatio(text: string) {
   let c = 0
   let n = 0
   for (const ch of text) {

@@ -27,7 +27,7 @@ export interface MindmapNode {
   collapsed: boolean
 }
 
-export interface MindmapBuildOptions {
+interface MindmapBuildOptions {
   /** 默认展开到此层级；根为 0，默认展开到句组层（2）。 */
   expandedThroughLevel?: number
   /** 长标签最大显示字符数；不改变原文坐标，只影响节点文案。 */

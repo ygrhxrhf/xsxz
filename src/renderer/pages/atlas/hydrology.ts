@@ -6,7 +6,7 @@
 import type { ErrorEvent as MapErrorEvent, ExpressionSpecification, LayerSpecification, Map as GlobeMap, SourceSpecification } from 'maplibre-gl'
 
 export const WATER_COLOR = '#a9c4cc'
-export const WATER_DETAIL_ZOOM = 8
+const WATER_DETAIL_ZOOM = 8
 export const WATER_DETAIL_SOURCE = 'hydro-detail'
 const RIVER_COLOR = '#568b9d'
 const DETAIL_VISIBLE: ExpressionSpecification = ['case', ['boolean', ['global-state', 'waterDetailReady'], false], 1, 0]

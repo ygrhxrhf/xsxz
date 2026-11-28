@@ -36,7 +36,7 @@ const AUTH_STATUSES = new Set([110, 111, 120, 121, 125])
  * 腾讯可信度是 1–10；低于 6 视为需要人确认的歧义结果。
  * 坐标照常返回，但先不落成“已定位”，由用户在列表里确认或忽略。
  */
-export const AMBIGUOUS_RELIABILITY = 6
+const AMBIGUOUS_RELIABILITY = 6
 const STATUS_MESSAGES: Record<number, string> = {
   110: '腾讯地图 Key 未授权 WebService API，请在地图控制台开启该服务并检查来源限制',
   111: '腾讯地图 Key 格式不正确',
@@ -70,7 +70,7 @@ export function buildGeocoderUrl(name: string, key: string, region = ''): string
   return `${GEOCODER_ENDPOINT}?${params.toString()}`
 }
 
-export interface GeocodeResult {
+interface GeocodeResult {
   ok: boolean
   location?: AiPlaceLocation
   /** 失败时的中文说明；成功时为空。 */
@@ -211,7 +211,7 @@ function sanitizePlace(value: unknown): AiPlaceGeo | null {
   }
 }
 
-export function buildDistrictUrl(name: string, key: string): string {
+function buildDistrictUrl(name: string, key: string): string {
   return `${DISTRICT_ENDPOINT}?keyword=${encodeURIComponent(name)}&key=${encodeURIComponent(key)}`
 }
 
@@ -249,7 +249,7 @@ export function parseDistrictResponse(raw: unknown): GeocodeResult {
   }
 }
 
-export function buildPlaceSearchUrl(name: string, key: string, boundary: string): string {
+function buildPlaceSearchUrl(name: string, key: string, boundary: string): string {
   const params = new URLSearchParams({
     keyword: name,
     boundary,
@@ -403,7 +403,7 @@ export async function resolvePlace(
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-export interface GeocodeOptions {
+interface GeocodeOptions {
   /** 测试注入；生产不传。 */
   fetchImpl?: typeof fetch
   /** 测试注入；生产不传。 */
@@ -496,7 +496,7 @@ export async function geocodePlaces(bookId: string, options: GeocodeOptions = {}
   }
 }
 
-export interface PlaceSearchOptions {
+interface PlaceSearchOptions {
   /** 测试注入；生产不传。 */
   fetchImpl?: typeof fetch
 }

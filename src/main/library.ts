@@ -65,7 +65,7 @@ export async function setLibraryPath(next: string): Promise<void> {
  *  收紧在路径拼装的唯一出口，既挡住 IPC 传来的 `../` 穿越，也挡住内部误传。 */
 const BOOK_ID_RE = /^[A-Za-z0-9_]+$/
 
-export function assertBookId(bookId: string): string {
+function assertBookId(bookId: string): string {
   if (typeof bookId !== 'string' || !BOOK_ID_RE.test(bookId)) {
     throw new Error(`非法的书籍编号：${String(bookId)}`)
   }
@@ -711,7 +711,7 @@ async function dirSizeBytes(dir: string): Promise<number> {
 }
 
 /** 回收站条目保留天数：超过就由启动时的清理删掉。 */
-export const TRASH_MAX_AGE_DAYS = 30
+const TRASH_MAX_AGE_DAYS = 30
 
 /** 清掉回收站里过期的条目：回收站不是长期仓库，占的是同一块盘。 */
 export async function purgeExpiredTrash(maxAgeDays = TRASH_MAX_AGE_DAYS): Promise<number> {
@@ -776,7 +776,7 @@ export async function purgeTrash(name?: string): Promise<number> {
  * 旧书可能存着 CRLF（早期导入端没做换行规范化）：读出来先统一，
  * 否则阅读器按空行分段时整章会挤成一段。只改内存里的副本，不改磁盘格式。
  */
-export function normalizeChapterNewlines(file: ChapterFile): ChapterFile {
+function normalizeChapterNewlines(file: ChapterFile): ChapterFile {
   if (file.body?.includes('\r')) file.body = file.body.replace(/\r\n?/g, '\n')
   if (file.bodyRaw?.includes('\r')) file.bodyRaw = file.bodyRaw.replace(/\r\n?/g, '\n')
   return file
@@ -883,7 +883,7 @@ function stringEntries(value: unknown): Record<string, string> | null {
  * Convert the legacy `byChapter = whole story so far` shape into v2 without
  * ever exposing legacy text as a per-chapter summary to a model caller.
  */
-export async function migrateSummariesV1(bookId: string, legacy: Record<string, string>): Promise<AiSummaries> {
+async function migrateSummariesV1(bookId: string, legacy: Record<string, string>): Promise<AiSummaries> {
   const migrated = emptySummaries()
   let book: Book | null = null
   try {
@@ -1552,7 +1552,7 @@ export async function deleteChatThread(
 }
 
 export type AiMemoryCollection = 'characters' | 'relations' | 'foreshadows' | 'events'
-export type AiMemoryIdKind = 'character' | 'relation' | 'foreshadow' | 'event'
+type AiMemoryIdKind = 'character' | 'relation' | 'foreshadow' | 'event'
 
 function isAiCitation(value: unknown): boolean {
   return isRecord(value) &&
@@ -1648,7 +1648,7 @@ function finiteToken(value: unknown): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
-export function isAiBookUsage(value: unknown): value is AiBookUsage {
+function isAiBookUsage(value: unknown): value is AiBookUsage {
   return isRecord(value) &&
     finiteToken(value.calls) === value.calls &&
     finiteToken(value.inputTokens) === value.inputTokens &&
@@ -1742,7 +1742,7 @@ export async function markAiMemoryAccuracy(
   })
 }
 
-export async function readCharacterCard(bookId: string): Promise<CharacterCard | null> {
+async function readCharacterCard(bookId: string): Promise<CharacterCard | null> {
   try {
     return JSON.parse(await readFile(join(bookDir(bookId), 'ai', 'characters.json'), 'utf-8')) as CharacterCard
   } catch {
@@ -1920,10 +1920,6 @@ export async function writeChapterFile(bookId: string, chapterId: string, data: 
     }
     if (dirty) await saveBookUnlocked(book)
   })
-}
-
-export async function markChapterReady(bookId: string, chapterId: string, status: ChapterStatus): Promise<void> {
-  await markChapterStatus(bookId, chapterId, status)
 }
 
 /**

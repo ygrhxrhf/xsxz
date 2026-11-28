@@ -15,20 +15,20 @@ export interface MemoryChapterInput {
   body?: string
 }
 
-export interface MemoryChapterSelection {
+interface MemoryChapterSelection {
   batches: MemoryChapterInput[][]
   /** 章数上限之后仍未处理的已读章节数；重建恒为 0。 */
   remainingChapters: number
   eligibleChapterIds: string[]
 }
 
-export interface MemoryPromptRequest {
+interface MemoryPromptRequest {
   prompt: string
   candidates: AiMemoryCandidate[]
   reviewItemIds: Set<string>
 }
 
-export type MemoryCompletion = (request: MemoryPromptRequest, signal?: AbortSignal) => Promise<unknown>
+type MemoryCompletion = (request: MemoryPromptRequest, signal?: AbortSignal) => Promise<unknown>
 
 function chapterPosition(chapters: MemoryChapterInput[], chapterId?: string | null): number {
   return chapterId ? chapters.findIndex((chapter) => chapter.id === chapterId) : -1

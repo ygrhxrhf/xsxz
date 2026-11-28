@@ -14,13 +14,13 @@ export interface AiMemoryCandidate extends AiCitation {
   text: string
 }
 
-export interface ApplyMemoryExtractionOptions {
+interface ApplyMemoryExtractionOptions {
   uptoChapterId?: string
   updatedAt?: string
   reviewItemIds?: ReadonlySet<string>
 }
 
-export interface ApplyMemoryExtractionResult {
+interface ApplyMemoryExtractionResult {
   memory: AiMemoryFile
   changedItems: number
   acceptedItems: number

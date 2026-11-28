@@ -2,7 +2,7 @@ import { decorateText, type DecoSegment } from '@shared/paragraphSearch'
 import type { Annotation } from '@shared/types'
 
 /** 页内批注最多展示三行；完整内容在编辑浮层里看。 */
-export const INLINE_NOTE_LINE_CLAMP = 3
+const INLINE_NOTE_LINE_CLAMP = 3
 /** 卡片与上文之间的固定间距（px）。 */
 export const INLINE_NOTE_GAP_PX = 8
 

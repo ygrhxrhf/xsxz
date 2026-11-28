@@ -1,6 +1,6 @@
 import type { AiDoneEvent, AiMemoryUpdateResult, AiUsage } from '../shared/types'
 
-export interface MemorySaveDependencies {
+interface MemorySaveDependencies {
   save: (signal?: AbortSignal) => Promise<void>
   retrySave: () => Promise<void>
   registerRetry: (save: () => Promise<void>) => string

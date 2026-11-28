@@ -20,7 +20,7 @@ export interface ChapterApiCandidate {
   detail: string
 }
 
-export interface ChapterApiResponse {
+interface ChapterApiResponse {
   url: string
   status?: number
   text?: string
@@ -28,7 +28,7 @@ export interface ChapterApiResponse {
 }
 
 /** 一次最多试几个接口：多了既是浪费，也是给站点送风控特征。 */
-export const MAX_API_CANDIDATES = 2
+const MAX_API_CANDIDATES = 2
 
 /** 接口响应最多带回多少字符（正文通常几 KB，留足余量）。 */
 const MAX_API_TEXT = 400_000
@@ -114,7 +114,7 @@ function ruleCandidate(rule?: SiteRule): ChapterApiCandidate | null {
  * 只替换占位符，不做 URL 解析：请求体模板也要用同一套替换。
  * 缺 id 或还剩未知占位符时返回 null。
  */
-export function substitutePlaceholders(template: string, ids: string[], pageUrl: string): string | null {
+function substitutePlaceholders(template: string, ids: string[], pageUrl: string): string | null {
   const id = ids[0]
   let missing = false
   const filled = template.replace(/\{(id|cid|chapterId|chapter_id|page|url|nid)\}/g, (_whole, key: string) => {

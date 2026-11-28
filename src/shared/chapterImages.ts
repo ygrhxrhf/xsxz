@@ -8,7 +8,7 @@
  * 纹理层再把这个块画成图片，因此翻页、飞页、跨页选择都不必为图片另开一套模型。
  */
 
-export const CHAPTER_IMAGE_PREFIX = '[图]'
+const CHAPTER_IMAGE_PREFIX = '[图]'
 
 export interface ChapterImageRef {
   /** 书目录 images/ 下的文件名（不含目录） */

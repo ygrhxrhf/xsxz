@@ -1,9 +1,9 @@
-export type ProgressWriteOutcome = 'saved' | 'failed' | 'skipped'
+type ProgressWriteOutcome = 'saved' | 'failed' | 'skipped'
 
 /** 排期那一刻抓好的写入动作，落盘时机由状态机决定。 */
 export type CapturedProgressWrite = () => Promise<unknown>
 
-export interface ReaderProgressWriter {
+interface ReaderProgressWriter {
   /** 滚动：抓一份位置，安静 delayMs 之后写一次；期间再滚就用新位置顶掉旧的。 */
   schedule(): void
   /** 换章 / 切书 / 关窗：撤掉待触发的排期，把刚抓的位置单独排队写出去。 */

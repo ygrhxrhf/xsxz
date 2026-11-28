@@ -4,16 +4,16 @@ import type { AiFollowMode } from '../shared/types'
  * 追剧三个频道的入参校验。这里的失败一律返回中文文案，不抛给界面堆栈，
  * 也绝不能因为参数不对就动用模型额度。
  */
-export interface FollowBookPayload {
+interface FollowBookPayload {
   bookId: string
 }
 
-export interface FollowSetPayload extends FollowBookPayload {
+interface FollowSetPayload extends FollowBookPayload {
   mode: AiFollowMode
   confirmOverBudget: boolean
 }
 
-export interface ChapterFinishedPayload extends FollowBookPayload {
+interface ChapterFinishedPayload extends FollowBookPayload {
   chapterId: string
   ratio: number
 }

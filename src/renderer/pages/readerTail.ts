@@ -6,7 +6,7 @@
  * 用的都是原始坐标。
  */
 
-export type SiteTailRule = 'R1' | 'R2' | 'R3' | 'R4' | 'R5'
+type SiteTailRule = 'R1' | 'R2' | 'R3' | 'R4' | 'R5'
 
 /** R4 的段首词。 */
 const R4_PREFIXES = ['最新网址', '最新地址', '手机用户请', '本章未完'] as const
@@ -45,7 +45,7 @@ export function isSiteTailParagraph(text: string): boolean {
   return matchSiteTailRule(text) !== null
 }
 
-export interface VisibleParagraphOptions {
+interface VisibleParagraphOptions {
   /** 是否隐藏尾巴段；缺省 true（默认开启净化）。 */
   hideTail?: boolean
 }

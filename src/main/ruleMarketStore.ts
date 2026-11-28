@@ -27,10 +27,6 @@ export interface MarketSubscription {
 /** 单测注入目录；null = 用真实的 userData 目录。 */
 let overrideDir: string | null = null
 
-export function setRuleMarketStoreDir(dir: string | null): void {
-  overrideDir = dir
-}
-
 function storePath(): string {
   return join(overrideDir ?? app.getPath('userData'), 'rule-market.json')
 }

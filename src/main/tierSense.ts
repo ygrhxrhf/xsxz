@@ -1,17 +1,17 @@
 import type { AiTaskKind } from './ai'
 import type { Settings, TierSensePrefs } from '../shared/types'
 
-export interface TierSenseDifficulty {
+interface TierSenseDifficulty {
   score: number
   suggestedThinking?: boolean
 }
 
-export interface TierSenseCompression {
+interface TierSenseCompression {
   compressed: string
   savedRatio?: number
 }
 
-export interface TierSenseDecision {
+interface TierSenseDecision {
   action: 'proceed' | 'skip'
   reason?: string
 }
@@ -44,7 +44,7 @@ export interface AiRequestAdvisor {
   }): void
 }
 
-export const TIER_SENSE_TASKS: ReadonlySet<AiTaskKind> = new Set([
+const TIER_SENSE_TASKS: ReadonlySet<AiTaskKind> = new Set([
   'evidenceQa',
   'chapterNote',
   'recap',
@@ -64,7 +64,7 @@ interface TierSenseClientHooks {
   timeoutMs?: number
 }
 
-export function createTierSenseClient(
+function createTierSenseClient(
   config: TierSenseClientConfig,
   hooks?: TierSenseClientHooks,
 ): TierSenseClient {
@@ -176,7 +176,7 @@ export function createTierSenseClient(
   }
 }
 
-export function splitCompressibleBody(prompt: string): { head: string; body: string } | null {
+function splitCompressibleBody(prompt: string): { head: string; body: string } | null {
   const markers = ['当前章节内容：', '章节内容：', '正文：', '内容：']
   for (const marker of markers) {
     const idx = prompt.indexOf(marker)

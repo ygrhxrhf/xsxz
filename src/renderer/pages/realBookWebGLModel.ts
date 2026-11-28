@@ -11,12 +11,11 @@ export const COVER_OVERHANG = 0.15
 export const BOARD_THICKNESS = 0.11
 export const PAGE_TEXTURE_WIDTH = 640
 export const PAGE_TEXTURE_HEIGHT = 920
-export const PAGE_ASPECT = PAGE_TEXTURE_HEIGHT / PAGE_TEXTURE_WIDTH
 
 export const CAMERA_FOV = 24
 export const DEFAULT_TILT_RAD = 0.44
-export const MIN_TILT_RAD = 0.02
-export const MAX_TILT_RAD = 1.08
+const MIN_TILT_RAD = 0.02
+const MAX_TILT_RAD = 1.08
 export const DEFAULT_ZOOM = 0.9
 export const MIN_ZOOM = 0.12
 export const MAX_ZOOM = 7
@@ -24,7 +23,7 @@ export const MAX_ZOOM = 7
 export type RealBookDesk = 'walnut' | 'linen' | 'graphite' | 'sage' | 'limestone'
 export type RealBookEndpaper = 'ivory' | 'sand' | 'slate' | 'sage' | 'burgundy'
 
-export interface DeskPalette {
+interface DeskPalette {
   label: string
   swatch: string
   dark: string
@@ -40,7 +39,7 @@ export const DESK_PALETTES: Record<RealBookDesk, DeskPalette> = {
   limestone: { label: '石灰岩', swatch: '#cccec8', dark: '#c8cdd0', light: '#dcdfdf', roughness: 0.93 },
 }
 
-export interface EndpaperPalette {
+interface EndpaperPalette {
   label: string
   swatch: string
 }
@@ -53,12 +52,12 @@ export const ENDPAPER_PALETTES: Record<RealBookEndpaper, EndpaperPalette> = {
   burgundy: { label: '勃艮第红', swatch: '#765863' },
 }
 
-export interface CameraPose {
+interface CameraPose {
   position: [number, number, number]
   lookAt: [number, number, number]
 }
 
-export interface BookThickness {
+interface BookThickness {
   total: number
   left: number
   right: number
@@ -101,10 +100,6 @@ export function cameraPose(
 
 export function degreesToTilt(degrees: number): number {
   return clamp((Number.isFinite(degrees) ? degrees : 0) * Math.PI / 180, MIN_TILT_RAD, MAX_TILT_RAD)
-}
-
-export function tiltToDegrees(radians: number): number {
-  return clamp(Number.isFinite(radians) ? radians : 0, MIN_TILT_RAD, MAX_TILT_RAD) * 180 / Math.PI
 }
 
 /** 书本总厚度：页数和字符数共同决定，夹在参考站的 0.14–1.15 场景单位。 */

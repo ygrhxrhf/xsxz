@@ -26,13 +26,13 @@ const STAT_YIELD_INTERVAL = 32
 const BOOK_CACHE_LIMIT = 4
 const SAFE_FILE_ID = /^[A-Za-z0-9_-]+$/
 
-export interface EvidenceChapterRef {
+interface EvidenceChapterRef {
   id: string
   index: number
   file: string
 }
 
-export interface EvidenceReadPlan {
+interface EvidenceReadPlan {
   /** 必须读盘的章节 ID：必选集 + 索引不可用的章 + 布隆命中的前 maxRead 章。 */
   readIds: Set<string>
   indexed: number

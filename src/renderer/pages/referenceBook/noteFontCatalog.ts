@@ -16,10 +16,10 @@ export const NOTE_FONTS = [
   { id: 'noto-sans', label: '思源黑体', detail: '简洁清晰 · 中英文', family: 'Noto Sans SC Variable' },
 ] as const
 export type NoteFontId = (typeof NOTE_FONTS)[number]['id']
-export const DEFAULT_NOTE_FONT: NoteFontId = 'wenkai'
 export function noteFontIdOf(value: unknown): NoteFontId {
   return NOTE_FONTS.find(font => font.id === value)?.id ?? 'inherit'
 }
+
 export function noteFontFamily(value: unknown, readerFamily: string): string {
   const id = noteFontIdOf(value)
   if (id === 'inherit') return readerFamily

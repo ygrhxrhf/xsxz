@@ -21,7 +21,7 @@ export interface RealBookLine {
   end: number
 }
 
-export interface RealBookLayout {
+interface RealBookLayout {
   /** 版心高度（px）：一页能放多少行 */
   pageHeight: number
   /** 行高（px） */
@@ -186,7 +186,7 @@ export interface RealBookAnchor {
   chapterId?: string
 }
 
-export interface RealBookPaginator {
+interface RealBookPaginator {
   /** 已排好的页（快照数组；每次调用返回新数组，便于响应式更新） */
   readonly pages: RealBookPage[]
   /** 是否已排完整章 */
@@ -481,13 +481,6 @@ export function createRealBookPaginator(
       return pageCount()
     },
   }
-}
-
-/** 页首锚点。 */
-export function anchorForPage(pages: readonly RealBookPage[], pageIndex: number): RealBookAnchor | null {
-  const page = pages[pageIndex]
-  if (!page) return null
-  return { paragraph: page.paragraph, offset: page.offset }
 }
 
 /** 锚点落在哪一页；锚点在正文范围外时钳到最近的页。 */

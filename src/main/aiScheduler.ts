@@ -22,7 +22,7 @@ export interface AiJobPolicy {
  * 队列不再拒绝，所以排队信息挂在成功分支上；失败仍只由调用方自己的前置检查给出。
  * `position` 是同车道等待队列里的位次（从 1 开始），已经开跑则为 0。
  */
-export type AiStartResult = Extract<AiJobStart, { ok: true }> & { queued: boolean; position: number }
+type AiStartResult = Extract<AiJobStart, { ok: true }> & { queued: boolean; position: number }
 
 export type AiExclusiveResult<T> = { ok: true; value: T } | { ok: false; message: string }
 
@@ -42,7 +42,7 @@ interface QueueEntry {
 
 let nextQueueJobId = 0
 
-export function createAiJobId(): string {
+function createAiJobId(): string {
   return `ai-${Date.now()}-${++nextQueueJobId}`
 }
 

@@ -25,7 +25,7 @@ export const DEFAULT_PITCH_SENSITIVITY = 0.1
 /** WebGL 灵敏度：拖 330px 走完 0–62° 全量程。 */
 export const TILT_SENSITIVITY = MAX_TILT_DEG / 330
 
-export interface PitchDragState {
+interface PitchDragState {
   startY: number
   startPitch: number
 }

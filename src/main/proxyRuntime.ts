@@ -2,7 +2,6 @@ import { app, session } from 'electron'
 import type { ProxyKernelState, ProxySubscriptionState } from '../shared/types'
 import { parseSubscription, buildSingBoxConfig, type ParsedNode } from './subscription'
 import {
-  isPortListening,
   pickFreePort,
   startKernel,
   type KernelHandle,
@@ -65,11 +64,6 @@ function setState(next: ProxyKernelState): void {
 
 let emit: (() => void) | null = null
 
-/** 注册状态变化回调（IPC 推送给渲染层用）。 */
-export function onKernelStateChange(listener: (() => void) | null): void {
-  emit = listener
-}
-
 export function getKernelState(): ProxyKernelState {
   return state
 }
@@ -92,7 +86,7 @@ export async function stopSubscriptionProxy(): Promise<void> {
   if (state.status !== 'stopped') setState({ status: 'stopped' })
 }
 
-export interface StartFromSubscriptionOptions {
+interface StartFromSubscriptionOptions {
   /** 订阅正文（已经过网络拉取；本模块不负责下载）。 */
   body: string
   /** 选第几个节点；缺省沿用上次或 0。 */
@@ -101,7 +95,7 @@ export interface StartFromSubscriptionOptions {
   applyToSession?: boolean
 }
 
-export type StartFromSubscriptionResult =
+type StartFromSubscriptionResult =
   | { ok: true; port: number; node: { name: string; protocol: string } }
   | { ok: false; message: string }
 

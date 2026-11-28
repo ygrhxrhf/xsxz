@@ -25,7 +25,7 @@ export interface SpeedNodeTarget {
 export type LatencyProbe = (node: SpeedNodeTarget) => Promise<number>
 
 /** 默认并发数：一次开太多连接反而会挤占带宽、让延迟数据失真。 */
-export const DEFAULT_PROBE_CONCURRENCY = 8
+const DEFAULT_PROBE_CONCURRENCY = 8
 
 /** 把异常翻译成一句中文原因。 */
 export function describeProbeFailure(error: unknown): string {

@@ -5,10 +5,10 @@ import { atomicWriteText } from './atomicFile'
 import { normalizeHost } from './siteRules'
 import { canonicalizeUrl } from '../shared/urlHash'
 
-export interface SavedBrowsePosition { url: string; ratio: number; updatedAt: string }
+interface SavedBrowsePosition { url: string; ratio: number; updatedAt: string }
 
 /** 网页阅读模式的位置：段落锚点优先，滚动比例兜底。 */
-export interface SavedReadingPosition {
+interface SavedReadingPosition {
   url: string
   paragraphIndex: number
   scrollRatio: number

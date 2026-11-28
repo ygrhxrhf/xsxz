@@ -3,12 +3,12 @@ import { isLibraryRestoring } from './libraryMaintenance'
 import { checkAllUpdates, isDownloadBusy } from './download'
 import { getSettings, updateSettings } from './settings'
 
-export type AutoUpdateCheckOutcome =
+type AutoUpdateCheckOutcome =
   | { status: 'disabled' | 'notDue' | 'busy' }
   | { status: 'ran'; summary: string; result: CheckAllResult }
   | { status: 'failed'; message: string }
 
-export interface AutoUpdateCheckDeps {
+interface AutoUpdateCheckDeps {
   now?: Date
   getPrefs?: () => Promise<AutoUpdateCheckPrefs>
   checkAll?: () => Promise<CheckAllResult>

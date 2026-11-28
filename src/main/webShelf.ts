@@ -14,23 +14,23 @@ import type { WebShelfBook, WebShelfChapter, WebShelfProgress } from '../shared/
  * 磁盘格式见 `docs/disk-schema.md` 的「网页书架」。文件不进书库备份。
  */
 const FILE_VERSION = 1
-export const WEB_SHELF_BOOK_LIMIT = 500
+const WEB_SHELF_BOOK_LIMIT = 500
 export const WEB_SHELF_CHAPTER_LIMIT = 3000
 /** 简介落盘上限，与提取侧一致。 */
 const MAX_INTRO_CHARS = 800
 /** 同一本书两次刷新之间的最小间隔，避免连点刷新打站点。 */
-export const REFRESH_BACKOFF_MS = 10 * 60 * 1000
-export const REFRESH_ALL_LIMIT = 50
-export const REFRESH_ALL_GAP_MS = 800
+const REFRESH_BACKOFF_MS = 10 * 60 * 1000
+const REFRESH_ALL_LIMIT = 50
+const REFRESH_ALL_GAP_MS = 800
 
-export type ShelfChangeReason = 'add' | 'remove' | 'refresh' | 'progress'
+type ShelfChangeReason = 'add' | 'remove' | 'refresh' | 'progress'
 
 interface WebShelfFile {
   version: number
   books: WebShelfBook[]
 }
 
-export type ShelfResult<T> = { ok: true } & T | { ok: false; message: string }
+type ShelfResult<T> = { ok: true } & T | { ok: false; message: string }
 
 let state: WebShelfFile | null = null
 let pending: Promise<void> = Promise.resolve()
@@ -169,13 +169,6 @@ function save(): Promise<void> {
 
 function bookId(host: string, catalogUrl: string): string {
   return canonicalBookId(host, catalogUrl)
-}
-
-export function webShelfBookIdForUrl(url: string): string | null {
-  if (!isHttpUrl(url)) return null
-  const host = normalizeHost(url)
-  const catalogUrl = normalizeUrl(url)
-  try { return bookId(host, catalogUrl) } catch { return null }
 }
 
 export async function listWebShelf(): Promise<WebShelfBook[]> {

@@ -89,7 +89,7 @@ export async function createBackup(
 }
 
 /** 仅删除本应用自动备份文件；手动备份及其它文件不受影响。 */
-export async function pruneAutoBackups(destDir: string, keep = 5): Promise<void> {
+async function pruneAutoBackups(destDir: string, keep = 5): Promise<void> {
   const names = (await readdir(destDir)).filter((name) => /^spbf-auto-\d{8}-\d{6}\.zip$/.test(name)).sort()
   for (const name of names.slice(0, Math.max(0, names.length - keep))) {
     await rm(join(destDir, name), { force: true })

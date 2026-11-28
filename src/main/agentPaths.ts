@@ -14,7 +14,7 @@ import { constants as fsConstants } from 'node:fs'
 import { access, stat } from 'node:fs/promises'
 import { win32 } from 'node:path'
 
-export const PATH_PARAM_NAMES = ['filePath', 'sourcePath', 'zipPath', 'destDir', 'targetPath'] as const
+const PATH_PARAM_NAMES = ['filePath', 'sourcePath', 'zipPath', 'destDir', 'targetPath'] as const
 
 /** 会被 handler 递归创建的目标目录；只检查最近已存在祖先的可写性。 */
 const CREATABLE_DIR_PARAMS: ReadonlySet<string> = new Set(['destDir'])
@@ -22,7 +22,7 @@ const CREATABLE_DIR_PARAMS: ReadonlySet<string> = new Set(['destDir'])
 /** `\\?\C:\x` 与 `\\.\pipe\x` 这类设备路径，以及 `\\host\share\x` 这种 UNC。 */
 const DEVICE_PREFIXES = ['\\\\?\\', '\\\\.\\']
 
-export interface AgentPathIssue {
+interface AgentPathIssue {
   field: string
   message: string
 }

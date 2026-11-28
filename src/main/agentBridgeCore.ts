@@ -43,7 +43,7 @@ export interface BridgeHost {
   ): Promise<BridgeDispatchResult>
 }
 
-export interface BridgeSessionOptions {
+interface BridgeSessionOptions {
   host: BridgeHost
   /** 令牌校验；由宿主提供，便于测试注入。 */
   verifyToken(token: unknown): boolean

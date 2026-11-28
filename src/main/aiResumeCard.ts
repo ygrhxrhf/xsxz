@@ -10,7 +10,7 @@ const DAY_MS = 24 * 60 * 60_000
 const pathFor = (bookId: string) => join(bookDir(bookId), 'ai', 'resume-card.json')
 const sha = (value: string) => createHash('sha256').update(value).digest('hex')
 
-export interface ResumeContext {
+interface ResumeContext {
   sessionEndedAt: string
   sourceHash: string
   chapters: Array<{ id: string; title: string }>

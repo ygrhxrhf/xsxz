@@ -7,15 +7,11 @@
  * 许可文本见 third_party/infinite-reader/LICENSE。
  */
 
-export type Locale = 'zh-CN' | 'en'
+type Locale = 'zh-CN' | 'en'
 
 let locale: Locale = 'zh-CN'
 
 export const getLocale = (): Locale => locale
-
-export function setLocale(next: Locale): void {
-  locale = next
-}
 
 const ZH: Record<string, string> = {
   'Read on the desk': '在书桌上阅读',
@@ -33,4 +29,3 @@ export function t(key: string, ...args: unknown[]): string {
   return template.replace(/\{(\d+)\}/g, (_, index: string) => String(args[Number(index)] ?? ''))
 }
 
-export const subscribe = (): (() => void) => () => {}

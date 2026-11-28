@@ -10,7 +10,7 @@ import { join } from 'node:path'
  * 这里只放行构建产物 `out/renderer/`（含 `assets/`）下的 `.woff2`，
  * 主进程按文件名白名单读取，不暴露任意路径。
  */
-export const FONT_SCHEME = 'spbf-font'
+const FONT_SCHEME = 'spbf-font'
 
 const SAFE_FILE = /^[A-Za-z0-9._-]+\.woff2$/
 

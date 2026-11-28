@@ -11,7 +11,7 @@ export function autoScrollSpeedPx(speed: number): number {
   return AUTO_SCROLL_SPEEDS[index]
 }
 
-export interface AutoScrollEndInput {
+interface AutoScrollEndInput {
   scrollTop: number
   delta: number
   scrollHeight: number
@@ -26,7 +26,7 @@ export function nextAutoScrollTop(input: AutoScrollEndInput): { top: number; rea
   return { top, reachedEnd: false }
 }
 
-export interface AutoScrollSource {
+interface AutoScrollSource {
   scrollTop(): number
   scrollHeight(): number
   viewportHeight(): number
@@ -39,7 +39,7 @@ export interface AutoScrollSource {
   onTick?(scrollTop: number): void
 }
 
-export interface AutoScroll {
+interface AutoScroll {
   start(): void
   stop(): void
   running(): boolean

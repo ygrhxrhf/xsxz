@@ -24,8 +24,6 @@ export const PAGE_TEXTURE_MARGIN_BOTTOM = 100
 export const PAGE_TEXTURE_MARGIN_INNER = 80
 /** 外口边距：左页（奇数页）靠书脊的一侧。 */
 export const PAGE_TEXTURE_MARGIN_OUTER = 58
-/** 兼容旧调用：对称版心统一按订口边距。 */
-export const PAGE_TEXTURE_MARGIN_X = PAGE_TEXTURE_MARGIN_INNER
 
 export interface RealBookTextureHighlight {
   start: number
@@ -54,7 +52,7 @@ export interface RealBookTextureTextItem {
   noteMarks: readonly number[]
 }
 
-export interface RealBookTextureNoteItem {
+interface RealBookTextureNoteItem {
   kind: 'note'
   note: RealBookNote
   /** 分页器为其预留的高度（含段间距） */
@@ -71,7 +69,7 @@ export interface RealBookTextureNoteItem {
 }
 
 /** 页内图片块：正文里以 `[图]` 标记占位，纹理层按版心宽度画出来。 */
-export interface RealBookTextureImageItem {
+interface RealBookTextureImageItem {
   kind: 'image'
   /** 书目录 images/ 下的文件名 */
   file: string

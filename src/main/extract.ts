@@ -740,7 +740,7 @@ const BODY_CLEAN_LINE_LIMIT = 200
 const BODY_CLEAN_MAX_LINES = 20
 
 /** 站点规则里的正文噪音正则：每行一条，非法行与超限行忽略，不抛错。 */
-export function parseBodyCleanPatterns(value: string | undefined): RegExp[] {
+function parseBodyCleanPatterns(value: string | undefined): RegExp[] {
   if (typeof value !== 'string' || !value.trim()) return []
   const patterns: RegExp[] = []
   for (const line of value.split('\n')) {
@@ -982,7 +982,7 @@ function bodyWallFail(kind: WallKind, unlockReason?: string): BodyWallFail {
   return fail
 }
 
-export interface UnlockMeta {
+interface UnlockMeta {
   unlockedBy: UnlockMethod
   unlockDetail: string
   continuationUrls?: string[]
@@ -1040,7 +1040,7 @@ function chapterBootstrap(
 // public API
 // ---------------------------------------------------------------------------
 
-export interface ExtractResult extends Partial<UnlockMeta> {
+interface ExtractResult extends Partial<UnlockMeta> {
   ok: boolean
   pageKind: PageKind
   bootstrap?: ExtractBootstrap
@@ -1257,7 +1257,7 @@ export function findCatalogPageUrls(html: string, catalogUrl: string, limit = 5)
   return out
 }
 
-export interface ExtractBodyResult extends Partial<UnlockMeta> {
+interface ExtractBodyResult extends Partial<UnlockMeta> {
   body: string
   bodyRaw?: string
   ok: boolean

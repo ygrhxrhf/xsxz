@@ -21,11 +21,11 @@ const MAX_BYPASS_LENGTH = 2000
 /** 判定「这台机器的代理地址是否合法」时不许出现协议前缀，避免拼出 `http://http://x`。 */
 const HOST_PATTERN = /^[a-zA-Z0-9._-]+$|^\[[0-9a-fA-F:]+\]$/
 
-export function isProxyProtocol(value: unknown): value is ProxyProtocol {
+function isProxyProtocol(value: unknown): value is ProxyProtocol {
   return PROXY_PROTOCOLS.includes(value as ProxyProtocol)
 }
 
-export function isProxyMode(value: unknown): value is ProxyMode {
+function isProxyMode(value: unknown): value is ProxyMode {
   return PROXY_MODES.includes(value as ProxyMode)
 }
 
@@ -53,7 +53,7 @@ export function normalizeProxyPrefs(value: unknown): ProxyPrefs {
  * 订阅地址只收 http(s)。订阅里含节点凭据，允许 `file://` 或裸路径等于让别人
  * 通过改 settings.json 读本机文件，没有正当用途。
  */
-export function normalizeSubscriptionUrl(value: unknown): string {
+function normalizeSubscriptionUrl(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) return ''
   try {
     const url = new URL(value.trim())
@@ -65,7 +65,7 @@ export function normalizeSubscriptionUrl(value: unknown): string {
 }
 
 /** 节点序号：非负整数，非法回退 0（0 永远是安全的兜底）。 */
-export function normalizeNodeIndex(value: unknown): number {
+function normalizeNodeIndex(value: unknown): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
@@ -158,12 +158,12 @@ export function describeProxy(prefs: ProxyPrefs): string {
   return `${prefs.protocol}://${prefs.host}:${prefs.port}${auth}`
 }
 
-export interface ProxyApplyResult {
+interface ProxyApplyResult {
   ok: boolean
   message?: string
 }
 
-export interface ProxySessionLike {
+interface ProxySessionLike {
   setProxy(config: {
     mode: 'direct' | 'system' | 'fixed_servers'
     proxyRules?: string
@@ -190,7 +190,7 @@ export interface ProxySessionLike {
  */
 export const PROXY_SETTLE_BEFORE_CLOSE_MS = 300
 
-export interface ApplyProxyOptions {
+interface ApplyProxyOptions {
   /** 覆盖默认等待；测试传 0 保持同步。 */
   settleMs?: number
   /** 等待实现，测试可注入。 */

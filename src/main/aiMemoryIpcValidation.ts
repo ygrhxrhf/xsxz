@@ -1,8 +1,8 @@
-export interface MemoryBookPayload {
+interface MemoryBookPayload {
   bookId: string
 }
 
-export interface MemoryRunPayload extends MemoryBookPayload {
+interface MemoryRunPayload extends MemoryBookPayload {
   uptoChapterId: string
 }
 
@@ -10,16 +10,16 @@ export interface MemoryRebuildFromPayload extends MemoryRunPayload {
   fromChapterId: string
 }
 
-export interface MemoryMarkPayload extends MemoryBookPayload {
+interface MemoryMarkPayload extends MemoryBookPayload {
   kind: 'character' | 'relation' | 'foreshadow' | 'event'
   itemId: string
 }
 
-export interface MemorySummaryPayload extends MemoryMarkPayload {
+interface MemorySummaryPayload extends MemoryMarkPayload {
   summary: string
 }
 
-export interface MemoryAliasPayload extends MemoryBookPayload {
+interface MemoryAliasPayload extends MemoryBookPayload {
   itemId: string
   aliases: string[]
 }

@@ -5,7 +5,7 @@
  * 纯函数，主进程与测试环境都能用。
  */
 
-export interface ImageBytesInfo {
+interface ImageBytesInfo {
   width: number
   height: number
   /** 推荐扩展名（含点），与真实字节一致 */

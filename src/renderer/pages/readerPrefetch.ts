@@ -1,12 +1,12 @@
 import type { ChapterFile, ChapterMeta } from '@shared/types'
 
-export const PREFETCH_CACHE_LIMIT = 2
+const PREFETCH_CACHE_LIMIT = 2
 
-export type PrefetchNeighbor = Pick<ChapterMeta, 'id' | 'status'> | null | undefined
+type PrefetchNeighbor = Pick<ChapterMeta, 'id' | 'status'> | null | undefined
 
-export type PrefetchReadResult = { chapter?: ChapterFile; message?: string }
+type PrefetchReadResult = { chapter?: ChapterFile; message?: string }
 
-export type PrefetchReadChapter = (bookId: string, chapterId: string) => Promise<PrefetchReadResult>
+type PrefetchReadChapter = (bookId: string, chapterId: string) => Promise<PrefetchReadResult>
 
 export type IdleSchedulerHost = {
   requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number

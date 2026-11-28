@@ -31,13 +31,10 @@ import { MANUAL_PLACE_ID_PREFIX, readPlaces } from './mapPlaces'
  */
 export { MANUAL_PLACE_ID_PREFIX }
 
-/** 带正文锚点的手工标注 id：段号与段内偏移都写进 id，便于回跳与去重。 */
-export const MANUAL_ANCHOR_ID_PATTERN = /^place-manual-anchor-(\d+)-(\d+)$/
-
 /** 手工标注的章节标题：手工项不隶属于任何一章。 */
 const MANUAL_CHAPTER_TITLE = '手工标注'
 
-export interface ManualPlaceInput {
+interface ManualPlaceInput {
   name?: unknown
   latitude?: unknown
   longitude?: unknown
@@ -46,7 +43,7 @@ export interface ManualPlaceInput {
   paragraphOffset?: unknown
 }
 
-export interface ValidatedManualPlace {
+interface ValidatedManualPlace {
   ok: true
   name: string
   latitude: number
@@ -57,7 +54,7 @@ export interface ValidatedManualPlace {
   paragraphOffset?: number
 }
 
-export interface ManualPlaceError {
+interface ManualPlaceError {
   ok: false
   /** 中文原因，直接给界面显示。 */
   message: string

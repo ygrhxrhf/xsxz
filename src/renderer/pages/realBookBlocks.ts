@@ -29,7 +29,7 @@ export interface PageImageLayout {
   captionRun: PageTextRun | null
 }
 
-export interface PageBlockStyle {
+interface PageBlockStyle {
   fontSize: number
   lineHeight: number
 }

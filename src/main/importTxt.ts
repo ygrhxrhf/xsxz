@@ -88,7 +88,7 @@ function decodeUtf16be(buf: Buffer): string {
 }
 
 /** 解码结果连同猜到的编码：界面据此提示，用户才知道自己那份文件是怎么被读的。 */
-export interface DecodedTxt {
+interface DecodedTxt {
   text: string
   encoding: string
 }
@@ -131,7 +131,7 @@ export function decodeTxtBuffer(buf: Buffer): DecodedTxt {
 }
 
 /** Windows 记事本、Word 导出的 txt 都是 CRLF：先统一换行，段落才切得开。 */
-export function normalizeNewlines(text: string): string {
+function normalizeNewlines(text: string): string {
   return text.replace(/\r\n?/g, '\n')
 }
 

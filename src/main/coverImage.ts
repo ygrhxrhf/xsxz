@@ -19,7 +19,7 @@ import { aiFetch } from './aiFetch'
  * 清理旧封面名、更新索引都由 setCover 负责，这里不碰书库文件结构。
  */
 
-export type CoverGenFailCode =
+type CoverGenFailCode =
   | 'disabled'
   | 'has-cover'
   | 'no-api-key'
@@ -31,7 +31,7 @@ export type CoverGenFailCode =
   | 'bad-image'
   | 'failed'
 
-export type CoverGenResult =
+type CoverGenResult =
   | { ok: true; bookId: string; coverPath: string }
   | { ok: false; code: CoverGenFailCode; message: string }
 
@@ -109,7 +109,7 @@ export function buildCoverPrompt(input: {
  * 按内容策略打回（400 content_policy），所以被拒时自动降级：先去梗概，再去书名，
  * 最后只留氛围——一张风格对得上的图，比书架上永远空着一块强。
  */
-export function coverPromptVariants(input: {
+function coverPromptVariants(input: {
   title: string
   author?: string
   tags?: string[]

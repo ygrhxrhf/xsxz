@@ -110,7 +110,7 @@ export const RATE_LIMIT_MAX_TRIES = 2
 /** 连续这么多章都被限流就收工：等站点缓过来，稍后用「重试失败章」继续。 */
 export const RATE_LIMIT_STOP_COUNT = 3
 /** 批量检查更新：两本书之间的间隔，降低对站点的请求压力。 */
-export const CHECK_ALL_GAP_MS = 1_000
+const CHECK_ALL_GAP_MS = 1_000
 /**
  * 同类墙连撞这么多章，判定为整站性质：停在这一章等用户本人处理。
  * 单章付费的书里偶然一章撞墙不该把后面几百章免费内容卡住，所以仍按连撞计数。
@@ -172,7 +172,7 @@ export function isSiteWallFail(code: FailCode | undefined): boolean {
 }
 
 /** 同一章撞墙后被重排的上限：超过就说明「处理好了」其实没生效，别再空转。 */
-export const WALL_REQUEUE_LIMIT = 2
+const WALL_REQUEUE_LIMIT = 2
 
 /** 撞墙时给人的话：说清卡在哪、要本人去做什么。软件不代做登录、付费或验证。 */
 function blockedMessage(code: FailCode, unlockReason?: string): string {
@@ -619,7 +619,7 @@ async function withCancel<T>(work: Promise<T>): Promise<T> {
 }
 
 /** 空正文页（占位章 / 已删章）等不来内容，把总预算收到这里就走。 */
-export const EMPTY_BODY_TIMEOUT_MS = 3_000
+const EMPTY_BODY_TIMEOUT_MS = 3_000
 
 function isEmptyBodyHtml(html: string, pageUrl: string, rule?: SiteRule): boolean {
   const page = extractPage(html, pageUrl, undefined, rule)
@@ -1265,7 +1265,7 @@ async function beginDownloadFromBootstrap(
   return { ok: true, bookId }
 }
 
-export async function downloadChapters(bookId: string): Promise<void> {
+async function downloadChapters(bookId: string): Promise<void> {
   const dl = active.get(bookId)
   if (!dl) return
 

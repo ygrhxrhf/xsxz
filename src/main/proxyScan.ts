@@ -22,13 +22,13 @@ export const COMMON_PROXY_PORTS: readonly { port: number; label: string; protoco
   { port: 2081, label: 'Nekoray HTTP', protocol: 'http' },
 ]
 
-export interface PortProbeTarget {
+interface PortProbeTarget {
   port: number
   label: string
   protocol: 'socks5' | 'http'
 }
 
-export interface OpenPort {
+interface OpenPort {
   port: number
   label: string
   protocol: 'socks5' | 'http'
@@ -40,7 +40,7 @@ export function isLoopbackHost(host: string): boolean {
   return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]'
 }
 
-export interface PortScanOptions {
+interface PortScanOptions {
   /** 连得上就算在监听（不验证协议）。 */
   isOpen(port: number): Promise<boolean>
 }
