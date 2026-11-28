@@ -47,6 +47,19 @@ describe('readerMindmapCanvas', () => {
     expect(fitCamera({ width: 0, height: 0 }, { width: 1, height: 1 })).toEqual({ x: 0, y: 0, scale: 1 })
   })
 
+  it('适应视口：上万像素高的长章节也能整棵树进框', () => {
+    const viewport = { width: 1200, height: 670 }
+    const content = { width: 1032, height: 10502 }
+    const camera = fitCamera(viewport, content)
+    expect(camera.scale).toBeGreaterThan(MIN_MAP_ZOOM)
+    expect(camera.scale).toBeLessThan(0.1)
+    // 四边都落在视口里（含 24px 内边距）
+    expect(camera.x).toBeGreaterThanOrEqual(24 - 1e-6)
+    expect(camera.y).toBeGreaterThanOrEqual(24 - 1e-6)
+    expect(camera.x + content.width * camera.scale).toBeLessThanOrEqual(viewport.width - 24 + 1e-6)
+    expect(camera.y + content.height * camera.scale).toBeLessThanOrEqual(viewport.height - 24 + 1e-6)
+  })
+
   it('滚轮：Ctrl/⌘ 缩放，其余平移', () => {
     expect(wheelIntent({ ctrlKey: true, metaKey: false, deltaX: 0, deltaY: -100 }).kind).toBe('zoom')
     expect(wheelIntent({ ctrlKey: false, metaKey: true, deltaX: 0, deltaY: 100 }).kind).toBe('zoom')
