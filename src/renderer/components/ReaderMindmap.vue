@@ -65,7 +65,7 @@ const emit = defineEmits<{
 
 const tree = ref<MindmapNode | null>(props.root)
 const nodeWidth = 190
-const nodeHeight = 48
+const nodeHeight = 64
 const horizontalGap = 72
 const verticalGap = 24
 const canvasPadding = 48
@@ -275,14 +275,22 @@ function onViewportKeydown(event: KeyboardEvent): void {
 // wheel 必须是非 passive 才能 preventDefault，Vue 的 @wheel 默认是 passive，所以手动绑定。
 // 画布元素只在有章节树时才渲染，树可能晚于挂载到达（或中途被清空再出现），
 // 所以不能只在 onMounted 绑定一次：用函数式 ref，元素出现时绑定、替换/消失时解绑。
+// 视口尺寸变化（抽屉拉伸/收起）时重新适应，避免内容溢出或留出大片空白。
+let resizeObserver: ResizeObserver | null = null
 function setViewport(el: unknown): void {
   const next = el instanceof HTMLElement ? el : null
   const previous = viewport.value
   if (previous === next) return
   previous?.removeEventListener('wheel', onWheel)
+  resizeObserver?.disconnect()
+  resizeObserver = null
   viewport.value = next
   if (next) {
     next.addEventListener('wheel', onWheel, { passive: false })
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => fitView())
+      resizeObserver.observe(next)
+    }
     void nextTick(fitView)
   }
 }
@@ -291,6 +299,8 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   viewport.value?.removeEventListener('wheel', onWheel)
+  resizeObserver?.disconnect()
+  resizeObserver = null
 })
 
 watch(() => props.root, (root) => {
@@ -333,6 +343,43 @@ function onNodeKeydown(event: KeyboardEvent, node: MindmapNode): void {
   event.preventDefault()
   if (node.children.length) toggle(node)
   else select(node)
+}
+
+/**
+ * 按字符估算宽度（CJK 全角、其余半角）把标签折成最多两行；超出部分加省略号，完整文案在 <title> 里悬停可见。
+ * 这是估算而非 DOM 实测，字体渲染可能有几像素误差。
+ */
+const LABEL_FONT_PX = 13
+const LABEL_MAX_WIDTH = 190 - 28
+const LABEL_MAX_LINES = 2
+const ELLIPSIS = '…'
+function charWidth(ch: string): number {
+  return /[\u1100-\uffff]/.test(ch) ? LABEL_FONT_PX : LABEL_FONT_PX * 0.56
+}
+function measure(text: string): number {
+  let total = 0
+  for (const ch of text) total += charWidth(ch)
+  return total
+}
+function wrapLabel(text: string): string[] {
+  const lines: string[] = []
+  let current = ''
+  for (const ch of text) {
+    if (measure(current + ch) <= LABEL_MAX_WIDTH) {
+      current += ch
+      continue
+    }
+    if (lines.length + 1 === LABEL_MAX_LINES) {
+      let trimmed = current
+      while (trimmed && measure(trimmed + ELLIPSIS) > LABEL_MAX_WIDTH) trimmed = trimmed.slice(0, -1)
+      lines.push(trimmed + ELLIPSIS)
+      return lines
+    }
+    lines.push(current)
+    current = ch
+  }
+  lines.push(current)
+  return lines
 }
 
 function nodeClass(item: PositionedNode): string {
@@ -437,9 +484,10 @@ function nodeClass(item: PositionedNode): string {
               @click="onNodeClick(item.node)"
               @dblclick.stop="onNodeLocate(item.node)"
             >
+              <title>{{ item.node.label }}</title>
               <rect :width="nodeWidth" :height="nodeHeight" rx="10" :style="item.branch >= 0 ? { stroke: branchVar(item.branch) } : undefined" />
-              <text x="14" y="22" class="reader-mindmap-label">{{ item.node.label }}</text>
-              <text v-if="item.node.children.length" x="14" y="39" class="reader-mindmap-toggle">
+              <text v-for="(line, index) in wrapLabel(item.node.label)" :key="index" x="14" :y="22 + index * 16" class="reader-mindmap-label">{{ line }}</text>
+              <text v-if="item.node.children.length" x="14" y="54" class="reader-mindmap-toggle">
                 {{ item.node.collapsed ? '展开' : '折叠' }}<tspan v-if="mindmapAnchor(item.node)"> · 双击定位</tspan>
               </text>
             </g>
@@ -548,7 +596,7 @@ function nodeClass(item: PositionedNode): string {
 
 .reader-mindmap-viewport {
   position: relative;
-  min-height: 260px;
+  min-height: 0;
   flex: 1;
   overflow: hidden;
   overscroll-behavior: contain;

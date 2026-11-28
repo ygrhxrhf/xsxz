@@ -145,7 +145,7 @@ describe('AI 回答的 Markdown 渲染', () => {
     expect(html).toContain('<th style="text-align: left">左对齐</th>')
     expect(html).toContain('<th style="text-align: center">居中</th>')
     expect(html).toContain('<td style="text-align: right">丙</td>')
-    expect(html).toContain('<pre class="md-pre" data-lang="ts"><code class="language-ts">const x = 1</code></pre>')
+    expect(html).toContain('<pre class="md-pre" data-lang="ts"><code class="language-ts"><span class="hljs-keyword">const</span> x = <span class="hljs-number">1</span></code></pre>')
     expect(html).toContain('<li>第一段<p>第二段</p></li>')
     expect(html).toContain('<p>首行文字<br>次行文字</p>')
 

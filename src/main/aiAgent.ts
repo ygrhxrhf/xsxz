@@ -11,7 +11,7 @@
  */
 import { Agent, type AgentTool } from '@mariozechner/pi-agent-core'
 import { Type } from '@mariozechner/pi-ai'
-import type { AiCitation, AiMemoryFile } from '../shared/types'
+import type { AiCitation, AiMemoryFile, ExternalSource } from '../shared/types'
 
 export type ReaderAgentRecallScope = 'book' | 'progress'
 
@@ -20,14 +20,39 @@ export type ReaderAgentRecallScope = 'book' | 'progress'
  * `recallScope` 控制能否聊到未读章节：默认 `book`（问答不设防剧透锁），只有读者主动关掉
  * 「可聊全书」时才回退到旧的已读前沿约束。真正的取数边界由 toolkit 夹紧，这里只让模型少走弯路。
  */
+export interface ReaderAgentNoteLibraries {
+  /** Craft 笔记库是否已连上。 */
+  craft: boolean
+  /** ima 笔记是否已连上。 */
+  imaNotes: boolean
+  /** 是否选定了 ima 知识库（没选就只有笔记检索）。 */
+  imaKnowledgeBase: boolean
+}
+
 export function buildReaderAgentSystemPrompt(
   bookTitle: string,
   currentChapterTitle: string,
   recallScope: ReaderAgentRecallScope = 'book',
+  noteLibraries?: ReaderAgentNoteLibraries,
 ): string {
   const scopeRule = recallScope === 'progress'
     ? '- 已读范围之外的内容不要编：读者还没读到就直说“你还没读到那里”。'
     : '- 读者主动追问后续剧情或结局时可以直接回答：read_chapter 与 search_read_text 此时可以访问全书，不要因为某章标着「未读」就拒答；但没人问的时候不要主动把未读章节的后续透出来。'
+  const noteTools = [
+    noteLibraries?.imaNotes ? '- ima_search_notes：在读者自己的 ima 笔记里按标题搜索并读出正文。' : '',
+    noteLibraries?.imaKnowledgeBase ? '- ima_search_knowledge：在读者选定的 ima 知识库里搜内容，结果带高亮片段。' : '',
+    noteLibraries?.craft ? '- craft__craft_read：在读者的 Craft 笔记里检索文档与页面。' : '',
+  ].filter(Boolean).join('\n')
+  const noteRule = noteTools ? `
+
+读者还连着笔记库，额外可用这些只读工具：
+${noteTools}
+
+笔记库使用规则（不要跳过）：
+- 只在读者自己提到「我的笔记」「我之前记过」「查一下我写的」「知识库里有没有」这类指向他个人记录的说法时才查；本书剧情问题一律用上面的书内工具。
+- 不要把书里读到的内容拿到笔记库反查，也不要把笔记库里的内容当成小说原文引用。
+- 问题确实横跨多个笔记库时（例如读者问「我笔记里关于 X 的记录」，而 ima 与 Craft 都连着），在同一次回复里同时发起多个检索调用，让它们并行跑完再综合；只有一个来源够用时不要为了凑齐而全都调。
+- 引用笔记时必须写明来源标题（哪份笔记、哪个知识库），并说明它来自读者的笔记库而不是本书正文。` : ''
   return `你是《${bookTitle}》这本书的阅读搭子，读者正读到这里：${currentChapterTitle}。
 
 你可以调用工具：
@@ -35,7 +60,7 @@ export function buildReaderAgentSystemPrompt(
 - read_chapter：读一章正文。
 - search_read_text：按关键词找原文，结果带段落坐标。
 - get_memory：人物、关系、伏笔、关键事件（已整理好的记忆）。
-- get_chapter_notes：AI 或读者写过的章节笔记。
+- get_chapter_notes：AI 或读者写过的章节笔记。${noteRule}
 
 工作方式（先按问题性质分流，再决定是否调用工具）：
 - 【情况 A：字词释义 / 现实百科 / 通用文化常识（与本书具体剧情无关）】
@@ -112,6 +137,10 @@ export interface RunReaderAgentOptions {
   onDelta: (delta: string) => void
   onTool?: (event: { phase: 'start' | 'end'; name: string; label: string; isError?: boolean }) => void
   onCitations?: (citations: AiCitation[]) => void
+  /** 外部 MCP 工具（如 craft__*）；未配置或未授权时为空数组。 */
+  extraTools?: AgentTool<any>[]
+  /** 由 extraTools 抽到的外部引用（与 citations 并列，互不污染）。 */
+  onExternalSources?: (sources: ExternalSource[]) => void
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -125,6 +154,8 @@ const TOOL_LABELS: Record<string, string> = {
 export interface AgentRunResult {
   text: string
   citations: AiCitation[]
+  /** 外部 MCP 来源引用（Craft 等），与 citations 并列，互不污染。 */
+  externalSources: ExternalSource[]
   toolCalls: number
   stopReason: 'stop' | 'stopped' | 'error'
 }
@@ -273,19 +304,38 @@ function textOf(message: unknown): string {
 }
 
 export async function runReaderAgent(options: RunReaderAgentOptions): Promise<AgentRunResult> {
-  const state: { toolCalls: number; citations: AiCitation[]; onCitations?: (citations: AiCitation[]) => void } = {
+  const state: { toolCalls: number; citations: AiCitation[]; onCitations?: (citations: AiCitation[]) => void; externalSources: ExternalSource[] } = {
     toolCalls: 0,
     citations: [],
     onCitations: options.onCitations,
+    externalSources: [],
   }
   let streamed = ''
+
+  // 外部 MCP 工具包一层：执行前计入 state.toolCalls（beforeToolCall 预算才对它生效），
+  // 执行后从 details.sources 把外部引用推进 state.externalSources 并回调（并列通道）。
+  const wrappedExtraTools = (options.extraTools ?? []).map((tool) => ({
+    ...tool,
+    execute: async (toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
+      state.toolCalls += 1
+      const result = await tool.execute(toolCallId, params, signal, onUpdate)
+      const sources = (result?.details as { sources?: ExternalSource[] } | undefined)?.sources ?? []
+      if (sources.length) {
+        for (const source of sources) {
+          if (!state.externalSources.some((item) => item.id === source.id)) state.externalSources.push(source)
+        }
+        options.onExternalSources?.([...state.externalSources])
+      }
+      return result
+    },
+  }))
 
   const agent = new Agent({
     initialState: {
       systemPrompt: options.systemPrompt,
       model: buildModel(options.config),
       thinkingLevel: 'off',
-      tools: buildTools(options.toolkit, state),
+      tools: [...buildTools(options.toolkit, state), ...wrappedExtraTools],
       messages: options.history.map((turn) => ({
         role: turn.role,
         content: turn.content,
@@ -294,6 +344,7 @@ export async function runReaderAgent(options: RunReaderAgentOptions): Promise<Ag
     },
     getApiKey: () => options.config.apiKey,
     // 模型想无限往下查时会话会失控：按次数掐死，并把事实告诉它而不是静默截断。
+    // 经 extraTools 并入的 MCP 工具与内置工具走同一个 beforeToolCall，预算同样生效。
     beforeToolCall: async () => {
       if (state.toolCalls >= MAX_AGENT_TOOL_CALLS) {
         return { block: true, reason: `本轮工具调用已达 ${MAX_AGENT_TOOL_CALLS} 次上限，请直接基于已有材料作答。` }
@@ -332,7 +383,7 @@ export async function runReaderAgent(options: RunReaderAgentOptions): Promise<Ag
   const onAbort = (): void => agent.abort()
   if (options.signal.aborted) {
     unsubscribe()
-    return { text: '', citations: [], toolCalls: 0, stopReason: 'stopped' }
+    return { text: '', citations: [], externalSources: [], toolCalls: 0, stopReason: 'stopped' }
   }
   options.signal.addEventListener('abort', onAbort, { once: true })
 
@@ -350,12 +401,12 @@ export async function runReaderAgent(options: RunReaderAgentOptions): Promise<Ag
     | undefined
 
   if (options.signal.aborted || lastAssistant?.stopReason === 'aborted') {
-    return { text: streamed.trim(), citations: [...state.citations], toolCalls: state.toolCalls, stopReason: 'stopped' }
+    return { text: streamed.trim(), citations: [...state.citations], externalSources: [...state.externalSources], toolCalls: state.toolCalls, stopReason: 'stopped' }
   }
   if (lastAssistant?.stopReason === 'error') {
     throw new Error(lastAssistant.errorMessage || '模型调用失败')
   }
   const text = (streamed.trim() || textOf(lastAssistant).trim())
   if (!text) throw new Error('模型没有返回任何内容，请重试')
-  return { text, citations: [...state.citations], toolCalls: state.toolCalls, stopReason: 'stop' }
+  return { text, citations: [...state.citations], externalSources: [...state.externalSources], toolCalls: state.toolCalls, stopReason: 'stop' }
 }

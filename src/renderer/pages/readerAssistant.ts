@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import type { Ref } from 'vue'
-import type { Book, ChapterMeta, ReaderReadingMode, AiChatMessage, AiChatThreadSummary, AiResumeCardView, AiBookUsage, AiBudgetEstimate, AiBudgetEvent, AiChapterNote, AiCitation, AiEvidenceChatMessage, AiFollowCoverage, AiFollowMode, AiMaterialCoverage, AiMemoryBase, AiMemoryCharacter, AiMemoryFile, AiTimelineView, AiUsage } from '@shared/types'
+import type { AiMindmapGenerateResponse, AiMindmapGetResponse } from '@shared/mindmap'
+import type { AiChatContextAnchor, Book, ChapterMeta, ReaderReadingMode, AiChatMessage, AiChatThreadSummary, AiResumeCardView, AiBookUsage, AiBudgetEstimate, AiBudgetEvent, AiChapterNote, AiCitation, AiEvidenceChatMessage, AiFollowCoverage, AiFollowMode, AiMaterialCoverage, AiMemoryBase, AiMemoryCharacter, AiMemoryFile, AiTimelineView, AiUsage } from '@shared/types'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { clearRetriedAssistantSaveToken, describeAssistantStage, currentAssistantStage as resolveAssistantStage, type AssistantJobKind, type AssistantPanelTab, type AssistantSaveTokenState, type AssistantStageState } from './aiAssistantStatus'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
@@ -9,6 +10,31 @@ import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { splitIntoParagraphs } from './useTts'
 import { useInlineAsk } from './readerInlineAsk'
 import { hasQaContext, qaContextDirective, readQaContextChips, stripQaContextDirective, writeQaContextChips, type QaContextChips } from './readerQaContext'
+
+/**
+ * 章节 AI 导图的两个入口：只包 IPC 调用，不持有界面状态。
+ *
+ * 放在这里而不是 `readerMindmap.ts`：后者是纯函数（构建/折叠/扁平化）且被单测直接导入，
+ * 不应依赖 `window.api`。
+ */
+export async function fetchCachedChapterMindmap(
+  bookId: string,
+  chapterId: string,
+): Promise<AiMindmapGetResponse> {
+  if (!bookId || !chapterId || !window.api?.ai?.getMindmap) return { ok: true, result: null }
+  return window.api.ai.getMindmap(bookId, chapterId)
+}
+
+export async function requestChapterAiMindmap(
+  bookId: string,
+  chapterId: string,
+  force = false,
+): Promise<AiMindmapGenerateResponse> {
+  if (!bookId || !chapterId || !window.api?.ai?.generateMindmap) {
+    return { ok: false, message: 'AI 导图不可用' }
+  }
+  return window.api.ai.generateMindmap(bookId, chapterId, force)
+}
 
 /**
  * 阅读器的「AI 助手面板」域：前情/记忆/问答/笔记/输出五个 tab 的状态与行为。
@@ -131,6 +157,11 @@ const recapLoading = computed(() => Boolean(recapJobId.value))
 const translateJobId = ref('')
 const translateLoading = computed(() => Boolean(translateJobId.value))
 const chatMode = ref<'agent' | 'general' | 'evidence'>('agent')
+/**
+ * 待发送的选区锚点：划词提问时记下这一问基于哪段原文，发送时挂到那条用户消息上，
+ * 之后随消息落盘（context 字段）。追问、重开侧栏都能复用同一处出处。
+ */
+const pendingSelectionAnchor = ref<AiChatContextAnchor | null>(null)
 /**
  * 问答检索范围：默认 'book' 允许问全书（不问就不主动透未读剧情）；
  * 读者在运行面板里关掉「可聊全书」后变成 'progress'，检索重新锁在已读前沿。
@@ -553,7 +584,16 @@ async function listChatThreads() {
 async function switchChatThread(id: string) {
   const target = book.value
   if (!target || !id) return
-  if (chatLoading.value || assistantSaveRetrying.value) return
+  if (assistantSaveRetrying.value || chatThreadSaving.value) return
+  // 先取消旧线程并关闭本地写入门槛；迟到的 chunk 仍可能抵达，但不会再命中新线程的消息下标。
+  if (chatJobId.value) {
+    const oldJobId = chatJobId.value
+    void window.api.ai.cancel(oldJobId)
+    chatJobId.value = ''
+    chatAssistantIndex.value = -1
+    chatLoading.value = false
+    agentToolActivity.value = ''
+  }
   chatThreadSaving.value = true
   try {
     const res = await window.api.ai.getChat(target.id, id)
@@ -1125,7 +1165,13 @@ async function startChatFrom(history: readonly AiEvidenceChatMessage[], question
   const payload: AiChatMessage[] = [...history, { role: 'user' as const, content: userContent }]
     .map((m) => ({ role: m.role, content: m.content }))
   selectionNoteTarget.value = null
-  chatMessages.value.push({ role: 'user', content: userContent })
+  chatMessages.value.push({
+    role: 'user',
+    content: userContent,
+    // 划词提问时把选区锚点挂到这条用户消息上，随后随消息落盘，追问/重开侧栏可复用。
+    ...(pendingSelectionAnchor.value ? { context: [pendingSelectionAnchor.value] } : {}),
+  })
+  pendingSelectionAnchor.value = null
   chatStarting.value = true
   try {
     // 对话模式走 pi agent（模型自己决定查目录/读原文/检索/看记忆），证据模式仍是单轮严格引用。
@@ -1221,19 +1267,53 @@ async function askSelectionInAgent(question?: string) {
   chatMode.value = 'agent'
   aiAssistantTab.value = 'qa'
   showAiAssistant.value = true
+  const target = selectedRange.value ?? selectionOffsets()
+  // 先落锚点：把这一问基于哪段原文记下来，随消息持久化，追问/重开侧栏都能复用出处。
+  const anchorParagraph = selectionParagraphIndex(target, excerpt)
+  pendingSelectionAnchor.value =
+    excerpt && currentChapter.value
+      ? {
+          kind: 'selection' as const,
+          chapterId: currentChapter.value.id,
+          chapterTitle: currentChapter.value.title,
+          ...(target ? { start: target.start, end: target.end } : {}),
+          excerpt: excerpt.slice(0, 2000),
+          label: `《${currentChapter.value.title}》${anchorParagraph >= 0 ? `第 ${anchorParagraph + 1} 段` : ''}`.trim(),
+        }
+      : null
   if (question) {
     chatInput.value = question
     closeSelectionTools()
     await sendChat()
     return
   }
-  const target = selectedRange.value ?? selectionOffsets()
   const context = [
     currentChapter.value ? `本章：《${currentChapter.value.title}》` : '',
     selectionContext(target, excerpt),
   ].filter(Boolean).join('\n')
   chatInput.value = excerpt ? `关于「${excerpt.slice(0, 200)}」\n${context}\n` : ''
   showSelPopup.value = false
+}
+
+/**
+ * 选区在规范化正文里的段落下标：给选区锚点算一个「第几段」给人看。
+ * 找不到（选区跨章或正文已变）返回 -1，气泡里就不显示段号，只显示章名。
+ */
+function selectionParagraphIndex(range: { start: number; end: number } | null, excerpt: string): number {
+  const list = paras.value
+  if (!list.length) return -1
+  if (range && Number.isSafeInteger(range.start)) {
+    let cursor = 0
+    for (let i = 0; i < list.length; i += 1) {
+      const start = cursor
+      const end = start + list[i]!.length
+      if (range.start >= start && range.start <= end) return i
+      cursor = end + 2
+    }
+  }
+  const probe = excerpt.trim().slice(0, 30)
+  if (!probe) return -1
+  return list.findIndex((paragraph) => paragraph.includes(probe))
 }
 
 /**
@@ -1275,12 +1355,14 @@ async function persistChatSnapshot() {
   const target = book.value
   if (!target) return
   // 传 IPC 的必须是纯对象：Vue 的响应式对象是 Proxy，structured clone 会直接抛。
-  // steps 是界面上的思考链，不写进书库。
+  // steps（思考链）与 context（选区锚点）现在随消息落盘，重开侧栏后都能回放/复用。
   const snapshot: AiEvidenceChatMessage[] = chatMessages.value.map((message) => ({
     role: message.role,
     content: message.content,
     ...(message.citations ? { citations: message.citations.map((citation) => ({ ...citation })) } : {}),
     ...(message.scope ? { scope: message.scope } : {}),
+    // 笔记库来源也要跟着走，否则删一轮之后那组依据就没了。
+    ...(message.externalSources?.length ? { externalSources: message.externalSources.map((source) => ({ ...source })) } : {}),
     // quote 也要跟着走：它是引文校验的依据，丢了下次就只能说「没核过」。
     ...(message.claims ? { claims: message.claims.map((claim) => ({ text: claim.text, citationIds: [...claim.citationIds], ...(claim.quote ? { quote: claim.quote } : {}) })) } : {}),
     // 可信度标签不是界面临时算的，重开面板后要能原样复现，所以一起写回。
@@ -1288,6 +1370,10 @@ async function persistChatSnapshot() {
     ...(message.droppedClaims !== undefined ? { droppedClaims: message.droppedClaims } : {}),
     ...(message.uptoChapterId ? { uptoChapterId: message.uptoChapterId } : {}),
     ...(message.stopped ? { stopped: true } : {}),
+    // 思考链随消息落盘：重开侧栏后这一轮「去了哪些工具」还在，不再是重开就丢。
+    ...(message.steps?.length ? { steps: message.steps.map((step) => ({ ...step })) } : {}),
+    // 选区锚点随消息落盘：追问与重开侧栏都能复用同一处原文出处。
+    ...(message.context?.length ? { context: message.context.map((anchor) => ({ ...anchor })) } : {}),
   }))
   try {
     // 只覆盖当前会话：不带 threadId 会盖到主进程的 active 上，删错一条会话。

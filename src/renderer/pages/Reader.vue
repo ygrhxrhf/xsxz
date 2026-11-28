@@ -959,6 +959,7 @@ const {
   pinnedActions,
   isPinned,
   togglePinned,
+  reorderPinned,
 } = selection
 
 /** 工具栏与菜单的图标：一条 path 数据就能画出来的线性图标，免得模板里堆大段 SVG。 */
@@ -994,23 +995,45 @@ const SEL_MENU_DIVIDER_AT = 5
  * 划词菜单底部的模型选择器。
  * 真源是 Settings.model（与设置页同一个字段），这里只做快捷切换，
  * 提示词、端点、Key 仍由设置页负责。
+ *
+ * 候选来源（优先级从高到低）：当前模型 → 端点 `/models` 拉回来的全部模型 → 内置兜底候选。
+ * 端点拉不到（离线、非兼容接口）时只丢候选，不打断面板。
  */
 const showModelMenu = ref(false)
+const modelMenuQuery = ref('')
 const aiModelValue = ref('')
 const aiModelOptions = ref<Array<{ label: string; value: string }>>([])
 const aiModelLabel = computed(() => aiModelValue.value || '未配置模型')
+/** 内置兜底：端点不可用，或者用户用的是官方 DeepSeek 且没开 /models 时也能选到东西。 */
+const BUILTIN_AI_MODELS = ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner']
+const modelMenuOptions = computed(() => {
+  const keyword = modelMenuQuery.value.trim().toLowerCase()
+  if (!keyword) return aiModelOptions.value
+  return aiModelOptions.value.filter((option) => option.value.toLowerCase().includes(keyword))
+})
+function toggleModelMenu() {
+  showModelMenu.value = !showModelMenu.value
+  if (showModelMenu.value) modelMenuQuery.value = ''
+}
 
 async function loadAiModelOptions() {
+  let currentModel = ''
   try {
     const current = await window.api.settings.get()
-    aiModelValue.value = current.model || ''
-    // 内置候选 + 当前已配置的模型（自定义端点可能用任何名字，也必须能选到）。
-    const builtin = ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner']
-    const values = [...new Set([...builtin, current.model].filter((value): value is string => Boolean(value)))]
-    aiModelOptions.value = values.map((value) => ({ value, label: value }))
+    currentModel = current.model || ''
+    aiModelValue.value = currentModel
   } catch {
-    aiModelOptions.value = []
+    aiModelValue.value = currentModel
   }
+  let remoteModels: string[] = []
+  try {
+    const remote = await window.api.ai.listModels()
+    if (remote.ok) remoteModels = remote.models
+  } catch {
+    remoteModels = []
+  }
+  const values = [...new Set([currentModel, ...remoteModels, ...BUILTIN_AI_MODELS].filter((value) => Boolean(value)))]
+  aiModelOptions.value = values.map((value) => ({ value, label: value }))
 }
 
 async function applyAiModel(value: string) {
@@ -1032,6 +1055,63 @@ function onTogglePin(id: import('./readerSelection').SelectionActionId) {
   if (!togglePinned(id)) {
     message.warning('至少保留一个工具栏按钮；可以先把别的项钉上再取消这一项')
   }
+}
+
+/**
+ * 菜单里拖动已钉住的项调整工具栏顺序。菜单按 SELECTION_ACTIONS（固定动作表）排列，
+ * 拖拽下标必须映射回 pinnedActions，才能调 reorderPinned；未钉住的项（-1）既不拖也不收。
+ */
+const pinDragFrom = ref<number | null>(null)
+const pinDragOver = ref<number | null>(null)
+
+function pinnedIndexOf(id: import('./readerSelection').SelectionActionId): number {
+  return pinnedActions.value.indexOf(id)
+}
+
+function onPinDragStart(id: import('./readerSelection').SelectionActionId, event: DragEvent) {
+  const from = pinnedIndexOf(id)
+  if (from < 0) { event.preventDefault(); return }
+  pinDragFrom.value = from
+  pinDragOver.value = from
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    // Firefox 只有 setData 之后才真正开始拖拽，内容本身用不到。
+    event.dataTransfer.setData('text/plain', id)
+  }
+}
+
+function onPinDragOver(id: import('./readerSelection').SelectionActionId, event: DragEvent) {
+  const over = pinnedIndexOf(id)
+  if (pinDragFrom.value === null || over < 0) return
+  // 只有钉住项才接受放置：不 preventDefault 时浏览器显示禁止光标，也不会派发 drop。
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  pinDragOver.value = over
+}
+
+function onPinDragLeave(id: import('./readerSelection').SelectionActionId) {
+  const over = pinnedIndexOf(id)
+  if (over >= 0 && pinDragOver.value === over) pinDragOver.value = pinDragFrom.value
+}
+
+function onPinDragEnd() {
+  pinDragFrom.value = null
+  pinDragOver.value = null
+}
+
+function onPinDrop(id: import('./readerSelection').SelectionActionId, event: DragEvent) {
+  event.preventDefault()
+  const from = pinDragFrom.value
+  const to = pinnedIndexOf(id)
+  onPinDragEnd()
+  if (from === null || to < 0) return
+  reorderPinned(from, to)
+}
+
+/** 手柄的键盘等价操作：上下箭头在工具栏里挪一格，越界由 reorderPinned 拒绝。 */
+function movePinnedByOne(id: import('./readerSelection').SelectionActionId, delta: number) {
+  const index = pinnedIndexOf(id)
+  if (index >= 0) reorderPinned(index, index + delta)
 }
 
 /** 菜单与工具栏共用同一个入口：点图钉只切钉住，点项体才执行动作。 */
@@ -2322,6 +2402,7 @@ function cancelReaderDownload() {
 }
 let unsubAiChunk: (() => void) | null = null
 let unsubAiStage: (() => void) | null = null
+let unsubAiExternalSources: (() => void) | null = null
 let unsubAiBudget: (() => void) | null = null
 let unsubAiDone: (() => void) | null = null
 
@@ -3740,7 +3821,11 @@ const aiSettingsOpen = ref(false)
  * 顺带收掉顶栏那个「清正文 / AI 助手 / 聊书」的小面板——抽屉关了它还挂在正文上挡字。
  */
 watch(showAiAssistant, (open) => {
-  if (open) void loadAiModelOptions()
+  if (open) {
+    void loadAiModelOptions()
+    void refreshCraftState()
+    void refreshImaState()
+  }
   // 抽屉关掉时顺手收起独立设置弹窗，避免它孤零零留在正文上。
   else aiSettingsOpen.value = false
 })
@@ -3776,6 +3861,162 @@ async function testAiConnection() {
   }
 }
 
+/**
+ * 笔记库（Craft）：端点含私有 linkid，视同凭据。
+ * 渲染层只拿「已配置」布尔值，明文永远不回显；填写后立即测试连接。
+ */
+const craftUrl = ref('')
+const craftTesting = ref(false)
+const craftMessage = ref('')
+const craftMessageType = ref<'success' | 'error'>('success')
+const craftTools = ref<Array<{ toolName: string; title: string; description: string; readOnly: boolean }>>([])
+const craftConfigured = ref(false)
+const craftUnreadable = ref(false)
+
+/**
+ * ima（腾讯 ima.copilot）：两个凭据字段 + 可选知识库。
+ * 凭据只加密存本机、界面永不回显；知识库 ID 不是凭据，可回显。
+ */
+const imaClientId = ref('')
+const imaApiKey = ref('')
+const imaTesting = ref(false)
+const imaMessage = ref('')
+const imaMessageType = ref<'success' | 'error'>('success')
+const imaConfigured = ref(false)
+const imaUnreadable = ref(false)
+const imaKnowledgeBases = ref<Array<{ id: string; name: string }>>([])
+const imaKnowledgeBaseId = ref('')
+
+async function refreshImaState() {
+  try {
+    const settings = await window.api.settings.get()
+    imaConfigured.value = settings.imaConfigured === true
+    imaUnreadable.value = settings.imaUnreadable === true
+    imaKnowledgeBaseId.value = settings.imaKnowledgeBaseId ?? ''
+  } catch {
+    // 读设置失败不打断侧栏。
+  }
+}
+
+async function saveIma() {
+  if (imaTesting.value) return
+  const clientId = imaClientId.value.trim()
+  const apiKey = imaApiKey.value.trim()
+  if (!clientId || !apiKey) {
+    imaMessage.value = 'Client ID 与 API Key 都要填'
+    imaMessageType.value = 'error'
+    return
+  }
+  imaTesting.value = true
+  imaMessage.value = ''
+  try {
+    await window.api.settings.set({ imaClientId: clientId, imaApiKey: apiKey })
+    const tested = await window.api.ima.testConnection()
+    if (!tested.ok) {
+      imaMessage.value = tested.message
+      imaMessageType.value = 'error'
+      return
+    }
+    imaKnowledgeBases.value = tested.knowledgeBases
+    imaConfigured.value = true
+    imaUnreadable.value = false
+    imaClientId.value = ''
+    imaApiKey.value = ''
+    imaMessage.value = `已连接，可检索 ima 笔记${tested.knowledgeBases.length ? `，发现 ${tested.knowledgeBases.length} 个知识库` : ''}`
+    imaMessageType.value = 'success'
+  } catch (error) {
+    imaMessage.value = error instanceof Error ? error.message : '保存失败'
+    imaMessageType.value = 'error'
+  } finally {
+    imaTesting.value = false
+  }
+}
+
+async function pickImaKnowledgeBase(value: string) {
+  imaKnowledgeBaseId.value = value
+  try {
+    await window.api.settings.set({ imaKnowledgeBaseId: value })
+    imaMessage.value = value ? '已选定知识库' : '已改为只用笔记检索'
+    imaMessageType.value = 'success'
+  } catch {
+    imaMessage.value = '保存知识库选择失败'
+    imaMessageType.value = 'error'
+  }
+}
+
+async function removeIma() {
+  imaTesting.value = true
+  try {
+    await window.api.settings.set({ imaClientId: '', imaApiKey: '', imaKnowledgeBaseId: '' })
+    imaConfigured.value = false
+    imaUnreadable.value = false
+    imaKnowledgeBases.value = []
+    imaKnowledgeBaseId.value = ''
+    imaMessage.value = '已断开 ima'
+    imaMessageType.value = 'success'
+  } finally {
+    imaTesting.value = false
+  }
+}
+
+async function refreshCraftState() {
+  try {
+    const settings = await window.api.settings.get()
+    craftConfigured.value = settings.craftMcpUrlConfigured === true
+    craftUnreadable.value = settings.craftMcpUrlUnreadable === true
+  } catch {
+    // 读设置失败不打断侧栏使用，按未配置显示。
+  }
+}
+
+async function saveCraft() {
+  const trimmed = craftUrl.value.trim()
+  if (!trimmed) {
+    craftMessage.value = '请填写 Craft MCP 端点'
+    craftMessageType.value = 'error'
+    return
+  }
+  if (craftTesting.value) return
+  craftTesting.value = true
+  craftMessage.value = ''
+  try {
+    await window.api.settings.set({ craftMcpUrl: trimmed })
+    const tested = await window.api.mcp.testConnection()
+    if (!tested.ok) {
+      craftMessage.value = tested.message
+      craftMessageType.value = 'error'
+      return
+    }
+    const listed = await window.api.mcp.listTools()
+    if (listed.ok) craftTools.value = listed.tools
+    craftUrl.value = ''
+    craftConfigured.value = true
+    craftUnreadable.value = false
+    craftMessage.value = `已连接，${tested.tools} 个只读工具可用`
+    craftMessageType.value = 'success'
+  } catch (error) {
+    craftMessage.value = error instanceof Error ? error.message : '保存失败'
+    craftMessageType.value = 'error'
+  } finally {
+    craftTesting.value = false
+  }
+}
+
+async function removeCraft() {
+  craftTesting.value = true
+  try {
+    await window.api.mcp.disconnect()
+    await window.api.settings.set({ craftMcpUrl: '' })
+    craftConfigured.value = false
+    craftUnreadable.value = false
+    craftTools.value = []
+    craftMessage.value = '已断开'
+    craftMessageType.value = 'success'
+  } finally {
+    craftTesting.value = false
+  }
+}
+
 /** 状态条上的「已读至」：没有进度就直说，别显示一个空章节名。 */
 const readUptoTitle = computed(() => {
   const chapterId = book.value?.progress?.chapterId
@@ -3787,19 +4028,48 @@ const readUptoTitle = computed(() => {
  * 打开「聊书」后把抽屉滚到最底：抽屉内容比窗口高，输入框在对话末尾，
  * 不滚就得先往下翻半屏才找得到在哪里提问。
  */
-async function pinChatToBottom() {
-  await nextTick()
-  // 真正会滚的是 .n-drawer-body-content-wrapper（body 自己是 overflow:hidden），
-  // 不写死类名：往上找第一个真能滚的祖先。
+/** 问答列表里真正能滚的容器：body 自己 overflow:hidden，得往上找第一个真会滚的祖先。 */
+function chatScrollContainer(): HTMLElement | null {
   let el = document.querySelector('.chat-input-row')?.parentElement ?? null
   while (el && el !== document.body) {
     if (el.scrollHeight > el.clientHeight + 4 && getComputedStyle(el).overflowY !== 'visible') break
     el = el.parentElement
   }
-  if (el && el !== document.body) el.scrollTop = el.scrollHeight
+  return el && el !== document.body ? el : null
+}
+
+/** 用户是不是停在底部附近：判断新消息/流式增量要不要跟着往下拉。 */
+function chatNearBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
+
+/** 强制到底：打开抽屉、切页签时用，无条件拉回。 */
+async function pinChatToBottom() {
+  await nextTick()
+  const el = chatScrollContainer()
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+/**
+ * 消息级跟随：新消息或流式增量时，只有用户本来停在底部附近才跟着到底。
+ * 用户主动上滚翻历史就不打断他，免得回答一出来就被拽回底部。
+ */
+async function followChatIfAtBottom() {
+  await nextTick()
+  const el = chatScrollContainer()
+  if (!el || chatNearBottom(el)) {
+    if (el) el.scrollTop = el.scrollHeight
+  }
 }
 watch(showAiAssistant, (open) => { if (open) void pinChatToBottom() })
 watch(aiAssistantTab, (tab) => { if (tab === 'qa' && showAiAssistant.value) void pinChatToBottom() })
+// 跟随的触发点：消息条数变化（新的一轮）与流式过程中 content 增长都拉一次，
+// 但都只在本就靠近底部时才真正滚动。
+watch(() => chatMessages.value.length, () => { if (showAiAssistant.value && aiAssistantTab.value === 'qa') void followChatIfAtBottom() })
+watch(
+  () => chatMessages.value.map((m) => m.content.length).join(','),
+  () => { if (showAiAssistant.value && aiAssistantTab.value === 'qa') void followChatIfAtBottom() },
+)
 
 watch(
   [fontSize, lineHeight, theme, fontFamily, bookFontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, showInlineNotes, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome, highlightColor, highlightOpacity],
@@ -3903,6 +4173,17 @@ onMounted(async () => {
     if (event.jobId === chatJobId.value && chatMode.value === 'agent') {
       setAgentToolActivity(detail ?? '')
     }
+  })
+  unsubAiExternalSources = window.api.ai.onExternalSources(({ jobId, externalSources }) => {
+    if (jobId !== chatJobId.value || chatAssistantIndex.value < 0) return
+    const assistant = chatMessages.value[chatAssistantIndex.value]
+    if (!assistant) return
+    // 一轮里可能多次调工具：按 id 合并去重，不能把上一批直接盖掉。
+    const merged = [...(assistant.externalSources ?? [])]
+    for (const source of externalSources) {
+      if (!merged.some((item) => item.id === source.id)) merged.push(source)
+    }
+    assistant.externalSources = merged
   })
   unsubAiBudget = window.api.ai.onBudget(({ task, budget }) => {
     assistantBudgets.value = { ...assistantBudgets.value, [task]: budget }
@@ -4062,6 +4343,7 @@ onUnmounted(() => {
   unsubDownload?.()
   unsubAiChunk?.()
   unsubAiStage?.()
+  unsubAiExternalSources?.()
   unsubAiBudget?.()
   unsubAiDone?.()
   void readerProgress.writeNow()
@@ -4740,7 +5022,7 @@ onUnmounted(() => {
           <div v-show="aiRuntimeOpen" class="ai-runtime-panel">
             <div class="ai-model-row">
               <span class="ai-runtime-label">模型</span>
-              <n-select size="tiny" :value="aiModelValue" :options="aiModelOptions" @update:value="applyAiModel" />
+              <n-select size="tiny" filterable :value="aiModelValue" :options="aiModelOptions" @update:value="applyAiModel" />
             </div>
             <div class="ai-recall-row">
               <span class="ai-runtime-label">问答范围</span>
@@ -5094,8 +5376,8 @@ onUnmounted(() => {
                     <!-- 通用/字词百科徽标：告诉读者这条回答来自通用知识库，未动用本书内容。 -->
                     <div v-else-if="msg.scope === 'general'" class="chat-scope-tag">字词 / 百科</div>
                     <!-- 依据默认收起：角标回答按结论分组，旧回答保留「未逐条对应」的平铺列表。 -->
-                    <details v-if="msg.claims?.length || msg.citations?.length" class="chat-evidence">
-                      <summary>依据 · {{ (msg.citations ?? []).length }} 条</summary>
+                    <details v-if="msg.claims?.length || msg.citations?.length || msg.externalSources?.length" class="chat-evidence">
+                      <summary>依据 · {{ (msg.citations ?? []).length + (msg.externalSources ?? []).length }} 条</summary>
                       <template v-if="msg.claims?.length">
                         <section v-for="(claim, claimIndex) in msg.claims" :key="claimIndex">
                           <strong>结论 {{ claimIndex + 1 }}：{{ claim.text }}</strong>
@@ -5104,12 +5386,22 @@ onUnmounted(() => {
                         <!-- 这里只说「引文来自已读正文」，不说「已校验」：真正的核验结论在上面的徽标里。 -->
                         <small>引文取自已读正文，可点开原文核对。</small>
                       </template>
-                      <template v-else>
+                      <template v-else-if="msg.citations?.length">
                         <strong>依据（旧版回答，未逐条对应）</strong>
                         <button v-for="citation in msg.citations" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
                       </template>
+                      <!-- 外部笔记库（Craft）来源：没有章节坐标，只给标题与片段，不接 jumpToMemorySource。 -->
+                      <section v-if="msg.externalSources?.length" class="chat-external">
+                        <strong>笔记库来源</strong>
+                        <div v-for="source in msg.externalSources" :key="source.id" class="chat-external-item">
+                          <span class="chat-external-provider">{{ source.providerName }}</span>
+                          <a v-if="source.url" :href="source.url" target="_blank" rel="noreferrer noopener">{{ source.title }}</a>
+                          <span v-else>{{ source.title }}</span>
+                          <small>{{ source.excerpt }}</small>
+                        </div>
+                      </section>
                     </details>
-                    <div v-else-if="msg.citations === undefined && !msg.content.startsWith('错误：')" class="chat-legacy">旧版回答，无来源</div>
+                    <div v-else-if="msg.citations === undefined && !msg.externalSources?.length && !msg.content.startsWith('错误：')" class="chat-legacy">旧版回答，无来源</div>
                     <n-button
                       v-if="canSaveSelectionNote(msg, i)"
                       size="tiny"
@@ -5380,6 +5672,77 @@ onUnmounted(() => {
               {{ autoBudget.month }} 自动任务：{{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余 {{ autoBudget.remainingTokens }}。
             </div>
           </section>
+
+          <!-- 笔记库（Craft）：端点含私有 linkid，视同凭据，只加密存本机；这里只做填写与测试。 -->
+          <section class="ai-settings-section">
+            <div class="ai-settings-label">笔记库（Craft）</div>
+            <div class="ai-settings-hint">
+              <span v-if="craftConfigured">已连接，对话里可以检索你的 Craft 笔记。</span>
+              <span v-else-if="craftUnreadable">已保存的端点在本机无法解密，请重新填写。</span>
+              <span v-else>填入 Craft 分享的 MCP 端点，对话时 AI 可检索你的笔记。</span>
+            </div>
+            <n-input
+              v-model:value="craftUrl"
+              type="password"
+              size="small"
+              show-password-on="click"
+              placeholder="https://mcp.craft.do/links/…/mcp"
+              :disabled="craftTesting"
+            />
+            <div class="ai-settings-row">
+              <n-button size="tiny" type="primary" :loading="craftTesting" @click="saveCraft">保存并测试</n-button>
+              <n-button v-if="craftConfigured" size="tiny" :disabled="craftTesting" @click="removeCraft">断开</n-button>
+            </div>
+            <div v-if="craftMessage" class="ai-settings-hint" :class="{ 'is-error': craftMessageType === 'error' }">{{ craftMessage }}</div>
+            <div v-if="craftTools.length" class="ai-settings-hint">
+              可用工具：{{ craftTools.map((tool) => tool.title || tool.toolName).join('、') }}
+            </div>
+          </section>
+
+          <!-- ima（腾讯 ima.copilot）：走官方 OpenAPI，凭据只加密存本机。 -->
+          <section class="ai-settings-section">
+            <div class="ai-settings-label">ima（知识库 / 笔记）</div>
+            <div class="ai-settings-hint">
+              <span v-if="imaConfigured">
+                已连接。凭据在 <a href="https://ima.qq.com/agent-interface" target="_blank" rel="noreferrer noopener">ima 开放接口</a> 获取，可随时更换。
+              </span>
+              <span v-else-if="imaUnreadable">已保存的凭据在本机无法解密，请重新填写。</span>
+              <span v-else>
+                填 <a href="https://ima.qq.com/agent-interface" target="_blank" rel="noreferrer noopener">ima 开放接口</a> 的 Client ID 与 API Key，对话时 AI 可检索你的笔记与知识库。
+              </span>
+            </div>
+            <n-input
+              v-model:value="imaClientId"
+              size="small"
+              :placeholder="imaConfigured ? '已配置，留空不修改' : 'Client ID'"
+              :disabled="imaTesting"
+            />
+            <n-input
+              v-model:value="imaApiKey"
+              type="password"
+              size="small"
+              show-password-on="click"
+              :placeholder="imaConfigured ? '已配置，留空不修改' : 'API Key'"
+              :disabled="imaTesting"
+            />
+            <div class="ai-settings-row">
+              <n-button size="tiny" type="primary" :loading="imaTesting" @click="saveIma">保存并测试</n-button>
+              <n-button v-if="imaConfigured" size="tiny" :disabled="imaTesting" @click="removeIma">断开</n-button>
+            </div>
+            <div v-if="imaMessage" class="ai-settings-hint" :class="{ 'is-error': imaMessageType === 'error' }">{{ imaMessage }}</div>
+            <template v-if="imaConfigured">
+              <div class="ai-settings-label">知识库</div>
+              <n-select
+                size="small"
+                :value="imaKnowledgeBaseId"
+                :options="[{ label: '只用笔记检索', value: '' }, ...imaKnowledgeBases.map((kb) => ({ label: kb.name, value: kb.id }))]"
+                @update:value="pickImaKnowledgeBase"
+              />
+              <div class="ai-settings-hint">
+                选定后模型还能在「{{ imaKnowledgeBases.find((kb) => kb.id === imaKnowledgeBaseId)?.name || '该知识库' }}」里搜内容。
+              </div>
+            </template>
+          </section>
         </div>
       </n-modal>
 
@@ -5524,14 +5887,46 @@ onUnmounted(() => {
             v-for="(action, index) in SELECTION_ACTIONS"
             :key="action.id"
             class="sel-menu-item"
-            :class="{ 'sel-menu-item-pinned': isPinned(action.id), 'sel-menu-item-first-ai': index === SEL_MENU_DIVIDER_AT }"
+            :class="{
+              'sel-menu-item-pinned': isPinned(action.id),
+              'sel-menu-item-first-ai': index === SEL_MENU_DIVIDER_AT,
+              'sel-menu-item-dragging': pinnedIndexOf(action.id) === pinDragFrom,
+              'sel-menu-item-drop': pinDragOver !== pinDragFrom && pinnedIndexOf(action.id) === pinDragOver,
+            }"
             type="button"
             role="menuitem"
             :data-action="action.id"
             @click="runSelectionAction(action.id)"
+            @dragover="onPinDragOver(action.id, $event)"
+            @dragleave="onPinDragLeave(action.id)"
+            @drop="onPinDrop(action.id, $event)"
           >
             <svg class="sel-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path :d="SEL_ACTION_ICON[action.id]" /></svg>
             <span class="sel-menu-label">{{ action.label }}</span>
+            <span
+              v-if="isPinned(action.id)"
+              class="sel-menu-grip"
+              draggable="true"
+              role="button"
+              tabindex="0"
+              title="拖动调整工具栏顺序"
+              aria-label="拖动调整工具栏顺序"
+              @mousedown.stop
+              @click.stop.prevent
+              @keydown.up.prevent.stop="movePinnedByOne(action.id, -1)"
+              @keydown.down.prevent.stop="movePinnedByOne(action.id, 1)"
+              @dragstart.stop="onPinDragStart(action.id, $event)"
+              @dragend="onPinDragEnd"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="9" cy="8" r="1.4" fill="currentColor" stroke="none" />
+                <circle cx="15" cy="8" r="1.4" fill="currentColor" stroke="none" />
+                <circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none" />
+                <circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none" />
+                <circle cx="9" cy="16" r="1.4" fill="currentColor" stroke="none" />
+                <circle cx="15" cy="16" r="1.4" fill="currentColor" stroke="none" />
+              </svg>
+            </span>
             <span
               class="sel-menu-pin"
               :class="{ 'sel-menu-pin-on': isPinned(action.id) }"
@@ -5547,7 +5942,7 @@ onUnmounted(() => {
           </button>
 
           <div class="sel-menu-footer">
-            <div class="sel-model-picker" role="button" tabindex="0" :aria-expanded="showModelMenu" @click.stop="showModelMenu = !showModelMenu">
+            <div class="sel-model-picker" role="button" tabindex="0" :aria-expanded="showModelMenu" @click.stop="toggleModelMenu">
               <span class="sel-model-dot" aria-hidden="true">✦</span>
               <span class="sel-model-name">{{ aiModelLabel }}</span>
               <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-model-caret"><path d="m6 9 6 6 6-6" /></svg>
@@ -5558,16 +5953,27 @@ onUnmounted(() => {
           </div>
 
           <div v-if="showModelMenu" class="sel-model-menu" role="menu" aria-label="选择模型">
-            <button
-              v-for="option in aiModelOptions"
-              :key="option.value"
-              class="sel-model-option"
-              :class="{ 'sel-model-option-on': option.value === aiModelValue }"
-              type="button"
-              role="menuitem"
-              @click.stop="applyAiModel(option.value)"
-            >{{ option.label }}</button>
-            <div class="sel-model-hint">模型与提示词在设置里改；这里只能切换到已配置好的那几个。</div>
+            <n-input
+              v-model:value="modelMenuQuery"
+              size="tiny"
+              clearable
+              placeholder="搜索模型"
+              class="sel-model-search"
+              @click.stop
+            />
+            <div class="sel-model-list">
+              <button
+                v-for="option in modelMenuOptions"
+                :key="option.value"
+                class="sel-model-option"
+                :class="{ 'sel-model-option-on': option.value === aiModelValue }"
+                type="button"
+                role="menuitem"
+                @click.stop="applyAiModel(option.value)"
+              >{{ option.label }}</button>
+              <div v-if="modelMenuOptions.length === 0" class="sel-model-hint">没有匹配的模型</div>
+            </div>
+            <div class="sel-model-hint">候选来自当前端点；模型与提示词仍在设置里改。</div>
           </div>
         </div>
       </Transition>
@@ -6034,6 +6440,25 @@ onUnmounted(() => {
 .sel-menu-pin svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .sel-menu-pin-on { color: #7c5cff; }
 .sel-menu-pin-on svg { fill: currentColor; stroke: none; }
+/* 拖拽手柄：只出现在已钉住的项上，虚线点阵提示可拖。 */
+.sel-menu-grip {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 20px;
+  flex: none;
+  color: rgba(13, 15, 12, 0.22);
+  cursor: grab;
+  /* 抓手上不做文字选择、不让触控手势抢走拖拽，拖拽期间光标才稳定在抓手上。 */
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+.sel-menu-grip:active { cursor: grabbing; }
+.sel-menu-grip svg { width: 14px; height: 14px; }
+.sel-menu-item-dragging { opacity: 0.4; }
+/* 放置提示：用背景色而不是边框，避免与文稿/AI 分段线叠在一起。 */
+.sel-menu-item-drop { background: rgba(124, 92, 255, 0.12); }
 .sel-menu-divider { height: 1px; margin: 4px 6px; background: var(--r-line); }
 
 /* 底部模型行：左侧模型选择器（可展开），右侧设置入口。 */
@@ -6090,6 +6515,17 @@ onUnmounted(() => {
   border-radius: 10px;
   background: var(--popover-bg);
   box-shadow: 0 8px 24px rgba(13, 15, 12, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* 模型可能上百个：搜索框固定在上，列表自己滚。 */
+.sel-model-search { flex: 0 0 auto; }
+.sel-model-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 240px;
+  overflow-y: auto;
 }
 .sel-model-option {
   display: block;

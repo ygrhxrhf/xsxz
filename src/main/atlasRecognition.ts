@@ -23,6 +23,17 @@ import { cityCoordinates, locateCity, type Bounds } from './atlasCities'
 export const ATLAS_VERSION = 'v3'
 export const ATLAS_TIMEOUT_MS = 90_000
 export const ATLAS_MAX_IMAGE_BYTES = 6 * 1024 * 1024
+
+/**
+ * 默认的视觉服务：本机 magpie 网关。
+ *
+ * 它提供 OpenAI 兼容接口、不需 Key，`auto/glm-5.3-flash` 支持图像输入并能稳定返回 JSON。
+ * 连不上时调用方回退到聊天 AI 的配置（见 `map.recognize`）；识别只要求模型能看到图并回 JSON。
+ */
+export const ATLAS_LOCAL_VISION = {
+  baseUrl: 'http://127.0.0.1:3425/v1',
+  model: 'auto/glm-5.3-flash',
+} as const
 /** 最多校验 64 条模型候选，最多展示 24 个唯一匹配成功的城市（与上游一致）。 */
 const MAX_CANDIDATES = 64
 const MAX_MAP_PLACES = 24
@@ -348,6 +359,21 @@ export function atlasRequestBody(config: AiConfig, bookTitle: string, image: { m
   // DeepSeek 官方接口才有 thinking 开关；自定义网关收到不认识的字段可能直接 400。
   if (config.provider === 'deepseek') body.thinking = { type: 'disabled' }
   return body
+}
+
+/**
+ * 本机 magpie 网关是否可用：一次轻量的模型列表请求，不发正文、不花额度。
+ * 网关没启动或超时就当不可用，调用方回退到聊天 AI 配置。
+ */
+export async function localVisionAvailable(fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  try {
+    const response = await fetchImpl(`${ATLAS_LOCAL_VISION.baseUrl}/models`, {
+      signal: AbortSignal.timeout(3_000),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
 }
 
 // ── 识别入口 ────────────────────────────────────────────────────────────────

@@ -23,6 +23,7 @@ import type {
   ChapterFile,
   ChapterMeta,
   ChapterStatus,
+  ExternalSource,
   FailCode,
   ImportType,
   ReadingProgress,
@@ -1093,7 +1094,31 @@ function parseChatMessage(value: unknown, v2: boolean): AiEvidenceChatMessage | 
   if (value.scope === 'book' || value.scope === 'general') {
     message.scope = value.scope
   }
+  message.externalSources = parseExternalSources(value.externalSources)
   return message
+}
+
+/**
+ * 外部 MCP 来源的宽容读取：字段不合法的条目单独丢掉，绝不让整条消息作废。
+ * 旧记录没有这个字段，返回空数组，界面不渲染这一组（与 citations 的「undefined = 旧记录」语义分开）。
+ */
+function parseExternalSources(value: unknown): ExternalSource[] {
+  if (!Array.isArray(value)) return []
+  const sources: ExternalSource[] = []
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.id !== 'string' || !item.id) continue
+    if (typeof item.title !== 'string' || typeof item.providerName !== 'string') continue
+    if (typeof item.excerpt !== 'string') continue
+    sources.push({
+      id: item.id,
+      providerName: item.providerName,
+      title: item.title,
+      // 只放行 http(s)：持久化文件可能被手改，javascript: / 相对路径不能原样进侧栏渲染。
+      ...(typeof item.url === 'string' && /^https?:\/\//i.test(item.url) ? { url: item.url } : {}),
+      excerpt: item.excerpt.slice(0, 300),
+    })
+  }
+  return sources
 }
 
 // ---------------------------------------------------------------------------

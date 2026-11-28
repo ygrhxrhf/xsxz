@@ -8,7 +8,7 @@
 export interface Point { x: number; y: number }
 export interface Camera extends Point { scale: number }
 
-export const MIN_MAP_ZOOM = 0.2
+export const MIN_MAP_ZOOM = 0.5
 export const MAX_MAP_ZOOM = 3
 
 export const clampZoom = (scale: number): number => {

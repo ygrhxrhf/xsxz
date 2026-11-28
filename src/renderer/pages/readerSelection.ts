@@ -111,6 +111,23 @@ function togglePinned(id: SelectionActionId): boolean {
   pinnedActions.value = [...pinnedActions.value, id]
   return true
 }
+
+/**
+ * 拖动重排工具栏：from / to 都是 pinnedActions 的下标（调用方从菜单的 SELECTION_ACTIONS 下标映射过来）。
+ * 越界、非整数、原地拖动一律拒绝，保证这个入口不会把工具栏清空（togglePinned 之外的第二个写入口）。
+ * 赋值新数组即可，持久化由上面的 deep watch 负责。
+ */
+function reorderPinned(from: number, to: number): boolean {
+  const list = pinnedActions.value
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return false
+  if (from === to) return false
+  if (from < 0 || to < 0 || from >= list.length || to >= list.length) return false
+  const next = [...list]
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved!)
+  pinnedActions.value = next
+  return true
+}
 const selPopupX = ref(0)
 const selPopupY = ref(0)
 /**
@@ -242,6 +259,7 @@ async function addHighlight() {
     pinnedActions,
     isPinned,
     togglePinned,
+    reorderPinned,
     showSelPopup,
     selectedExcerpt,
     selectedRange,
