@@ -7,6 +7,7 @@ import {
   REPLACE_CHAT_MAX_CITATIONS,
   REPLACE_CHAT_MAX_MESSAGES,
   REPLACE_CHAT_MAX_QUOTE,
+  REPLACE_CHAT_MAX_STEPS,
   REPLACE_CHAT_VERIFICATIONS,
 } from './aiReplaceChat'
 
@@ -54,13 +55,33 @@ describe('ai.replaceChat 入参校验', () => {
     expect(parseReplaceChatPayload({ bookId, messages: [] })).toEqual({ bookId, messages: [] })
   })
 
-  it('丢掉本地思考链等非持久化字段，避免界面状态写进书库', () => {
+  it('保留持久化的思考链与选区锚点，重开侧栏后可回放', () => {
     const parsed = parseReplaceChatPayload({
       bookId,
-      messages: [{ role: 'assistant', content: '有答案。', steps: [{ label: '查目录', state: 'done' }] }],
+      messages: [{
+        role: 'assistant',
+        content: '有答案。',
+        steps: [{ label: '查目录', state: 'done' }],
+        context: [{ kind: 'selection', chapterId: 'c1', chapterTitle: '第一章', excerpt: '原文', label: '《第一章》第 1 段', start: 0, end: 2 }],
+      }],
     })
-    expect(parsed.messages[0]).toEqual({ role: 'assistant', content: '有答案。' })
-    expect(parsed.messages[0]).not.toHaveProperty('steps')
+    expect(parsed.messages[0]).toEqual({
+      role: 'assistant',
+      content: '有答案。',
+      steps: [{ label: '查目录', state: 'done' }],
+      context: [{ kind: 'selection', chapterId: 'c1', chapterTitle: '第一章', excerpt: '原文', label: '《第一章》第 1 段', start: 0, end: 2 }],
+    })
+  })
+
+  it('思考链状态必须是 running/done/error 之一，超步数与超长 label 直接拒绝', () => {
+    expect(() => parseReplaceChatPayload({
+      bookId,
+      messages: [{ role: 'assistant', content: 'x', steps: [{ label: 'a', state: 'finished' }] }],
+    })).toThrow('的状态无效')
+    expect(() => parseReplaceChatPayload({
+      bookId,
+      messages: [{ role: 'assistant', content: 'x', steps: Array.from({ length: REPLACE_CHAT_MAX_STEPS + 1 }, () => ({ label: 'a', state: 'done' })) }],
+    })).toThrow(`的思考链超过 ${REPLACE_CHAT_MAX_STEPS} 步`)
   })
 
   it.each([null, undefined, 12, 'book', [], {}])('非对象或缺少 bookId 直接拒绝：%j', (payload) => {

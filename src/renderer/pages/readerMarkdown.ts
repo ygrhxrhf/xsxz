@@ -14,9 +14,26 @@ import { defineComponent, h, type VNodeChild } from 'vue'
 import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
+import hljs from 'highlight.js/lib/common'
 import type { Root, RootContent, PhrasingContent, Definition } from 'mdast'
 
 const parser = unified().use(remarkParse).use(remarkGfm)
+
+/**
+ * 代码块语法高亮：AI 回答常带代码，没有高亮就只是一块等宽字。
+ * 用 highlight.js 的 common 子集（常用 40 来种语言）控制体积；未知语言/高亮失败
+ * 都降级成原样转义的纯文本，绝不因此丢内容。返回的 HTML 已转义，可安全插入。
+ */
+function highlightCode(code: string, lang: string): string {
+  if (lang && hljs.getLanguage(lang)) {
+    try {
+      return hljs.highlight(code, { language: lang }).value
+    } catch {
+      /* 高亮失败就降级成纯文本 */
+    }
+  }
+  return escapeHtml(code)
+}
 
 interface MarkdownRenderContext {
   definitions: Map<string, Definition>
@@ -145,7 +162,8 @@ function renderBlock(node: RootContent, ctx: MarkdownRenderContext): string {
       const lang = node.lang?.trim() || ''
       const preAttr = lang ? ` class="md-pre" data-lang="${escapeHtml(lang)}"` : ' class="md-pre"'
       const codeAttr = lang ? ` class="language-${escapeHtml(lang)}"` : ''
-      return `<pre${preAttr}><code${codeAttr}>${escapeHtml(node.value)}</code></pre>`
+      // 代码内容走高亮（已转义），未知语言降级成纯转义文本。
+      return `<pre${preAttr}><code${codeAttr}>${highlightCode(node.value, lang)}</code></pre>`
     }
     case 'thematicBreak':
       return '<hr>'

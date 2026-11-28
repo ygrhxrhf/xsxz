@@ -8,7 +8,11 @@
 export interface Point { x: number; y: number }
 export interface Camera extends Point { scale: number }
 
-export const MIN_MAP_ZOOM = 0.2
+/**
+ * 缩放下限放得很低：长章节整棵树动辄上万像素高，「适应窗口」必须能一路缩到全图进框，
+ * 否则 8% 这种下限只会把树卡在半截、露出视口外。
+ */
+export const MIN_MAP_ZOOM = 0.02
 export const MAX_MAP_ZOOM = 3
 
 export const clampZoom = (scale: number): number => {

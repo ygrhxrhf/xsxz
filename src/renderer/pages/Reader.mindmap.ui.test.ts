@@ -59,7 +59,7 @@ function installReaderApi(bookView: BookView, body: string) {
       },
       download: { onProgress: () => () => {} },
       ai: {
-        onChunk: () => () => {}, onStage: () => () => {}, onBudget: () => () => {}, onDone: () => () => {},
+        onChunk: () => () => {}, onStage: () => () => {}, onExternalSources: () => () => {}, onBudget: () => () => {}, onDone: () => () => {},
         getMaterialCoverage: async () => ({ ok: true, coverage: null }),
         getUsage: async () => ({ ok: true, usage: { calls: 0 } }),
         chapterFinished: async () => ({ ok: false, message: '测试桩：不追剧' }),

@@ -712,13 +712,17 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="mapImageUrl" class="book-map-original-frame">
         <img :src="mapImageUrl" class="book-map-original-image" alt="书中原图">
+        <!--
+          只画有图内坐标的地点：imagePoint 为 null 表示模型没能定位它在原图上的位置，
+          画到 (0,0) 会把地名错标到左上角，比不画更误导。
+        -->
         <button
-          v-for="place in atlasMatch.map?.places ?? []"
+          v-for="place in atlasMatch.map?.places.filter((item) => item.imagePoint) ?? []"
           :key="place.id"
           type="button"
           class="book-map-atlas-pin"
           :class="{ selected: atlasSelected === place.id }"
-          :style="{ left: `${(place.imagePoint?.[0] ?? 0) * 100}%`, top: `${(place.imagePoint?.[1] ?? 0) * 100}%` }"
+          :style="{ left: `${(place.imagePoint![0] ?? 0) * 100}%`, top: `${(place.imagePoint![1] ?? 0) * 100}%` }"
           :title="place.name"
           :aria-label="`在 3D 地图查看${place.name}`"
           @click="openAtlasPlace(place.id)"

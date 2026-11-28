@@ -23,7 +23,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import type { AiPromptKind, AiPromptMode, AiProvider, DownloadPace, ProxyKernelState, ProxyMode, ProxyPrefs, ProxyProtocol, ProxySubscriptionState, Settings, SiteRule, SiteRulePreview, Skin } from '@shared/types'
-import { AI_PROMPT_KINDS, COVER_GEN_SIZES, DEFAULT_AI_PREFS, DEFAULT_COVER_GEN_PREFS } from '@shared/types'
+import { AI_PROMPT_KINDS, COVER_GEN_SIZES, DEFAULT_AI_PREFS, DEFAULT_ATLAS_VISION_PREFS, DEFAULT_COVER_GEN_PREFS } from '@shared/types'
 import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
 import ProxySubscriptionPanel from '../components/ProxySubscriptionPanel.vue'
 import RuleMarketPanel from '../components/RuleMarketPanel.vue'
@@ -263,6 +263,7 @@ async function testProxy() {
   }
 }
 const settingsLoading = ref(true)
+
 const sectionOptions: { id: SettingsSection; label: string }[] = [
   { id: 'appearance', label: '外观' },
   { id: 'library', label: '书库' },
@@ -327,6 +328,10 @@ const coverGenBaseUrl = ref(DEFAULT_COVER_GEN_PREFS.baseUrl)
 const coverGenApiKey = ref('')
 const coverGenKeyConfigured = ref(false)
 const coverGenSaving = ref(false)
+/** 书中地图识别用的视觉服务：默认本机 magpie（不要求聊天 Key）。 */
+const atlasVisionBaseUrl = ref(DEFAULT_ATLAS_VISION_PREFS.baseUrl)
+const atlasVisionModel = ref(DEFAULT_ATLAS_VISION_PREFS.model)
+const atlasVisionSaving = ref(false)
 const coverSizeOptions = COVER_GEN_SIZES.map((size) => ({ label: size, value: size }))
 const autoUpdateHoursOptions = [
   { label: '每 12 小时', value: 12 },
@@ -473,6 +478,9 @@ async function load() {
     autoUpdateCheckEnabled.value = settings.value.autoUpdateCheck?.enabled ?? true
     autoUpdateCheckHours.value = settings.value.autoUpdateCheck?.intervalHours ?? 24
     const coverGen = settings.value.coverGen ?? DEFAULT_COVER_GEN_PREFS
+    const atlasVision = settings.value.atlasVision ?? DEFAULT_ATLAS_VISION_PREFS
+    atlasVisionBaseUrl.value = atlasVision.baseUrl
+    atlasVisionModel.value = atlasVision.model
     coverGenEnabled.value = coverGen.enabled
     coverGenAutoOnImport.value = coverGen.autoOnImport
     coverGenModel.value = coverGen.model
@@ -688,6 +696,30 @@ async function migrateLibrary() {
   } finally {
     saving.value = false
     libraryMoving.value = false
+  }
+}
+
+async function saveAtlasVision(): Promise<void> {
+  if (atlasVisionSaving.value) return
+  atlasVisionSaving.value = true
+  msg.value = ''
+  try {
+    settings.value = await window.api.settings.set({
+      atlasVision: {
+        baseUrl: atlasVisionBaseUrl.value.trim(),
+        model: atlasVisionModel.value.trim(),
+      },
+    })
+    const saved = settings.value.atlasVision ?? DEFAULT_ATLAS_VISION_PREFS
+    atlasVisionBaseUrl.value = saved.baseUrl
+    atlasVisionModel.value = saved.model
+    msg.value = '地图识别服务已保存。'
+    msgType.value = 'success'
+  } catch (e: unknown) {
+    msg.value = e instanceof Error ? e.message : String(e)
+    msgType.value = 'error'
+  } finally {
+    atlasVisionSaving.value = false
   }
 }
 
@@ -1459,6 +1491,24 @@ onMounted(async () => {
         <n-space>
           <n-button type="primary" :loading="tencentMapSaving" @click="saveTencentMapKey">保存 Key</n-button>
           <n-button v-if="settings?.tencentMapKeyConfigured" quaternary type="error" @click="clearTencentMapKey">清除 Key</n-button>
+        </n-space>
+
+        <n-divider />
+        <div class="field-label">地图识别（读图定位地名）</div>
+        <p class="field-help">
+          识别只需要一个能看图、返回 JSON 的 OpenAI 兼容服务，不必与聊天模型相同。默认使用本机 magpie
+          （{{ DEFAULT_ATLAS_VISION_PREFS.baseUrl }}），它不需要 Key；地址留空则回退到上方聊天模型的服务与 Key。
+        </p>
+        <n-input-group>
+          <n-input-group-label style="width:110px">识别服务地址</n-input-group-label>
+          <n-input v-model:value="atlasVisionBaseUrl" :placeholder="DEFAULT_ATLAS_VISION_PREFS.baseUrl" />
+        </n-input-group>
+        <n-input-group>
+          <n-input-group-label style="width:110px">视觉模型</n-input-group-label>
+          <n-input v-model:value="atlasVisionModel" :placeholder="DEFAULT_ATLAS_VISION_PREFS.model" />
+        </n-input-group>
+        <n-space>
+          <n-button type="primary" :loading="atlasVisionSaving" @click="saveAtlasVision">保存识别服务</n-button>
         </n-space>
       </n-space>
     </n-card>

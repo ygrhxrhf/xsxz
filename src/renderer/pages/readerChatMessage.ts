@@ -1,17 +1,16 @@
-import type { AiCitation, AiEvidenceChatMessage } from '@shared/types'
+import type { AiChatStep, AiCitation, AiEvidenceChatMessage } from '@shared/types'
 
 /**
- * 侧栏问答消息在界面里的样子：在持久化的 `AiEvidenceChatMessage` 之外多一条思考链。
+ * 侧栏问答消息里一条工具进度（思考链）的形状。
  *
- * 为什么不做进 IPC 类型：思考链是「这一轮正在怎么干」的即时回放，重开侧栏后没有意义，
- * 写进 chat.json 只会让书库里堆一批过期的工具名。所以它只活在这个扩展类型里，
- * `ai.replaceChat` 的快照会把它剔掉。
+ * 已随消息持久化进 `AiEvidenceChatMessage.steps`，这里只是它的别名，方便本地函数引用。
  */
-export interface ChatStep {
-  label: string
-  state: 'running' | 'done' | 'error'
-}
+export type ChatStep = AiChatStep
 
+/**
+ * 界面里带思考链的消息：`steps` 已经是持久化字段的一部分（见 types.ts）。
+ * 这里保留扩展类型，让依赖它的旧调用与测试不用一起改。
+ */
 export interface ReaderChatMessage extends AiEvidenceChatMessage {
   steps?: ChatStep[]
 }

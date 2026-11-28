@@ -47,7 +47,7 @@ function installReaderApi() {
       annotations: { list: async () => ({ ok: true, items: [] }) },
       download: { onProgress: NO_SUB },
       ai: {
-        onChunk: NO_SUB, onStage: NO_SUB, onBudget: NO_SUB, onDone: NO_SUB,
+        onChunk: NO_SUB, onStage: NO_SUB, onExternalSources: () => () => {}, onBudget: NO_SUB, onDone: NO_SUB,
         getChat: async () => ({ ok: true, version: 2, messages: [] }),
         getSummaries: async () => ({ ok: true, summaries: { byChapter: {}, storySoFar: '' } }),
         getMemory: async () => ({ ok: true, memory: null }),

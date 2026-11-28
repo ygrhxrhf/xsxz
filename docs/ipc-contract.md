@@ -263,7 +263,9 @@
 
 `Settings.browseFavorites` / `SettingsUpdate.browseFavorites` 是浏览页的「常用网站」，同样走现有 `settings.get` / `settings.set`，不新增频道：`{ url: string; title: string; addedAt: string }[]`。主进程只收 `http` / `https` 绝对地址（`URL.toString()` 规范化），按地址去重，最多 40 条；`title` 去空白后截到 60 字，为空时退回去掉 `www.` 的域名。同一域名在界面里只算一个站点，站内翻章不会重复收藏。
 
-**书中地图（腾讯地图 Key）**：`settings.set` 的 `tencentMapKey` 落盘经 `safeStorage`（空串清除），`settings.get` 只给 `tencentMapKeyConfigured` / `tencentMapKeyUnreadable`，不返回明文。地图页打开时经 `map.getKey` 按需取解密后的 Key 拼脚本地址；未配置或本机解不开时返回空串。渲染层不缓存 Key、不写日志，Key 不进入书库与备份。
+**书中地图（腾讯地图 Key 与识别服务）**：`settings.set` 的 `tencentMapKey` 落盘经 `safeStorage`（空串清除），`settings.get` 只给 `tencentMapKeyConfigured` / `tencentMapKeyUnreadable`，不返回明文。地图页打开时经 `map.getKey` 按需取解密后的 Key 拼脚本地址；未配置或本机解不开时返回空串。渲染层不缓存 Key、不写日志，Key 不进入书库与备份。
+
+`map.recognize` 的视觉服务走 `settings.set` 的 `atlasVision: { baseUrl: string; model: string }`，不新增频道。默认 `http://127.0.0.1:3425/v1` + `auto/glm-5.3-flash`（本机 magpie 网关，**不需要 Key**）。`baseUrl` 只接受 `http` / `https` 根地址（去掉尾部斜杠，拒绝带账号密码的地址）；**显式空串表示回退聊天 AI 的服务地址与 Key**，非法地址也按回退处理。地址已配置时直接用它；没配置时先探一次本机网关（`GET /models`，3 秒超时、不带凭据），可用就用本机，否则才回退聊天 AI。网关无需鉴权，主进程不发明空 `Authorization` 头。
 
 | 频道 | 方向 | 请求 | 响应 |
 |---|---|---|---|
@@ -474,6 +476,23 @@
 - 幂等：每本书的 `ai/craft-link.json` 记 `{ docId, endpoint, contentHash, pushedAt }`；第二次推同一本带 `documentId` 更新上次那篇，对端 404 时自动退回新建一次。
 - 单篇上限 450000 字符（对端上限 500000）；超限直接拒绝，不发请求。
 
+## Craft MCP 与 ima 客户端
+
+设置页两处外部服务的探测：Craft MCP 端点（`mcp.*`）与 ima 知识库（`ima.*`）。凭据都存在设置里，
+主进程只回布尔位与列表，**不回传凭据明文**。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `mcp.testConnection` | invoke | 无 | `{ ok: true; tools: number } \| { ok: false; message: string }` |
+| `mcp.listTools` | invoke | 无 | `{ ok: true; tools: Array<{ toolName: string; title: string; description: string; readOnly: boolean }> } \| { ok: false; message: string }` |
+| `mcp.disconnect` | invoke | 无 | `{ ok: true }` |
+| `ima.testConnection` | invoke | 无 | `{ ok: true; knowledgeBases: Array<{ id: string; name: string }> } \| { ok: false; message: string }` |
+| `ima.listKnowledgeBases` | invoke | 无 | `{ ok: true; knowledgeBases: Array<{ id: string; name: string }> } \| { ok: false; message: string }` |
+
+- `mcp.disconnect` 只丢缓存会话，下次访问按设置里的地址重建，不改配置与令牌。
+- `ima.testConnection` 用一次不会命中的笔记搜索证明凭据可用，不写任何数据。
+- 改了 `craftMcpUrl` 会先断开旧会话，避免继续用指向旧端点的连接。
+
 ## 付费墙自动解锁
 
 下载与预览共用，实现在 `src/main/paywallUnlock.ts`，只处理「正文已经发到浏览器、只是被页面挡住」的情况。
@@ -529,6 +548,7 @@
 |---|---|---|---|
 | `ai.clean` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean; jobId?: string }` | `{ ok: true; result: AiCleanResult; budget: AiBudgetEstimate } \| { ok: false; confirmationRequired: true; message: string; budget: AiBudgetEstimate } \| { ok: false; stopped?: boolean; message: string }` |
 | `ai.test` | invoke | `{ baseUrl?: string; model?: string; apiKey?: string; provider?: AiProvider; thinkingEnabled?: boolean }`（均可空，空则用已保存设置） | `{ ok: true; text: string } \| { ok: false; message: string }` |
+| `ai.listModels` | invoke | `{ baseUrl?: string }`（可空，空则用已保存设置） | `{ ok: true; models: string[] } \| { ok: false; message: string }` |
 | `ai.summarizeChapter` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate }` |
 | `ai.chapterNote` | invoke | `{ bookId: string; chapterId: string; confirmOverBudget?: boolean; overwriteUserNote?: boolean }` | `AiJobStart \| { ok:false; confirmationRequired:true; message:string; budget:AiBudgetEstimate } \| { ok:false; userNoteConfirmedRequired:true; message:string } \| { ok:false; message:string }` |
 | `ai.chapterNotes` | invoke | `{ bookId: string; chapterId?: string }` | `AiChapterNotesResult`（`notes` 按章节序、只含仍在目录里的章；`current` 仅对请求的 `chapterId` 给出 `stale`） |
@@ -573,12 +593,15 @@
 | `ai.stage` | 主→渲染 | — | `AiStageEvent` |
 | `ai.budget` | 主→渲染 | — | `AiBudgetEvent`（增量兼容；仅含 jobId、任务 `recap \| chapterSummary \| chapterNote \| memory \| qa` 和估算，不含 prompt、Key 或正文。`ai.summarizeChapter` 报 `chapterSummary`，`ai.chapterNote` 报 `chapterNote`） |
 | `ai.done` | 主→渲染 | — | `AiDoneEvent` |
+| `ai.externalSources` | 主→渲染 | — | `{ jobId: string; externalSources: ExternalSource[] }`（本轮问答引用的外部材料；ima 知识库来源，问答结束后随流推送）
 
 未配置 Key 或网络失败：返回 `{ ok: false; message }`，不得影响浏览/下载/阅读。
 
 主进程 AI 队列分 `interactive`（用户点开）与 `background`（全书概览等自动任务）两条车道，各车道一次只跑一个任务，因此最多两个任务在飞；后台车道取活前要求交互车道完全空闲，排队中的用户任务同样算占用。`start` 与独占频道一律只排队不拒绝，不再因为「已有任务」返回忙；`{ ok:false, message:'请先停止当前生成' }` 只剩「同一本书的记忆族任务（`memory` / `follow`）已在跑或已排队」这一种触发场景，共用 `bookId:write` 资源的章节摘要改为排队串行。同一 `dedupeKey`（书 + 类别 + 章，证据问答再含问题原文）重复提交时复用已在跑或已排队的任务并返回同一 `jobId`，连点不再重复花额度。
 
 `ai.test` 发一条最小 chat completions 探活。401/403、429、超时、5xx 返回中文分级文案。
+
+`ai.listModels` 读 `GET {baseUrl}/models` 给侧边栏模型选择器做候选，同样走可信端点校验。只读、不排队：失败（离线 / HTTP 错误 / 非 JSON / 空列表 / 超时）一律返回 `ok:false`，界面回退内置候选，不弹错误、不阻塞面板。
 
 `ai.extractPlaces` 只扫描已读边界内的正文：模型只允许引用候选段落 id 并给出逐字引文，段号与段内偏移由主进程按引文在段内的真实位置计算，模型不返回坐标；引文不在原文、地点名不在引文、候选 id 不认识的条目直接丢弃。结果按书落盘到书目录 `ai/places.json`，供书中地图页列出地名、后续地理编码与跳回原文复用，不重复花模型配额；达到输入预算提醒阈值时先返回 `confirmationRequired`。系统提示与候选 JSON 合计必须压在 30000 字硬预算内，超出时从末尾裁候选并把 `truncated` 置真，不得把超预算请求发出去。
 
@@ -651,12 +674,14 @@ window.api = {
   ruleMarket: { list, apply, subscribe, unsubscribe },
   sync: { status, signIn, signOut, run },
   craft: { status, configure, push },
+  mcp: { testConnection, listTools, disconnect },
+  ima: { testConnection, listKnowledgeBases },
   backup: { create, restore, runAuto },
   ocr: { status },
   annotations: { list, add, update, remove },
   webAnnotations: { list, add, update, remove },
   siteRules: { list, preview, upsert, remove },
-  ai: { clean, getChat, listThreads, createThread, deleteThread, clearChat, replaceChat, test, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, agentChat, generalChat, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, getMindmap, generateMindmap, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onDone },
+  ai: { clean, getChat, listThreads, createThread, deleteThread, clearChat, replaceChat, test, listModels, summarizeChapter, chapterNote, chapterNotes, saveChapterNote, storySoFar, getSummaries, chatStream, agentChat, generalChat, translateStream, explainText, getMemory, updateMemory, rebuildMemory, rebuildMemoryFrom, markMemoryInaccurate, correctCharacterAliases, correctMemorySummary, getMaterialCoverage, chapterFinished, followSet, followRetry, getUsage, semanticIndexStatus, semanticIndexSet, findScenes, resumeCard, timeline, extractPlaces, getMindmap, generateMindmap, generateResumeCard, retrySave, cancel, onChunk, onStage, onBudget, onExternalSources, onDone },
 }
 ```
 
