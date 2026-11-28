@@ -42,6 +42,8 @@ import type {
   BrowseReadingChapter,
   BrowseReadingPage,
   ChapterFile,
+  CraftPushResult,
+  CraftState,
   DownloadBlocked,
   DownloadProgress,
   ReadingProgress,
@@ -448,6 +450,21 @@ const api = {
     /** 与云端同步设置与站点规则。 */
     run: () =>
       ipcRenderer.invoke('sync.run') as Promise<{ ok: true; result: SyncResult } | { ok: false; message: string }>,
+  },
+  /** Crafty 联动：把一本书的读书笔记推成 Crafty 文档；令牌只存本机。 */
+  craft: {
+    status: () =>
+      ipcRenderer.invoke('craft.status') as Promise<{ ok: true; state: CraftState }>,
+    /** 保存地址与写入令牌；`token` 传空串即清除。 */
+    configure: (payload: { endpoint?: string; token?: string }) =>
+      ipcRenderer.invoke('craft.configure', payload) as Promise<
+        { ok: true; state: CraftState } | { ok: false; message: string }
+      >,
+    /** 推一本书；第二次推同一本会更新上次那篇。 */
+    push: (bookId: string) =>
+      ipcRenderer.invoke('craft.push', { bookId }) as Promise<
+        { ok: true; result: CraftPushResult } | { ok: false; message: string }
+      >,
   },
   siteRules: {
     list: () => ipcRenderer.invoke('siteRules.list') as Promise<{ rules: SiteRule[] }>,
