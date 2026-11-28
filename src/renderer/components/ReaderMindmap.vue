@@ -435,6 +435,13 @@ onMounted(() => {
   void nextTick(fitView)
 })
 onBeforeUnmount(() => {
+  // 全屏中点节点会跳正文、连带关抽屉把这块卸载掉：不交回状态，外层会以为还在全屏，
+  // 抽屉的焦点陷阱就一直让开着。
+  if (fullscreen.value) {
+    fullscreen.value = false
+    document.documentElement.style.overflow = ''
+    emit('fullscreen-change', false)
+  }
   window.removeEventListener('keydown', onWindowKeydown, true)
   viewport.value?.removeEventListener('wheel', onWheel)
   resizeObserver?.disconnect()

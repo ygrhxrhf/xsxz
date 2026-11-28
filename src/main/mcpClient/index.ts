@@ -12,6 +12,8 @@ import { isCraftMcpUrl, McpClientError } from './types'
 
 let session: CraftSession | null = null
 let configuredUrl = ''
+/** 断开/换地址时自增：在途尝试只有代次未变才能接管会话，避免断开后又把旧连接挂回来。 */
+let sessionGeneration = 0
 /** 按 URL 分键的 in-flight：换 URL 时不会拿到旧端点的连接。 */
 const connectingByUrl = new Map<string, Promise<CraftSession>>()
 
@@ -23,22 +25,25 @@ export async function ensureCraftSession(): Promise<CraftSession> {
   const inflight = connectingByUrl.get(url)
   if (inflight) return inflight
   if (session && configuredUrl === url) return session
+  const generation = sessionGeneration
   const pending = (async (): Promise<CraftSession> => {
-    if (session) {
-      await session.disconnect().catch(() => {})
-      session = null
-    }
-    configuredUrl = url
-    session = createCraftSession({ serverUrl: url })
+    // 每次尝试持有自己的会话对象：在途期间用户可能断开或改地址，碰全局那个会把
+    // 「已断开」的会话又挂回去（或把新连接踩掉）。
+    const created = createCraftSession({ serverUrl: url })
     try {
-      const tools = await session.listTools()
+      const tools = await created.listTools()
       // 0 个只读工具视为不可用：不缓存，让调用方决定是否重试或报错。
       if (!tools.length) throw new McpClientError('not_configured', '连接成功但没有可用的只读工具。')
-      return session
+      if (generation !== sessionGeneration) {
+        throw new McpClientError('not_configured', '连接已被断开，重新连接后重试。')
+      }
+      const previous = session
+      session = created
+      configuredUrl = url
+      if (previous && previous !== created) await previous.disconnect().catch(() => {})
+      return created
     } catch (error) {
-      await session.disconnect().catch(() => {})
-      session = null
-      configuredUrl = ''
+      await created.disconnect().catch(() => {})
       throw error
     }
   })()
@@ -89,7 +94,8 @@ export async function listCraftTools(): Promise<
 /** 断开连接（设置页「断开」或退出时用）。 */
 export async function disconnectCraft(): Promise<void> {
   // 不动 connectingByUrl 里在途的尝试：它们各自会在落定后把自己摘掉，
-  // 这里清表反而会让同一地址出现两条并发的建会话路径。
+  // 这里清表反而会让同一地址出现两条并发的建会话路径。代次 +1 让在途尝试作废。
+  sessionGeneration += 1
   if (session) {
     await session.disconnect().catch(() => {})
     session = null

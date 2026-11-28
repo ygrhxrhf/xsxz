@@ -152,10 +152,10 @@ function parseMessage(value: unknown, index: number): AiEvidenceChatMessage {
   // 在这里丢掉，读者保留下来的那条回答就再也点不回出处了。
   if (value.externalSources !== undefined) {
     if (!Array.isArray(value.externalSources)) throw new Error(`${at}的外部来源列表格式无效`)
-    if (value.externalSources.length > REPLACE_CHAT_MAX_SOURCES) {
-      throw new Error(`${at}的外部来源超过 ${REPLACE_CHAT_MAX_SOURCES} 条`)
-    }
-    message.externalSources = value.externalSources.map((source, sourceIndex): ExternalSource => {
+    // 超上限只截断、不拒绝：正常问答保存本来就不限量，这里拒绝会让「删一轮」直接存不回去。
+    message.externalSources = value.externalSources
+      .slice(0, REPLACE_CHAT_MAX_SOURCES)
+      .map((source, sourceIndex): ExternalSource => {
       const where = `${at}第 ${sourceIndex + 1} 条外部来源`
       if (!isRecord(source)) throw new Error(`${where}格式无效`)
       if (
