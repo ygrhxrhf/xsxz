@@ -74,7 +74,8 @@ describe('连接配置', () => {
       endpoint: 'https://craft.example.com',
       tokenConfigured: true,
     })
-    expect(await store.getToken()).toBe('mcp_abc.write.xyz')
+    const snapshot = await store.credential()
+    expect(snapshot).toEqual({ endpoint: 'https://craft.example.com', token: 'mcp_abc.write.xyz', unreadable: false })
 
     const raw = await readFile(join(mocks.userData, 'craft-push.json'), 'utf-8')
     expect(raw).not.toContain('mcp_abc.write.xyz')
@@ -135,7 +136,11 @@ describe('pushCraftNote', () => {
     expect(result).toMatchObject({ docId: 'doc-1', created: true, endpoint: 'https://craft.example.com' })
 
     const link = await readCraftLink(join(root, 'library', 'd_1'))
-    expect(link).toMatchObject({ docId: 'doc-1', endpoint: 'https://craft.example.com' })
+    expect(link).toMatchObject({
+      docId: 'doc-1',
+      // 映射里存站点身份（规范形），根地址与完整导入地址在这里是同一个值
+      endpoint: 'https://craft.example.com/api/v1/import/markdown',
+    })
     expect(link!.contentHash).toHaveLength(64)
   })
 
@@ -180,6 +185,42 @@ describe('pushCraftNote', () => {
     await d.store.save({ endpoint: 'https://other.example.com' })
     await pushCraftNote(d, { bookId: 'd_4', title: '《长夜行》', markdown: '# v2\n' })
     expect(d.calls[1]!.body.files[0].documentId).toBeUndefined()
+  })
+
+  it('同一站点的两种写法复用同一篇文档（根地址 ↔ 完整导入地址）', async () => {
+    const d = await deps(async (_url, init) => {
+      const body = JSON.parse(init.body)
+      const documentId = body.files[0].documentId
+      return { status: 200, body: { ok: true, documents: [{ id: documentId ?? 'doc-1', created: !documentId }] } }
+    })
+    await pushCraftNote(d, { bookId: 'd_7', title: '《长夜行》', markdown: '# v1 ' })
+    await d.store.save({ endpoint: 'https://craft.example.com/api/v1/import/markdown' })
+    const second = await pushCraftNote(d, { bookId: 'd_7', title: '《长夜行》', markdown: '# v2 ' })
+
+    expect(d.calls[1]!.body.files[0].documentId).toBe('doc-1')
+    expect(second.created).toBe(false)
+  })
+
+  it('同一本书并发推两次只建一篇：第二次拿到第一次的 documentId', async () => {
+    let created = 0
+    const d = await deps(async (_url, init) => {
+      const body = JSON.parse(init.body)
+      const documentId = body.files[0].documentId
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      if (documentId) return { status: 200, body: { ok: true, documents: [{ id: documentId, created: false }] } }
+      created += 1
+      return { status: 200, body: { ok: true, documents: [{ id: `doc-${created}`, created: true }] } }
+    })
+
+    const [a, b] = await Promise.all([
+      pushCraftNote(d, { bookId: 'd_8', title: '《长夜行》', markdown: '# v1 ' }),
+      pushCraftNote(d, { bookId: 'd_8', title: '《长夜行》', markdown: '# v2 ' }),
+    ])
+
+    expect(created).toBe(1)
+    expect(d.calls).toHaveLength(2)
+    expect(d.calls[1]!.body.files[0].documentId).toBe('doc-1')
+    expect([a.docId, b.docId]).toEqual(['doc-1', 'doc-1'])
   })
 
   it('只读令牌 403：给的是能照着做的中文提示', async () => {

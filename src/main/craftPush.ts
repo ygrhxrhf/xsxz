@@ -46,9 +46,17 @@ export interface CraftLink {
   pushedAt: string
 }
 
+/** 端点与令牌必须在同一次读取里取到：分两次读，中间改配置就会把新站点的令牌发到旧站点。 */
+export interface CraftCredential {
+  endpoint: string
+  token: string
+  /** 有密文但本机解不开（换机器、系统密钥库重置）：界面要提示重新粘贴。 */
+  unreadable: boolean
+}
+
 export interface CraftStore {
   read(): Promise<CraftState>
-  getToken(): Promise<string>
+  credential(): Promise<CraftCredential>
   save(input: { endpoint?: string; token?: string }): Promise<CraftState>
   clear(): Promise<CraftState>
 }
@@ -106,24 +114,34 @@ export function craftImportUrl(endpoint: string): string {
   return /\/api\/v1\/import\/markdown$/i.test(base) ? base : `${base}/api/v1/import/markdown`
 }
 
+/** 站点身份：根地址与完整导入地址是同一个站点，比较映射时必须用同一个规范形。 */
+export function craftSiteKey(endpoint: string): string {
+  const base = normalizeCraftEndpoint(endpoint)
+  return base ? craftImportUrl(base) : ''
+}
+
 export function createCraftStore(): CraftStore {
-  async function state(): Promise<CraftState> {
+  async function snapshot(): Promise<CraftCredential> {
     const config = await readConfig()
     const { token, unreadable } = await decryptToken(config.tokenEnc)
-    const endpoint = normalizeCraftEndpoint(config.endpoint)
+    return { endpoint: normalizeCraftEndpoint(config.endpoint), token, unreadable }
+  }
+
+  async function state(): Promise<CraftState> {
+    const credential = await snapshot()
     const state: CraftState = {
-      configured: Boolean(endpoint && token),
-      endpoint,
-      tokenConfigured: Boolean(token),
+      configured: Boolean(credential.endpoint && credential.token),
+      endpoint: credential.endpoint,
+      tokenConfigured: Boolean(credential.token),
     }
-    if (unreadable) state.tokenUnreadable = true
+    if (credential.unreadable) state.tokenUnreadable = true
     return state
   }
 
   return {
     read: state,
-    async getToken() {
-      return (await decryptToken((await readConfig()).tokenEnc)).token
+    async credential() {
+      return snapshot()
     },
     async save(input) {
       const config = await readConfig()
@@ -221,6 +239,25 @@ function statusMessage(status: number, body: unknown): string {
 }
 
 /**
+ * 同一条书目录上的推送串行化：读映射 → 发请求 → 写映射是一个事务。
+ *
+ * 界面（书卡）和 Agent 走的是同一个 handler，各自的去重只管自己那一侧；
+ * 首次推送时两边都读到空映射就会建出两篇文档，后写的那次还会把另一篇的映射顶掉。
+ */
+const pushTails = new Map<string, Promise<unknown>>()
+
+export async function withBookPushLock<T>(bookDir: string, fn: () => Promise<T>): Promise<T> {
+  const previous = pushTails.get(bookDir) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(fn)
+  pushTails.set(bookDir, current)
+  try {
+    return await current
+  } finally {
+    if (pushTails.get(bookDir) === current) pushTails.delete(bookDir)
+  }
+}
+
+/**
  * 推一本书。成功返回文档 id 与是否新建；失败抛 `CraftError`，消息是给人看的中文。
  */
 export async function pushCraftNote(deps: CraftPushDeps, input: CraftPushInput): Promise<CraftPushResult> {
@@ -228,19 +265,25 @@ export async function pushCraftNote(deps: CraftPushDeps, input: CraftPushInput):
     throw new CraftError(`这本书的笔记太长了（${input.markdown.length} 字），超过了单篇上限 ${MAX_NOTE_CHARS}`)
   }
 
-  const state = await deps.store.read()
-  const token = await deps.store.getToken()
-  if (!state.endpoint) throw new CraftError('还没有填 Crafty 地址，先到设置里填上')
-  if (!token) {
+  const bookDir = deps.bookDirOf(input.bookId)
+  return withBookPushLock(bookDir, () => pushOnce(deps, input, bookDir))
+}
+
+async function pushOnce(deps: CraftPushDeps, input: CraftPushInput, bookDir: string): Promise<CraftPushResult> {
+  // 端点与令牌来自同一次读取：中间被改配置也不会把新令牌发到旧站点。
+  const credential = await deps.store.credential()
+  if (!credential.endpoint) throw new CraftError('还没有填 Crafty 地址，先到设置里填上')
+  if (!credential.token) {
     throw new CraftError(
-      state.tokenUnreadable ? '令牌在本机解不开，请重新粘贴一次' : '还没有填 Crafty 写入令牌，先到设置里填上',
+      credential.unreadable ? '令牌在本机解不开，请重新粘贴一次' : '还没有填 Crafty 写入令牌，先到设置里填上',
     )
   }
 
-  const bookDir = deps.bookDirOf(input.bookId)
+  const siteKey = craftSiteKey(credential.endpoint)
   const previous = await readCraftLink(bookDir)
-  const reusableDocId = previous && previous.endpoint === state.endpoint ? previous.docId : undefined
-  const url = craftImportUrl(state.endpoint)
+  // 根地址与完整导入地址指向同一个站点，比较映射用站点身份；老映射也按同一规范形比。
+  const reusableDocId = previous && craftSiteKey(previous.endpoint) === siteKey ? previous.docId : undefined
+  const url = craftImportUrl(credential.endpoint)
   const now = deps.now?.() ?? new Date().toISOString()
 
   const send = async (documentId?: string) => {
@@ -248,7 +291,7 @@ export async function pushCraftNote(deps: CraftPushDeps, input: CraftPushInput):
     if (documentId) file.documentId = documentId
     return deps.fetchJson(url, {
       body: JSON.stringify({ folder: DEFAULT_CRAFT_FOLDER, files: [file] }),
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${credential.token}` },
     })
   }
 
@@ -265,7 +308,7 @@ export async function pushCraftNote(deps: CraftPushDeps, input: CraftPushInput):
   await writeCraftLink(bookDir, {
     version: 1,
     docId: document.id,
-    endpoint: state.endpoint,
+    endpoint: siteKey,
     contentHash: createHash('sha256').update(input.markdown, 'utf8').digest('hex'),
     pushedAt: now,
   })
@@ -276,6 +319,6 @@ export async function pushCraftNote(deps: CraftPushDeps, input: CraftPushInput):
     created: document.created,
     bytes: Buffer.byteLength(input.markdown, 'utf8'),
     pushedAt: now,
-    endpoint: state.endpoint,
+    endpoint: credential.endpoint,
   }
 }
