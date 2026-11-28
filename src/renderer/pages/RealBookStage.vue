@@ -58,6 +58,8 @@ import {
   type RealBookEndpaper,
 } from './realBookWebGLModel'
 import { localOfMerged, windowIndexOf, type RealBookWindow, type RealBookWindowChapter } from './realBookWindow'
+import { readerWheelIntent } from './realBookViewGestures'
+import { canPageFrom, pageKeyDirection } from './realBookReaderKeyboard'
 
 interface HighlightSpan {
   /** 段落下标（原始下标，与经典模式一致） */
@@ -131,6 +133,10 @@ const props = withDefaults(defineProps<{
   bookAuthor?: string
   /** 书 id：章内图片按它拼 spbf-image:// 协议地址。 */
   bookId?: string
+  /** 高亮色带颜色（十六进制） */
+  highlightColor?: string
+  /** 高亮色带透明度 0–100 */
+  highlightOpacity?: number
   /** 书页模式每页栏数：1 单栏、2 双栏；书台版式忽略。 */
   columns?: number
   /**
@@ -712,6 +718,7 @@ async function rebuildReferencePages(): Promise<void> {
   try {
     const { pages: nextPages } = await paginateReferenceChapter({
       chapterTitle: continuousWindow.value ? props.bookTitle || props.chapterTitle : props.chapterTitle,
+      chapterOpenings: chapterOpenings.value,
       paragraphs: props.paragraphs,
       paragraphIndexes: props.paragraphIndexes,
       notes: props.showNotes ? props.notes : [],
@@ -1149,22 +1156,19 @@ function clampZoom(value: number): number {
 }
 
 function onWheel(e: WheelEvent): void {
-  // WebGL 复刻沿用参考站：滚轮缩放，翻页交给按钮/方向键/拖页。
-  if (effectiveRenderer.value) {
-    const delta = Math.max(-120, Math.min(120, e.deltaY))
-    zoom.value = clampZoom(zoom.value * Math.exp(-delta * 0.001))
+  const host = hostRef.value
+  if (!host) return
+  const viewport = { clientWidth: host.clientWidth, clientHeight: host.clientHeight }
+  const intent = readerWheelIntent(e, viewport)
+  if (intent.kind === 'zoom') {
+    zoom.value = clampZoom(zoom.value * intent.factor)
     e.preventDefault()
     return
   }
-  if (e.ctrlKey) {
-    // CSS 3D 回退：双指捏合在桌面端会带 ctrlKey；这是缩放，不翻页。
-    zoom.value = clampZoom(zoom.value - e.deltaY * 0.002)
-    e.preventDefault()
-    return
-  }
-  if (Math.abs(e.deltaY) < 8) return
+  // pan: on desktop, wheel without modifier pans (turns pages)
+  if (Math.abs(intent.y) < 8) return
   e.preventDefault()
-  if (e.deltaY > 0) nextPage()
+  if (intent.y > 0) nextPage()
   else prevPage()
 }
 
@@ -1535,10 +1539,11 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
   const page = pages.value[index]
   if (!page) return null
   if (page.special) {
-    return { pageNumber: index + 1, chapterTitle: '', header: '', special: page.special, label: '', items: [] }
+    return { pageNumber: index + 1, chapterTitle: '', header: '', special: page.special, label: '', items: [], source: page.source }
   }
   if (!page.items.length) return null
   const items: Array<RealBookTexturePage['items'][number]> = []
+  const sourceMarks: Array<{ start: number; end: number; color: string }> = []
   for (const item of page.items) {
     if (item.kind === 'image') {
       items.push({
@@ -1553,7 +1558,18 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
     }
     if (item.kind === 'note') {
       const note = props.notes.find((candidate) => candidate.id === item.noteId)
-      if (note) items.push({ kind: 'note', note, height: item.height })
+      // 便签片段数据（lines/continued/continues/textColor）原样透传，纹理层交给上游 renderPage 内联绘制。
+      if (note) {
+        items.push({
+          kind: 'note',
+          note,
+          height: item.height,
+          continued: item.continued,
+          continues: item.continues,
+          lines: item.lines,
+          textColor: item.textColor,
+        })
+      }
       continue
     }
     const paragraphText = props.paragraphs[item.paragraph] ?? ''
@@ -1575,10 +1591,16 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
       .filter((highlight) => highlight.index === original)
       .map((highlight) => ({ start: highlight.start, end: highlight.end, color: highlight.color }))
     const noteMarks = (noteMarksByParagraph.value.get(original) ?? []).map((mark) => mark.offset)
+    const base = page.paragraphStarts?.get(item.paragraph)
+    if (base !== undefined) {
+      for (const highlight of highlights) sourceMarks.push({ start: base + highlight.start, end: base + highlight.end, color: highlight.color })
+    }
     items.push({
       kind: 'text',
       text: props.paragraphs[item.paragraph] ?? '',
       originalIndex: original,
+      // 章内字符坐标：纹理层据此把这一段的每一行对到参考站排出的真实位置。
+      chapterStart: base,
       start: item.start,
       end: item.end,
       continued: item.continued,
@@ -1590,14 +1612,34 @@ function texturePageOf(index: number, header = props.chapterTitle): RealBookText
   return {
     pageNumber: index + 1,
     chapterTitle: props.chapterTitle,
-    header,
+    // 章首页不印页眉：参考站由 chapterStart 隐去，否则大标题上方还会重复一行章名。
+    header: page.source?.chapterStart ? '' : header,
     label: page.label,
     items,
+    source: page.source,
+    sourceMarks,
   }
 }
 
 /** 参考站的书页页眉：左页印书名，右页印章节名；手机单页印章节名。 */
 // 连排时页眉随页所在章变（同一本物理书翻到不同章印不同章名）；单章则左书名、右章名。
+/**
+ * 章首标题块：每个章的第一个输入段落前插一条 h1。
+ *
+ * 参考站的章首页是「大留白 + 居中大字」，靠的是 `chapterHeading`/`h1` 块，
+ * 而 spbf 的章节正文只有段落、标题存在章元信息里。不注入这一块，章首页
+ * 就只剩顶格正文——参考图里最像「书」的那一页反而没有了。
+ * 单章一本时只有第 0 段；整本连排时每章各一个（窗口章的 start）。
+ */
+const chapterOpenings = computed<Array<{ paragraph: number; title: string }>>(() => {
+  const win = continuousWindow.value
+  if (!win) {
+    return props.chapterTitle.trim() ? [{ paragraph: 0, title: props.chapterTitle }] : []
+  }
+  return win.chapters
+    .filter((chapter) => chapter.total > 0 && chapter.meta.title.trim().length > 0)
+    .map((chapter) => ({ paragraph: chapter.start, title: chapter.meta.title }))
+})
 const leftHeader = computed(() => (continuousWindow.value
   ? chapterTitleForMergedIndex(leftViewIndex.value)
   : props.bookTitle || props.chapterTitle))
@@ -2098,6 +2140,23 @@ onMounted(() => {
     retry(0)
   }
   document.fonts?.addEventListener?.('loadingdone', fontListener)
+
+  // Keyboard navigation (ArrowLeft/Right, PageUp/Down, Space)
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (!canPageFrom(e.target, e.key)) return
+    const dir = pageKeyDirection(e.key, e.shiftKey)
+    if (dir === 1) {
+      e.preventDefault()
+      nextPage()
+    } else if (dir === -1) {
+      e.preventDefault()
+      prevPage()
+    }
+  }
+  window.addEventListener('keydown', onKeyDown)
+  ;(hostRef.value as HTMLElement | null)?.addEventListener('keydown', onKeyDown)
+  // Store cleanup
+  ;(window as unknown as { __rbKeydown?: typeof onKeyDown }).__rbKeydown = onKeyDown
 })
 
 onBeforeUnmount(() => {
@@ -2109,6 +2168,11 @@ onBeforeUnmount(() => {
   fontReloadTimer = 0
   stopFlipAnimation()
   for (const id of [...runTimers.keys()]) clearRunTimer(id)
+  const kd = (window as unknown as { __rbKeydown?: (e: KeyboardEvent) => void }).__rbKeydown
+  if (kd) {
+    window.removeEventListener('keydown', kd)
+    ;(hostRef.value as HTMLElement | null)?.removeEventListener('keydown', kd)
+  }
 })
 
 /** 已读上界：右页最后一段的末尾（段落下标 + 段内偏移），与经典模式同构。 */
@@ -2282,6 +2346,8 @@ defineExpose({
         :book-title="bookTitle || chapterTitle"
         :book-author="bookAuthor"
         :book-id="bookId"
+        :highlight-color="highlightColor"
+        :highlight-opacity="highlightOpacity"
         @update:pitch="setPitch"
         @update:open="onWebglOpen"
         @spread-changed="onWebglSpreadChanged"
@@ -2294,6 +2360,7 @@ defineExpose({
         @peel-end="onPeelEnd"
         @edit-note="emit('edit-note', $event)"
         @select-range="emit('select-range', $event)"
+        @select="onStageMouseup"
         @cross-turn="onWebglCrossTurn"
         @unsupported="handleWebglUnsupported"
       />

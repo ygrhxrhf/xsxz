@@ -108,6 +108,10 @@ describe('buildPageTexturePlan', () => {
         {
           kind: 'note',
           height: 80,
+          continued: false,
+          continues: true,
+          lines: [{ y: 0, h: 20, baseline: 15, words: [{ text: '页内批注', x: 0, w: 40, font: '14px serif', size: 14, s: -1, e: -1 }] }],
+          textColor: 'default',
           note: {
             id: 'n1',
             paragraph: 2,
@@ -120,6 +124,10 @@ describe('buildPageTexturePlan', () => {
       ],
     }), STYLE)
     expect(plan.notes).toHaveLength(1)
+    // 片段字段原样进入 note box，lines 非空才能让上游 renderPage 画出真实文本行。
+    expect(plan.notes[0]!.continues).toBe(true)
+    expect(plan.notes[0]!.continued).toBe(false)
+    expect(plan.notes[0]!.lines.length).toBeGreaterThan(0)
     expect(plan.notes[0]!.width).toBe(PAGE_TEXTURE_WIDTH - PAGE_TEXTURE_MARGIN_INNER - PAGE_TEXTURE_MARGIN_OUTER)
     expect(plan.notes[0]!.height).toBe(80)
     expect(plan.notes[0]!.y).toBeGreaterThan(plan.lines.at(-1)!.y)
@@ -141,6 +149,27 @@ describe('buildPageTexturePlan', () => {
     }), STYLE)
     expect(plan.lines).toHaveLength(1)
     expect(plan.lines[0]!.text).toBe('没有行区间')
+  })
+
+  it('同一条便签的不同片段纹理签名不同，不共用缓存', () => {
+    const note = {
+      id: 'n1',
+      paragraph: 2,
+      offset: 4,
+      text: '一条很长的便签',
+      source: 'user' as const,
+      createdAt: '2026-11-14T00:00:00.000Z',
+    }
+    const line = (text: string) => ({
+      y: 0, h: 20, baseline: 15,
+      words: [{ text, x: 0, w: 40, font: '14px serif', size: 14, s: -1, e: -1 }],
+    })
+    const fragment = (continued: boolean, continues: boolean, text: string) => page({
+      items: [{ kind: 'note', note, height: 60, continued, continues, lines: [line(text)], textColor: 'default' }],
+    })
+    const first = textureStyleSignature(fragment(false, true, '前半'), STYLE)
+    const second = textureStyleSignature(fragment(true, false, '后半'), STYLE)
+    expect(first).not.toBe(second)
   })
 
   it('纹理签名随字体/页内容变化，用于避免无谓重绘', () => {

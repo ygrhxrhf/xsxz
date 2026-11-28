@@ -10,7 +10,9 @@ describe('Browse toolbar and drawer contract', () => {
     expect(source).toContain('aria-label="网页地址"')
     expect(source).toContain('<span>{{ siteLabel }}</span>')
     expect(source).toContain("return host ? `当前站点：${host}` : '尚未打开网页'")
-    expect(source.match(/class="browser-icon-button"/g)).toHaveLength(3)
+    // 起始页 / 后退 / 前进 / 刷新：起始页那颗是常用网站的唯一常驻入口
+    expect(source.match(/class="browser-icon-button"/g)).toHaveLength(4)
+    expect(source).toContain('aria-label="回到起始页"')
     expect(source).toContain('type="primary"')
     expect(source).toContain('size="small" secondary')
     expect(source).toContain('class="browser-more"')

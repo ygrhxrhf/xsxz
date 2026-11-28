@@ -229,16 +229,6 @@ onMounted(async () => {
   } catch {
     /* 设置读不到就沿用快照 */
   }
-  try {
-    const { books } = await window.api.library.list()
-    const withProgress = books.filter((b) => b.progress)
-    if (withProgress.length === 0) return
-    withProgress.sort((a, b) => (b.progress!.updatedAt || '').localeCompare(a.progress!.updatedAt || ''))
-    currentBookId.value = withProgress[0].id
-    tab.value = 'reader'
-  } catch {
-    /* first launch / empty library */
-  }
 })
 
 onUnmounted(() => {

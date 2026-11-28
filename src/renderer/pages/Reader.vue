@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed } from 'vue'
-import { NButton, NConfigProvider, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NPopconfirm, NRadioButton, NRadioGroup, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, darkTheme, useMessage } from 'naive-ui'
+import { NButton, NConfigProvider, NDrawer, NDrawerContent, NEmpty, NInput, NList, NListItem, NModal, NPopconfirm, NRadioButton, NRadioGroup, NSelect, NSlider, NSpace, NSwitch, NTabPane, NTabs, NTag, darkTheme, useMessage } from 'naive-ui'
 import { DEFAULT_READER_PREFS, FAIL_CODE_ZH } from '@shared/types'
 import { READER_THEME_COLORS } from '@shared/readerTheme'
+import { ReaderMarkdown } from './readerMarkdown'
 import type {
   AiBookUsage,
   AiBudgetEstimate,
@@ -132,16 +133,20 @@ type RealBookStageHandle = {
 }
 import { useReaderMarks } from './readerMarks'
 import { useReaderSelection } from './readerSelection'
-import { useReaderAssistant } from './readerAssistant'
+import { useReaderAssistant, fetchCachedChapterMindmap, requestChapterAiMindmap } from './readerAssistant'
 import { selectionRangeOffsets } from './selectionOffsets'
 import type { Annotation, BookSearchHit } from '@shared/types'
 import AiBudgetConfirm from '../components/AiBudgetConfirm.vue'
 import ReaderMindmap from '../components/ReaderMindmap.vue'
+import MemoryGraph from '../components/MemoryGraph.vue'
+import MarkdownBlock from '../components/MarkdownBlock.vue'
+import { buildMemoryGraph, sliceMemoryGraph } from './memoryGraph'
 import BookMapPage from './BookMapPage.vue'
 import AtlasDock from './atlas/AtlasDock.vue'
 import { aiSaveRecoveryActive, runAiSaveRecovery } from '../aiSaveRecoveryLock'
 import { locateMemorySourceParagraph } from './memorySourceLocator'
 import { normalizeEvidenceChatHistory } from './aiEvidenceUi'
+import { claimCitationLines, evidenceVerificationLabel } from './readerChatMessage'
 import { displayAiServiceOrigin } from './aiAssistantTransparency'
 import {
   assistantKindForJob,
@@ -159,7 +164,8 @@ import { createChapterPrefetch } from './readerPrefetch'
 import { createReaderProgressWriter } from './readerProgressWriter'
 import type { CapturedProgressWrite } from './readerProgressWriter'
 import { autoScrollSpeedPx, createAutoScroll } from './readingAutoScroll'
-import { buildMindmapTree, type MindmapAnchor } from './readerMindmap'
+import { buildMindmapTree, convertAiMindmapTree, type MindmapAnchor } from './readerMindmap'
+import type { AiMindmapResult } from '@shared/mindmap'
 
 const props = defineProps<{ bookId?: string; appSkin?: string }>()
 const emit = defineEmits<{
@@ -218,6 +224,63 @@ const focusMode = ref<ReaderFocusMode>(DEFAULT_READER_PREFS.focusMode)
 const readingMode = ref<ReaderReadingMode>(DEFAULT_READER_PREFS.readingMode)
 // 阅读界面与批注手写体偏好已持久化；真实书籍渲染层是 M2 的独立组件，数据层与经典模式共用。
 const bookView = ref<ReaderBookView>(DEFAULT_READER_PREFS.bookView ?? 'classic')
+/** 经典阅读模式：采用微信读书式顶部简洁栏 + 右侧垂直圆形悬浮工具栏 + 清爽纸面排版。 */
+const isClassic = computed(() => bookView.value === 'classic')
+/** 记录上次浅色主题，供右侧悬浮栏一键日/夜切换时恢复。 */
+const lastLightTheme = ref<ReaderTheme>('paper')
+function toggleClassicNightTheme() {
+  if (theme.value === 'night') {
+    theme.value = lastLightTheme.value
+  } else {
+    lastLightTheme.value = theme.value
+    theme.value = 'night'
+  }
+}
+function toggleClassicReadingMode() {
+  readingMode.value = readingMode.value === 'scroll' ? 'screen' : 'scroll'
+}
+/** 经典模式双栏排布开关（微信读书式双栏阅读，与单栏共用正文 DOM 与锚点）。 */
+const classicDoubleColumn = ref<boolean>((() => {
+  try { return localStorage.getItem('xsxz.classic.columns') === 'double' } catch { return false }
+})())
+function toggleClassicColumns() {
+  const host = contentRef.value
+  let anchorPara = viewportCenterPara.value >= 0 ? viewportCenterPara.value : -1
+  if (host && anchorPara < 0) {
+    const hostTop = host.getBoundingClientRect().top
+    const el = Array.from(host.querySelectorAll<HTMLElement>('[data-p]'))
+      .find((node) => node.getBoundingClientRect().bottom >= hostTop + 8)
+    if (el) anchorPara = Number(el.dataset.p)
+  }
+  classicDoubleColumn.value = !classicDoubleColumn.value
+  try { localStorage.setItem('xsxz.classic.columns', classicDoubleColumn.value ? 'double' : 'single') } catch {}
+  if (anchorPara >= 0) {
+    void nextTick(() => {
+      const target = contentRef.value?.querySelector<HTMLElement>(`[data-p="${anchorPara}"]`)
+      target?.scrollIntoView({ block: 'start', behavior: 'instant' as ScrollBehavior })
+    })
+  }
+}
+/** 经典模式划线样式：微信读书默认波浪线，支持波浪线 / 直线 / 荧光背景切换。 */
+type ClassicMarkStyle = 'wavy' | 'line' | 'bg'
+const CLASSIC_MARK_STYLE_LABELS: Record<ClassicMarkStyle, string> = {
+  wavy: '波浪线',
+  line: '直线',
+  bg: '荧光',
+}
+const classicMarkStyle = ref<ClassicMarkStyle>((() => {
+  try {
+    const saved = localStorage.getItem('xsxz.classic.markStyle')
+    if (saved === 'wavy' || saved === 'line' || saved === 'bg') return saved
+  } catch {}
+  return 'wavy'
+})())
+function cycleClassicMarkStyle() {
+  const order: ClassicMarkStyle[] = ['wavy', 'line', 'bg']
+  const next = order[(order.indexOf(classicMarkStyle.value) + 1) % order.length]
+  classicMarkStyle.value = next
+  try { localStorage.setItem('xsxz.classic.markStyle', next) } catch {}
+}
 /** 真实书籍的底栏由 Reader 自己画（参考图的图标条），舞台内悬浮条让位。 */
 const isRealBook = computed(() => bookView.value === 'realbook')
 /** 渲染层偏好：WebGL 复刻；没有 WebGL 的机器和测试环境自动留在 CSS 3D。 */
@@ -249,6 +312,8 @@ const dim = ref(DEFAULT_READER_PREFS.dim ?? 0)
 const hideSiteTail = ref(DEFAULT_READER_PREFS.hideSiteTail ?? true)
 // 「工具一直显示」是持久偏好 hideReaderChrome 的反义：hideReaderChrome=false 才常显。
 const hideReaderChrome = ref(DEFAULT_READER_PREFS.hideReaderChrome ?? true)
+const highlightColor = ref(DEFAULT_READER_PREFS.highlightColor ?? '#ffe45c')
+const highlightOpacity = ref(DEFAULT_READER_PREFS.highlightOpacity ?? 35)
 const alwaysShowTools = computed({
   get: () => hideReaderChrome.value === false,
   set: (value: boolean) => { hideReaderChrome.value = value !== true },
@@ -280,7 +345,8 @@ const toolsVisible = ref(false)
 const chapterFadeIn = ref(false)
 const temporaryToolReveal = ref(false)
 const pointerInToolbar = ref(false)
-const activeToolPanel = ref<'tts' | 'ai' | 'shortcuts' | null>(null)
+const activeToolPanel = ref<'tts' | 'shortcuts' | null>(null)
+const editingMemoryId = ref('')
 const activeBottomPanel = ref<'catalog' | 'progress' | 'background' | 'font' | 'more' | null>(null)
 
 /**
@@ -654,7 +720,6 @@ const marks = useReaderMarks({
   currentChapterId: () => currentChapter.value?.id,
   normalizedBody: () => normalizedBody.value,
   chapterOrder: () => new Map(chapters.value.map((chapter, index) => [chapter.id, index])),
-  memoryCharacters: () => memoryData.value?.characters ?? [],
   notify: (kind, text) => {
     if (kind === 'error') message.error(text)
     else if (kind === 'info') message.info(text)
@@ -687,7 +752,6 @@ const {
   wordbookHighlights,
   wordbookTerms,
   wordbookTrimmed,
-  wordbookPeople,
   reload: reloadAnnotations,
   resolveCurrentChapter: resolveCurrentAnnotations,
   toggleBookmark,
@@ -894,7 +958,174 @@ const {
   openDirectNote,
   saveDirectNote,
   addHighlight,
+  SELECTION_ACTIONS,
+  pinnedActions,
+  isPinned,
+  togglePinned,
 } = selection
+
+/** 工具栏与菜单的图标：一条 path 数据就能画出来的线性图标，免得模板里堆大段 SVG。 */
+const SEL_ACTION_ICON: Record<import('./readerSelection').SelectionActionId, string> = {
+  ask: 'M12 4.5c-4.2 0-7.5 2.6-7.5 6.1 0 2.2 1.2 4 3.2 5.1l-.6 3.3 3.3-1.6c.5.1 1.1.1 1.6.1 4.2 0 7.5-2.6 7.5-6.1S16.2 4.5 12 4.5Z',
+  copy: 'M9 9h10v10H9z M15 6.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h.5',
+  highlight: 'm14.5 4.5 5 5L10 19H5v-5Z M13 6l5 5',
+  note: 'M5 4h14v13l-4 3H5Z M8.5 9h7M8.5 12.5h4',
+  read: 'M4 10v4a1 1 0 0 0 1 1h2.5l3.6 3V6L7.5 9H5a1 1 0 0 0-1 1Z M15.5 9.2a4 4 0 0 1 0 5.6M18 6.8a7.4 7.4 0 0 1 0 10.4',
+  explainWord: 'M6 4h9l3 3v13H6z M9 9h6M9 12.5h6M9 16h3.5',
+  'explain-text': 'M12 4.5c-4.2 0-7.5 2.6-7.5 6.1 0 2.2 1.2 4 3.2 5.1l-.6 3.3 3.3-1.6c.5.1 1.1.1 1.6.1 4.2 0 7.5-2.6 7.5-6.1S16.2 4.5 12 4.5Z',
+  translate: 'M4 6h9M8.5 4v2c0 4-1.6 7.2-4.5 9M6 9.5c0 2.6 2 5.1 5 6.2 M13 20l4-9 4 9M14.6 17h4.8',
+  who: 'M12 5.2a3.3 3.3 0 1 1 0 6.6 3.3 3.3 0 0 1 0-6.6Z M5.5 20c0-3.4 2.9-5.6 6.5-5.6s6.5 2.2 6.5 5.6',
+  backstory: 'M4 12a8 8 0 1 0 2.6-5.9 M4 4.5V10h5.5',
+  chat: 'M3.5 7.5a3 3 0 0 1 3-3h11a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H8l-4.5 3.5Z',
+}
+
+/** 需要品牌色标记的 AI 动作；文档类动作保持单色。 */
+const SEL_AI_ACTIONS = new Set<import('./readerSelection').SelectionActionId>([
+  'ask', 'explainWord', 'explain-text', 'translate', 'who', 'backstory', 'chat',
+])
+
+/** 工具栏只渲染钉住的动作，顺序按钉住顺序（就是用户点图钉的先后）。 */
+const pinnedBarActions = computed(() => {
+  const byId = new Map(SELECTION_ACTIONS.map((action) => [action.id, action]))
+  return pinnedActions.value.map((id) => byId.get(id)).filter((action): action is (typeof SELECTION_ACTIONS)[number] => Boolean(action))
+})
+
+/** 菜单里从第几项开始插分隔线：文稿类在前，AI 类在后。 */
+const SEL_MENU_DIVIDER_AT = 5
+
+/**
+ * 划词菜单底部的模型选择器。
+ * 真源是 Settings.model（与设置页同一个字段），这里只做快捷切换，
+ * 提示词、端点、Key 仍由设置页负责。
+ */
+const showModelMenu = ref(false)
+const aiModelValue = ref('')
+const aiModelOptions = ref<Array<{ label: string; value: string }>>([])
+const aiModelLabel = computed(() => aiModelValue.value || '未配置模型')
+
+async function loadAiModelOptions() {
+  try {
+    const current = await window.api.settings.get()
+    aiModelValue.value = current.model || ''
+    // 内置候选 + 当前已配置的模型（自定义端点可能用任何名字，也必须能选到）。
+    const builtin = ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner']
+    const values = [...new Set([...builtin, current.model].filter((value): value is string => Boolean(value)))]
+    aiModelOptions.value = values.map((value) => ({ value, label: value }))
+  } catch {
+    aiModelOptions.value = []
+  }
+}
+
+async function applyAiModel(value: string) {
+  showModelMenu.value = false
+  if (value === aiModelValue.value) return
+  const previous = aiModelValue.value
+  aiModelValue.value = value
+  try {
+    const saved = await window.api.settings.set({ model: value })
+    aiModelValue.value = saved.model || value
+    message.success(`已切换到 ${aiModelValue.value}`)
+  } catch {
+    aiModelValue.value = previous
+    message.error('切换模型失败，已恢复原模型')
+  }
+}
+
+function onTogglePin(id: import('./readerSelection').SelectionActionId) {
+  if (!togglePinned(id)) {
+    message.warning('至少保留一个工具栏按钮；可以先把别的项钉上再取消这一项')
+  }
+}
+
+/** 菜单与工具栏共用同一个入口：点图钉只切钉住，点项体才执行动作。 */
+function runSelectionAction(id: import('./readerSelection').SelectionActionId) {
+  showSelMenu.value = false
+  switch (id) {
+    case 'ask': openInlineAsk(); return
+    case 'copy': copySelectedText(); return
+    case 'highlight': void addHighlight(); return
+    case 'note': openDirectNote(); return
+    case 'read': readSelectionAloud(); return
+    case 'explainWord': void explainSelection('word'); return
+    case 'explain-text': void askSelectedText('explain'); return
+    case 'translate': void translateSelectedText(); return
+    case 'who': void askSelectedText('person'); return
+    case 'backstory': void askSelectedText('backstory'); return
+    case 'chat': void askSelectionInAgent(); return
+  }
+}
+
+/**
+ * 划词工具栏默认是紧凑图标条（复制/翻译/朗读/更多/关闭），点「⋯」才展开竖向菜单。
+ * 菜单向下挂在工具条下沿，容器底边不够时翻到上方，避免被窗口裁掉。
+ */
+const showSelMenu = ref(false)
+const SEL_MENU_HEIGHT = 372
+const SEL_MENU_WIDTH = 268
+
+/**
+ * 划词行内问答卡的尺寸与位置：挂在所选文字下方，下方放不下就翻到上方。
+ * 卡片比工具条宽，所以要按自己的尺寸单独算，不能复用它那套 191×30。
+ */
+const INLINE_ASK_SIZE = { width: 380, height: 420 }
+
+const inlineAskStyle = computed(() => {
+  const { width, height } = INLINE_ASK_SIZE
+  const gap = 8
+  const margin = 8
+  const rect = selection.lastSelRect?.value ?? { top: 0, bottom: 0, left: 0, width: 0 }
+  const below = rect.bottom + gap + height + margin <= window.innerHeight
+  let top = below ? rect.bottom + gap : Math.max(margin, rect.top - gap - height)
+  // 卡片会随回答长高（CSS 上限 60vh）：再夹一次底边，别让「在侧边栏中继续」掉出屏幕。
+  const maxHeight = Math.min(window.innerHeight * 0.6, 520)
+  top = Math.min(top, Math.max(margin, window.innerHeight - margin - maxHeight))
+  const centered = rect.left + rect.width / 2 - width / 2
+  const left = Math.min(Math.max(margin, centered), Math.max(margin, window.innerWidth - width - margin))
+  return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${width}px` }
+})
+
+async function copyInlineAnswer() {
+  const text = inlineAsk.answer.value
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('已复制回答')
+  } catch {
+    message.error('复制失败，请重试')
+  }
+}
+
+function stopInlineAsk() {
+  if (inlineAsk.jobId.value) void window.api.ai.cancel(inlineAsk.jobId.value)
+}
+
+const selMenuStyle = computed(() => {
+  const gap = 6
+  // 翻到上方时以「选区顶边」为锚，不是以工具条顶边：工具条只有 30px 高，
+  // 用它当锚会让整张菜单盖住刚选中的那段话。
+  const rect = selection.lastSelRect?.value
+  const anchorTop = rect?.top ?? selPopupY.value
+  const anchorBottom = Math.max(selPopupY.value, rect?.bottom ?? 0)
+  const below = anchorBottom + gap
+  const roomBelow = window.innerHeight - below
+  const top = roomBelow >= SEL_MENU_HEIGHT ? below : Math.max(8, anchorTop - SEL_MENU_HEIGHT - gap)
+  const left = Math.min(selPopupX.value, Math.max(8, window.innerWidth - SEL_MENU_WIDTH - 8))
+  return { left: `${left}px`, top: `${top}px` }
+})
+
+watch(showSelPopup, (open) => {
+  if (!open) {
+    showSelMenu.value = false
+    showModelMenu.value = false
+    return
+  }
+  // 只在工具条真正出现时读一次设置，不在每次渲染时读盘。
+  void loadAiModelOptions()
+})
+
+// 菜单展开时它可能盖住工具条，所以把模型选择器也一并刷新。
+watch(showSelMenu, (open) => { if (open) void loadAiModelOptions() })
+
 
 /** 当前章各段的渲染切片：叠加搜索命中与划线 */
 const plainDecoratedParas = computed(() => paras.value.map((text) => decorateText(text, '', [])))
@@ -1286,6 +1517,36 @@ const visibleMemoryCount = computed(() => visibleMemoryCharacters.value.length
   + visibleMemoryRelations.value.length
   + visibleMemoryForeshadows.value.length
   + visibleMemoryEvents.value.length)
+/**
+ * 关系图切片上限：默认停在「当前读到的章」。
+ *
+ * 不默认全量的理由：全量图里有一半关系是读者还没读到的地方才成立的，
+ * 对小说读者来说那就是剧透。滑块只在当前章以内取值，读者也不能往前拉。
+ */
+const memoryGraphUpto = ref(1)
+/**
+ * 当前章在 book.chapters 里的 index（滑块上界与默认值）。
+ *
+ * 用 find 找而不是拿 chapters 的下标：章节表不保证按 index 排序（补章、重导都会打乱），
+ * 下标当章节号会在那些书上直接错位，连带把切片切错。
+ */
+const memoryGraphCurrentIndex = computed(() => {
+  const current = currentChapter.value
+  if (!current) return 1
+  const found = book.value?.chapters?.find((chapter) => chapter.id === current.id)
+  return found?.index ?? current.index
+})
+/**
+ * 关系图折叠标题上的数字和图里真正画出来的规模保持一致（都经过 24 人 / 80 条上限截断，
+ * 以及当前的进度切片），否则读者会以为图漏了人；没有关系时返回 0/0，由 v-if 决定整块不渲染。
+ */
+const memoryGraphCounts = computed(() => {
+  if (!memoryData.value?.relations?.length) return { people: 0, edges: 0 }
+  const graph = buildMemoryGraph(memoryData.value)
+  // 标题跟着画面走：别出现「20 人」的标题配 3 个点的图。
+  const shown = sliceMemoryGraph(graph, book.value?.chapters, memoryGraphUpto.value)
+  return { people: shown.nodes.length, edges: shown.edges.length }
+})
 
 async function jumpToAnnotation(a: Annotation) {
   if (!book.value) return
@@ -1622,10 +1883,18 @@ function onReaderFocusIn() {
   revealTools(immersiveMode.value === 'locked')
 }
 
-function toggleToolPanel(panel: 'tts' | 'ai' | 'shortcuts') {
+function toggleToolPanel(panel: 'tts' | 'shortcuts') {
   activeToolPanel.value = activeToolPanel.value === panel ? null : panel
   if (activeToolPanel.value) activeBottomPanel.value = null
   revealTools(immersiveMode.value === 'locked')
+}
+
+/** 顶栏 AI 按钮一键开关侧栏，不再先弹一层小菜单。 */
+function toggleAiAssistant() {
+  activeToolPanel.value = null
+  activeBottomPanel.value = null
+  if (showAiAssistant.value) showAiAssistant.value = false
+  else void openAiAssistant('qa')
 }
 
 function toggleBottomPanel(panel: 'catalog' | 'progress' | 'background' | 'font' | 'more') {
@@ -1691,6 +1960,34 @@ function startTtsFromParagraph(index: number) {
   closeSelectionTools()
   ttsStart(index)
   revealTools(immersiveMode.value === 'locked')
+}
+
+/**
+ * 划词工具栏的「朗读」：从选区所在的那一段开始读。
+ * 选区不跨段时就是该段；找不到对应段就退回当前正在读的段，不静默无反应。
+ */
+function readSelectionAloud() {
+  if (!ttsSupported) {
+    message.warning('当前环境不支持朗读')
+    return
+  }
+  const range = selectedRange.value ?? selectionOffsets()
+  const excerpt = selectedExcerpt.value || getSelectedText()
+  let index = -1
+  if (range) {
+    let cursor = 0
+    for (let i = 0; i < paras.value.length; i += 1) {
+      const start = cursor
+      const end = start + paras.value[i]!.length
+      if (range.start >= start && range.start <= end) { index = i; break }
+      cursor = end + 2
+    }
+  }
+  if (index < 0 && excerpt) {
+    const probe = excerpt.trim().slice(0, 30)
+    if (probe) index = paras.value.findIndex((paragraph) => paragraph.includes(probe))
+  }
+  startTtsFromParagraph(Math.max(0, index))
 }
 
 function syncVisualPage() {
@@ -2056,17 +2353,23 @@ const readerThemeStyle = computed(() => ({
   '--reader-paper': READER_THEME_COLORS[theme.value].paper,
   '--reader-paper-text': READER_THEME_COLORS[theme.value].text,
   '--reader-outer': READER_THEME_COLORS[theme.value].outer,
+  '--hl-color': highlightColor.value,
+  '--hl-opacity': `${highlightOpacity.value}%`,
 }))
-const contentStyle = computed(() => ({
-  fontSize: fontSize.value + 'px',
-  lineHeight: lineHeight.value,
-  fontFamily: fontStacks[fontFamily.value],
-  width: `min(100%, ${widthValues[contentWidth.value]})`,
-  maxWidth: widthValues[contentWidth.value],
-  flexBasis: widthValues[contentWidth.value],
-  '--paragraph-spacing': spacingValues[paragraphSpacing.value],
-  '--paragraph-indent': paragraphIndent.value ? '2em' : '0',
-}))
+const contentStyle = computed(() => {
+  const isClassicDouble = bookView.value === 'classic' && classicDoubleColumn.value
+  const singleWidth = widthValues[contentWidth.value]
+  return {
+    fontSize: fontSize.value + 'px',
+    lineHeight: lineHeight.value,
+    fontFamily: fontStacks[fontFamily.value],
+    width: isClassicDouble ? 'min(calc(100vw - 140px), 1320px)' : `min(100%, ${singleWidth})`,
+    maxWidth: isClassicDouble ? '1320px' : singleWidth,
+    flexBasis: isClassicDouble ? 'min(calc(100vw - 140px), 1320px)' : singleWidth,
+    '--paragraph-spacing': spacingValues[paragraphSpacing.value],
+    '--paragraph-indent': paragraphIndent.value ? '2em' : '0',
+  }
+})
 const chapterReady = computed(() => Boolean(currentChapter.value && currentChapter.value.status === 'ready' && chapterBody.value))
 /**
  * 章节导图的数据源：与正文同一套原始段落下标，节点跳转不需要任何坐标换算。
@@ -2074,8 +2377,63 @@ const chapterReady = computed(() => Boolean(currentChapter.value && currentChapt
  * 超长章只展开到段落层——句组层会让 SVG 一次落下上万节点；经典模式的窗口化
  * 早就按同一个阈值退让，导图沿用同一判据。
  */
+const aiMindmapResult = ref<AiMindmapResult | null>(null)
+const aiMindmapLoading = ref(false)
+const aiMindmapError = ref('')
+const canGenerateAiMindmap = computed(() => Boolean(window.api?.ai?.generateMindmap))
+
+async function loadCachedChapterMindmap(): Promise<void> {
+  const bookId = book.value?.id
+  const chapterId = currentChapter.value?.id
+  aiMindmapResult.value = null
+  aiMindmapError.value = ''
+  if (!bookId || !chapterId || !window.api?.ai?.getMindmap) return
+  try {
+    const res = await fetchCachedChapterMindmap(bookId, chapterId)
+    if (book.value?.id !== bookId || currentChapter.value?.id !== chapterId) return
+    if (res?.ok && res.result) aiMindmapResult.value = res.result
+  } catch {
+    // 读取缓存失败时静默退回本地切分导图。
+  }
+}
+
+async function generateChapterAiMindmap(force: boolean): Promise<void> {
+  const bookId = book.value?.id
+  const chapterId = currentChapter.value?.id
+  if (!bookId || !chapterId || !window.api?.ai?.generateMindmap || aiMindmapLoading.value) return
+  aiMindmapLoading.value = true
+  aiMindmapError.value = ''
+  try {
+    const res = await requestChapterAiMindmap(bookId, chapterId, force)
+    if (book.value?.id !== bookId || currentChapter.value?.id !== chapterId) return
+    if (res?.ok) {
+      aiMindmapResult.value = res.result
+    } else {
+      aiMindmapError.value = res?.message || 'AI 导图生成失败，已显示本地结构。'
+    }
+  } catch (e: unknown) {
+    if (book.value?.id === bookId && currentChapter.value?.id === chapterId) {
+      aiMindmapError.value = e instanceof Error ? e.message : 'AI 导图生成失败，已显示本地结构。'
+    }
+  } finally {
+    if (book.value?.id === bookId && currentChapter.value?.id === chapterId) {
+      aiMindmapLoading.value = false
+    }
+  }
+}
+
+watch(
+  [() => drawerTab.value, () => book.value?.id, () => currentChapter.value?.id],
+  ([tab]) => {
+    if (tab === 'mindmap') void loadCachedChapterMindmap()
+  },
+)
+
 const chapterMindmap = computed(() => {
   if (!chapterReady.value) return null
+  if (aiMindmapResult.value) {
+    return convertAiMindmapTree(aiMindmapResult.value.tree)
+  }
   const indexes = visibleParaIndexes.value
   return buildMindmapTree(
     currentChapter.value?.title ?? '',
@@ -2919,6 +3277,8 @@ function currentReaderPrefs(): ReaderPrefs {
     dim: dim.value,
     hideSiteTail: hideSiteTail.value,
     hideReaderChrome: hideReaderChrome.value,
+    highlightColor: highlightColor.value,
+    highlightOpacity: highlightOpacity.value,
   }
 }
 
@@ -2979,6 +3339,8 @@ function restoreDefaultReaderPrefs() {
   // 净化与「工具一直显示」同样回到缺省（净化开、工具收起）；「本章显示原文」是临时态。
   hideSiteTail.value = DEFAULT_READER_PREFS.hideSiteTail ?? true
   hideReaderChrome.value = DEFAULT_READER_PREFS.hideReaderChrome ?? true
+  highlightColor.value = DEFAULT_READER_PREFS.highlightColor ?? '#ffe45c'
+  highlightOpacity.value = DEFAULT_READER_PREFS.highlightOpacity ?? 35
   showRawThisChapter.value = false
   // 顶栏只按两条露出规则重算：下载 running 优先，恢复默认不丢「已下 x / y 章」与「取消」。
   toolsVisible.value = false
@@ -3018,6 +3380,8 @@ async function loadPrefs() {
   recapLength.value = s.ai?.recapLength ?? 'standard'
   autoFollowEnabled.value = s.ai?.autoReadingFollow ?? false
   aiServiceOrigin.value = displayAiServiceOrigin(s.baseUrl)
+  aiVerifyEvidence.value = s.ai?.verifyEvidenceAnswers !== false
+  aiApiKeyConfigured.value = Boolean(s.apiKeyConfigured)
 }
 
 // AI actions
@@ -3077,6 +3441,17 @@ async function stopCleanBody() {
   await window.api.ai.cancel()
 }
 
+async function copyAiResult() {
+  const text = aiResult.value.trim()
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('已复制结果')
+  } catch {
+    message.error('复制失败，请重试')
+  }
+}
+
 async function applyCleanedBody() {
   if (!book.value || !currentChapter.value || !aiResult.value) return
   // 清理结果基于当时那份正文：中途换源、重下或手修过就拒绝覆盖，让用户重新清一次。
@@ -3108,6 +3483,68 @@ async function restoreCleanedBody() {
   }
 }
 
+/**
+ * 侧栏宽度是纯界面偏好（不写 settings.json，不动主进程），拖宽后下次打开还是这个宽度。
+ * 历史脏数据/隐私模式下 localStorage 读不出来一律回退默认值：宽度错了只是难看，不该拦住侧栏。
+ */
+const AI_DRAWER_WIDTH_DEFAULT = 420
+const AI_DRAWER_WIDTH_MIN = 360
+const AI_DRAWER_WIDTH_MAX = 720
+const AI_DRAWER_WIDTH_KEY = 'spbf.aiDrawerWidth'
+function clampAiDrawerWidth(width: number): number {
+  return Math.min(AI_DRAWER_WIDTH_MAX, Math.max(AI_DRAWER_WIDTH_MIN, Math.round(width)))
+}
+function readStoredAiDrawerWidth(): number {
+  try {
+    const raw = localStorage.getItem(AI_DRAWER_WIDTH_KEY)
+    const parsed = raw === null ? Number.NaN : Number.parseFloat(raw)
+    return Number.isFinite(parsed) ? clampAiDrawerWidth(parsed) : AI_DRAWER_WIDTH_DEFAULT
+  } catch {
+    return AI_DRAWER_WIDTH_DEFAULT
+  }
+}
+const aiDrawerWidth = ref(readStoredAiDrawerWidth())
+function setAiDrawerWidth(width: number): void {
+  // 拖动时 naive-ui 每帧都会回报一次宽度：先夹住再落库，避免把越界值写进下一次启动。
+  const clamped = clampAiDrawerWidth(width)
+  aiDrawerWidth.value = clamped
+  try {
+    localStorage.setItem(AI_DRAWER_WIDTH_KEY, String(clamped))
+  } catch {
+    /* 忽略存储失败：只影响下次的默认宽度 */
+  }
+}
+
+/**
+ * 从引用角标跳回原文后闪一下目标段落：同章内跳转页码可能没变，不闪读者不知道自己落在哪。
+ * 真实书籍 WebGL 模式没有 [data-p] 段落元素，找不到就静默返回（允许不闪）。
+ */
+let paraFlashEl: HTMLElement | null = null
+let paraFlashTimer: ReturnType<typeof setTimeout> | null = null
+function flashParagraph(paragraphIndex: number): void {
+  // 连续点两个角标时，上一个定时器要撤掉，否则它会把新段落的 class 一起抹掉。
+  if (paraFlashTimer !== null) {
+    clearTimeout(paraFlashTimer)
+    paraFlashTimer = null
+  }
+  if (paraFlashEl) {
+    paraFlashEl.classList.remove('para-flash')
+    paraFlashEl = null
+  }
+  // 换章后的 DOM 要等这一轮渲染落地；下一帧仍找不到就是窗口外/无段落坐标，直接放弃。
+  void nextTick(() => {
+    const el = contentRef.value?.querySelector<HTMLElement>(`[data-p="${paragraphIndex}"]`)
+    if (!el) return
+    el.classList.add('para-flash')
+    paraFlashEl = el
+    paraFlashTimer = setTimeout(() => {
+      el.classList.remove('para-flash')
+      if (paraFlashEl === el) paraFlashEl = null
+      paraFlashTimer = null
+    }, 1200)
+  })
+}
+
 // AI 助手面板：整块（状态 + 行为）在 readerAssistant.ts，这里只接线（名字保持原样，模板不用改）。
 // 必须放在所有依赖声明之后（paras/chapters/contentRef/fontSize/readingMode/loadBook/openChapter…），
 // 否则 setup 里会 TDZ；onMounted 里的回调是懒执行，放在它前面即可。
@@ -3129,10 +3566,13 @@ const assistant = useReaderAssistant({
   resumeCardWarning,
   showSelPopup,
   selectedExcerpt,
+  selectedRange,
+  selectionOffsets,
   restoringChat,
   aiResult,
   aiResultTitle,
   closeSelectionTools,
+  flashParagraph,
 })
 const {
   showAiAssistant,
@@ -3189,6 +3629,14 @@ const {
   translateJobId,
   translateLoading,
   chatMessages,
+  chatMode,
+  chatRecallScope,
+  setChatRecallScope,
+  qaContextChips,
+  qaContextActive,
+  toggleQaContextChip,
+  agentToolActivity,
+  setAgentToolActivity,
   chatInput,
   chatLoading,
   chatStarting,
@@ -3196,6 +3644,16 @@ const {
   chatAssistantIndex,
   selectionNoteTarget,
   selectionNoteSaving,
+  // 会话栏：一本书的多条问答会话（问人物线 / 问这卷剧情 / 问伏笔各一条）。
+  chatThreadId,
+  chatThreads,
+  chatThreadSaving,
+  chatThreadOptionLabel,
+  chatThreadOptions,
+  listChatThreads,
+  switchChatThread,
+  newChatThread,
+  removeChatThread,
   follow,
   readingAiMode,
   materialCoverage,
@@ -3271,13 +3729,74 @@ const {
   openChapterFromNote,
   getSelectedText,
   translateSelectedText,
+  explainSelection,
+  askSelectionInAgent,
+  openInlineAsk,
+  inlineAsk,
   stopTranslate,
   QUICK_READING_QUESTIONS,
   prepareQuickQuestion,
   sendChat,
   stopChat,
   clearChat,
+  // 问答历史的就地修改（复制 / 重问 / 编辑 / 删一轮）：状态在 readerAssistant.ts，这里只接按钮。
+  chatActionsDisabled,
+  copyChatAnswer,
+  reAskChatAnswer,
+  editChatQuestion,
+  deleteChatRound,
 } = assistant
+
+/** 侧栏独立设置弹窗：只包含 AI 助手自己的选项，不再跳去全局设置页。 */
+const aiSettingsOpen = ref(false)
+
+/**
+ * 侧栏一打开就读一次模型配置：状态条上的模型名不能等到用户先划过词才出现。
+ * 顺带收掉顶栏那个「清正文 / AI 助手 / 聊书」的小面板——抽屉关了它还挂在正文上挡字。
+ */
+watch(showAiAssistant, (open) => {
+  if (open) void loadAiModelOptions()
+  // 抽屉关掉时顺手收起独立设置弹窗，避免它孤零零留在正文上。
+  else aiSettingsOpen.value = false
+})
+
+/** 运行信息面板默认收起：模型与已读边界已经在状态条上，其余按需展开。 */
+const aiRuntimeOpen = ref(false)
+
+const aiVerifyEvidence = ref(true)
+const aiApiKeyConfigured = ref(false)
+const aiTesting = ref(false)
+async function setAiVerifyEvidence(value: boolean) {
+  const previous = aiVerifyEvidence.value
+  aiVerifyEvidence.value = value
+  try {
+    await window.api.settings.set({ ai: { verifyEvidenceAnswers: value } })
+    message.success(value ? '已开启：回答后核对原文（会多一次请求）' : '已关闭：回答不再核对原文')
+  } catch {
+    aiVerifyEvidence.value = previous
+    message.error('保存 AI 设置失败，已恢复原值')
+  }
+}
+async function testAiConnection() {
+  if (aiTesting.value) return
+  aiTesting.value = true
+  try {
+    const res = await window.api.ai.test()
+    if (res.ok) message.success('模型服务连接正常')
+    else message.error(res.message || '连接失败')
+  } catch (error) {
+    message.error(`连接失败：${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    aiTesting.value = false
+  }
+}
+
+/** 状态条上的「已读至」：没有进度就直说，别显示一个空章节名。 */
+const readUptoTitle = computed(() => {
+  const chapterId = book.value?.progress?.chapterId
+  if (!chapterId) return '还没有阅读进度'
+  return book.value?.chapters.find((chapter) => chapter.id === chapterId)?.title || '未知章节'
+})
 
 /**
  * 打开「聊书」后把抽屉滚到最底：抽屉内容比窗口高，输入框在对话末尾，
@@ -3319,7 +3838,7 @@ watch(positionRatio, async (ratio) => {
 watch(() => book.value?.id, () => finishedReported.clear())
 
 watch(
-  [fontSize, lineHeight, theme, fontFamily, bookFontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, showInlineNotes, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome],
+  [fontSize, lineHeight, theme, fontFamily, bookFontFamily, contentWidth, paragraphSpacing, paragraphIndent, focusMode, readingMode, bookView, sheetColumns, handwritingFont, showInlineNotes, autoScrollSpeed, autoNextChapter, dim, hideSiteTail, hideReaderChrome, highlightColor, highlightOpacity],
   () => {
     if (!prefsReady.value) return
     scheduleReaderPrefsSave()
@@ -3352,6 +3871,9 @@ watch(() => props.bookId, (id) => { if (id) void loadBook(id) })
 watch(() => currentChapter.value?.id, () => {
   selectionNoteTarget.value = null
   inlineNoteEditor.value = null
+  // 换章（含换书、续读）就把关系图拉回新章的进度：
+  // 否则上一本/上一章拖到的位置会带到新章，那正好会造成它本想避免的剧透。
+  memoryGraphUpto.value = memoryGraphCurrentIndex.value
 })
 watch([aiAssistantTab, currentChapter], ([tab]) => {
   if (tab === 'notes') void loadChapterNotes()
@@ -3397,6 +3919,8 @@ onMounted(async () => {
       const assistant = chatMessages.value[chatAssistantIndex.value]
       if (assistant) assistant.content += delta
     }
+    // 划词行内卡片自己那一轮：只有它开着且 jobId 对得上时才追加。
+    if (inlineAsk.open.value) inlineAsk.appendDelta(jobId, delta)
   })
   unsubAiStage = window.api.ai.onStage((event) => {
     const detail = event.detail?.trim()
@@ -3411,11 +3935,19 @@ onMounted(async () => {
         if (event.uptoChapterId) assistant.uptoChapterId = event.uptoChapterId
       }
     }
+    // 对话模式下 events.detail 是模型正在调的工具名（查目录/读原文/检索…）。
+    if (event.jobId === chatJobId.value && chatMode.value === 'agent') {
+      setAgentToolActivity(detail ?? '')
+    }
   })
   unsubAiBudget = window.api.ai.onBudget(({ task, budget }) => {
     assistantBudgets.value = { ...assistantBudgets.value, [task]: budget }
   })
   unsubAiDone = window.api.ai.onDone((event) => {
+    // 行内卡片先接手自己的终态：它和侧栏的 jobId 不同源，不该落进下面那些分支。
+    if (inlineAsk.open.value && event.jobId === inlineAsk.jobId.value) {
+      inlineAsk.finish(event)
+    }
     if (event.ok && event.usage) void loadAssistantMaterial()
     const assistantKind = assistantKindForJob(event.jobId, assistantJobIds.value)
     if (assistantKind) {
@@ -3457,7 +3989,11 @@ onMounted(async () => {
         if (assistant) {
           assistant.content = event.text
           assistant.citations = event.citations
+          if (event.scope) assistant.scope = event.scope
           assistant.claims = event.claims
+          // 可信度三件套一起落地：少了它们，界面会把一轮「删过结论」的回答当成普通回答展示。
+          assistant.verification = event.verification
+          assistant.droppedClaims = event.droppedClaims
           assistant.uptoChapterId = event.uptoChapterId
           assistant.stopped = event.stopped === true
         }
@@ -3465,9 +4001,14 @@ onMounted(async () => {
       } else if (assistant) {
         assistant.content = `错误：${event.message}`
       }
+      // 空 label 只收尾不加步：成功的收尾把还在跑的那步标成 done，失败必须传 error，
+      // 否则一次没跑通的调用会在思考链里停在「进行中」，看起来像还在等。
+      // 必须在清 chatAssistantIndex 之前调：它是靠下标找那条消息的，清完就找不到还在跑的那一步。
+      setAgentToolActivity('', event.ok ? 'done' : 'error')
       chatJobId.value = ''
       chatAssistantIndex.value = -1
       chatLoading.value = false
+      setAgentToolActivity('')
       return
     }
     if (event.jobId === memoryJobId.value) {
@@ -3564,7 +4105,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="readerRootRef" :class="['reader-wrap', { 'immersive-locked': immersiveMode === 'locked', 'drawer-open': showDrawer }]" :style="readerThemeStyle" @focusin="onReaderFocusIn">
+  <div ref="readerRootRef" :class="['reader-wrap', { 'immersive-locked': immersiveMode === 'locked', 'drawer-open': showDrawer, 'is-classic': isClassic, 'is-night': theme === 'night' }]" :style="readerThemeStyle" @focusin="onReaderFocusIn">
     <!-- No book selected -->
     <div v-if="!book" class="page placeholder">
       <h2>阅读</h2>
@@ -3576,7 +4117,7 @@ onUnmounted(() => {
     <template v-else>
       <div
         class="reader-toolbar"
-        :class="{ 'reader-tools-hidden': !toolsVisible, 'reader-toolbar-realbook': isRealBook }"
+        :class="{ 'reader-tools-hidden': !toolsVisible, 'reader-toolbar-realbook': isRealBook, 'is-classic': isClassic }"
         :aria-hidden="!toolsVisible"
         :inert="!toolsVisible"
         @mouseenter="onToolbarEnter"
@@ -3587,12 +4128,13 @@ onUnmounted(() => {
         <span v-if="isRealBook" class="real-book-page-label" aria-hidden="true">第 {{ realBookPage + 1 }} / {{ Math.max(1, realBookPageCount) }} 页</span>
         <template v-if="!isRealBook">
         <div class="reader-book-title" :title="book.title">{{ book.title }}</div>
+        <span v-if="isClassic && currentChapter?.title" class="classic-chapter-subtitle" :title="currentChapter.title">{{ currentChapter.title }}</span>
         <button class="tool-button tool-text" type="button" title="书架" aria-label="书架" @click="emit('back')">书架</button>
         <button class="tool-button tool-icon-text" title="搜索" aria-label="搜索" @click="openSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><span>搜索</span></button>
         <button class="tool-button tool-icon-text" title="标记" aria-label="标记" @click="showMarks = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16l-6-4-6 4z"/></svg><span>标记</span></button>
         <button class="tool-button tool-icon-text" title="书中地图" aria-label="书中地图" @click="showMap = true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg><span>地图</span></button>
         <button class="tool-button tool-icon-text" title="朗读" aria-label="朗读" @click="toggleToolPanel('tts')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10v4h4l5 4V6L9 10zM18 9a5 5 0 0 1 0 6"/></svg><span>朗读</span></button>
-        <button class="tool-button tool-icon-text" title="AI 助手" aria-label="AI" @click="toggleToolPanel('ai')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg><span>AI</span></button>
+        <button class="tool-button tool-icon-text" title="AI 助手" aria-label="AI" :class="{ active: showAiAssistant }" @click="toggleAiAssistant"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 9.8 8.8 4 11l5.8 2.2L12 19l2.2-5.8L20 11l-5.8-2.2z"/></svg><span>AI</span></button>
         <button v-if="isRealBook" class="tool-button bottom-button" type="button" title="字体" aria-label="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg></button>
         <button v-if="isRealBook" class="tool-button bottom-button real-book-btn" type="button" title="平放" aria-label="平放" @click="realBookStageRef?.resetPitch()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16"/><path d="M7 12V8h10v4"/></svg></button>
         <button
@@ -3601,7 +4143,7 @@ onUnmounted(() => {
           type="button"
           role="status"
           :title="`${backgroundAiLabel}：点开看后台 AI 任务`"
-          @click="toggleToolPanel('ai')"
+          @click="openAiAssistant('recap')"
         >{{ backgroundAiLabel }}</button>
         <span class="toolbar-gap" aria-hidden="true"></span>
         <template v-if="isCurrentBookDownloading(downloadProgress, book.id)">
@@ -3664,10 +4206,6 @@ onUnmounted(() => {
               <div><dt>Ctrl+F，+ / -</dt><dd>本书搜索 / 调整字号</dd></div>
             </dl>
           </template>
-          <template v-else>
-            <strong>AI</strong>
-            <n-space vertical :size="6"><n-button size="tiny" block :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button><n-button v-if="cleanRunning" size="tiny" block type="warning" @click="stopCleanBody">停止清正文</n-button><n-button v-if="hasBodyRaw" size="tiny" block @click="restoreCleanedBody">撤销清正文</n-button><n-button size="tiny" block @click="openAiAssistant('recap')">AI 助手</n-button><n-button size="tiny" block :disabled="!chapterReady" @click="openAiAssistant('qa')">聊书</n-button></n-space>
-          </template>
         </div>
       </div>
 
@@ -3694,7 +4232,7 @@ onUnmounted(() => {
           </p>
         </aside>
         <div class="reader-body" :class="{ 'reader-body-paged': pagedView, 'reader-body-realbook': isRealBook }">
-        <div v-if="bookView === 'classic'" class="reader-content reader-pane" :class="{ 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn }" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentZoneMouseup">
+        <div v-if="bookView === 'classic'" class="reader-content reader-pane" :class="['classic-mark-' + classicMarkStyle, { 'large-chapter': paras.length > 2000, 'chapter-fade-in': chapterFadeIn, 'is-classic-double': classicDoubleColumn }]" :style="contentStyle" ref="contentRef" @scroll="onScroll" @mouseup="onContentZoneMouseup">
           <div v-if="chapterLoading" class="loading-hint">正在打开章节…</div>
           <template v-else>
             <h3 class="ch-title">{{ currentChapter?.title }}</h3>
@@ -3718,7 +4256,7 @@ onUnmounted(() => {
               <p
                 :data-p="i"
                 :class="['para', { 'para-speaking': i === spokenPara, 'para-unfocused': focusMode !== 'off' && resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }) >= 0 && !isParagraphInFocus({ mode: focusMode, anchorIndex: resolveFocusAnchor({ spokenPara: spokenPara, viewportCenterPara }), paragraphIndex: i, paragraphCount: paras.length }) }]"
-              ><template v-for="(s, j) in segs" :key="j"><span v-if="s.noteId" class="classic-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="openInlineNoteEditor(s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="openInlineNoteEditor(s.noteId)" @keydown.space.stop.prevent="openInlineNoteEditor(s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><span v-if="ttsSupported && chapterReady" class="para-tts-zone" aria-hidden="true"></span><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3l4-3.2v11.4l-4-3.2H4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18 6a8.5 8.5 0 0 1 0 12"/></svg><span class="para-tts-label">从此段朗读</span></button></p>
+              ><template v-for="(s, j) in segs" :key="j"><span v-if="s.noteId" class="classic-note-anchor" :data-note-anchor-id="s.noteId" role="button" tabindex="0" aria-label="查看这条批注" @click.stop="openInlineNoteEditor(s.noteId)" @mouseup.stop @keydown.enter.stop.prevent="openInlineNoteEditor(s.noteId)" @keydown.space.stop.prevent="openInlineNoteEditor(s.noteId)"></span><mark v-else-if="s.hit" class="search-hit">{{ s.text }}</mark><mark v-else-if="s.hl" :class="['hl-mark', 'hl-' + (s.color ?? 'yellow')]">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template><button v-if="isClassic && (classicInlineNotes.get(i)?.length ?? 0) > 0" type="button" class="classic-para-note-badge" :aria-label="`查看本段 ${classicInlineNotes.get(i)!.length} 条想法`" :title="`本段有 ${classicInlineNotes.get(i)!.length} 条想法`" @mouseup.stop @click.stop="openInlineNoteEditor(classicInlineNotes.get(i)![0].id)">{{ classicInlineNotes.get(i)!.length }}</button><span v-if="ttsSupported && chapterReady" class="para-tts-zone" aria-hidden="true"></span><button v-if="ttsSupported && chapterReady" type="button" class="para-tts-start" :aria-label="`从第 ${i + 1} 段开始朗读`" title="从此段开始朗读" @mouseup.stop @click.stop="startTtsFromParagraph(i)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3l4-3.2v11.4l-4-3.2H4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18 6a8.5 8.5 0 0 1 0 12"/></svg><span class="para-tts-label">从此段朗读</span></button></p>
               <aside
                 v-for="note in classicInlineNotes.get(i) ?? []"
                 :key="note.id"
@@ -3741,7 +4279,12 @@ onUnmounted(() => {
             </template>
             <!-- 窗口化：跳到后段时，跳过的段用等高的占位撑住，滚动条始终按整章长度显示 -->
             <div v-if="bottomGapHeight > 0" class="reader-gap" :style="{ height: `${bottomGapHeight}px` }" aria-hidden="true"></div>
-            <button v-if="chapterReady && followingChapter && renderedCount >= paras.length" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
+            <div v-if="chapterReady && renderedCount >= paras.length && (previousChapter || followingChapter)" class="classic-chapter-footer">
+              <button v-if="isClassic && previousChapter" type="button" class="classic-chapter-prev" :title="`上一章：${previousChapter.title}`" @click="prevChapter">
+                上一章：{{ previousChapter.title }}
+              </button>
+              <button v-if="followingChapter" type="button" class="chapter-end-card" @click="nextChapter">下一章：{{ followingChapter.title }}</button>
+            </div>
             <div v-else-if="chapterReady && currentChapterIndex === chapters.length - 1 && renderedCount >= paras.length" class="chapter-end-card finished">
               <strong>已读完《{{ book.title }}》</strong>
               <n-button size="small" @click="emit('back')">返回书库</n-button>
@@ -3820,18 +4363,21 @@ onUnmounted(() => {
 
       <div
         class="reader-bottombar"
-        :class="{ 'reader-tools-hidden': !toolsVisible, 'is-realbook': isRealBook }"
+        :class="{ 'reader-tools-hidden': !toolsVisible, 'is-realbook': isRealBook, 'is-classic': isClassic, 'is-classic-double': isClassic && classicDoubleColumn }"
         :aria-hidden="isRealBook ? realBookBarCollapsed : !toolsVisible"
         :inert="isRealBook ? realBookBarCollapsed : !toolsVisible"
         @mouseenter="onToolbarEnter"
         @mouseleave="onToolbarLeave"
       >
         <template v-if="!isRealBook">
-          <button class="bottom-button" type="button" aria-label="目录" title="目录" :class="{ active: activeBottomPanel === 'catalog' || showDrawer }" @click="toggleBottomPanel('catalog')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span class="bottom-button-text">目录</span></button>
-          <button class="bottom-button" type="button" aria-label="进度" title="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span class="bottom-button-text">进度</span></button>
-          <button class="bottom-button" type="button" aria-label="背景" title="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg><span class="bottom-button-text">背景</span></button>
-          <button class="bottom-button" type="button" aria-label="字体" title="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg><span class="bottom-button-text">字体</span></button>
-          <button class="bottom-button real-book-note-toggle" type="button" :aria-label="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :title="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :aria-pressed="showInlineNotes" :class="{ active: showInlineNotes }" @click="showInlineNotes = !showInlineNotes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.2-4.2L15.5 5.5l3 3L8.2 18.8 4 20z"/><path d="m13.5 7.5 3 3"/></svg><span class="bottom-button-text">批注</span></button>
+          <button class="bottom-button" type="button" aria-label="目录" title="目录" data-tip="目录" :class="{ active: activeBottomPanel === 'catalog' || showDrawer }" @click="toggleBottomPanel('catalog')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span class="bottom-button-text">目录</span></button>
+          <button class="bottom-button" type="button" aria-label="进度" title="进度" data-tip="进度" :class="{ active: activeBottomPanel === 'progress' }" @click="toggleBottomPanel('progress')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span class="bottom-button-text">进度</span></button>
+          <button class="bottom-button" type="button" aria-label="背景" title="背景" data-tip="背景" :class="{ active: activeBottomPanel === 'background' }" @click="toggleBottomPanel('background')"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg><span class="bottom-button-text">背景</span></button>
+          <button class="bottom-button" type="button" aria-label="字体" title="字体" data-tip="字体" :class="{ active: activeBottomPanel === 'font' }" @click="toggleBottomPanel('font')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg><span class="bottom-button-text">字体</span></button>
+          <button class="bottom-button real-book-note-toggle" type="button" :aria-label="showInlineNotes ? '关闭批注模式' : '开启批注模式'" :title="showInlineNotes ? '关闭批注模式' : '开启批注模式'" data-tip="批注" :aria-pressed="showInlineNotes" :class="{ active: showInlineNotes }" @click="showInlineNotes = !showInlineNotes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.2-4.2L15.5 5.5l3 3L8.2 18.8 4 20z"/><path d="m13.5 7.5 3 3"/></svg><span class="bottom-button-text">批注</span></button>
+          <button v-if="isClassic" class="bottom-button classic-rail-columns" type="button" :aria-label="classicDoubleColumn ? '切换为单栏阅读' : '切换为双栏阅读'" :title="classicDoubleColumn ? '切换为单栏阅读' : '切换为双栏阅读'" :data-tip="classicDoubleColumn ? '切单栏' : '切双栏'" :aria-pressed="classicDoubleColumn" :class="{ active: classicDoubleColumn }" @click="toggleClassicColumns"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="7.5" height="15" rx="1.5"/><rect x="13.5" y="4.5" width="7.5" height="15" rx="1.5"/></svg><span class="bottom-button-text">{{ classicDoubleColumn ? '单栏' : '双栏' }}</span></button>
+          <button v-if="isClassic" class="bottom-button classic-rail-mode" type="button" :aria-label="readingMode === 'screen' ? '切换为滚动阅读' : '切换为翻页阅读'" :title="readingMode === 'screen' ? '切换为滚动阅读' : '切换为翻页阅读'" :data-tip="readingMode === 'screen' ? '切滚动' : '切翻页'" :aria-pressed="readingMode === 'screen'" :class="{ active: readingMode === 'screen' }" @click="toggleClassicReadingMode"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M12 5v14"/></svg><span class="bottom-button-text">{{ readingMode === 'screen' ? '滚动' : '翻页' }}</span></button>
+          <button v-if="isClassic" class="bottom-button classic-rail-theme" type="button" :aria-label="theme === 'night' ? '切换为浅色模式' : '切换为夜间模式'" :title="theme === 'night' ? '切换为浅色模式' : '切换为夜间模式'" :data-tip="theme === 'night' ? '浅色' : '夜间'" :aria-pressed="theme === 'night'" :class="{ active: theme === 'night' }" @click="toggleClassicNightTheme"><svg v-if="theme !== 'night'" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg><svg v-else viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg><span class="bottom-button-text">{{ theme === 'night' ? '浅色' : '夜间' }}</span></button>
         </template>
         <template v-else>
           <!-- 真实书籍底栏：按参考图排成一条图标带——书库 / 目录 / 翻页 /
@@ -3891,6 +4437,21 @@ onUnmounted(() => {
               <div class="reader-progress-row panel" aria-hidden="true"><div class="reader-progress-fill book" :style="{ width: `${bookPercent}%` }"></div></div>
               <div class="control-label">本章 {{ chapterPercent }}%</div>
               <div class="reader-progress-row panel" aria-hidden="true"><div class="reader-progress-fill chapter" :style="{ width: `${chapterPercent}%` }"></div></div>
+              <template v-if="chapters.length > 1">
+                <div class="control-label">快速跳章（第 {{ Math.max(1, currentChapterIndex + 1) }} / {{ chapters.length }} 章）</div>
+                <n-slider
+                  :value="Math.max(0, currentChapterIndex)"
+                  :min="0"
+                  :max="chapters.length - 1"
+                  :step="1"
+                  :format-tooltip="(v: number) => chapters[v]?.title || `第 ${v + 1} 章`"
+                  @update:value="(v: number) => { if (chapters[v] && v !== currentChapterIndex) openChapter(chapters[v], 0) }"
+                />
+                <div class="option-grid two" style="margin-top:8px">
+                  <button type="button" :disabled="!previousChapter" @click="prevChapter">上一章</button>
+                  <button type="button" :disabled="!followingChapter" @click="nextChapter">下一章</button>
+                </div>
+              </template>
             </template>
             <template v-else-if="activeBottomPanel === 'background'">
               <strong>背景</strong>
@@ -3947,7 +4508,7 @@ onUnmounted(() => {
                 <button type="button" @click="closeBottomPanel(); showMarks = true">标记</button>
                 <button type="button" @click="closeBottomPanel(); showMap = true">书中地图</button>
                 <button type="button" @click="toggleToolPanel('tts')">朗读</button>
-                <button type="button" @click="toggleToolPanel('ai')">AI</button>
+                <button type="button" @click="toggleAiAssistant">AI</button>
                 <button type="button" @click="toggleBottomPanel('font')">字体 / 排版</button>
                 <button type="button" @click="realBookStageRef?.resetPitch?.()">平放</button>
                 <button type="button" @click="toggleToolPanel('shortcuts')">快捷键</button>
@@ -4029,6 +4590,13 @@ onUnmounted(() => {
               </div>
               <div class="control-label">只影响当前章，换章或重开书恢复净化</div>
               <div class="control-label"><n-switch v-model:value="alwaysShowTools" /> 工具一直显示</div>
+              <div class="control-label">高亮色带颜色</div>
+              <div class="option-grid" style="align-items:center;gap:8px">
+                <n-color-picker v-model:value="highlightColor" format="hex" />
+                <span style="font-size:12px;color:var(--text-muted)">{{ highlightColor }}</span>
+              </div>
+              <div class="control-label">高亮透明度 {{ highlightOpacity }}%</div>
+              <n-slider v-model:value="highlightOpacity" :min="0" :max="100" :step="1" />
               <n-button size="small" @click="restoreDefaultReaderPrefs">恢复默认</n-button>
             </template>
           </div>
@@ -4130,7 +4698,16 @@ onUnmounted(() => {
               </n-list-item>
             </n-list>
           </template>
-          <ReaderMindmap v-else :root="chapterMindmap" @select="jumpToTextAnchor" />
+          <ReaderMindmap
+            v-else
+            :root="chapterMindmap"
+            :mode="aiMindmapResult ? 'ai' : 'local'"
+            :loading="aiMindmapLoading"
+            :error="aiMindmapError"
+            :can-generate="canGenerateAiMindmap"
+            @select="jumpToTextAnchor"
+            @generate="generateChapterAiMindmap"
+          />
         </n-drawer-content>
         </n-config-provider>
       </n-drawer>
@@ -4174,52 +4751,120 @@ onUnmounted(() => {
         @cancel="cancelFollowBudget"
       />
 
-      <n-drawer v-model:show="showAiAssistant" placement="right" :width="420">
-        <n-drawer-content title="AI 助手" closable>
+      <!-- 侧栏宽度可拖：长回答与引用列表在 420 下要反复横向看，拖宽比缩放正文更省事。-->
+      <n-drawer
+        v-model:show="showAiAssistant"
+        placement="right"
+        resizable
+        :default-width="aiDrawerWidth"
+        :min-width="360"
+        :max-width="720"
+        @update:width="setAiDrawerWidth"
+      >
+        <n-drawer-content title="AI 助手" closable
+          :header-style="{ background: 'var(--sider-bg, #f5f6f8)', borderBottom: 'none', padding: '12px 16px 6px' }"
+          :body-style="{ background: 'var(--sider-bg, #f5f6f8)', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: '0' }"
+          :body-content-style="{ padding: '0', overflow: 'hidden', height: '100%', flex: '1 1 0%', minHeight: '0', display: 'flex', flexDirection: 'column' }"
+        >
+          <div class="sider-shell">
+          <div class="sider-main">
           <div v-if="legacyReadProposal" class="ai-budget-status">
             <strong>旧书已读范围待确认</strong>
             <div>旧版只记录到当前章节的进度。确认后，将它之前的章节与本章已到位置纳入 AI 已读范围；不确认时只使用新版实际记录的位置。</div>
             <n-button size="small" @click="confirmLegacyFrontier">确认旧进度为已读</n-button>
           </div>
-          <div class="ai-assistant-heading">
-            <strong>{{ book?.title }}</strong>
-            <span v-if="aiServiceOrigin">模型服务：{{ aiServiceOrigin }}</span>
-            <span v-else class="ai-heading-missing">
-              模型服务：未配置
-              <n-button size="tiny" text type="primary" @click="emit('go-settings')">去设置</n-button>
-            </span>
-            <span>当前任务：{{ aiAssistantTaskLabel }}</span>
-            <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
-            <span>仅包含当前阅读进度以内的内容，不发送未读章节。</span>
+          <div v-show="aiRuntimeOpen" class="ai-runtime-panel">
+            <div class="ai-model-row">
+              <span class="ai-runtime-label">模型</span>
+              <n-select size="tiny" :value="aiModelValue" :options="aiModelOptions" @update:value="applyAiModel" />
+            </div>
+            <div class="ai-recall-row">
+              <span class="ai-runtime-label">问答范围</span>
+              <n-switch :value="chatRecallScope === 'book'" size="small" @update:value="setChatRecallScope" />
+              <span class="ai-recall-hint">{{ chatRecallScope === 'book' ? '允许聊全书（追问后续会直接回答）' : '仅限已读进度（怕剧透就保持关）' }}</span>
+            </div>
+            <div class="ai-clean-actions">
+              <span class="ai-runtime-label">工具</span>
+              <n-button size="tiny" quaternary :disabled="!chapterReady" :loading="cleanRunning" @click="aiCleanBody">清正文</n-button>
+              <n-button v-if="cleanRunning" size="tiny" type="warning" @click="stopCleanBody">停止清正文</n-button>
+              <n-button v-if="hasBodyRaw" size="tiny" quaternary @click="restoreCleanedBody">撤销清正文</n-button>
+              <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="clearChat">
+                确定清空这本书的全部 AI 问答记录吗？此操作无法撤销。
+                <template #trigger>
+                  <n-button size="tiny" quaternary :disabled="chatLoading || assistantSaveRetrying || chatMessages.length === 0">清空问答</n-button>
+                </template>
+              </n-popconfirm>
+            </div>
+            <div class="ai-budget-status ai-follow-box">
+              <div class="ai-follow-head">
+                <strong>读完一章后整理</strong>
+                <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
+                  <n-radio-button value="manual">手动</n-radio-button>
+                  <n-radio-button value="ask">提醒我</n-radio-button>
+                  <n-radio-button value="auto">自动</n-radio-button>
+                </n-radio-group>
+              </div>
+              <div v-if="follow" class="subtle">
+                <span v-if="follow.queuedChapters">待整理 {{ follow.queuedChapters }} 章。</span>
+                <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章<span v-if="follow.uptoChapterTitle">，到「{{ follow.uptoChapterTitle }}」</span>。</span>
+                <span v-if="follow.running">正在整理，跑完当前章节才让路。</span>
+                <span v-else-if="follow.paused">已暂停：{{ follow.pauseReason || '达到单次章数上限' }}。</span>
+                <span v-if="follow.failed">上次失败：{{ follow.failed.message }}。</span>
+              </div>
+              <n-space v-if="follow && (follow.queuedChapters || follow.mode !== 'manual')">
+                <n-button size="tiny" :disabled="!follow?.queuedChapters" @click="runFollowNow">{{ follow?.paused ? '继续整理' : '现在整理' }}</n-button>
+                <n-button v-if="follow && follow.mode !== 'manual'" size="tiny" @click="stopFollowAuto">停止自动</n-button>
+              </n-space>
+            </div>
+            <div class="ai-assistant-heading">
+              <strong>{{ book?.title }}</strong>
+              <span v-if="aiServiceOrigin">模型服务：{{ aiServiceOrigin }}</span>
+              <span v-else class="ai-heading-missing">
+                模型服务：未配置
+                <n-button size="tiny" text type="primary" @click="aiSettingsOpen = true">打开 AI 设置</n-button>
+              </span>
+              <span>当前任务：{{ aiAssistantTaskLabel }}</span>
+              <span>{{ book?.progress?.chapterId ? `已读截止：${book.chapters.find((chapter) => chapter.id === book?.progress?.chapterId)?.title || '未知章节'}` : '还没有阅读进度，先阅读一章再使用已读内容分析。' }}</span>
+              <span>仅包含当前阅读进度以内的内容，不发送未读章节。</span>
+              <span v-if="materialCoverage">材料覆盖到{{ materialCoverage.uptoChapterTitle }}（{{ materialCoverage.summarizedChapters }}/{{ materialCoverage.readyChapters }} 章有摘要）<span v-if="materialCoverage.missing.length">，缺摘要 {{ materialCoverage.missing.length }} 章</span>。</span>
+            </div>
+            <div v-if="assistantCompleted" class="ai-assistant-status">
+              <template v-if="lastAssistantUsage && (lastAssistantUsage.inputTokens !== undefined || lastAssistantUsage.outputTokens !== undefined)">
+                最近一次：输入 {{ lastAssistantUsage.inputTokens ?? 0 }} / 输出 {{ lastAssistantUsage.outputTokens ?? 0 }} tokens
+                <span v-if="lastAssistantUsage.cacheHitTokens !== undefined"> · 缓存命中 {{ lastAssistantUsage.cacheHitTokens }} tokens</span>
+              </template>
+              <template v-else>服务未返回 token 用量。</template>
+            </div>
+            <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens。</div>
+            <div v-if="currentAssistantBudget" class="subtle"><strong>本次发送范围</strong>：{{ currentAssistantBudget.range }} · {{ currentAssistantBudget.sentCharacters }} 字 / {{ currentAssistantBudget.estimatedTokens }} tokens（估算）</div>
+            <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
+            <div v-if="autoBudget" class="subtle">
+              本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens。
+            </div>
           </div>
-          <div v-if="currentAssistantBudget" class="ai-budget-status">
-            <strong>本次发送范围</strong>
-            <div>预计发送：{{ currentAssistantBudget.chapterCount }} 章 / {{ currentAssistantBudget.paragraphCount }} 段，约 {{ currentAssistantBudget.sentCharacters }} 字 / {{ currentAssistantBudget.estimatedTokens }} tokens（估算）</div>
-            <div>{{ currentAssistantBudget.range }}</div>
-          </div>
+
+          <!-- 只在真需要告知时浮出来：生成中、被截断、保存失败。 -->
           <div v-if="assistantStageText" class="ai-assistant-status">{{ assistantStageText }}</div>
-          <div v-if="assistantCompleted" class="ai-assistant-status">
-            <template v-if="lastAssistantUsage && (lastAssistantUsage.inputTokens !== undefined || lastAssistantUsage.outputTokens !== undefined)">
-              最近一次：输入 {{ lastAssistantUsage.inputTokens ?? 0 }} / 输出 {{ lastAssistantUsage.outputTokens ?? 0 }} tokens
-              <span v-if="lastAssistantUsage.cacheHitTokens !== undefined"> · 缓存命中 {{ lastAssistantUsage.cacheHitTokens }} tokens</span>
-            </template>
-            <template v-else>服务未返回 token 用量。</template>
-            <div class="subtle">实际费用以模型服务商的计费规则为准。</div>
-          </div>
           <n-tag v-if="lastAssistantTruncated" type="warning">回答可能因输出上限而截断。</n-tag>
           <div v-if="assistantSaveState.token" class="ai-save-warning">
             结果已生成，但未能保存到书库。
             <n-button size="small" :loading="assistantSaveRetrying" :disabled="assistantSaveBusy" @click="retryAssistantSave">重试保存</n-button>
           </div>
-          <n-tabs v-model:value="aiAssistantTab" type="line" animated>
-            <n-tab-pane name="recap" tab="前情">
-              <section v-if="resumeCardView?.available" class="ai-budget-status">
-                <strong>断点续读卡</strong>
-                <div class="subtle">上次会话附近最多 10 个读完的章节；只在你点击生成时调用模型。</div>
+          <div v-show="aiAssistantTab === 'recap'" data-ai-pane="recap">
+              <div class="ai-pane-toolbar is-recap-bar">
+                <n-button size="small" :disabled="!book?.progress?.chapterId || assistantBusyByKind.recap || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
+                <n-button size="small" :disabled="!chapterReady || assistantBusyByKind.recap || assistantSaveRetrying" @click="startRecap('chapter')">生成本章摘要</n-button>
+                <n-button v-if="recapLoading && aiAssistantTab === 'recap'" size="small" type="warning" @click="stopRecap">停止生成</n-button>
+              </div>
+              <section v-if="resumeCardView?.available" class="ai-budget-status resume-card-panel">
+                <div class="resume-card-head">
+                  <strong>断点续读卡</strong>
+                  <n-button size="tiny" :loading="resumeCardLoading" @click="generateResumeCard(false)">{{ resumeCardView.card ? '重新生成续读卡' : '生成续读卡' }}</n-button>
+                </div>
                 <div v-if="resumeCardView.reason" class="subtle">{{ resumeCardView.reason }}</div>
                 <template v-if="resumeCardView.card">
-                  <div v-for="group in ([['关键变化', resumeCardView.card.changes], ['当前冲突', resumeCardView.card.conflicts], ['待解疑问', resumeCardView.card.questions]] as const)" :key="group[0]">
-                    <strong>{{ group[0] }}</strong>
+                  <div v-for="(group, gi) in ([['关键变化', resumeCardView.card.changes], ['当前冲突', resumeCardView.card.conflicts], ['待解疑问', resumeCardView.card.questions]] as const)" :key="group[0]" :class="['resume-group', `is-group-${gi}`]">
+                    <strong class="resume-group-title">{{ group[0] }}</strong>
                     <div v-for="(item, index) in group[1]" :key="index" class="memory-item">
                       <p>{{ item.text }}</p>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }}</button>
@@ -4227,34 +4872,65 @@ onUnmounted(() => {
                   </div>
                 </template>
                 <div v-if="resumeCardWarning">{{ resumeCardWarning }} <n-button size="tiny" @click="generateResumeCard(true)">确认生成</n-button></div>
-                <n-button size="small" :loading="resumeCardLoading" @click="generateResumeCard(false)">{{ resumeCardView.card ? '重新生成续读卡' : '生成续读卡' }}</n-button>
               </section>
-              <div v-if="chapterSummaryBudget" class="ai-budget-status">
-                预计发送：{{ chapterSummaryBudget.chapterCount }} 章 / {{ chapterSummaryBudget.paragraphCount }} 段，约
-                {{ chapterSummaryBudget.sentCharacters }} 字 / {{ chapterSummaryBudget.estimatedTokens }} tokens（估算）
-              </div>
-              <n-radio-group :value="recapLength" size="small" @update:value="setRecapLength">
-                <n-radio-button value="short">简短 · 约 200 字</n-radio-button>
-                <n-radio-button value="standard">标准 · 约 500 字</n-radio-button>
-                <n-radio-button value="detailed">详细 · 约 1000 字</n-radio-button>
-              </n-radio-group>
-              <p class="subtle">前情只根据已经生成的本章摘要和小说记忆整理。</p>
-              <div v-if="materialCoverage" class="ai-budget-status">
-                材料覆盖到：{{ materialCoverage.uptoChapterTitle }}（{{ materialCoverage.summarizedChapters }}/{{ materialCoverage.readyChapters }} 章已有摘要）
-                <div v-if="materialCoverage.missing.length">缺摘要：{{ materialCoverage.missing.slice(0, 8).map((chapter) => chapter.title).join('、') }}<span v-if="materialCoverage.missing.length > 8"> 等 {{ materialCoverage.missing.length }} 章</span></div>
-                <div v-else>已读范围内的就绪章节都已有摘要。</div>
-              </div>
-              <div class="ai-result">{{ recapText || '还没有前情提要。' }}</div>
-              <n-space>
-                <n-button :disabled="!book?.progress?.chapterId || assistantBusyByKind.recap || assistantSaveRetrying" type="primary" @click="startRecap('story')">刷新前情</n-button>
-                <n-button :disabled="!chapterReady || assistantBusyByKind.recap || assistantSaveRetrying" @click="startRecap('chapter')">生成本章摘要</n-button>
-              </n-space>
-            </n-tab-pane>
-            <n-tab-pane name="memory" tab="记忆">
+              <div class="ai-result recap-story-card">{{ recapText || '还没有前情提要。' }}</div>
+          </div>
+          <div v-show="aiAssistantTab === 'memory'" data-ai-pane="memory">
               <n-space vertical>
-                <section class="ai-budget-status">
-                  <strong>人物与伏笔时间线</strong>
-                  <div class="subtle">按已读章节显示出现、变化与当前状态。未读完的章节不会写入时间线。</div>
+                <!--
+                  关系图默认收起：记忆页一进来先看到的是「更新记忆」和搜索框，
+                  图放在这里只是第二个入口，不该让每次进记忆页都要滚过一张画。
+                  只有真的有 relations 才渲染，空记忆不该占一个折叠标题。
+                -->
+                <details v-if="memoryData?.relations?.length" class="memory-graph-panel">
+                  <summary class="memory-graph-panel-summary">人物关系图 · {{ memoryGraphCounts.people }} 人 / {{ memoryGraphCounts.edges }} 条关系</summary>
+                  <!--
+                    进度控制：默认停在当前章，图里只有读者已经读到的关系。
+                    滑块上界就是当前章，读者也不能把自己往前拨（那就又是剧透）。
+                    右侧小字是当前章标题，告诉读者这个上界到底是哪一章。
+                  -->
+                  <div class="memory-graph-progress">
+                    <label class="memory-graph-progress-label" for="memory-graph-upto">只看读到第 {{ memoryGraphUpto }} 章为止</label>
+                    <input
+                      id="memory-graph-upto"
+                      v-model.number="memoryGraphUpto"
+                      class="memory-graph-range"
+                      type="range"
+                      :min="1"
+                      :max="memoryGraphCurrentIndex"
+                      aria-label="关系图显示到第几章"
+                    />
+                    <span class="memory-graph-progress-title" :title="currentChapter?.title">{{ currentChapter?.title }}</span>
+                  </div>
+                  <MemoryGraph
+                    :memory="memoryData"
+                    :chapters="book?.chapters"
+                    :upto-chapter-index="memoryGraphUpto"
+                    @jump="jumpToMemorySource"
+                  />
+                </details>
+                <div class="ai-pane-toolbar is-memory-bar">
+                  <n-input
+                    v-if="memoryData"
+                    v-model:value="memoryQuery"
+                    size="small"
+                    clearable
+                    placeholder="搜索人物、别名、关系、伏笔或事件"
+                    aria-label="搜索小说记忆"
+                  />
+                  <n-button type="primary" size="small" :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying" @click="startMemoryJob('update')">更新记忆</n-button>
+                  <n-popconfirm
+                    positive-text="继续重建"
+                    negative-text="取消"
+                    @positive-click="startMemoryJob('rebuild')"
+                  >
+                    全部重建会删除现有 AI 记忆，并重新分析第一章到当前已读章节。旧记忆会在新结果完整保存后替换。确定继续吗？
+                    <template #trigger><n-button size="small" :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying">全部重建</n-button></template>
+                  </n-popconfirm>
+                  <n-button v-if="memoryJobId" size="small" type="warning" :disabled="memoryStopping" @click="stopMemoryJob">{{ memoryStopping ? '正在停止…' : '停止生成' }}</n-button>
+                </div>
+                <details class="ai-budget-status memory-timeline">
+                  <summary><strong>人物与伏笔时间线</strong><span class="subtle"> · 按已读章节显示变化</span></summary>
                   <div v-if="timelineData?.message" class="subtle">{{ timelineData.message }}</div>
                   <div v-for="entry in timelineData?.entries || []" :key="entry.id" class="memory-item">
                     <strong>{{ entry.source.chapterTitle }} · {{ entry.name }} · {{ entry.phase }}</strong>
@@ -4263,33 +4939,7 @@ onUnmounted(() => {
                     <p>{{ entry.text }}</p>
                     <button class="memory-source" type="button" @click="jumpToMemorySource(entry.source)">{{ entry.source.excerpt }} · 查看原文</button>
                   </div>
-                </section>
-                <n-space>
-                  <n-button type="primary" :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying" @click="startMemoryJob('update')">更新记忆</n-button>
-                  <n-popconfirm
-                    positive-text="继续重建"
-                    negative-text="取消"
-                    @positive-click="startMemoryJob('rebuild')"
-                  >
-                    全部重建会删除现有 AI 记忆，并重新分析第一章到当前已读章节。旧记忆会在新结果完整保存后替换。确定继续吗？
-                    <template #trigger><n-button :disabled="!book?.progress?.chapterId || assistantBusyByKind.memory || assistantSaveRetrying">全部重建</n-button></template>
-                  </n-popconfirm>
-                  <n-button v-if="memoryJobId" type="warning" :disabled="memoryStopping" @click="stopMemoryJob">{{ memoryStopping ? '正在停止…' : '停止生成' }}</n-button>
-                </n-space>
-                <div v-if="memoryData?.uptoChapterId" class="subtle">
-                  已更新到：{{ book?.chapters.find((chapter) => chapter.id === memoryData?.uptoChapterId)?.title || memoryData.uptoChapterId }}
-                </div>
-                <div v-if="materialCoverage" class="subtle">
-                  摘要覆盖到 {{ materialCoverage.uptoChapterTitle }}，缺 {{ materialCoverage.missing.length }} 章摘要。
-                </div>
-                <n-input
-                  v-if="memoryData"
-                  v-model:value="memoryQuery"
-                  clearable
-                  placeholder="搜索人物、别名、关系、伏笔或事件"
-                  aria-label="搜索小说记忆"
-                />
-                <p v-if="memoryData && memoryQuery" class="subtle">找到 {{ visibleMemoryCount }} 条；搜索只读取本地记忆，不调用模型。</p>
+                </details>
                 <n-empty
                   v-if="!memoryData || !(memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length)"
                   description="还没有人物与剧情记忆。"
@@ -4297,94 +4947,205 @@ onUnmounted(() => {
                   <template #extra>更新记忆后，可按人物、关系、伏笔和关键事件查看已读剧情。</template>
                 </n-empty>
                 <template v-else>
-                  <section v-if="visibleMemoryCharacters.length" class="memory-section">
+                  <section v-if="visibleMemoryCharacters.length" class="memory-section is-characters">
                     <h3>人物</h3>
-                    <details v-for="item in visibleMemoryCharacters" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryCharacters" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.name }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.role }} · {{ item.status }}</p><p v-if="item.aliases.length">别名：{{ item.aliases.join('、') }}<span v-if="item.userEditedAliases">（用户修正）</span></p><p>{{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
+                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
+                      <div class="memory-item-actions">
+                        <button class="chat-chip" type="button" @click="editingMemoryId = editingMemoryId === item.id ? '' : item.id">{{ editingMemoryId === item.id ? '收起修正' : '修正' }}</button>
+                        <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
+                      </div>
+                      <div v-if="editingMemoryId === item.id" class="memory-edit-form">
                       <n-input :value="aliasDrafts[item.id] ?? item.aliases.join('、')" size="small" placeholder="纠正别名，用顿号分隔" @update:value="(value: string) => { aliasDrafts[item.id] = value }" />
                       <n-button size="tiny" :loading="correctingAliasId === item.id" :disabled="assistantBusyByKind.memory" @click="saveCharacterAliases(item)">保存别名</n-button>
                       <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('character', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
-                      <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('character', item)">标记不准确</n-button>
+                        <div class="memory-edit-buttons">
+                        <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('character', item)">保存说明</n-button>
+                        <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                        </div>
+                      </div>
                     </details>
                   </section>
-                  <section v-if="visibleMemoryRelations.length" class="memory-section">
+                  <section v-if="visibleMemoryRelations.length" class="memory-section is-relations">
                     <h3>关系</h3>
-                    <details v-for="item in visibleMemoryRelations" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryRelations" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.from }} — {{ item.to }}：{{ item.relation }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
-                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('relation', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
+                      <div class="memory-item-actions">
+                        <button class="chat-chip" type="button" @click="editingMemoryId = editingMemoryId === item.id ? '' : item.id">{{ editingMemoryId === item.id ? '收起修正' : '修正' }}</button>
+                        <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('relation', item)">标记不准确</n-button>
+                      </div>
+                      <div v-if="editingMemoryId === item.id" class="memory-edit-form">
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                        <div class="memory-edit-buttons">
+                        <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('relation', item)">保存说明</n-button>
+                        <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                        </div>
+                      </div>
                     </details>
                   </section>
-                  <section v-if="visibleMemoryForeshadows.length" class="memory-section">
+                  <section v-if="visibleMemoryForeshadows.length" class="memory-section is-foreshadows">
                     <h3>伏笔</h3>
-                    <details v-for="item in visibleMemoryForeshadows" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryForeshadows" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.desc }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p>{{ item.status }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
-                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('foreshadow', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
+                      <div class="memory-item-actions">
+                        <button class="chat-chip" type="button" @click="editingMemoryId = editingMemoryId === item.id ? '' : item.id">{{ editingMemoryId === item.id ? '收起修正' : '修正' }}</button>
+                        <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('foreshadow', item)">标记不准确</n-button>
+                      </div>
+                      <div v-if="editingMemoryId === item.id" class="memory-edit-form">
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                        <div class="memory-edit-buttons">
+                        <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('foreshadow', item)">保存说明</n-button>
+                        <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                        </div>
+                      </div>
                     </details>
                   </section>
-                  <section v-if="visibleMemoryEvents.length" class="memory-section">
+                  <section v-if="visibleMemoryEvents.length" class="memory-section is-events">
                     <h3>关键事件</h3>
-                    <details v-for="item in visibleMemoryEvents" :key="item.id" class="memory-item" :open="item.accuracy === 'normal'">
+                    <details v-for="item in visibleMemoryEvents" :key="item.id" class="memory-item">
                       <summary><strong>{{ item.title }}</strong><span v-if="item.accuracy !== 'normal'" class="memory-accuracy-tag">{{ item.accuracy === 'review' ? '待复核' : '存疑' }}</span></summary>
                       <p v-if="item.participants.length">参与者：{{ item.participants.join('、') }}</p><p>{{ item.result }} · {{ item.summary }}<span v-if="item.userEditedSummary">（用户修正）</span></p>
-                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
-                      <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('event', item)">保存说明</n-button>
-                      <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
                       <button v-for="source in item.sources" :key="source.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(source)">{{ source.chapterTitle }} · 第 {{ source.paragraphIndex + 1 }} 段：{{ source.excerpt }} · 查看原文</button>
-                      <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
+                      <div class="memory-item-actions">
+                        <button class="chat-chip" type="button" @click="editingMemoryId = editingMemoryId === item.id ? '' : item.id">{{ editingMemoryId === item.id ? '收起修正' : '修正' }}</button>
+                        <n-button v-if="item.accuracy === 'normal'" text type="warning" :disabled="assistantSaveRetrying" @click="markMemoryItem('event', item)">标记不准确</n-button>
+                      </div>
+                      <div v-if="editingMemoryId === item.id" class="memory-edit-form">
+                      <n-input v-model:value="summaryDrafts[item.id]" type="textarea" :rows="2" placeholder="修正这条记忆的说明" />
+                        <div class="memory-edit-buttons">
+                        <n-button size="tiny" :loading="correctingSummaryId === item.id" :disabled="assistantBusyByKind.memory" @click="saveMemorySummary('event', item)">保存说明</n-button>
+                        <n-button size="tiny" :disabled="assistantBusyByKind.memory" @click="rebuildMemoryFromSource(item)">从来源章重建</n-button>
+                        </div>
+                      </div>
                     </details>
                   </section>
                   <n-empty v-if="memoryQuery && visibleMemoryCount === 0" description="本地记忆里没有匹配内容" />
                 </template>
               </n-space>
-            </n-tab-pane>
-            <n-tab-pane name="qa" tab="问答">
-              <section class="ai-budget-status">
-                <strong>找回情节</strong>
-                <div class="subtle">先找已读原文，再决定是否让模型回答。启用语义索引后，新读内容会自动发送到你配置的向量服务。</div>
-                <div v-if="semanticState" class="subtle">{{ semanticState.message }} · 已索引 {{ semanticState.indexed }} / {{ semanticState.total }} 段</div>
-                <n-button size="tiny" @click="toggleSemanticIndex">{{ semanticState?.enabled ? '关闭自动语义索引' : '为本书开启语义索引' }}</n-button>
-                <n-input v-model:value="sceneQuestion" placeholder="例如：那封信是谁交给他的？" @keyup.enter="searchScenes" />
-                <n-space><n-button size="small" :loading="sceneSearching" @click="searchScenes">找原文</n-button><n-button v-if="sceneHits.length" size="small" @click="askFromScene">用这个问题问 AI</n-button></n-space>
-                <div v-if="sceneMessage" class="subtle">{{ sceneMessage }}</div>
-                <button v-for="hit in sceneHits" :key="hit.id" class="memory-source" type="button" @click="jumpToMemorySource(hit)">{{ hit.chapterTitle }} · 第 {{ hit.paragraphIndex + 1 }} 段：{{ hit.excerpt }} · 查看原文</button>
-              </section>
-              <div class="ai-quick-questions">
-                <strong>常用问题</strong>
-                <span class="subtle">点一下只会填入输入框，确认发送后才调用模型。</span>
-                <div>
-                  <n-button v-for="question in QUICK_READING_QUESTIONS" :key="question" size="tiny" @click="prepareQuickQuestion(question)">{{ question }}</n-button>
-                </div>
-              </div>
+          </div>
+          <div v-show="aiAssistantTab === 'qa'" data-ai-pane="qa" class="sider-qa-pane">
               <div class="chat-messages">
+                <!-- 欢迎态：复刻 Sider 柔和弥散彩云吉祥物 + 标题副标题 + 左对齐双行深色横幅 + 3+3+2 胶囊快捷云 -->
+                <div v-if="chatMessages.length === 0 && !chatLoading" class="sider-welcome">
+                  <div class="sider-welcome-logo" aria-hidden="true">
+                    <svg viewBox="0 0 72 72" fill="none">
+                      <defs>
+                        <clipPath id="siderBlobClip">
+                          <path d="M36 9c5.8 0 10.7 3.4 12.7 8.3 5.4.8 9.5 5.4 9.5 11 0 3-1.2 5.7-3.1 7.7 1.9 2 3.1 4.7 3.1 7.7 0 5.6-4.1 10.2-9.5 11-2 4.9-6.9 8.3-12.7 8.3s-10.7-3.4-12.7-8.3c-5.4-.8-9.5-5.4-9.5-11 0-3 1.2-5.7 3.1-7.7-1.9-2-3.1-4.7-3.1-7.7 0-5.6 4.1-10.2 9.5-11C25.3 12.4 30.2 9 36 9Z" />
+                        </clipPath>
+                        <filter id="siderMeshBlur" x="-30%" y="-30%" width="160%" height="160%">
+                          <feGaussianBlur stdDeviation="6" />
+                        </filter>
+                      </defs>
+                      <g clip-path="url(#siderBlobClip)">
+                        <rect width="72" height="72" fill="#8b5cf6" />
+                        <g filter="url(#siderMeshBlur)">
+                          <circle cx="24" cy="20" r="16" fill="#38bdf8" />
+                          <circle cx="48" cy="22" r="16" fill="#7c3aed" />
+                          <circle cx="20" cy="40" r="16" fill="#f43f5e" />
+                          <circle cx="34" cy="52" r="16" fill="#facc15" />
+                          <circle cx="50" cy="44" r="15" fill="#60a5fa" />
+                          <circle cx="35" cy="33" r="13" fill="#c084fc" />
+                        </g>
+                      </g>
+                      <rect x="31" y="22.5" width="4.4" height="9.2" rx="2.2" fill="#ffffff" />
+                      <rect x="39.2" y="22.5" width="4.4" height="9.2" rx="2.2" fill="#ffffff" />
+                    </svg>
+                  </div>
+                  <h3>提问任何剧情，或直接交办阅读任务</h3>
+                  <p>在一个地方完成剧情问答、人物考据、前情梳理与笔记 · 已读到「{{ currentChapter?.title || '当前章' }}」</p>
+                  <div class="sider-welcome-grid">
+                    <button
+                      v-for="(item, qi) in ([
+                        { label: '主线进展', question: QUICK_READING_QUESTIONS[0] },
+                        { label: '人物关系', question: QUICK_READING_QUESTIONS[1] },
+                        { label: '未解伏笔', question: QUICK_READING_QUESTIONS[2] },
+                        { label: '核心冲突', question: QUICK_READING_QUESTIONS[3] },
+                        { label: '本章脉络', question: '梳理本章的叙事脉络、关键转折与场面调度。' },
+                        { label: '人物考据', question: '盘点目前已出场主要人物的身份背景、性格特征与关键行动。' },
+                        { label: '设定梳理', question: '整理目前已经揭示的世界观设定、势力分布与核心规则。' },
+                        { label: '细节呼应', question: '找出近期章节里容易被忽略的细节暗示与前后呼应。' },
+                      ] as const)"
+                      :key="item.label"
+                      type="button"
+                      class="sider-welcome-card"
+                      :title="item.question"
+                      @click="prepareQuickQuestion(item.question)"
+                    >
+                      <svg v-if="qi === 0" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="3" /><path d="M8 10h4m-4 4h8" /></svg>
+                      <svg v-else-if="qi === 1" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3" /><circle cx="16.5" cy="9.5" r="2.3" /><path d="M3.8 18.5c0-2.6 2.3-4.5 5.2-4.5s5.2 1.9 5.2 4.5M14.5 18.5c.3-1.8 1.7-3.2 3.7-3.2 1.2 0 2.2.5 2.8 1.3" /></svg>
+                      <svg v-else-if="qi === 2" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 17h5M10 20h4M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.4 1.1 2.2h5c0-.8.4-1.6 1.1-2.2A6 6 0 0 0 12 3Z" /></svg>
+                      <svg v-else-if="qi === 3" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4" /><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3" /></svg>
+                      <svg v-else-if="qi === 4" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M4 9.5h16M9.5 9.5V20" /></svg>
+                      <svg v-else-if="qi === 5" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 3H19a1 1 0 0 1 1 1v16H6.5A2.5 2.5 0 0 1 4 17.5v-12A2.5 2.5 0 0 1 6.5 3Z" /><path d="M9 8h6M9 12h4" /></svg>
+                      <svg v-else-if="qi === 6" class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M3.6 12h16.8M12 3.5c2.3 2.3 3.6 5.3 3.6 8.5s-1.3 6.2-3.6 8.5c-2.3-2.3-3.6-5.3-3.6-8.5s1.3-6.2 3.6-8.5Z" /></svg>
+                      <svg v-else class="sider-pill-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V9L14 3.5Z" /><path d="M13.5 3.5V9H19M8.5 13h7M8.5 16.5h4.5" /></svg>
+                      <span>{{ item.label }}</span>
+                    </button>
+                  </div>
+                </div>
+                <div v-if="chatLoading && agentToolActivity" class="chat-tool-activity">{{ agentToolActivity }}…</div>
                 <div v-for="(msg, i) in chatMessages" :key="i" :class="['chat-msg', msg.role]">
-                  <div class="chat-bubble">{{ msg.content }}</div>
+                  <!-- 思考链在气泡上方：只有想知道「它去查了什么」时才展开，默认只露步数。 -->
+                  <details
+                    v-if="msg.steps?.length"
+                    class="chat-steps"
+                    :open="chatLoading && i === chatMessages.length - 1"
+                  >
+                    <summary>思考过程 · {{ msg.steps.length }} 步</summary>
+                    <ol>
+                      <li v-for="(step, si) in msg.steps" :key="si" :class="'is-' + step.state">{{ step.label }}</li>
+                    </ol>
+                  </details>
+                  <!-- 有 claims 的回答按句渲染，句尾挂该句自己的角标；没有 claims 的旧回答保持整段原文。 -->
+                  <div class="chat-bubble">
+                    <template v-if="msg.claims?.length">
+                      <p v-for="(line, li) in claimCitationLines(msg)" :key="li" class="chat-claim">{{ line.text }}<button v-for="badge in line.badges" :key="badge.label" class="chat-cite" type="button" :disabled="memorySourceJumping" :title="`跳到依据 ${badge.label} 的原文`" @click="jumpToMemorySource(badge.citation)">[{{ badge.label }}]</button></p>
+                    </template>
+                    <ReaderMarkdown v-else :source="msg.content" />
+                  </div>
                   <template v-if="msg.role === 'assistant'">
                     <n-tag v-if="msg.stopped" size="small" type="warning">已停止，以下为停止前生成的部分回答。</n-tag>
-                    <div v-if="msg.claims?.length" class="chat-evidence">
-                      <section v-for="(claim, claimIndex) in msg.claims" :key="claimIndex">
-                        <strong>结论 {{ claimIndex + 1 }}：{{ claim.text }}</strong>
-                        <button v-for="citation in msg.citations?.filter((item) => claim.citationIds.includes(item.id)) || []" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
-                      </section>
-                      <small>引用位置已校验；请自行核对原文是否支持每条结论。</small>
+                    <!-- 一行操作：复制只拿正文；重问/编辑/删除都以「一问一答」为单位，没有上一句提问时不露。 -->
+                    <div class="chat-actions">
+                      <button class="chat-chip" type="button" :disabled="chatActionsDisabled" @click="copyChatAnswer(i)">复制</button>
+                      <template v-if="chatMessages[i - 1]?.role === 'user'">
+                        <button class="chat-chip" type="button" :disabled="chatActionsDisabled" @click="reAskChatAnswer(i)">重问</button>
+                        <button class="chat-chip" type="button" :disabled="chatActionsDisabled" @click="editChatQuestion(i)">编辑</button>
+                        <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="deleteChatRound(i)">
+                          删除这一轮问答，不会调用模型。
+                          <template #trigger>
+                            <button class="chat-chip" type="button" :disabled="chatActionsDisabled">删除</button>
+                          </template>
+                        </n-popconfirm>
+                      </template>
                     </div>
-                    <div v-else-if="msg.citations?.length" class="chat-evidence">
-                      <strong>依据（旧版回答，未逐条对应）</strong>
-                      <button v-for="citation in msg.citations" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
-                    </div>
+                    <!-- 可信度徽标：结论到底核过没有，一行说清；旧记录没有这个字段就不显示，不默认说它被核过。 -->
+                    <div v-if="msg.claims?.length && evidenceVerificationLabel(msg)" :class="['chat-verify', `is-${msg.verification}`]">{{ evidenceVerificationLabel(msg) }}</div>
+                    <!-- 通用/字词百科徽标：告诉读者这条回答来自通用知识库，未动用本书内容。 -->
+                    <div v-else-if="msg.scope === 'general'" class="chat-scope-tag">字词 / 百科</div>
+                    <!-- 依据默认收起：角标回答按结论分组，旧回答保留「未逐条对应」的平铺列表。 -->
+                    <details v-if="msg.claims?.length || msg.citations?.length" class="chat-evidence">
+                      <summary>依据 · {{ (msg.citations ?? []).length }} 条</summary>
+                      <template v-if="msg.claims?.length">
+                        <section v-for="(claim, claimIndex) in msg.claims" :key="claimIndex">
+                          <strong>结论 {{ claimIndex + 1 }}：{{ claim.text }}</strong>
+                          <button v-for="citation in msg.citations?.filter((item) => claim.citationIds.includes(item.id)) || []" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
+                        </section>
+                        <!-- 这里只说「引文来自已读正文」，不说「已校验」：真正的核验结论在上面的徽标里。 -->
+                        <small>引文取自已读正文，可点开原文核对。</small>
+                      </template>
+                      <template v-else>
+                        <strong>依据（旧版回答，未逐条对应）</strong>
+                        <button v-for="citation in msg.citations" :key="citation.id" class="memory-source" type="button" :disabled="memorySourceJumping" @click="jumpToMemorySource(citation)">{{ citation.chapterTitle }} · 第 {{ citation.paragraphIndex + 1 }} 段：{{ citation.excerpt }} · 查看原文</button>
+                      </template>
+                    </details>
                     <div v-else-if="msg.citations === undefined && !msg.content.startsWith('错误：')" class="chat-legacy">旧版回答，无来源</div>
                     <n-button
                       v-if="canSaveSelectionNote(msg, i)"
@@ -4394,28 +5155,83 @@ onUnmounted(() => {
                     >存为这段的批注</n-button>
                   </template>
                 </div>
-                <div v-if="chatMessages.length === 0 && !chatLoading" class="chat-empty">
-                  可询问已读内容，回答会附上可回到原文的依据。
+              </div>
+              <!-- Sider 底部悬浮区：浅紫上下文状态胶囊 + 会话选择/新任务栏 + 纯白大圆角输入盒 + 底部状态脚标 -->
+              <div class="sider-bottom-dock">
+                <button
+                  class="ai-status-bar"
+                  type="button"
+                  :aria-expanded="aiSettingsOpen"
+                  aria-label="运行信息"
+                  @click="aiSettingsOpen = true"
+                >
+                  <span class="ai-status-dot" :class="{ 'is-off': !aiServiceOrigin }" aria-hidden="true" />
+                  <span class="ai-status-model">{{ aiServiceOrigin ? aiModelLabel : '未配置模型服务' }}</span>
+                  <span class="ai-status-sep" aria-hidden="true">·</span>
+                  <span class="ai-status-read">已读至 {{ readUptoTitle }}</span>
+                  <span class="ai-status-toggle">AI 设置 ▾</span>
+                </button>
+                <div class="chat-threads">
+                  <div class="sider-fusion-pill">
+                    <span class="sider-fusion-badge" aria-hidden="true" />
+                    <n-select
+                      class="chat-threads-select"
+                      size="tiny"
+                      :value="chatThreadId"
+                      :options="chatThreadOptions"
+                      :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || chatThreads.length === 0"
+                      placeholder="新会话"
+                      aria-label="切换问答会话"
+                      @update:value="switchChatThread"
+                    />
+                  </div>
+                  <button
+                    class="chat-topbar-btn is-new-thread"
+                    type="button"
+                    :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving"
+                    title="新建一条空的问答会话；上限由主进程判定并给出可读原因"
+                    @click="newChatThread"
+                  >新会话</button>
+                  <n-popconfirm
+                    v-if="chatThreads.length > 1"
+                    positive-text="确定"
+                    negative-text="取消"
+                    @positive-click="removeChatThread(chatThreadId)"
+                  >
+                    删除这个会话的全部消息，不会删除书籍，也无法撤销。
+                    <template #trigger>
+                      <button
+                        class="chat-topbar-btn is-del-thread"
+                        type="button"
+                        :disabled="chatLoading || assistantSaveRetrying || chatThreadSaving || !chatThreadId"
+                      >删除会话</button>
+                    </template>
+                  </n-popconfirm>
+                </div>
+                <div class="chat-input-row">
+                  <div class="sider-composer">
+                    <n-input v-model:value="chatInput" type="textarea" :rows="3" :autosize="{ minRows: 3, maxRows: 6 }" :placeholder="chatMode === 'general' ? '输入字词、成语或通用百科问题（不关联当前书籍，Ctrl+Enter 发送）…' : '提问任何问题，或描述一项阅读任务…（Ctrl+Enter 发送）'" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
+                    <div class="sider-composer-bar">
+                      <div class="sider-composer-chips">
+                        <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'agent' }" title="结合本书已读内容：模型自己决定查目录、读原文、检索、看记忆（问通用字词也会自动直答）" @click="chatMode = 'agent'">对话</button>
+                        <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'general' }" title="纯字词释义与通识百科：脱离当前书籍、不校验阅读进度、极速直答" @click="chatMode = 'general'">字词 / 百科</button>
+                        <button class="chat-chip" type="button" :class="{ 'chat-chip-on': chatMode === 'evidence' }" title="单轮严格引用，每条结论绑定已读段落" @click="chatMode = 'evidence'">证据</button>
+                      </div>
+                      <div class="sider-composer-send">
+                        <n-button v-if="chatLoading" type="warning" size="small" @click="stopChat">停止生成</n-button>
+                        <n-button v-else type="primary" size="small" :disabled="!chatInput.trim() || assistantBusyByKind.qa || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div class="chat-input-row">
-                <n-popconfirm positive-text="确定" negative-text="取消" @positive-click="clearChat">
-                  确定清空这本书的全部 AI 问答记录吗？此操作无法撤销。
-                  <template #trigger>
-                    <n-button :disabled="chatLoading || assistantSaveRetrying || chatMessages.length === 0">清空聊天</n-button>
-                  </template>
-                </n-popconfirm>
-                <n-input v-model:value="chatInput" type="textarea" :rows="2" placeholder="询问已经读过的剧情、人物、关系或伏笔…" :disabled="assistantBusyByKind.qa || assistantSaveRetrying" @keydown.stop @keyup.ctrl.enter="sendChat" />
-                <n-button v-if="chatLoading" type="warning" @click="stopChat">停止生成</n-button>
-                <n-button v-else type="primary" :disabled="!chatInput.trim() || assistantBusyByKind.qa || assistantSaveRetrying" @click="sendChat">发送问题</n-button>
-              </div>
-            </n-tab-pane>
-            <n-tab-pane name="notes" tab="笔记">
+          </div>
+          <div v-show="aiAssistantTab === 'notes'" data-ai-pane="notes">
               <n-space vertical>
-                <p class="subtle">只发送本章正文和本章的划线批注来生成读书笔记，不发送未读章节。</p>
                 <n-tag v-if="currentChapterNote?.stale" size="small" type="warning">正文已变，建议重新生成</n-tag>
                 <n-tag v-if="chapterNoteStopped" size="small" type="warning">已停止，以下为停止前生成的部分笔记。</n-tag>
-                <div class="ai-result">{{ chapterNoteView || '还没有本章笔记。' }}</div>
+                <ReaderMarkdown v-if="chapterNoteView" class="ai-result md-body notes-result-card" :source="chapterNoteView" />
+                <div v-else class="ai-result notes-result-card">还没有本章笔记。</div>
                 <n-input
                   v-model:value="chapterNoteDraft"
                   type="textarea"
@@ -4447,24 +5263,13 @@ onUnmounted(() => {
                   <strong>已写笔记的章节</strong>
                   <details v-for="note in otherChapterNotes" :key="note.chapterId" class="notes-archive-item">
                     <summary>{{ book?.chapters.find((chapter) => chapter.id === note.chapterId)?.title || note.chapterId }}</summary>
-                    <p>{{ note.text }}</p>
+                    <ReaderMarkdown class="md-body" :source="note.text" />
                     <n-button size="tiny" @click="openChapterFromNote(note.chapterId)">跳到这一章</n-button>
                   </details>
                 </div>
                 <div class="wordbook">
-                  <strong>生词本</strong>
-                  <p class="subtle">这里只汇总你自己的划线和已核实的记忆，不另外存一份。</p>
-                  <details v-if="wordbookPeople.length" class="notes-archive-item">
-                    <summary>人物 {{ wordbookPeople.length }} 个</summary>
-                    <ul class="wordbook-list">
-                      <li v-for="person in wordbookPeople" :key="person.id">
-                        <strong>{{ person.name }}</strong>
-                        <span v-if="person.aliases.length" class="subtle">{{ person.aliases.join('、') }}</span>
-                        <p>{{ person.summary }}</p>
-                      </li>
-                    </ul>
-                  </details>
-                  <details v-if="wordbookTerms.length" class="notes-archive-item">
+                  <strong>划线与释义</strong>
+                  <details v-if="wordbookTerms.length" class="notes-archive-item is-wordbook-card" open>
                     <summary>划线 {{ wordbookTerms.length }} 处{{ wordbookTrimmed ? '（只显示最近 60 处）' : '' }}</summary>
                     <ul class="wordbook-list">
                       <li v-for="term in wordbookTerms" :key="term.id">
@@ -4474,15 +5279,15 @@ onUnmounted(() => {
                       </li>
                     </ul>
                   </details>
-                  <p v-if="!wordbookPeople.length && !wordbookTerms.length" class="subtle">
-                    在正文里划一段、或让它先记住几个人物，这里就会开始攒你自己的词表。
+                  <p v-if="!wordbookTerms.length" class="subtle">
+                    在正文里划词解释或加批注后，这里会按顺序列出。
                   </p>
                 </div>
               </n-space>
-            </n-tab-pane>
-            <n-tab-pane name="output" tab="输出">
+          </div>
+          <div v-show="aiAssistantTab === 'output'" data-ai-pane="output">
               <n-space vertical>
-                <div class="ai-budget-status">
+                <div class="ai-budget-status is-output-head">
                   <strong>{{ aiResultTitle || '输出' }}</strong>
                   <div v-if="aiResultTitle === '清正文' && lastCleanBudget">
                     预计发送：{{ lastCleanBudget.chapterCount }} 章 / {{ lastCleanBudget.paragraphCount }} 段，约 {{ lastCleanBudget.sentCharacters }} 字 / {{ lastCleanBudget.estimatedTokens }} tokens（估算）
@@ -4490,81 +5295,321 @@ onUnmounted(() => {
                   <div v-if="aiResultTitle === '清正文' && cleanProgress" class="subtle">{{ cleanProgress }}</div>
                   <div v-else-if="!aiResult" class="subtle">清正文、翻译这类一次性结果会显示在这里。</div>
                 </div>
-                <div v-if="aiResult" class="ai-result">{{ aiResult }}</div>
+                <div v-if="aiResult && aiResultTitle === '清正文'" class="ai-result output-result-card">{{ aiResult }}</div>
+                <ReaderMarkdown v-else-if="aiResult" class="ai-result md-body output-result-card" :source="aiResult" />
                 <n-space v-if="aiResultTitle === '清正文'">
                   <n-button type="primary" size="small" :disabled="!aiResult" @click="applyCleanedBody">应用到正文</n-button>
+                  <n-button v-if="aiResult" size="small" @click="copyAiResult">复制结果</n-button>
                   <n-button size="small" @click="showAiAssistant = false">关闭</n-button>
                 </n-space>
-                <n-button v-else-if="aiResultTitle === '翻译' && translateLoading" type="warning" @click="stopTranslate">停止</n-button>
+                <n-space v-else>
+                  <n-button v-if="aiResultTitle === '翻译' && translateLoading" size="small" type="warning" @click="stopTranslate">停止</n-button>
+                  <n-button v-if="aiResult" size="small" :disabled="translateLoading" @click="copyAiResult">复制结果</n-button>
+                </n-space>
               </n-space>
-            </n-tab-pane>
-          </n-tabs>
-
-          <!-- 任务是主体，参数是背景：任务入口放在页签里，整理开关 / 配额这类设置挪到页签之后，
-               否则从「聊书」进来第一屏全是配额和状态，提问要滚半屏才看得见。 -->
-          <section class="ai-reading-desk" aria-label="AI 阅读工作台">
-            <div class="ai-reading-desk__title">
-              <strong>现在可以做什么</strong>
-              <span>先选任务，再由你决定是否调用模型。</span>
+          </div>
+          </div>
+          <!-- Sider 右侧竖向窄导航轨：纤细线性图标在上、文字在下，底部带快捷工具与彩环图标 -->
+          <aside class="ai-top-bar sider-rail">
+            <div class="ai-top-switch" role="tablist" aria-label="AI 助手模式">
+              <button role="tab" :aria-selected="aiAssistantTab === 'qa'" :class="['ai-tab-btn', 'is-qa', { 'is-on': aiAssistantTab === 'qa' }]" type="button" @click="aiAssistantTab = 'qa'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5c-1.3 0-2.5-.3-3.6-.9L4.5 19.5l1.3-3.9A7.4 7.4 0 0 1 4.5 11.5 7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.5Z" /><path d="M9 10.5h6M9 13.5h4" /></svg></span>问答</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'recap'" :class="['ai-tab-btn', 'is-recap', { 'is-on': aiAssistantTab === 'recap' }]" type="button" @click="aiAssistantTab = 'recap'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4.5" width="16" height="15" rx="3" /><path d="M8 9.5h8M8 13h8M8 16.5h5" /></svg></span>前情</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'memory'" :class="['ai-tab-btn', 'is-memory', { 'is-on': aiAssistantTab === 'memory' }]" type="button" @click="aiAssistantTab = 'memory'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3.2" /><path d="m9.5 9.5-2.5 2.5 2.5 2.5m5-5 2.5 2.5-2.5 2.5" /></svg></span>记忆</button>
+              <button role="tab" :aria-selected="aiAssistantTab === 'notes'" :class="['ai-tab-btn', 'is-notes', { 'is-on': aiAssistantTab === 'notes' }]" type="button" @click="aiAssistantTab = 'notes'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.5 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V8.5L14.5 3.5Z" /><path d="M14 3.5V9h5.5M8.5 13h7M8.5 16.5h4.5" /></svg></span>笔记</button>
+              <button v-if="aiResult" role="tab" :aria-selected="aiAssistantTab === 'output'" :class="['ai-tab-btn', 'is-output', { 'is-on': aiAssistantTab === 'output' }]" type="button" @click="aiAssistantTab = 'output'"><span class="sider-rail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2L12 3Z" /></svg></span>结果</button>
             </div>
-            <div class="ai-reading-desk__actions">
-              <button type="button" @click="aiAssistantTab = 'recap'"><strong>接着读</strong><span>{{ recapText ? '查看已保存前情' : '整理读到这里的剧情' }}</span></button>
-              <button type="button" @click="aiAssistantTab = 'memory'"><strong>找人物与伏笔</strong><span>{{ memoryData ? `${memoryData.characters.length + memoryData.relations.length + memoryData.foreshadows.length + memoryData.events.length} 条本地记忆` : '建立已读剧情记忆' }}</span></button>
-              <button type="button" @click="aiAssistantTab = 'qa'"><strong>带依据地问</strong><span>回答可跳回已读原文</span></button>
-              <button type="button" @click="aiAssistantTab = 'notes'"><strong>记住本章</strong><span>{{ currentChapterNote ? '已有笔记，可继续修改' : '生成或手写本章笔记' }}</span></button>
+            <div class="sider-rail-divider" aria-hidden="true" />
+            <div class="sider-rail-tools">
+              <div
+                class="sider-rail-tool"
+                role="button"
+                tabindex="0"
+                title="AI 清正文"
+                @click="chapterReady && !cleanRunning && aiCleanBody()"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="m9 16 3-8 3 8m-5-2.5h4" /></svg>
+              </div>
+              <div
+                class="sider-rail-tool"
+                role="button"
+                tabindex="0"
+                title="切换对话 / 字词百科 / 证据模式"
+                @click="chatMode = chatMode === 'agent' ? 'general' : chatMode === 'general' ? 'evidence' : 'agent'"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9h14l-3.2-3.2M19 15H5l3.2 3.2" /></svg>
+              </div>
+            </div>
+            <div class="sider-rail-bottom">
+              <div
+                class="sider-rail-tool"
+                :class="{ 'is-active': aiSettingsOpen }"
+                role="button"
+                tabindex="0"
+                title="AI 助手设置"
+                @click="aiSettingsOpen = true"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19.5 7.8v8.4L12 20.5 4.5 16.2V7.8L12 3.5Z" /><circle cx="12" cy="12" r="2.8" /></svg>
+              </div>
+              <div
+                class="sider-rail-orb"
+                role="button"
+                tabindex="0"
+                title="AI 服务状态与已读范围"
+                @click="aiRuntimeOpen = !aiRuntimeOpen"
+              />
+            </div>
+          </aside>
+          </div>
+        </n-drawer-content>
+      </n-drawer>
+
+      <!-- AI 助手自己的设置弹窗：只装侧栏相关选项，不跳去全局设置页。 -->
+      <n-modal v-model:show="aiSettingsOpen" preset="card" class="ai-settings-modal" title="AI 助手设置">
+        <div class="ai-settings-body">
+          <section class="ai-settings-section">
+            <div class="ai-settings-label">模型</div>
+            <n-select size="small" :value="aiModelValue" :options="aiModelOptions" @update:value="applyAiModel" />
+            <div class="ai-settings-hint">
+              服务：{{ aiServiceOrigin || '未配置' }} · {{ aiApiKeyConfigured ? 'API Key 已配置' : 'API Key 未配置' }}
+              <n-button size="tiny" text type="primary" :loading="aiTesting" @click="testAiConnection">测试连接</n-button>
+            </div>
+            <div class="ai-settings-hint">服务地址与密钥保存在本机总设置里；这里只调整侧栏自己的行为。</div>
+          </section>
+
+          <section class="ai-settings-section">
+            <div class="ai-settings-row">
+              <div>
+                <div class="ai-settings-label">问答可聊全书</div>
+                <div class="ai-settings-hint">打开：追问后续剧情会直接回答；关闭：只使用当前已读进度。</div>
+              </div>
+              <n-switch :value="chatRecallScope === 'book'" size="small" @update:value="setChatRecallScope" />
+            </div>
+            <div class="ai-settings-row">
+              <div>
+                <div class="ai-settings-label">回答后核对原文</div>
+                <div class="ai-settings-hint">多一次小请求，用来判断原文是否支持结论；关掉会在回答上标「未运行校验」。</div>
+              </div>
+              <n-switch :value="aiVerifyEvidence" size="small" @update:value="setAiVerifyEvidence" />
             </div>
           </section>
-          <div class="ai-budget-status">
-            <strong>读完一章后整理</strong>
+
+          <section class="ai-settings-section">
+            <div class="ai-settings-label">读完一章后整理</div>
             <n-radio-group :value="readingAiMode" size="small" @update:value="setReadingAiMode">
               <n-radio-button value="manual">手动</n-radio-button>
               <n-radio-button value="ask">提醒我</n-radio-button>
               <n-radio-button value="auto">自动</n-radio-button>
             </n-radio-group>
-            <div class="subtle">读到章节末尾再换章时上报排队；本章不足一屏、翻页即到底的短章同样算读完。自动模式会调用模型并消耗你的 API 额度，关窗、切书后主进程接着跑。</div>
-            <div v-if="follow" class="subtle">
+            <div v-if="follow" class="ai-settings-hint">
               <span v-if="follow.queuedChapters">待整理 {{ follow.queuedChapters }} 章。</span>
-              <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章<span v-if="follow.uptoChapterTitle">，到「{{ follow.uptoChapterTitle }}」</span>。</span>
-              <span v-if="follow.running">正在整理，跑完当前章节才让路。</span>
+              <span v-if="follow.organizedChapters">已整理 {{ follow.organizedChapters }} 章。</span>
+              <span v-if="follow.running">正在整理。</span>
               <span v-else-if="follow.paused">已暂停：{{ follow.pauseReason || '达到单次章数上限' }}。</span>
-              <span v-if="follow.failed">上次失败：{{ follow.failed.message }}。</span>
-              <span>本轮累计 {{ follow.calls }} 次调用、约 {{ follow.estimatedTokens }} tokens（估算，不计算金额）。</span>
             </div>
-            <div v-if="follow?.mode === 'auto' && !autoFollowEnabled" class="subtle">
-              设置页的「读完一章自动整理」总开关是关的，所以不会自己跑；点「现在整理」可以手动跑一轮。
-            </div>
-            <n-space>
-              <n-button size="small" :disabled="!follow?.queuedChapters" @click="runFollowNow">{{ follow?.paused ? '继续整理' : '现在整理' }}</n-button>
-              <n-button v-if="follow && follow.mode !== 'manual'" size="small" @click="stopFollowAuto">停止自动</n-button>
-            </n-space>
-            <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens；未报告的用量不计入 token 总数。不计算金额。</div>
-            <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
-          </div>
-          <div v-if="autoBudget" class="subtle">
-            本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens（已含排队预留 {{ autoBudget.reservedTokens }}）；达到上限会暂停自动任务，实际费用以服务商账单为准。
-          </div>
-          <template #footer>
-            <n-button v-if="recapLoading && aiAssistantTab === 'recap'" type="warning" @click="stopRecap">停止生成</n-button>
-          </template>
-        </n-drawer-content>
-      </n-drawer>
+          </section>
 
-      <!-- Selection popup -->
+          <section class="ai-settings-section">
+            <div class="ai-settings-label">本书用量</div>
+            <div class="ai-settings-hint">
+              <span v-if="bookUsage">已调用 {{ bookUsage.calls }} 次 · 输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens</span>
+              <span v-else>还没有模型调用记录。</span>
+            </div>
+            <div v-if="autoBudget" class="ai-settings-hint">
+              {{ autoBudget.month }} 自动任务：{{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余 {{ autoBudget.remainingTokens }}。
+            </div>
+          </section>
+        </div>
+      </n-modal>
+
+      <!-- 划词行内问答卡：
+           - 「询问 AI」：结合本书已读内容提问，支持「在侧边栏中继续」；
+           - 「解释字词」：单纯解释字词本身的读音与意思，不与书籍或文章内容挂钩。 -->
+      <Transition name="popup-scale">
+        <div
+          v-if="inlineAsk.open.value"
+          class="inline-ask"
+          role="dialog"
+          :aria-label="inlineAsk.mode.value === 'word' ? '解释字词' : '询问 AI'"
+          :style="inlineAskStyle"
+          @mousedown.stop
+          @mouseup.stop
+        >
+          <div class="inline-ask-head">
+            <strong class="inline-ask-title">{{ inlineAsk.mode.value === 'word' ? '解释字词' : '询问 AI' }}</strong>
+            <span class="inline-ask-subject">{{ inlineAsk.subject.value }}</span>
+            <button class="inline-ask-icon" type="button" title="关闭" aria-label="关闭询问" @click="inlineAsk.close()">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" /></svg>
+            </button>
+          </div>
+
+          <div class="inline-ask-input">
+            <n-input
+              v-model:value="inlineAsk.question.value"
+              type="textarea"
+              :rows="1"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              :placeholder="inlineAsk.mode.value === 'word' ? '继续追问该字词的读音、释义或用法（不关联书籍）…' : '结合本书已读内容，向 AI 询问上述内容…'"
+              :disabled="inlineAsk.busy.value"
+              @keydown.stop
+              @keyup.ctrl.enter="inlineAsk.submit()"
+            />
+            <button
+              class="inline-ask-send"
+              type="button"
+              title="发送（Ctrl+Enter）"
+              aria-label="发送"
+              :disabled="!inlineAsk.canSubmit.value"
+              @click="inlineAsk.submit()"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 16-8-5.5 16-3-6.5-7.5-1.5Z" /></svg>
+            </button>
+          </div>
+
+          <div v-if="inlineAsk.errorText.value" class="inline-ask-error">{{ inlineAsk.errorText.value }}</div>
+
+          <div v-if="inlineAsk.answer.value || inlineAsk.busy.value" class="inline-ask-body">
+            <MarkdownBlock class="inline-ask-answer" :source="inlineAsk.answer.value" /><span v-if="inlineAsk.busy.value" class="inline-ask-caret">▍</span>
+          </div>
+
+          <div v-if="inlineAsk.status.value === 'ready' || inlineAsk.busy.value" class="inline-ask-foot">
+            <button class="inline-ask-continue" type="button" :disabled="!inlineAsk.turns.value.length" @click="inlineAsk.continueInSidebar()">
+              <span class="inline-ask-dot" aria-hidden="true">✦</span>在侧边栏中继续
+            </button>
+            <div class="inline-ask-tools">
+              <button class="inline-ask-icon" type="button" title="复制回答" aria-label="复制回答" @click="copyInlineAnswer">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="10" height="10" rx="2.2" /><path d="M15 6.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h.5" /></svg>
+              </button>
+              <button v-if="inlineAsk.busy.value" class="inline-ask-icon" type="button" title="停止生成" aria-label="停止生成" @click="stopInlineAsk">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2" /></svg>
+              </button>
+              <button v-else class="inline-ask-icon" type="button" title="重新问一次" aria-label="重新问一次" @click="inlineAsk.submit()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.6-5.9" /><path d="M4 4.5V10h5.5" /></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+
       <Transition name="popup-scale">
         <div
           v-if="showSelPopup"
-          class="sel-popup"
+          class="sel-bar sel-popup"
+          role="toolbar"
+          aria-label="划词操作"
           :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }"
+          @mousedown.prevent
         >
-          <n-button size="tiny" @click="copySelectedText">复制</n-button>
-          <n-button size="tiny" type="primary" @click="addHighlight">划线</n-button>
-          <n-button size="tiny" @click="openDirectNote">批注</n-button>
-          <n-button size="tiny" @click="translateSelectedText">翻译</n-button>
-          <n-button size="tiny" @click="askSelectedText('explain')">问 AI · 解释这段</n-button>
-          <n-button size="tiny" @click="askSelectedText('person')">这个人物是谁</n-button>
-          <n-button size="tiny" @click="askSelectedText('backstory')">这件事之前发生了什么</n-button>
+          <button
+            v-for="action in pinnedBarActions"
+            :key="action.id"
+            class="sel-bar-btn"
+            :class="{ 'sel-bar-btn-ai': SEL_AI_ACTIONS.has(action.id) }"
+            type="button"
+            :title="action.label"
+            :aria-label="action.aria"
+            :data-action="action.id"
+            @click="runSelectionAction(action.id)"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-bar-glyph"><path :d="SEL_ACTION_ICON[action.id]" /></svg>
+            <svg v-if="action.id === 'translate'" viewBox="0 0 24 24" aria-hidden="true" class="sel-bar-caret"><path d="m6 9 6 6 6-6" /></svg>
+          </button>
+          <button
+            class="sel-bar-btn"
+            type="button"
+            title="更多操作"
+            aria-label="更多操作"
+            :aria-expanded="showSelMenu"
+            @click="showSelMenu = !showSelMenu"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-bar-glyph">
+              <circle cx="12" cy="6" r="1.6" fill="currentColor" stroke="none" />
+              <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+              <circle cx="12" cy="18" r="1.6" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+          <button
+            v-if="isClassic"
+            class="sel-bar-btn sel-bar-mark-style"
+            type="button"
+            :title="`划线样式：${CLASSIC_MARK_STYLE_LABELS[classicMarkStyle]}（点击切换）`"
+            :aria-label="`切换划线样式，当前为${CLASSIC_MARK_STYLE_LABELS[classicMarkStyle]}`"
+            @click="cycleClassicMarkStyle"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-bar-glyph">
+              <path v-if="classicMarkStyle === 'wavy'" d="M3 16c2-3 4 3 6 0s4 3 6 0 4 3 6 0" />
+              <path v-else-if="classicMarkStyle === 'line'" d="M4 16h16" />
+              <path v-else d="M4 10h16v6H4z" />
+            </svg>
+          </button>
+          <span class="sel-bar-sep" />
+          <button class="sel-bar-btn" type="button" title="关闭" aria-label="关闭" @click="closeSelectionTools()">
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-bar-glyph"><path d="M7 7l10 10M17 7 7 17" /></svg>
+          </button>
         </div>
       </Transition>
+
+      <!--「⋯」展开的完整菜单：每项右侧图钉可钉住/取消，底部一条模型选择行。-->
+      <Transition name="popup-scale">
+        <div
+          v-if="showSelPopup && showSelMenu"
+          class="sel-menu"
+          role="menu"
+          aria-label="划词更多操作"
+          :style="selMenuStyle"
+          @mousedown.prevent
+        >
+          <button
+            v-for="(action, index) in SELECTION_ACTIONS"
+            :key="action.id"
+            class="sel-menu-item"
+            :class="{ 'sel-menu-item-pinned': isPinned(action.id), 'sel-menu-item-first-ai': index === SEL_MENU_DIVIDER_AT }"
+            type="button"
+            role="menuitem"
+            :data-action="action.id"
+            @click="runSelectionAction(action.id)"
+          >
+            <svg class="sel-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path :d="SEL_ACTION_ICON[action.id]" /></svg>
+            <span class="sel-menu-label">{{ action.label }}</span>
+            <span
+              class="sel-menu-pin"
+              :class="{ 'sel-menu-pin-on': isPinned(action.id) }"
+              role="button"
+              tabindex="0"
+              :title="isPinned(action.id) ? '取消钉住' : '钉住到工具栏'"
+              :aria-label="isPinned(action.id) ? `从工具栏移除${action.label}` : `钉住${action.label}`"
+              :aria-pressed="isPinned(action.id)"
+              @click.stop="onTogglePin(action.id)"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 5 3.5 3.5-4.5 1.5-3 3V21h-1v-5l-3-3L13 9 9 3Z" /></svg>
+            </span>
+          </button>
+
+          <div class="sel-menu-footer">
+            <div class="sel-model-picker" role="button" tabindex="0" :aria-expanded="showModelMenu" @click.stop="showModelMenu = !showModelMenu">
+              <span class="sel-model-dot" aria-hidden="true">✦</span>
+              <span class="sel-model-name">{{ aiModelLabel }}</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true" class="sel-model-caret"><path d="m6 9 6 6 6-6" /></svg>
+            </div>
+            <button class="sel-menu-gear" type="button" title="模型与提示词设置" aria-label="模型设置" @click.stop="emit('go-settings')">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </button>
+          </div>
+
+          <div v-if="showModelMenu" class="sel-model-menu" role="menu" aria-label="选择模型">
+            <button
+              v-for="option in aiModelOptions"
+              :key="option.value"
+              class="sel-model-option"
+              :class="{ 'sel-model-option-on': option.value === aiModelValue }"
+              type="button"
+              role="menuitem"
+              @click.stop="applyAiModel(option.value)"
+            >{{ option.label }}</button>
+            <div class="sel-model-hint">模型与提示词在设置里改；这里只能切换到已配置好的那几个。</div>
+          </div>
+        </div>
+      </Transition>
+
 
       <div v-if="showDirectNote" class="direct-note-editor" :style="{ left: selPopupX + 'px', top: selPopupY + 'px' }">
         <strong>添加批注</strong>
@@ -4744,12 +5789,13 @@ onUnmounted(() => {
   --r-hover: var(--hover);
   --r-focus: var(--focus);
   --r-panel-bg: var(--surface-2);
-  /* 划线颜色：黄色沿用既有 --hl-bg，其余四色用半透明墨色，四套主题下都不会遮住正文。 */
-  --hl-yellow-bg: var(--hl-bg);
-  --hl-green-bg: color-mix(in srgb, #34a853 34%, transparent);
-  --hl-blue-bg: color-mix(in srgb, #2f7fd0 32%, transparent);
-  --hl-red-bg: color-mix(in srgb, #d64545 30%, transparent);
-  --hl-purple-bg: color-mix(in srgb, #8b5cf6 32%, transparent);
+  /* 划线颜色：使用自定义高亮色与透明度；未自定义时回退到主题内置色。 */
+  --hl-custom-bg: color-mix(in srgb, var(--hl-color) var(--hl-opacity), transparent);
+  --hl-yellow-bg: var(--hl-custom-bg);
+  --hl-green-bg: var(--hl-custom-bg);
+  --hl-blue-bg: var(--hl-custom-bg);
+  --hl-red-bg: var(--hl-custom-bg);
+  --hl-purple-bg: var(--hl-custom-bg);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -4871,6 +5917,18 @@ onUnmounted(() => {
 
 .para-unfocused { opacity: 0.4; }
 
+/* 从引用角标跳回原文时闪一下目标段落：只动背景色，不碰高度/内边距/边框，
+   否则正文会在闪烁的那 1.2 秒里跳动；不透明度收到透明就结束，不残留底色。 */
+.para-flash {
+  animation: para-flash 1.2s ease-out both;
+  border-radius: 4px;
+}
+@keyframes para-flash {
+  0% { background-color: color-mix(in srgb, var(--hit-bg) 55%, transparent); }
+  70% { background-color: color-mix(in srgb, var(--hit-bg) 22%, transparent); }
+  100% { background-color: transparent; }
+}
+
 :deep(mark.search-hit) {
   background: var(--hit-bg);
   color: var(--hit-text);
@@ -4890,18 +5948,736 @@ onUnmounted(() => {
 :deep(mark.hl-mark.hl-red) { background: var(--hl-red-bg); }
 :deep(mark.hl-mark.hl-purple) { background: var(--hl-purple-bg); }
 
-.sel-popup {
+/*
+ * 划词工具条：按 Sider 扩展注入的真实 DOM 规格复刻。
+ * 实测取自 sider.ai 页面内 `[aria-label="询问AI"]` 所在的工具条：
+ *   外层：absolute rounded-xl（圆角 12px），实测 191×30，text-sm
+ *   内层：flex-center gap-1 p-[2px] overflow-hidden rounded-lg shadow-black-middle
+ *         → gap 4px、padding 2px、圆角 8px
+ *   按钮：p-0 rounded-lg，26×26；图标 viewBox 0 0 14 14，渲染 14×14px
+ * 因此图标比截图目测的小，这是 Sider 的真实尺寸，不再按图片估。
+ */
+.sel-bar {
   position: fixed;
   z-index: 1000;
   display: flex;
-  flex-wrap: wrap;
-  width: min(360px, calc(100vw - 16px));
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
   background: var(--popover-bg);
-  border: 1px solid var(--r-line);
-  border-radius: var(--radius-overlay);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(13, 15, 12, 0.12), 0 1px 2px rgba(13, 15, 12, 0.08);
+}
+
+.sel-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #2f3330;
+  cursor: pointer;
+}
+
+.sel-bar-btn:hover { background: rgba(13, 15, 12, 0.06); }
+
+.sel-bar-glyph {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 翻译项的下拉箭头：与 Sider 一样贴着图标右侧，比主图标小一号。 */
+.sel-bar-caret {
+  width: 8px;
+  height: 8px;
+  margin-left: -1px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.7;
+}
+
+/* AI 项用品牌色，与其余单色图标区分开。 */
+.sel-bar-btn-ai { color: #7c5cff; }
+
+.sel-bar-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 1px;
+  background: rgba(13, 15, 12, 0.1);
+}
+
+/* 点「⋯」后展开的竖向菜单：分组列表 + 底部说明。 */
+.sel-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  width: 268px;
+  background: var(--popover-bg);
+  border: 1px solid rgba(13, 15, 12, 0.08);
+  border-radius: 14px;
+  padding: 6px;
+  box-shadow: 0 8px 28px rgba(13, 15, 12, 0.14), 0 2px 6px rgba(13, 15, 12, 0.06);
+}
+
+.sel-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--r-text);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sel-menu-item:hover { background: var(--popover-hover, rgba(127, 127, 127, 0.12)); }
+.sel-menu-item:disabled { opacity: 0.45; cursor: default; }
+/* 文稿类与 AI 类之间用上边框分段，不额外插一条元素。 */
+.sel-menu-item-first-ai { margin-top: 5px; border-top: 1px solid rgba(13, 15, 12, 0.08); border-radius: 0 0 9px 9px; padding-top: 10px; }
+.sel-menu-item-pinned .sel-menu-label { font-weight: 500; }
+.sel-menu-icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; opacity: 0.72; }
+.sel-menu-icon-fill { fill: #7c5cff; stroke: none; opacity: 1; }
+.sel-menu-label { flex: 1; }
+.sel-menu-hint { color: var(--r-text-dim, rgba(127, 127, 127, 0.9)); font-size: 12px; }
+/* 图钉：未钉住灰色描边，钉住填品牌紫，一眼能分辨。 */
+.sel-menu-pin {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-left: 4px;
+  border-radius: 6px;
+  color: rgba(13, 15, 12, 0.35);
+  cursor: pointer;
+}
+.sel-menu-pin:hover { background: rgba(13, 15, 12, 0.06); color: rgba(13, 15, 12, 0.6); }
+.sel-menu-pin svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.sel-menu-pin-on { color: #7c5cff; }
+.sel-menu-pin-on svg { fill: currentColor; stroke: none; }
+.sel-menu-divider { height: 1px; margin: 4px 6px; background: var(--r-line); }
+
+/* 底部模型行：左侧模型选择器（可展开），右侧设置入口。 */
+.sel-menu-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(13, 15, 12, 0.08);
+}
+
+.sel-model-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--surface-3, rgba(127, 127, 127, 0.1));
+  color: var(--r-text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.sel-model-picker:hover { background: var(--surface-2, rgba(127, 127, 127, 0.14)); }
+.sel-model-dot { color: #7c5cff; font-size: 13px; line-height: 1; }
+.sel-model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+.sel-model-caret { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0.6; }
+
+.sel-menu-gear {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--r-muted);
+  cursor: pointer;
+}
+.sel-menu-gear:hover { background: rgba(13, 15, 12, 0.06); color: var(--r-text); }
+.sel-menu-gear svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* 模型下拉：向上展开，避免被屏幕底边裁掉。 */
+.sel-model-menu {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 44px;
+  padding: 5px;
+  border: 1px solid rgba(13, 15, 12, 0.08);
+  border-radius: 10px;
+  background: var(--popover-bg);
+  box-shadow: 0 8px 24px rgba(13, 15, 12, 0.16);
+}
+.sel-model-option {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--r-text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.sel-model-option:hover { background: rgba(13, 15, 12, 0.06); }
+.sel-model-option-on { color: #7c5cff; font-weight: 600; }
+.sel-model-hint { padding: 6px 9px 2px; color: var(--r-muted); font-size: 11px; line-height: 1.5; }
+.sel-menu-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
   padding: 6px 8px;
-  box-shadow: var(--shadow-overlay), var(--popover-ring);
+  border-top: 1px solid var(--r-line);
+  color: var(--r-text-dim, rgba(127, 127, 127, 0.9));
+  font-size: 12px;
+}
+
+/* 运行信息：默认折叠的一行，展开才是模型端点/已读截止/用量这类核对信息。 */
+/* 状态条：一行就够。模型 + 已读边界常驻，其余收进面板。 */
+/* 状态条：流光毛玻璃胶囊，模型名与已读进度各带色彩层次。 */
+/* Sider 浅紫上下文状态胶囊条（对应 Sider 输入框上方的浅紫圆角横条） */
+.ai-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 13px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(124, 92, 255, 0.08);
+  border-radius: 11px;
+  background: var(--sider-status-bg, #f2f1f8);
+  color: var(--r-text, #1f2329);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.ai-status-bar:hover {
+  border-color: rgba(124, 92, 255, 0.22);
+  background: rgba(124, 92, 255, 0.11);
+}
+.ai-status-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+}
+.ai-status-dot.is-off {
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+}
+.ai-status-model {
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--r-text, #1f2329);
+}
+.ai-status-sep { opacity: 0.4; }
+.ai-status-read {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--r-muted, #646a73);
+}
+.ai-status-toggle {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: #7c5cff;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* 运行信息与设置抽屉：点状态条或右侧齿轮展开 */
+.ai-runtime-panel {
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid var(--sider-card-border, rgba(15, 23, 42, 0.08));
+  border-radius: 14px;
+  background: var(--sider-pill-bg, #f6f7f9);
+}
+.ai-runtime-label {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(124, 92, 255, 0.1);
+  color: #7c5cff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.ai-follow-box {
+  margin: 8px 0;
+  border: 1px solid var(--sider-card-border, rgba(15, 23, 42, 0.08));
+  background: var(--sider-card-bg, #ffffff);
+}
+.ai-follow-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ai-runtime-panel { flex: 0 0 auto; max-height: 45%; overflow-y: auto; }
+.ai-runtime-panel .ai-assistant-heading { padding: 6px 0 4px; font-size: 12px; }
+.ai-runtime-panel .ai-budget-status,
+.ai-runtime-panel .ai-assistant-status,
+.ai-runtime-panel .subtle { margin: 0 0 6px; }
+
+/* ── Sider 双栏骨架：外层浅灰底 + 左侧纯白圆角主卡片（独立滚动） + 右侧固定线性工具轨 ───────────── */
+.sider-shell {
+  --r-text: var(--text, #1f2329);
+  --r-muted: var(--muted, #646a73);
+  --r-surface: var(--card, #ffffff);
+  --r-line: var(--line, rgba(15, 23, 42, 0.08));
+  --sider-bg: #f5f6f8;
+  --sider-card-bg: #ffffff;
+  --sider-card-border: rgba(15, 23, 42, 0.07);
+  --sider-pill-bg: #f6f7f9;
+  --sider-pill-border: rgba(15, 23, 42, 0.06);
+  --sider-status-bg: #f2f1f8;
+  --sider-input-border: rgba(15, 23, 42, 0.11);
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 0%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 0 10px 10px;
+  background: var(--sider-bg);
+  color: var(--r-text);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+:global(body[data-skin="dark"]) .sider-shell {
+  --r-text: #f1f5f9;
+  --r-muted: #94a3b8;
+  --r-surface: #181b20;
+  --r-line: rgba(255, 255, 255, 0.09);
+  --sider-bg: #111317;
+  --sider-card-bg: #181b20;
+  --sider-card-border: rgba(255, 255, 255, 0.08);
+  --sider-pill-bg: #22262e;
+  --sider-pill-border: rgba(255, 255, 255, 0.08);
+  --sider-status-bg: rgba(124, 92, 255, 0.14);
+  --sider-input-border: rgba(255, 255, 255, 0.14);
+}
+.sider-main {
+  flex: 1 1 0%;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 14px;
+  background: var(--sider-card-bg);
+  border: 1px solid var(--sider-card-border);
+  border-radius: 16px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.025);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.sider-qa-pane {
+  flex: 1 1 0%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+[data-ai-pane="recap"],
+[data-ai-pane="memory"],
+[data-ai-pane="notes"],
+[data-ai-pane="output"] {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+.sider-bottom-dock {
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding-top: 8px;
+}
+
+.sider-rail {
+  flex: 0 0 54px;
+  width: 54px;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 4px 10px;
+  background: transparent;
+  user-select: none;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.ai-top-switch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.ai-top-switch button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 46px;
+  padding: 5px 2px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--r-muted, #646a73);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+.sider-rail-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 30px;
+  border-radius: 10px;
+  color: inherit;
+  transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+.sider-rail-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ai-top-switch button:hover:not(.is-on) {
+  color: var(--r-text, #1f2329);
+}
+.ai-top-switch button:hover:not(.is-on) .sider-rail-icon {
+  background: rgba(15, 23, 42, 0.055);
+}
+.ai-top-switch button.is-on {
+  color: #7c5cff;
+  font-weight: 600;
+}
+.ai-top-switch button.is-on .sider-rail-icon {
+  background: rgba(124, 92, 255, 0.14);
+  color: #7c5cff;
+}
+
+.sider-rail-divider {
+  width: 22px;
+  height: 1px;
+  margin: 12px 0;
+  background: rgba(15, 23, 42, 0.09);
+}
+.sider-rail-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.sider-rail-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+}
+.sider-rail-tool {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: var(--r-muted, #646a73);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.sider-rail-tool svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sider-rail-tool:hover,
+.sider-rail-tool.is-active {
+  background: rgba(124, 92, 255, 0.12);
+  color: #7c5cff;
+}
+.sider-rail-orb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: conic-gradient(from 45deg, #38bdf8, #818cf8, #ec4899, #facc15, #38bdf8);
+  box-shadow: 0 2px 8px rgba(124, 92, 255, 0.28);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+.sider-rail-orb:hover {
+  transform: scale(1.08);
+}
+
+/* 各页签顶部工具栏：极简浅灰底 */
+.ai-pane-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--r-text) 8%, transparent);
+  background: color-mix(in srgb, var(--r-text) 3%, var(--r-surface, #ffffff));
+}
+.ai-pane-toolbar.is-memory-bar :deep(.n-input) {
+  flex: 1 1 160px;
+}
+/* 划词行内问答卡：挂在选区下方的小窗，比侧栏轻，一问一答不占屏幕。 */
+.inline-ask {
+  position: fixed;
+  z-index: 1002;
+  display: flex;
+  flex-direction: column;
+  max-height: min(60vh, 520px);
+  border: 1px solid rgba(13, 15, 12, 0.1);
+  border-radius: 14px;
+  background: var(--popover-bg);
+  box-shadow: 0 12px 32px rgba(13, 15, 12, 0.18), 0 2px 8px rgba(13, 15, 12, 0.08);
+  overflow: hidden;
+}
+
+.inline-ask-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 6px;
+}
+
+.inline-ask-title { font-size: 13px; font-weight: 600; }
+.inline-ask-subject {
+  flex: 1;
+  min-width: 0;
+  color: var(--r-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inline-ask-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--r-muted);
+  cursor: pointer;
+}
+.inline-ask-icon:hover { background: rgba(13, 15, 12, 0.06); color: var(--r-text); }
+.inline-ask-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+.inline-ask-input {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin: 0 8px;
+  padding: 4px 4px 4px 8px;
+  border: 1px solid var(--r-line);
+  border-radius: 10px;
+  background: var(--card);
+}
+.inline-ask-input :deep(.n-input),
+.inline-ask-input :deep(.n-input .n-input__border),
+.inline-ask-input :deep(.n-input .n-input__state-border) { border: 0 !important; box-shadow: none !important; background: transparent !important; }
+
+.inline-ask-send {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #7c5cff;
+  cursor: pointer;
+}
+.inline-ask-send:hover:not(:disabled) { background: rgba(124, 92, 255, 0.1); }
+.inline-ask-send:disabled { opacity: 0.4; cursor: default; }
+.inline-ask-send svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+.inline-ask-error { margin: 6px 10px 0; color: var(--danger); font-size: 12px; }
+
+.inline-ask-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 8px 10px 0;
+}
+.inline-ask-answer { color: var(--r-text); font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
+.inline-ask-caret { color: #7c5cff; }
+
+/* ── 回答的 Markdown 排版：模型常返回 `**用法**`、有序列表、代码块，要真正显示成格式。 */
+.md-body { font-size: 13px; line-height: 1.75; white-space: normal; }
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p { margin: 0 0 8px; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5, .md-body h6 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.md-body h1 { font-size: 16px; }
+.md-body h2 { font-size: 14.5px; }
+.md-body h3 { font-size: 13.5px; }
+.md-body h4, .md-body h5, .md-body h6 { font-size: 13px; }
+.md-body ul, .md-body ol { margin: 0 0 8px; padding-left: 1.4em; }
+.md-body li { margin: 2px 0; }
+.md-body li > p { margin: 4px 0 0; }
+.md-body li > ul, .md-body li > ol { margin: 2px 0 0; }
+.md-body strong { font-weight: 600; }
+.md-body em { font-style: italic; }
+.md-body del { text-decoration: line-through; opacity: 0.7; }
+.md-body a { color: #6b4ce8; text-decoration: none; }
+.md-body a:hover { text-decoration: underline; }
+.md-body code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-3, rgba(127, 127, 127, 0.12));
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+.md-body .md-pre {
+  position: relative;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-3, rgba(127, 127, 127, 0.1));
+  overflow-x: auto;
+  white-space: pre;
+}
+.md-body .md-pre[data-lang]::before {
+  content: attr(data-lang);
+  float: right;
+  margin-left: 8px;
+  color: var(--r-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  user-select: none;
+}
+.md-body .md-pre code { padding: 0; background: none; font-size: 12px; line-height: 1.6; }
+.md-body blockquote {
+  margin: 0 0 8px;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--r-line);
+  color: var(--r-muted);
+}
+.md-body hr { margin: 10px 0; border: 0; border-top: 1px solid var(--r-line); }
+.md-body .md-table-wrap { margin: 0 0 8px; overflow-x: auto; }
+.md-body table { border-collapse: collapse; font-size: 12.5px; }
+.md-body th, .md-body td { padding: 4px 8px; border: 1px solid var(--r-line); text-align: left; }
+.md-body th { background: var(--surface-3, rgba(127, 127, 127, 0.08)); font-weight: 600; }
+.md-body .md-check { margin-right: 4px; }
+.md-body .md-image-alt { color: var(--r-muted); font-size: 12px; }
+.md-body .md-footnote-ref { margin: 0 1px; color: #6b4ce8; font-size: 11px; line-height: 1; }
+.md-body .md-footnote-def {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0;
+  color: var(--r-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.md-body .md-footnote-label { flex: none; font-weight: 600; }
+
+.inline-ask-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid rgba(13, 15, 12, 0.06);
+}
+
+/* 「在侧边栏中继续」：品牌色胶囊，与 Sider 那个入口同位置同分量。 */
+.inline-ask-continue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(124, 92, 255, 0.12);
+  color: #6b4ce8;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.inline-ask-continue:hover:not(:disabled) { background: rgba(124, 92, 255, 0.18); }
+.inline-ask-continue:disabled { opacity: 0.5; cursor: default; }
+.inline-ask-dot { font-size: 12px; }
+.inline-ask-tools { display: flex; align-items: center; gap: 2px; }
+
+.chat-tool-activity {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--r-text-dim, rgba(127, 127, 127, 0.9));
+  font-size: 12px;
 }
 
 .popup-scale-enter-active,
@@ -5205,18 +6981,58 @@ onUnmounted(() => {
 
 .ai-budget-status {
   margin-bottom: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--panel-soft, rgba(127, 127, 127, 0.1));
+  padding: 12px 14px;
+  border: 1px solid rgba(124, 92, 255, 0.2);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(124, 92, 255, 0.08), rgba(14, 165, 233, 0.05));
   font-size: 12px;
   line-height: 1.6;
 }
+
+.resume-card-panel {
+  border-color: rgba(14, 165, 233, 0.28);
+  background: linear-gradient(150deg, rgba(14, 165, 233, 0.11), rgba(124, 92, 255, 0.07) 55%, rgba(245, 158, 11, 0.05));
+}
+.resume-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.resume-group {
+  margin-top: 8px;
+  padding-left: 8px;
+  border-left: 3px solid #0ea5e9;
+}
+.resume-group.is-group-0 { border-left-color: #0ea5e9; }
+.resume-group.is-group-0 .resume-group-title { color: #0284c7; }
+.resume-group.is-group-1 { border-left-color: #f43f5e; }
+.resume-group.is-group-1 .resume-group-title { color: #e11d48; }
+.resume-group.is-group-2 { border-left-color: #f59e0b; }
+.resume-group.is-group-2 .resume-group-title { color: #d97706; }
 
 .ai-result {
   white-space: pre-wrap;
   line-height: 1.8;
   font-size: 14px;
-  padding: 0 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+.recap-story-card {
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  background: linear-gradient(160deg, rgba(14, 165, 233, 0.1), rgba(124, 92, 255, 0.06) 52%, rgba(236, 72, 153, 0.04));
+  box-shadow: 0 6px 18px rgba(14, 165, 233, 0.07);
+}
+.notes-result-card {
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  background: linear-gradient(160deg, rgba(245, 158, 11, 0.11), rgba(249, 115, 22, 0.06) 52%, rgba(236, 72, 153, 0.04));
+  box-shadow: 0 6px 18px rgba(245, 158, 11, 0.07);
+}
+.output-result-card,
+.is-output-head {
+  border: 1px solid rgba(236, 72, 153, 0.26);
+  background: linear-gradient(160deg, rgba(236, 72, 153, 0.1), rgba(124, 92, 255, 0.06));
 }
 
 .ai-assistant-heading {
@@ -5230,10 +7046,11 @@ onUnmounted(() => {
 .ai-assistant-status,
 .ai-save-warning {
   margin-bottom: 8px;
-  padding: 8px;
-  border-radius: 8px;
-  background: var(--r-panel-bg);
-  color: var(--r-muted);
+  padding: 8px 12px;
+  border: 1px solid rgba(124, 92, 255, 0.24);
+  border-radius: 10px;
+  background: linear-gradient(90deg, rgba(124, 92, 255, 0.12), rgba(14, 165, 233, 0.08));
+  color: var(--r-text);
   font-size: 12px;
 }
 
@@ -5242,91 +7059,135 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  border-color: rgba(245, 158, 11, 0.35);
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.14), rgba(244, 63, 94, 0.08));
 }
 
-.ai-reading-desk {
-  margin-bottom: 12px;
+/* 关系图与时间线：双色流光折叠卡片 */
+.memory-graph-panel {
   padding: 12px;
-  border: 1px solid var(--r-line);
-  border-radius: 10px;
-  background: var(--r-panel-bg);
+  border: 1px solid rgba(14, 165, 233, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(14, 165, 233, 0.11), rgba(99, 102, 241, 0.07));
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.06);
 }
 
-.ai-reading-desk__title {
+.memory-graph-panel-summary {
+  cursor: pointer;
+  color: #0284c7;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.memory-graph-panel-summary:focus-visible {
+  outline: 2px solid var(--active-chapter);
+  outline-offset: 2px;
+}
+.memory-graph-progress {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.ai-reading-desk__title span {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
   color: var(--r-muted);
   font-size: 12px;
 }
-
-.ai-reading-desk__actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+.memory-graph-progress-label {
+  white-space: nowrap;
 }
-
-.ai-reading-desk__actions button {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 9px 10px;
-  border: 1px solid var(--r-line);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
+.memory-graph-range {
+  flex: 0 0 120px;
+  width: 120px;
+  height: 14px;
+  margin: 0;
+  accent-color: #0ea5e9;
 }
-
-.ai-reading-desk__actions button:hover,
-.ai-reading-desk__actions button:focus-visible {
-  border-color: var(--active-chapter);
-}
-
-.ai-reading-desk__actions span {
-  color: var(--r-muted);
+.memory-graph-progress-title {
+  flex: 1 1 60px;
+  min-width: 0;
+  overflow: hidden;
   font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.ai-quick-questions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 10px;
+.memory-timeline {
+  border-color: rgba(168, 85, 247, 0.28);
+  background: linear-gradient(145deg, rgba(168, 85, 247, 0.11), rgba(236, 72, 153, 0.06));
+}
+.memory-timeline > summary strong {
+  color: #7c3aed;
 }
 
-.ai-quick-questions > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+/* 四类记忆专属宝石色彩：人物（星光紫）、关系（翡翠青）、伏笔（琥珀金）、事件（珊瑚粉） */
+.memory-section {
+  --mem-accent: #7c5cff;
+  --mem-bg-start: rgba(124, 92, 255, 0.1);
+  --mem-bg-end: rgba(168, 85, 247, 0.04);
+  --mem-border: rgba(124, 92, 255, 0.25);
 }
-
-.ai-quick-questions .n-button {
-  height: auto;
-  min-height: 28px;
-  white-space: normal;
-  text-align: left;
+.memory-section.is-characters {
+  --mem-accent: #7c5cff;
+  --mem-bg-start: rgba(124, 92, 255, 0.11);
+  --mem-bg-end: rgba(99, 102, 241, 0.04);
+  --mem-border: rgba(124, 92, 255, 0.26);
+}
+.memory-section.is-relations {
+  --mem-accent: #0d9488;
+  --mem-bg-start: rgba(16, 185, 129, 0.11);
+  --mem-bg-end: rgba(14, 165, 233, 0.04);
+  --mem-border: rgba(16, 185, 129, 0.26);
+}
+.memory-section.is-foreshadows {
+  --mem-accent: #d97706;
+  --mem-bg-start: rgba(245, 158, 11, 0.12);
+  --mem-bg-end: rgba(249, 115, 22, 0.04);
+  --mem-border: rgba(245, 158, 11, 0.28);
+}
+.memory-section.is-events {
+  --mem-accent: #e11d48;
+  --mem-bg-start: rgba(236, 72, 153, 0.11);
+  --mem-bg-end: rgba(244, 63, 94, 0.04);
+  --mem-border: rgba(236, 72, 153, 0.26);
 }
 
 .memory-section h3 {
-  margin: 12px 0 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--mem-bg-start);
+  color: var(--mem-accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.memory-section h3::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mem-accent);
 }
 
 .memory-item {
-  padding: 10px;
+  padding: 10px 12px;
   margin-bottom: 8px;
-  border: 1px solid var(--r-line);
-  border-radius: 8px;
+  border: 1px solid var(--mem-border, rgba(124, 92, 255, 0.22));
+  border-left: 3px solid var(--mem-accent, #7c5cff);
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--mem-bg-start, rgba(124, 92, 255, 0.08)), var(--mem-bg-end, rgba(14, 165, 233, 0.03)));
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.memory-item:hover {
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.07);
 }
 
 .memory-item summary {
   cursor: pointer;
+  font-weight: 600;
 }
 
 .memory-item summary:focus-visible {
@@ -5335,19 +7196,32 @@ onUnmounted(() => {
 }
 
 .notes-archive strong {
-  display: block;
+  display: inline-block;
   margin: 12px 0 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+  font-size: 12px;
 }
 
 .notes-archive-item {
-  padding: 10px;
+  padding: 10px 12px;
   margin-bottom: 8px;
-  border: 1px solid var(--r-line);
-  border-radius: 8px;
+  border: 1px solid rgba(14, 165, 233, 0.24);
+  border-left: 3px solid #0ea5e9;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.09), rgba(124, 92, 255, 0.04));
+}
+.notes-archive-item.is-wordbook-card {
+  border-color: rgba(236, 72, 153, 0.25);
+  border-left-color: #ec4899;
+  background: linear-gradient(135deg, rgba(236, 72, 153, 0.09), rgba(245, 158, 11, 0.05));
 }
 
 .notes-archive-item summary {
   cursor: pointer;
+  font-weight: 600;
 }
 
 .notes-archive-item summary:focus-visible {
@@ -5361,8 +7235,13 @@ onUnmounted(() => {
 }
 
 .wordbook > strong {
-  display: block;
+  display: inline-block;
   margin: 12px 0 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(236, 72, 153, 0.12);
+  color: #db2777;
+  font-size: 12px;
 }
 
 .wordbook-list {
@@ -5372,7 +7251,7 @@ onUnmounted(() => {
 }
 
 .wordbook-list li {
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .wordbook-list p {
@@ -5381,18 +7260,21 @@ onUnmounted(() => {
 }
 
 .wordbook-term {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--active-chapter);
+  margin-right: 6px;
+  padding: 2px 8px;
+  border: 1px solid rgba(236, 72, 153, 0.28);
+  border-radius: 6px;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(236, 72, 153, 0.14));
+  color: #be185d;
   font: inherit;
+  font-weight: 600;
   text-align: left;
   white-space: pre-wrap;
   cursor: pointer;
 }
 
 .wordbook-term:hover {
-  text-decoration: underline;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.26), rgba(236, 72, 153, 0.22));
 }
 
 .wordbook-term:focus-visible {
@@ -5403,12 +7285,12 @@ onUnmounted(() => {
 .memory-accuracy-tag {
   display: inline-block;
   margin-left: 6px;
-  padding: 1px 7px;
+  padding: 1px 8px;
   border-radius: 999px;
-  background: var(--warning-surface);
-  color: var(--warning);
-  font-size: 12px;
-  font-weight: 500;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(244, 63, 94, 0.14));
+  color: #d97706;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .memory-item p {
@@ -5420,33 +7302,41 @@ onUnmounted(() => {
   display: block;
   width: 100%;
   margin: 6px 0;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--r-muted);
+  padding: 7px 10px;
+  border: 1px solid rgba(124, 92, 255, 0.18);
+  border-left: 3px solid #7c5cff;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(124, 92, 255, 0.1), rgba(14, 165, 233, 0.05));
+  color: var(--r-text);
   font: inherit;
   font-size: 12px;
   line-height: 1.5;
   text-align: left;
   white-space: pre-wrap;
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
-.memory-source:hover { background: var(--surface-3); }
+.memory-source:hover {
+  border-color: rgba(124, 92, 255, 0.4);
+  background: linear-gradient(90deg, rgba(124, 92, 255, 0.18), rgba(14, 165, 233, 0.1));
+}
 .memory-source:focus-visible { outline: 2px solid var(--active-chapter); outline-offset: 2px; }
 
 .chat-messages {
-  flex: 1;
+  flex: 1 1 0%;
+  min-height: 0;
   overflow-y: auto;
-  padding: 12px 0;
+  overflow-x: hidden;
+  padding: 8px 4px 12px 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  scrollbar-gutter: stable;
 }
 
 .chat-msg {
   display: flex;
-  padding: 0 12px;
+  padding: 0 8px;
 }
 
 .chat-msg.user {
@@ -5459,14 +7349,74 @@ onUnmounted(() => {
   justify-content: flex-start;
   gap: 6px;
 }
-
-.chat-evidence {
-  width: 85%;
-  padding: 8px 10px;
-  border-left: 2px solid var(--active-chapter);
+/* 可信度徽标：带翡翠绿与琥珀金色彩胶囊 */
+.chat-verify {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
   color: var(--r-muted);
+  background: rgba(127, 127, 127, 0.1);
+}
+.chat-verify.is-verified {
+  color: #059669;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.16), rgba(14, 165, 233, 0.1));
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.chat-verify.is-partial {
+  color: #d97706;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(249, 115, 22, 0.1));
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.chat-verify.is-not_run,
+.chat-verify.is-disabled {
+  color: var(--r-muted);
+}
+.chat-scope-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+}
+.chat-evidence {
+  width: 90%;
+  padding: 8px 12px;
+  border: 1px solid rgba(14, 165, 233, 0.24);
+  border-left: 3px solid #0ea5e9;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.1), rgba(16, 185, 129, 0.05));
+  color: var(--r-text);
   font-size: 12px;
 }
+
+.chat-evidence > summary,
+.chat-steps > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+.chat-evidence > summary { color: #0284c7; }
+.chat-steps > summary { color: #7c3aed; }
+.chat-evidence > summary::-webkit-details-marker,
+.chat-steps > summary::-webkit-details-marker { display: none; }
+.chat-evidence > summary::after,
+.chat-steps > summary::after { content: '⌄'; margin-left: auto; opacity: 0.7; }
+.chat-evidence[open] > summary::after,
+.chat-steps[open] > summary::after { content: '⌃'; }
+.chat-evidence > summary:hover,
+.chat-steps > summary:hover { opacity: 0.85; }
 
 .chat-legacy {
   color: var(--r-muted);
@@ -5474,45 +7424,531 @@ onUnmounted(() => {
 }
 
 .chat-bubble {
-  max-width: 85%;
-  padding: 8px 12px;
-  border-radius: 14px;
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 16px;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.65;
   white-space: pre-wrap;
 }
 
 .chat-msg.user .chat-bubble {
-  background: var(--bubble-user-bg);
-  color: var(--bubble-user-text);
+  background: linear-gradient(135deg, #5b54f5, #7c5cff 55%, #c026d3);
+  color: #ffffff;
   border-bottom-right-radius: 4px;
+  box-shadow: 0 6px 18px rgba(124, 92, 255, 0.28);
 }
 
 .chat-msg.assistant .chat-bubble {
-  background: var(--bubble-ai-bg);
-  border: 1px solid var(--bubble-ai-border);
+  background: linear-gradient(160deg, rgba(124, 92, 255, 0.09), rgba(14, 165, 233, 0.05) 48%, var(--bubble-ai-bg, rgba(255, 255, 255, 0.9)));
+  border: 1px solid rgba(124, 92, 255, 0.24);
   color: var(--bubble-ai-text);
   border-bottom-left-radius: 4px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
 }
 
-.chat-empty {
-  text-align: center;
-  color: var(--r-muted);
-  padding: 40px 20px;
-  font-size: 13px;
+.chat-claim { margin: 0 0 5px; }
+.chat-claim:last-child { margin-bottom: 0; }
+
+/* 行内角标：精致宝石紫小胶囊 */
+.chat-cite {
+  margin-left: 3px;
+  padding: 1px 5px;
+  border: 1px solid rgba(124, 92, 255, 0.28);
+  border-radius: 6px;
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.16), rgba(14, 165, 233, 0.12));
+  color: #6d4aff;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  vertical-align: super;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
 }
+.chat-cite:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(14, 165, 233, 0.22));
+}
+.chat-cite:disabled { opacity: 0.5; cursor: default; }
+
+.chat-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.72;
+  transition: opacity 0.15s ease;
+}
+.chat-msg.assistant:hover .chat-actions,
+.chat-actions:focus-within { opacity: 1; }
+.chat-actions .chat-chip { padding: 2px 9px; font-size: 11px; }
+
+.chat-steps {
+  width: 90%;
+  padding: 6px 10px;
+  border: 1px solid rgba(139, 92, 246, 0.24);
+  border-left: 3px solid #8b5cf6;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.11), rgba(14, 165, 233, 0.05));
+  color: var(--r-text);
+  font-size: 12px;
+}
+.chat-steps ol { margin: 4px 0 0; padding-left: 18px; }
+.chat-steps li { line-height: 1.6; }
+.chat-steps li.is-running { color: #7c3aed; font-weight: 600; }
+.chat-steps li.is-done { opacity: 0.72; }
+.chat-steps li.is-error { color: #e11d48; font-weight: 600; }
+
+/* ── Sider 极简居中欢迎舱 + 深色横幅 + 药丸快捷卡 + 悬浮输入坞 ─────────── */
+
+.sider-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin: auto;
+  width: 100%;
+  max-width: 420px;
+  padding: 20px 8px 18px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  text-align: center;
+}
+
+.sider-welcome-logo {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  filter: drop-shadow(0 10px 20px rgba(139, 92, 246, 0.24));
+}
+.sider-welcome-logo svg {
+  width: 72px;
+  height: 72px;
+}
+
+.sider-welcome h3 {
+  margin: 4px 0 0;
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--r-text, #1f2329);
+  letter-spacing: -0.01em;
+}
+.sider-welcome p {
+  margin: 0;
+  max-width: 380px;
+  color: var(--r-muted, #646a73);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+
+.sider-welcome-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 9px;
+  width: 100%;
+  max-width: 400px;
+  margin-top: 4px;
+}
+
+.sider-welcome-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 15px;
+  border: 1px solid var(--sider-pill-border, rgba(15, 23, 42, 0.06));
+  border-radius: 999px;
+  background: var(--sider-pill-bg, #f6f7f9);
+  color: var(--r-text, #1f2329);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.sider-pill-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.78;
+}
+.sider-welcome-card:hover {
+  border-color: rgba(124, 92, 255, 0.32);
+  background: rgba(124, 92, 255, 0.08);
+  color: #6d4aff;
+  transform: translateY(-1px);
+}
+
+.chat-chip {
+  padding: 4px 12px;
+  border: 1px solid var(--sider-pill-border, rgba(15, 23, 42, 0.08));
+  border-radius: 999px;
+  background: var(--sider-pill-bg, #f6f7f9);
+  color: var(--r-muted, #646a73);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.chat-chip:hover:not(:disabled) {
+  color: #6d4aff;
+  border-color: rgba(124, 92, 255, 0.35);
+  background: rgba(124, 92, 255, 0.08);
+}
+.chat-chip:disabled { opacity: 0.45; cursor: default; }
+.chat-chip-on {
+  color: #6d4aff;
+  border-color: rgba(124, 92, 255, 0.32);
+  background: rgba(124, 92, 255, 0.12);
+  font-weight: 600;
+}
+
+.sider-composer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border: 1px solid var(--sider-input-border, rgba(15, 23, 42, 0.11));
+  border-radius: 16px;
+  background: var(--sider-card-bg, #ffffff);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.03);
+  overflow: hidden;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.sider-composer:focus-within {
+  border-color: rgba(124, 92, 255, 0.48);
+  box-shadow: 0 4px 18px rgba(124, 92, 255, 0.11);
+}
+
+.sider-composer :deep(.n-input),
+.sider-composer :deep(.n-input:focus-within),
+.sider-composer :deep(.n-input .n-input-wrapper),
+.sider-composer :deep(.n-input .n-input__textarea),
+.sider-composer :deep(.n-input .n-input__textarea-el),
+.sider-composer :deep(.n-input .n-input__border),
+.sider-composer :deep(.n-input .n-input__state-border) {
+  --n-color: transparent !important;
+  --n-color-focus: transparent !important;
+  --n-color-disabled: transparent !important;
+  --n-border: 0 !important;
+  --n-border-hover: 0 !important;
+  --n-border-focus: 0 !important;
+  --n-border-disabled: 0 !important;
+  --n-box-shadow-focus: none !important;
+  --n-caret-color: #7c5cff !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  outline: none !important;
+}
+
+.sider-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px 10px;
+}
+
+.sider-composer-chips { display: flex; align-items: center; gap: 6px; }
+.sider-composer-send { display: flex; align-items: center; gap: 8px; }
+
+.sider-main :deep(.n-button--primary-type) {
+  --n-color: #7c5cff !important;
+  --n-color-hover: #6d4aff !important;
+  --n-color-pressed: #5b38f5 !important;
+  --n-color-focus: #6d4aff !important;
+  --n-color-disabled: #a594f9 !important;
+  --n-border: 1px solid #7c5cff !important;
+  --n-border-hover: 1px solid #6d4aff !important;
+  --n-border-pressed: 1px solid #5b38f5 !important;
+  --n-border-focus: 1px solid #6d4aff !important;
+  --n-border-disabled: 1px solid #a594f9 !important;
+  --n-border-radius: 999px !important;
+  border-radius: 999px !important;
+  font-weight: 600;
+}
+
+:deep(.n-drawer-header__main)::before {
+  content: '✦';
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #38bdf8, #8b5cf6 52%, #ec4899);
+  color: #fff;
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+/* Sider 输入框上方的 Fusion 胶囊会话选择 + 右侧紫色「+ 新会话」栏 */
+.chat-threads {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 8px;
+  margin-bottom: 0;
+  border: 0;
+  background: transparent;
+}
+.sider-fusion-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 7px;
+  border-radius: 999px;
+  background: var(--sider-pill-bg, #f6f7f9);
+  border: 1px solid var(--sider-pill-border, rgba(15, 23, 42, 0.06));
+  max-width: 240px;
+}
+.sider-fusion-badge {
+  position: relative;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1, #a855f7 55%, #ec4899);
+  box-shadow: 0 2px 6px rgba(124, 92, 255, 0.28);
+}
+.sider-fusion-badge::after {
+  content: '✦';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-size: 10px;
+  line-height: 1;
+}
+.chat-threads-select {
+  flex: 0 1 175px;
+  min-width: 100px;
+}
+.chat-threads-select :deep(.n-base-selection) {
+  --n-color: transparent !important;
+  --n-color-active: transparent !important;
+  --n-color-disabled: transparent !important;
+  --n-border: 0 !important;
+  --n-border-hover: 0 !important;
+  --n-border-active: 0 !important;
+  --n-border-focus: 0 !important;
+  --n-border-disabled: 0 !important;
+  --n-box-shadow-active: none !important;
+  --n-box-shadow-focus: none !important;
+  --n-box-shadow-hover: none !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+.chat-topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  color: #7c5cff;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.chat-topbar-btn.is-new-thread {
+  margin-left: auto;
+}
+.chat-topbar-btn.is-new-thread::before {
+  content: '+';
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: #7c5cff;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.chat-topbar-btn.is-del-thread {
+  color: var(--r-muted, #646a73);
+  font-weight: 500;
+}
+.chat-topbar-btn:hover:not(:disabled) {
+  background: rgba(124, 92, 255, 0.1);
+  color: #5b38f5;
+}
+.chat-topbar-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* ── Sider 式问答界面：欢迎态 + 大圆角输入卡片 ───────────────────── */
+
+.sider-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 8px 8px;
+  text-align: center;
+}
+
+.sider-welcome-logo {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #7c5cff, #b06bff 55%, #ff9ecd);
+  color: #fff;
+  font-size: 20px;
+  box-shadow: 0 6px 18px rgba(124, 92, 255, 0.28);
+}
+
+.sider-welcome h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.sider-welcome p { margin: 0; max-width: 300px; color: var(--r-muted); font-size: 12px; line-height: 1.6; }
+
+.sider-welcome-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.sider-welcome-card {
+  padding: 10px;
+  border: 1px solid var(--r-line);
+  border-radius: 12px;
+  background: var(--surface-3, rgba(127, 127, 127, 0.06));
+  color: var(--r-text);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.sider-welcome-card:hover {
+  border-color: var(--active-chapter);
+  background: var(--surface-2, rgba(127, 127, 127, 0.1));
+}
+
+.sider-welcome-find {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  align-items: center;
+}
+
+.chat-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--r-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--r-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chat-chip:hover:not(:disabled) { color: var(--r-text); border-color: var(--active-chapter); }
+.chat-chip:disabled { opacity: 0.45; cursor: default; }
+.chat-chip-on {
+  color: var(--active-chapter);
+  border-color: var(--active-chapter);
+  background: color-mix(in srgb, var(--active-chapter) 12%, transparent);
+}
+
+.sider-composer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border: 1px solid var(--r-line);
+  border-radius: 16px;
+  background: var(--card);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.sider-composer :deep(.n-input),
+.sider-composer :deep(.n-input .n-input__textarea),
+.sider-composer :deep(.n-input .n-input__border),
+.sider-composer :deep(.n-input .n-input__state-border) {
+  border: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
+.sider-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 8px;
+}
+
+.sider-composer-chips { display: flex; align-items: center; gap: 6px; }
+.sider-composer-send { display: flex; align-items: center; gap: 8px; }
+.sider-composer-task { color: var(--r-muted); font-size: 12px; }
+
+:deep(.n-drawer-header__main)::before {
+  content: '✦';
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #7c5cff, #b06bff 55%, #ff9ecd);
+  color: #fff;
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+/* 会话主体铺满抽屉：Sider 的对话区就是整块面板，不留多余留白。 */
+:deep(.n-drawer-body-content-wrapper) { padding-top: 4px; }
+
+.chat-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px 8px;
+  border-bottom: 1px solid var(--r-line);
+}
+
+.chat-topbar-btn {
+  border: 0;
+  background: transparent;
+  color: var(--r-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.chat-topbar-btn:hover:not(:disabled) { color: var(--r-text); background: var(--surface-3, rgba(127, 127, 127, 0.1)); }
+.chat-topbar-btn:disabled { opacity: 0.45; cursor: default; }
+.chat-topbar-count { color: var(--r-muted); font-size: 11px; }
 
 .chat-input-row {
   display: flex;
   gap: 8px;
-  /* 抽屉内容比窗口高，输入框原来会被推到屏幕下方，用户点「聊书」后找不到在哪输入。
-     吸在抽屉底边，滑到哪都能直接提问。 */
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  padding: 8px 0;
-  background: var(--card);
+  padding: 2px 0 0;
+  background: transparent;
 }
+
 
 
 .reader-toolbar {
@@ -6349,6 +8785,330 @@ onUnmounted(() => {
 .theme-swatches .swatch-gray::before { background: #dfdfd9; }
 .theme-swatches .swatch-night::before { background: #1b1f22; }
 
+/* 微信读书风格经典阅读模式：浅灰画布 + 干净顶栏 + 居中纸面 + 右侧 48×48 圆形悬浮工具栏 */
+.reader-wrap.is-classic {
+  --classic-accent: #1b88ee;
+  --classic-border: rgba(13, 20, 30, 0.06);
+  --classic-muted: rgba(13, 20, 30, 0.5);
+  --classic-bar-bg: rgba(244, 245, 247, 0.94);
+  --classic-rail-bg: #ffffff;
+  --classic-rail-fg: #4a515a;
+  --classic-rail-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  --classic-rail-hover-shadow: 0 6px 22px rgba(0, 0, 0, 0.1);
+}
+.reader-wrap.is-classic.is-night {
+  --classic-border: rgba(255, 255, 255, 0.08);
+  --classic-muted: rgba(216, 216, 216, 0.55);
+  --classic-bar-bg: rgba(24, 25, 28, 0.94);
+  --classic-rail-bg: #26282c;
+  --classic-rail-fg: #c9cdd4;
+  --classic-rail-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  --classic-rail-hover-shadow: 0 6px 22px rgba(0, 0, 0, 0.42);
+}
+
+.reader-toolbar.is-classic {
+  min-height: 72px;
+  padding: 6px 32px;
+  background: var(--classic-bar-bg);
+  border-bottom: 1px solid var(--classic-border);
+  box-shadow: none;
+  backdrop-filter: blur(12px);
+}
+.reader-wrap.is-classic.is-night .reader-toolbar.is-classic,
+.reader-wrap.is-classic.is-night .reader-toolbar.is-classic .reader-book-title,
+.reader-wrap.is-classic.is-night .reader-toolbar.is-classic .tool-button {
+  color: #e5e7eb;
+}
+.classic-chapter-subtitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-right: 12px;
+  font-size: 13px;
+  color: var(--classic-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-wrap.is-classic .reader-content {
+  padding: 56px clamp(40px, 6vw, 76px) 108px;
+  border-radius: 12px;
+  border: 1px solid var(--classic-border);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.03);
+}
+.reader-wrap.is-classic .reader-content.is-classic-double {
+  position: relative;
+  width: min(calc(100vw - 140px), 1320px) !important;
+  max-width: min(calc(100vw - 140px), 1320px) !important;
+  flex-basis: min(calc(100vw - 140px), 1320px) !important;
+  padding: 48px clamp(36px, 4vw, 56px) 96px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 56px;
+  align-content: start;
+}
+.reader-wrap.is-classic .reader-content.is-classic-double::before {
+  content: '';
+  position: absolute;
+  top: 56px;
+  bottom: 108px;
+  left: 50%;
+  width: 1px;
+  background: var(--classic-border);
+  pointer-events: none;
+}
+.reader-wrap.is-classic .reader-content.is-classic-double .ch-title,
+.reader-wrap.is-classic .reader-content.is-classic-double .classic-chapter-footer,
+.reader-wrap.is-classic .reader-content.is-classic-double .ai-budget-status,
+.reader-wrap.is-classic .reader-content.is-classic-double .reader-gap,
+.reader-wrap.is-classic .reader-content.is-classic-double .classic-inline-note {
+  grid-column: 1 / -1;
+}
+.reader-wrap.is-classic .reader-content.classic-mark-wavy :deep(mark.hl-mark) {
+  background: transparent;
+  text-decoration: underline wavy #e6a23c;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 4px;
+}
+.reader-wrap.is-classic .reader-content.classic-mark-wavy :deep(mark.hl-mark.hl-green) { text-decoration-color: #2fa866; }
+.reader-wrap.is-classic .reader-content.classic-mark-wavy :deep(mark.hl-mark.hl-blue) { text-decoration-color: #1b88ee; }
+.reader-wrap.is-classic .reader-content.classic-mark-wavy :deep(mark.hl-mark.hl-red) { text-decoration-color: #e05252; }
+.reader-wrap.is-classic .reader-content.classic-mark-wavy :deep(mark.hl-mark.hl-purple) { text-decoration-color: #8b62e8; }
+.reader-wrap.is-classic .reader-content.classic-mark-line :deep(mark.hl-mark) {
+  background: transparent;
+  text-decoration: underline solid #e6a23c;
+  text-decoration-thickness: 1.8px;
+  text-underline-offset: 4px;
+}
+.reader-wrap.is-classic .reader-content.classic-mark-line :deep(mark.hl-mark.hl-green) { text-decoration-color: #2fa866; }
+.reader-wrap.is-classic .reader-content.classic-mark-line :deep(mark.hl-mark.hl-blue) { text-decoration-color: #1b88ee; }
+.reader-wrap.is-classic .reader-content.classic-mark-line :deep(mark.hl-mark.hl-red) { text-decoration-color: #e05252; }
+.reader-wrap.is-classic .reader-content.classic-mark-line :deep(mark.hl-mark.hl-purple) { text-decoration-color: #8b62e8; }
+.classic-para-note-badge {
+  position: absolute;
+  right: -30px;
+  top: 0.28em;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--classic-border);
+  background: var(--classic-rail-bg);
+  color: var(--classic-muted);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  text-indent: 0;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+.classic-para-note-badge:hover {
+  color: var(--classic-accent);
+  border-color: color-mix(in srgb, var(--classic-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--classic-accent) 8%, var(--classic-rail-bg));
+}
+.reader-wrap.is-classic .ch-title {
+  font-size: 1.32em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--reader-paper-text);
+  margin-bottom: 1.5em;
+  padding-bottom: 0.75em;
+  border-bottom: 1px solid var(--classic-border);
+}
+
+.reader-bottombar.is-classic {
+  left: auto;
+  right: max(24px, calc(50% - 490px));
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+  flex-direction: column;
+  gap: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.reader-bottombar.is-classic.is-classic-double {
+  right: max(16px, calc(50% - 716px));
+}
+.reader-bottombar.is-classic.reader-tools-hidden {
+  transform: translate(12px, -50%);
+}
+.reader-bottombar.is-classic .bottom-button {
+  position: relative;
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  padding: 0;
+  gap: 0;
+  border-radius: 50%;
+  border: 1px solid var(--classic-border);
+  background: var(--classic-rail-bg);
+  color: var(--classic-rail-fg);
+  box-shadow: var(--classic-rail-shadow);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, color 0.16s ease, background 0.16s ease;
+}
+.reader-bottombar.is-classic .bottom-button[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translate(4px, -50%);
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(28, 30, 34, 0.9);
+  color: #f4f6f9;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+}
+.reader-bottombar.is-classic .bottom-button[data-tip]:hover::after {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+.reader-bottombar.is-classic .bottom-button svg {
+  width: 20px;
+  height: 20px;
+}
+.reader-bottombar.is-classic .bottom-button-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.reader-bottombar.is-classic .bottom-button:hover {
+  transform: translateY(-1px);
+  color: var(--classic-accent);
+  background: var(--classic-rail-bg);
+  box-shadow: var(--classic-rail-hover-shadow);
+}
+.reader-bottombar.is-classic .bottom-button.active {
+  color: var(--classic-accent);
+  border-color: color-mix(in srgb, var(--classic-accent) 32%, transparent);
+  background: color-mix(in srgb, var(--classic-accent) 10%, var(--classic-rail-bg));
+  box-shadow: var(--classic-rail-hover-shadow);
+}
+.reader-bottombar.is-classic .bottom-panel {
+  left: auto;
+  right: 62px;
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  border-radius: 14px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
+}
+.reader-wrap.is-classic.is-night .reader-bottombar.is-classic .bottom-panel {
+  background: #232529;
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e5e7eb;
+}
+.reader-wrap.is-classic.is-night .reader-bottombar.is-classic .bottom-panel .control-label {
+  color: rgba(229, 231, 235, 0.62);
+}
+
+/* 经典模式章末导航：微信读书式双按钮条（上一章次按钮 + 下一章主按钮）。 */
+.classic-chapter-footer {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin-top: 32px;
+}
+.classic-chapter-footer .chapter-end-card {
+  margin-top: 0;
+  flex: 1 1 auto;
+}
+.reader-wrap.is-classic .classic-chapter-footer {
+  margin-top: 44px;
+  padding-top: 24px;
+  border-top: 1px solid var(--classic-border);
+}
+.reader-wrap.is-classic .classic-chapter-prev,
+.reader-wrap.is-classic .classic-chapter-footer .chapter-end-card {
+  min-height: 48px;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+.reader-wrap.is-classic .classic-chapter-prev {
+  flex: 0 1 42%;
+  border: 1px solid var(--classic-border);
+  background: transparent;
+  color: var(--classic-muted);
+  text-align: left;
+}
+.reader-wrap.is-classic .classic-chapter-prev:hover {
+  color: var(--reader-paper-text);
+  border-color: color-mix(in srgb, var(--reader-paper-text) 24%, transparent);
+  background: color-mix(in srgb, var(--reader-paper-text) 4%, transparent);
+}
+.reader-wrap.is-classic .classic-chapter-footer .chapter-end-card {
+  border: 1px solid color-mix(in srgb, var(--classic-accent) 26%, transparent);
+  background: color-mix(in srgb, var(--classic-accent) 8%, transparent);
+  color: var(--classic-accent);
+}
+.reader-wrap.is-classic .classic-chapter-footer .chapter-end-card:hover {
+  background: var(--classic-accent);
+  border-color: var(--classic-accent);
+  color: #ffffff;
+}
+
+/* 经典模式划词工具条：微信读书式深色圆角胶囊，在纸面上保持高对比度。 */
+.reader-wrap.is-classic .sel-bar {
+  background: #2c2e33;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 5px 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+}
+.reader-wrap.is-classic.is-night .sel-bar {
+  background: #363940;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.reader-wrap.is-classic .sel-bar-btn {
+  color: #f3f4f6;
+  border-radius: 999px;
+}
+.reader-wrap.is-classic .sel-bar-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+.reader-wrap.is-classic .sel-bar-btn-ai {
+  color: #b7a6ff;
+}
+.reader-wrap.is-classic .sel-bar-sep {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* 经典模式底部细进度条统一采用微信读书主题蓝。 */
+.reader-wrap.is-classic .reader-progress-fill.book,
+.reader-wrap.is-classic .reader-progress-fill.chapter {
+  background: var(--classic-accent);
+}
+
+@media (max-width: 1080px) {
+  .reader-bottombar.is-classic {
+    right: 14px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .reader-wrap, .reader-wrap *, .reader-toolbar, .reader-bottombar, .reader-progress-fill { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
@@ -6357,4 +9117,50 @@ onUnmounted(() => {
   outline: 2px solid var(--active-chapter);
   outline-offset: 2px;
 }
+
+/* 右侧竖向导航轨固定在抽屉右侧，不随对话区滚动、不出滚动条 */
+.ai-top-bar.sider-rail { flex-shrink: 0; height: 100%; overflow: hidden; }
+.ai-clean-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; }
+.memory-item-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.memory-edit-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(124, 92, 255, 0.25); }
+.memory-edit-buttons { display: flex; align-items: center; gap: 6px; }
+
+.sider-composer-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sider-composer-chips { flex-wrap: wrap; }
+.sider-composer-send { margin-left: auto; white-space: nowrap; }
+
+.ai-model-row { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+.ai-model-row .n-select { flex: 1 1 auto; min-width: 0; }
+.ai-recall-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; }
+.ai-recall-hint { color: var(--r-muted, #646a73); font-size: 11px; line-height: 1.5; }
+
+.memory-timeline > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 4px; }
+.memory-timeline > summary::-webkit-details-marker { display: none; }
+.memory-timeline > summary::after { content: '⌄'; margin-left: auto; opacity: 0.6; }
+.memory-timeline[open] > summary::after { content: '⌃'; }
+
+/* 模型回答的 Markdown：只做排版，不加卡片，跟气泡同一套字号。 */
+.md-body p { margin: 0 0 6px; }
+.md-body p:last-child { margin-bottom: 0; }
+.md-body strong { font-weight: 600; }
+.md-body ul, .md-body ol { margin: 4px 0 6px; padding-left: 18px; }
+.md-body li { margin: 2px 0; }
+.md-body code { padding: 0 3px; border-radius: 4px; background: var(--surface-3, rgba(127, 127, 127, 0.12)); font-size: 12px; }
+.md-body pre { overflow-x: auto; padding: 8px; border-radius: 6px; background: var(--surface-3, rgba(127, 127, 127, 0.12)); }
+.md-body h3, .md-body h4, .md-body h5 { margin: 8px 0 4px; font-size: 13px; }
+.md-body blockquote { margin: 4px 0; padding-left: 8px; border-left: 2px solid var(--r-line); color: var(--r-muted); }
+.md-body table { border-collapse: collapse; font-size: 12px; }
+.md-body th, .md-body td { padding: 2px 6px; border: 1px solid var(--r-line); }
+/* AI 助手独立设置弹窗（teleport 到 body，不能依赖 .sider-shell 内的变量） */
+.ai-settings-modal { width: min(520px, calc(100vw - 48px)); }
+.ai-settings-body { display: flex; flex-direction: column; gap: 16px; }
+.ai-settings-section { display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid rgba(15, 23, 42, 0.08); }
+.ai-settings-section:last-child { padding-bottom: 0; border-bottom: 0; }
+.ai-settings-label { font-size: 13px; font-weight: 600; color: #1f2329; }
+.ai-settings-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; line-height: 1.6; color: #646a73; }
+.ai-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.ai-settings-row .ai-settings-hint { margin-top: 3px; }
+:global(body[data-skin="dark"]) .ai-settings-label { color: #f1f5f9; }
+:global(body[data-skin="dark"]) .ai-settings-hint { color: #94a3b8; }
+:global(body[data-skin="dark"]) .ai-settings-section { border-bottom-color: rgba(255, 255, 255, 0.09); }
 </style>

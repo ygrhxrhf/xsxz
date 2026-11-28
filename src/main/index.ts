@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, session, WebContentsView } from 'electron'
+import { generateChapterMindmap, MindmapError } from './aiMindmap'
 import { join } from 'node:path'
 import { appendFile, readFile, writeFile } from 'node:fs/promises'
 import type { AiBookUsage, AiBudgetEstimate, AiChapterNote, AiCitation, AiJobStart, AiMaterialCoverage, AiPromptKind, AiRequestStage, AiUsage, BrowseReadingChapter, BrowseReadingPage, BrowseState, BrowseChapterLink, MirrorProgress, Settings, SiteRule } from '../shared/types'
@@ -16,6 +17,7 @@ import {
   readChapter,
   deleteBook,
   listTrash,
+  bookDir,
   restoreFromTrash,
   purgeTrash,
   setProgress,
@@ -26,9 +28,17 @@ import {
   setLibraryPath,
   readSummaries,
   writeChapterSummary,
+  readChapterMindmap,
+  writeChapterMindmap,
   writeStorySoFar,
   writeChat,
   readChat,
+  readChatThread,
+  readChatThreadsState,
+  prepareChatThread,
+  markChatThreadStarted,
+  createChatThread,
+  deleteChatThread,
   readAiMemory,
   readAiMemoryCompat,
   writeAiMemory,
@@ -51,6 +61,7 @@ import { assertTrustedAiEndpoint, getSettings, updateSettings, getApiKey, getTie
 import { parsePlaceExtraction, placeExtractionPlan } from './aiPlaces'
 import { choosePlaceCandidate, confirmPlace as confirmMapPlace, geocodePlaces, readPlaces, savePlaces, searchPlaceCandidates } from './mapPlaces'
 import { getMapImage, setMapImage } from './mapImage'
+import { readMatchingRecognition, recognizeOriginalMap } from './atlasRecognition'
 import { previewDownload, confirmDownload, previewCurrentSiteRule, redownloadChapter, cancelDownload, retryFailed, openUnblock, resumeUnblock, checkUpdate, checkAllUpdates, cancelCheckAll, isDownloadBusy, setExternalBusyProbe, setOwnerWindow, setBrowseView, disposeHiddenView, loadPageHtml, loadPageHtmlWithView, startDownloadFromPage, waitForIdleSlice, getPausedForHuman } from './download'
 import { atomicWriteText } from './atomicFile'
 import { cancelMirror, getMirrorState, setMirrorDeps, setMirrorLastState, startMirror } from './mirror'
@@ -75,6 +86,9 @@ import { installJobEventTap } from './agentJobs'
 import { registerProxyIpc } from './proxyIpc'
 import { createProxyAutoUpdate, type ProxyAutoUpdateRuntime } from './proxyAutoUpdate'
 import { registerRuleMarketIpc, createAccountStore, createSafeStorageCredentialStore } from './ruleMarketIpc'
+import { registerCraftIpc, createCraftFetch } from './craftIpc'
+import { createCraftStore } from './craftPush'
+import { loadCraftMaterials } from './craftMaterials'
 import { readMarketSubscriptions, removeMarketSubscription, saveMarketSubscription } from './ruleMarketStore'
 import { addManualPlace } from './mapManualPlace'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
@@ -143,6 +157,8 @@ import {
   planEvidenceChapterReads, selectReaderAnnotations, type EvidenceAnswerNote,
   type EvidenceConversationTurn,
 } from './aiEvidenceQa'
+// 只借类型：核验回调的可选形参在流水线里已经推到闭包外的条件 spread，不标注就成了隐式 any。
+import type { buildEvidenceVerifyMessages } from './aiEvidenceVerify'
 import { aiBudgetWarning, promptBudget } from './aiBudget'
 import { AiReadingFollowService } from './aiReadingFollow'
 import {
@@ -151,6 +167,8 @@ import {
   parseFollowSetPayload,
 } from './aiFollowIpcValidation'
 import { planAiRecap, selectRecapMaterials, validateAiRecapOutput } from './aiRecap'
+import { runReaderAgent, buildReaderAgentSystemPrompt, buildGeneralChatSystemPrompt, formatMemoryDigest } from './aiAgent'
+import { renderedParagraphs } from '../shared/aiText'
 import { indexingText, queueWaitingText } from './aiStageCopy'
 import { BookOverviewService } from './bookOverview'
 import { confirmLegacyReadRange, getReadFrontier, isFullyRead, markReadFrontier, readClippedChapter, readableCitations, visibleMemory } from './readFrontier'
@@ -168,6 +186,7 @@ import {
   parseMemoryRunPayload,
   parseMemorySummaryPayload,
 } from './aiMemoryIpcValidation'
+import { parseReplaceChatPayload } from './aiReplaceChat'
 
 const PARTITION = 'persist:novel'
 const SIDEBAR_WIDTH = 200
@@ -1099,6 +1118,15 @@ function registerIpc(): void {
     account: createAccountStore(),
   })
 
+  // Crafty 联动（src/main/craftIpc.ts）：把一本书的读书笔记推成 Crafty 文档。
+  // 三个频道的形状与 docs/ipc-contract.md 的「Crafty 联动」一节逐字一致。
+  registerCraftIpc((channel, listener) => ipcMain.handle(channel, listener), {
+    store: createCraftStore(),
+    bookDirOf: bookDir,
+    loadMaterials: loadCraftMaterials,
+    fetchJson: createCraftFetch(),
+  })
+
   /** 手工标注一个地名坐标：不消耗腾讯地图配额，坐标由本人给定。 */
   ipcMain.handle('map.addManualPlace', async (_e, payload: { bookId?: unknown; name?: unknown; latitude?: unknown; longitude?: unknown; kind?: unknown; paragraphIndex?: unknown; paragraphOffset?: unknown } | undefined) => {
     try {
@@ -1394,6 +1422,47 @@ function registerIpc(): void {
       return { ok: true, view: await geocodePlaces(bookId, { retryNotFound: payload?.retryNotFound === true }) }
     } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
   })
+  ipcMain.handle('map.recognize', async (_e, payload?: { bookId?: unknown; refresh?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      if (!bookId) return { ok: false, message: '缺少书籍标识' }
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置聊天 API Key' }
+      const book = await getBook(bookId)
+      const result = await aiExclusive(
+        { lane: 'interactive', cls: 'places', bookId, dedupeKey: `atlas:${bookId}` },
+        async (signal) => {
+          const outcome = await recognizeOriginalMap(bookId, {
+            config: trustedAiConfig(settings, apiKey),
+            bookTitle: book.title,
+            refresh: payload?.refresh === true,
+            fetchImpl: (input, init) => {
+              // 取消/超时由 aiExclusive 的信号控制；识别内部另有 90 秒上限。
+              const source = init?.signal
+              const merged = signal
+                ? (source ? AbortSignal.any([signal, source]) : signal)
+                : source
+              return fetch(input, merged ? { ...init, signal: merged } : init)
+            },
+          })
+          if (!outcome.ok) throw new Error(outcome.message)
+          // 只有真正跑了模型才记账；缓存命中的返回里没有 usage。
+          if (outcome.usage) await persistAiUsage(bookId, outcome.usage)
+          return outcome.recognition
+        },
+      )
+      return result.ok ? { ok: true, recognition: result.value } : result
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
+  ipcMain.handle('map.getRecognition', async (_e, payload?: { bookId?: unknown }) => {
+    try {
+      const bookId = typeof payload?.bookId === 'string' ? payload.bookId.trim() : ''
+      if (!bookId) return { ok: false, message: '缺少书籍标识' }
+      // 只读上次保存的结论，不触发任何模型调用；原图换过就不返回旧图的地名。
+      return { ok: true, recognition: await readMatchingRecognition(bookId) }
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) } }
+  })
   ipcMain.handle('agentAudit.list', async (_e, payload?: { limit?: number }) => {
     const limit = typeof payload?.limit === 'number' ? Math.min(500, Math.max(1, Math.floor(payload.limit))) : 100
     // Rebuild from the narrow audit schema: never spread arbitrary disk values to the renderer.
@@ -1609,18 +1678,25 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.getChat', async (_e, { bookId }: { bookId: string }) => {
+  ipcMain.handle('ai.getChat', async (_e, { bookId, threadId }: { bookId: string; threadId?: string }) => {
     try {
-      const chat = await readChat(bookId)
+      // 不带 threadId = 读当前 active 会话（旧调用方照旧能用）。
+      // 历史文件坏掉时 readChatThread 按「没有会话」回空，不报错：报错就等于侧栏打不开，
+      // 可读原因由 ai.listThreads 带回给界面。
+      const chat = await readChatThread(bookId, threadId)
+      if (!chat.ok) return { ok: false, message: chat.message }
       const visible = await Promise.all(chat.messages.map(async (entry) => {
         if (entry.role !== 'assistant') return entry
-        const citations = 'citations' in entry ? entry.citations ?? [] : []
-        if (!citations.length || (await readableCitations(bookId, citations)).length !== citations.length) {
+        if (entry.scope === 'general') return entry
+        if (!Array.isArray(entry.citations)) {
+          return { role: 'assistant' as const, content: '这条旧回答无法按当前已读范围核验，已隐藏；可重新提问。' }
+        }
+        if (entry.citations.length > 0 && (await readableCitations(bookId, entry.citations, undefined, { fullBook: true })).length !== entry.citations.length) {
           return { role: 'assistant' as const, content: '这条旧回答无法按当前已读范围核验，已隐藏；可重新提问。' }
         }
         return entry
       }))
-      return { ok: true, version: chat.version, messages: visible }
+      return { ok: true, version: 2, messages: visible, threadId: chat.threadId }
     }
     catch (e: unknown) { return { ok: false, message: e instanceof Error ? e.message : String(e) } }
   })
@@ -1633,10 +1709,78 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.clearChat', async (_e, { bookId }: { bookId: string }) => {
+  ipcMain.handle('ai.clearChat', async (_e, { bookId, threadId }: { bookId: string; threadId?: string }) => {
     try {
-      await writeChat(bookId, [])
+      const found = await readChatThread(bookId, threadId)
+      if (!found.ok) return { ok: false, message: found.message }
+      // 清空只清这条会话的消息，不删会话本身；一条会话都没有时没什么可清，直接成功。
+      if (found.threadId) await writeChat(bookId, [], { threadId: found.threadId })
       return { ok: true }
+    } catch {
+      return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
+    }
+  })
+
+  // 整段覆盖问答历史：重问、编辑重发、删除某一轮都靠它，
+  // 否则 chatStream/agentChat 只会往后追加，被删的那一轮会被下一次问答带回来。
+  ipcMain.handle('ai.replaceChat', async (_e, payload: unknown) => {
+    let parsed: ReturnType<typeof parseReplaceChatPayload>
+    try {
+      parsed = parseReplaceChatPayload(payload)
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : '问答历史格式无效，无法覆盖' }
+    }
+    try {
+      // 先确认会话存在，再整段覆盖：不存在是参数问题，不该被当成磁盘故障报给读者。
+      const found = await readChatThread(parsed.bookId, parsed.threadId)
+      if (!found.ok) return { ok: false, message: found.message }
+      // 还没有任何会话且要被覆盖成空历史：不必为了写一个空而新建会话。
+      if (!found.threadId && !parsed.messages.length) return { ok: true }
+      await writeChat(parsed.bookId, parsed.messages, found.threadId ? { threadId: found.threadId } : {})
+      return { ok: true }
+    } catch {
+      return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
+    }
+  })
+
+  // ---- 问答会话（线程）--------------------------------------------------------
+  // 一本书可以有多条互不污染的会话：问人物线、问这卷剧情、问伏笔各开一条。
+  // 消息仍落 <书>/ai/chats.json；旧 chat.json 只在读时兼容迁移，不再写入。
+  ipcMain.handle('ai.listThreads', async (_e, { bookId }: { bookId: string }) => {
+    try {
+      const state = await readChatThreadsState(bookId)
+      const threads = state.file.threads
+        .map((thread) => ({
+          id: thread.id,
+          title: thread.title,
+          messageCount: thread.messages.length,
+          updatedAt: thread.updatedAt,
+        }))
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      return {
+        ok: true,
+        threads,
+        activeThreadId: state.file.activeThreadId,
+        // 坏文件按「没有会话」返回，但把原因说清楚：否则读者只会看到会话栏突然空了。
+        ...(state.corrupt ? { message: '问答历史文件已损坏，已按没有会话处理；新建会话后可以继续提问' } : {}),
+      }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.createThread', async (_e, { bookId, title }: { bookId: string; title?: string }) => {
+    try {
+      return await createChatThread(bookId, typeof title === 'string' ? title : undefined)
+    } catch {
+      return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
+    }
+  })
+
+  ipcMain.handle('ai.deleteThread', async (_e, { bookId, threadId }: { bookId: string; threadId: string }) => {
+    try {
+      if (typeof threadId !== 'string' || !threadId) return { ok: false, message: '缺少会话 ID，无法删除会话' }
+      return await deleteChatThread(bookId, threadId)
     } catch {
       return { ok: false, message: '无法保存到书库，请检查磁盘空间和权限' }
     }
@@ -2039,6 +2183,227 @@ function registerIpc(): void {
     return { ok: true }
   })
 
+  /**
+   * AI 对话：pi 驱动的多轮 agent，模型自己决定查目录、读原文、检索、看记忆。
+   * 与证据问答并存而不是替换它——证据问答每条结论强制绑引用，适合「核对剧情」；
+   * 这里适合「聊着读」，追问和跨章综合不会被单轮流水线卡住。
+   */
+  ipcMain.handle('ai.agentChat', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[]; threadId?: string; recallScope?: 'book' | 'progress' }) => {
+    try {
+      const book = await getBook(args.bookId)
+      const frontier = await getReadFrontier(args.bookId)
+      const progressChapterId = book.progress?.chapterId
+      const recallScope = args.recallScope === 'progress' ? 'progress' : 'book'
+      // 「全书」是默认：问答不再被已读进度锁死；只有读者主动关掉「可聊全书」才要求有进度。
+      if (recallScope === 'progress' && !progressChapterId) {
+        return { ok: false, message: '已开启「仅限当前进度」，请先阅读一章再和 AI 聊；或在设置里允许聊全书。' }
+      }
+      if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) return { ok: false, message: '章节不存在' }
+      const question = [...args.messages].reverse().find((message) => message.role === 'user')?.content.trim() ?? ''
+      if (!question) return { ok: false, message: '请输入问题' }
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const config = trustedAiConfig(settings, apiKey)
+      const ordered = [...book.chapters].sort((left, right) => left.index - right.index)
+      const progressPosition = ordered.findIndex((chapter) => chapter.id === progressChapterId)
+      const scopeChapterId = progressChapterId ?? args.chapterId
+      const readable = recallScope === 'book'
+        ? new Set(ordered.filter((chapter) => chapter.status === 'ready').map((chapter) => chapter.id))
+        : new Set(ordered.slice(0, Math.max(0, progressPosition) + 1)
+          .filter((chapter) => chapter.status === 'ready' && Boolean(frontier.chapters[chapter.id]))
+          .map((chapter) => chapter.id))
+      const history = args.messages.slice(0, -1).filter((message): message is { role: 'user' | 'assistant'; content: string } => message.role !== 'system')
+      // 先定下这条问答写回哪个会话：指定了不存在的会话就当场报错，不能静默落回默认会话。
+      const thread = await prepareChatThread(args.bookId, args.threadId)
+      if (!thread.ok) return { ok: false, message: thread.message }
+      const threadId = thread.threadId
+      // 切 active + 补标题要在任务开跑前做：流式回答先落盘后，线程就不再是「空」，
+      // 自动标题永远轮不到（已有标题不会被覆盖）。
+      await markChatThreadStarted(args.bookId, threadId, question)
+
+      return aiStart({
+        lane: 'interactive', cls: 'qa', bookId: args.bookId,
+        dedupeKey: `agent:${args.bookId}:${args.chapterId}:${question}`,
+      }, async (jobId, signal) => {
+        let partial = ''
+        const citations: AiCitation[] = []
+        try {
+          const result = await runReaderAgent({
+            config: { baseUrl: config.baseUrl, model: config.model, apiKey: config.apiKey },
+            systemPrompt: buildReaderAgentSystemPrompt(
+              book.title,
+              ordered[progressPosition]?.title ?? ordered.find((chapter) => chapter.id === args.chapterId)?.title ?? ordered[0]!.title,
+              recallScope,
+            ),
+            history,
+            question,
+            signal,
+            onDelta: (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
+            onTool: (event) => sendAiStage(jobId, event.phase === 'start' ? 'indexing' : 'requesting', event.label),
+            onCitations: (items) => sendAiEvidence(jobId, items, scopeChapterId),
+            toolkit: {
+              listChapters: async () => Promise.all(ordered.map(async (chapter) => {
+                const body = await readChapter(args.bookId, chapter.id).catch(() => null)
+                const clipped = frontier.chapters[chapter.id]
+                const paragraphs = renderedParagraphs(body?.body ?? '')
+                const readRatio = !clipped || !paragraphs.length
+                  ? 0
+                  : isFullyRead(body?.body ?? '', clipped)
+                    ? 1
+                    : Math.min(0.99, (clipped.paragraphIndex + clipped.characterOffset / Math.max(1, paragraphs[clipped.paragraphIndex]?.length ?? 1)) / paragraphs.length)
+                return { id: chapter.id, index: chapter.index, title: chapter.title, readRatio }
+              })),
+              readChapter: async (chapterId) => {
+                const chapter = ordered.find((item) => item.id === chapterId)
+                if (!chapter) throw new Error('章节不存在')
+                if (!readable.has(chapterId)) {
+                  throw new Error(`《${chapter.title}》还没有可读正文，无法引用。`)
+                }
+                const fullBody = recallScope === 'book'
+                  ? (await readChapter(args.bookId, chapterId)).body
+                  : (await readClippedChapter(args.bookId, chapterId, frontier)).body
+                if (fullBody.length > 12000) {
+                  return { title: chapter.title, body: `${fullBody.slice(0, 12000)}\n\n（本章过长，已截断前 12000 字；需要细节请用 search_read_text）`, full: false }
+                }
+                return { title: chapter.title, body: fullBody, full: recallScope === 'book' ? true : isFullyRead((await readChapter(args.bookId, chapterId)).body, frontier.chapters[chapterId]) }
+              },
+              searchReadText: async (query) => {
+                const { citations: hits } = await retrieveLocalEvidence({
+                  bookId: args.bookId,
+                  chapters: ordered,
+                  query: { originalQuestion: query },
+                  options: {
+                    requestedUptoChapterId: recallScope === 'book' ? ordered.at(-1)!.id : scopeChapterId,
+                    progressChapterId: scopeChapterId,
+                    currentChapterId: args.chapterId,
+                    ...(recallScope === 'book' ? { allowUnread: true } : {}),
+                  },
+                  readBody: async (chapterId) => ({
+                    body: recallScope === 'book'
+                      ? (await readChapter(args.bookId, chapterId)).body
+                      : (await readClippedChapter(args.bookId, chapterId, frontier)).body,
+                    status: (await readChapter(args.bookId, chapterId)).status,
+                  }),
+                  stopped: () => signal.aborted,
+                })
+                return hits
+              },
+              memoryDigest: async () => {
+                const memory = await visibleMemory(args.bookId, await readAiMemory(args.bookId), frontier)
+                return memory ? formatMemoryDigest(memory) : ''
+              },
+              chapterNotesDigest: async (chapterId) => {
+                const notes = await listChapterNotes(args.bookId)
+                const visibleNotes = notes.filter((note) => !chapterId || note.chapterId === chapterId)
+                return visibleNotes.slice(-8).map((note) =>
+                  `《${ordered.find((chapter) => chapter.id === note.chapterId)?.title ?? note.chapterId}》\n${note.text}`).join('\n\n')
+              },
+            },
+          })
+          citations.push(...result.citations)
+          const stopped = result.stopReason === 'stopped'
+          const scope: import('../shared/types').AiChatScope =
+            result.toolCalls === 0 && result.citations.length === 0 ? 'general' : 'book'
+          const answerMessages: import('../shared/types').AiEvidenceChatMessage[] = [
+            { role: 'user', content: question },
+            { role: 'assistant', content: result.text, citations: result.citations, scope, uptoChapterId: scopeChapterId, ...(stopped ? { stopped: true } : {}) },
+          ]
+          // 只读回这条会话自己的历史：别的会话的消息不该被并进来。
+          const existing = await readChat(args.bookId, threadId)
+          await saveAiDone(jobId, {
+            jobId, ok: true, text: result.text, citations: result.citations, scope, uptoChapterId: scopeChapterId,
+            ...(stopped ? { stopped: true } : {}),
+          }, () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }), {
+            retrySave: () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }),
+          })
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
+            return
+          }
+          mainWindow?.webContents.send('ai.done', {
+            jobId, ok: false, message: e instanceof Error ? e.message : String(e),
+          })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+  /**
+   * 侧边栏「字词 / 百科」（general 模式）：脱离具体书籍、不挂载查书工具、不校验阅读进度，
+   * 直接走多轮流式请求，回答字词释义、成语典故或通用百科问题，并按当前会话落盘。
+   */
+  ipcMain.handle('ai.generalChat', async (_e, args: { bookId: string; messages: import('../shared/types').AiChatMessage[]; threadId?: string }) => {
+    try {
+      await getBook(args.bookId)
+      const question = [...args.messages].reverse().find((message) => message.role === 'user')?.content.trim() ?? ''
+      if (!question) return { ok: false, message: '请输入问题' }
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const config = trustedAiConfig(settings, apiKey)
+      const thread = await prepareChatThread(args.bookId, args.threadId)
+      if (!thread.ok) return { ok: false, message: thread.message }
+      const threadId = thread.threadId
+      await markChatThreadStarted(args.bookId, threadId, question)
+      const turns = args.messages
+        .filter((message): message is { role: 'user' | 'assistant'; content: string } =>
+          (message.role === 'user' || message.role === 'assistant') && Boolean(message.content.trim()))
+        .slice(-12)
+      const llmMessages = [
+        { role: 'system' as const, content: buildGeneralChatSystemPrompt() },
+        ...turns,
+      ]
+      return aiStart({
+        lane: 'interactive', cls: 'qa', bookId: args.bookId,
+        dedupeKey: `general:${args.bookId}:${question}`,
+      }, async (jobId, signal) => {
+        let partial = ''
+        sendAiStage(jobId, 'preparing')
+        try {
+          sendAiStage(jobId, 'requesting')
+          const result = await streamAiTaskCompletion(
+            config,
+            llmMessages,
+            signal,
+            (delta) => {
+              partial += delta
+              mainWindow?.webContents.send('ai.chunk', { jobId, delta })
+            },
+            { task: 'translate', inputTokenEstimate: Math.ceil(llmMessages.reduce((sum, item) => sum + item.content.length, 0) / 2) },
+          )
+          await persistAiUsage(args.bookId, result.usage)
+          const answerMessages: import('../shared/types').AiEvidenceChatMessage[] = [
+            { role: 'user', content: question },
+            { role: 'assistant', content: result.text, citations: [], scope: 'general' },
+          ]
+          const existing = await readChat(args.bookId, threadId)
+          await saveAiDone(jobId, {
+            jobId, ok: true, text: result.text, usage: result.usage, truncated: result.truncated, citations: [], scope: 'general',
+          }, () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }), {
+            retrySave: () => writeChat(args.bookId, [...existing.messages, ...answerMessages], { threadId }),
+          })
+        } catch (e: unknown) {
+          if (signal.aborted) {
+            mainWindow?.webContents.send('ai.done', aiStoppedDoneEvent(jobId, partial))
+            return
+          }
+          mainWindow?.webContents.send('ai.done', {
+            jobId, ok: false, message: e instanceof Error ? e.message : String(e),
+          })
+        }
+      })
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+
   ipcMain.handle('ai.storySoFar', async (_e, unsafePayload?: unknown) => {
     try {
       const payload = parseMemoryRunPayload(unsafePayload)
@@ -2060,6 +2425,8 @@ function registerIpc(): void {
         aiTaskInstruction(settings, 'recap'),
         recapLength,
         materials,
+        // 记忆只用来给旧章节选挑「还活着的线索」，不会把记忆原文写进提示词。
+        memory,
       )
       const confirmOverBudget = unsafePayload && typeof unsafePayload === 'object' &&
         'confirmOverBudget' in unsafePayload &&
@@ -2127,6 +2494,58 @@ function registerIpc(): void {
         }
       })
     } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.getMindmap', async (_e, args: {
+    bookId: string
+    chapterId: string
+  }) => {
+    try {
+      const book = await getBook(args.bookId)
+      if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) {
+        return { ok: false, message: '章节不存在' }
+      }
+      const result = await readChapterMindmap(args.bookId, args.chapterId)
+      return { ok: true, result }
+    } catch (e: unknown) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('ai.generateMindmap', async (_e, args: {
+    bookId: string
+    chapterId: string
+    force?: boolean
+  }) => {
+    try {
+      const book = await getBook(args.bookId)
+      if (!book.chapters.some((chapter) => chapter.id === args.chapterId)) {
+        return { ok: false, message: '章节不存在' }
+      }
+      if (!args.force) {
+        const cached = await readChapterMindmap(args.bookId, args.chapterId)
+        if (cached) return { ok: true, result: cached, cached: true }
+      }
+      const chapter = await readChapter(args.bookId, args.chapterId)
+      if (!chapter.body.trim()) {
+        return { ok: false, code: 'mindmap_empty', message: '当前章节没有可生成思维导图的正文' }
+      }
+      const settings = await getSettings()
+      const apiKey = await getApiKey()
+      if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
+      const { result, usage } = await generateChapterMindmap(
+        trustedAiConfig(settings, apiKey),
+        { title: chapter.title, text: chapter.body },
+      )
+      await persistAiUsage(args.bookId, usage)
+      await writeChapterMindmap(args.bookId, args.chapterId, result)
+      return { ok: true, result, cached: false }
+    } catch (e: unknown) {
+      if (e instanceof MindmapError) {
+        return { ok: false, code: e.code, message: e.message }
+      }
       return { ok: false, message: e instanceof Error ? e.message : String(e) }
     }
   })
@@ -2496,7 +2915,8 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('ai.chatStream', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[] }) => {    try {
+  ipcMain.handle('ai.chatStream', async (_e, args: { bookId: string; chapterId: string; messages: import('../shared/types').AiChatMessage[]; threadId?: string }) => {
+    try {
       const book = await getBook(args.bookId)
       const frontier = await getReadFrontier(args.bookId)
       const progressChapterId = book.progress?.chapterId
@@ -2509,7 +2929,13 @@ function registerIpc(): void {
       if (!apiKey) return { ok: false, message: '请先在设置中配置 API Key' }
       const tierSenseApiKey = await getTierSenseApiKey()
       const config = trustedAiConfig(settings, apiKey)
-      const existingChat = await readChat(args.bookId)
+      // 先定下这条问答写回哪个会话：指定了不存在的会话就当场报错，不静默落回默认会话。
+      const thread = await prepareChatThread(args.bookId, args.threadId)
+      if (!thread.ok) return { ok: false, message: thread.message }
+      const threadId = thread.threadId
+      // 切 active + 补标题要先于任务开跑：流式回答先落盘后线程就不再是「空」，自动标题就轮不到了。
+      await markChatThreadStarted(args.bookId, threadId, question)
+      const existingChat = await readChat(args.bookId, threadId)
       const persistedMessages: import('../shared/types').AiEvidenceChatMessage[] = [...existingChat.messages]
       const latest = persistedMessages.at(-1)
       if (latest?.role !== 'user' || latest.content !== question) {
@@ -2548,13 +2974,13 @@ function registerIpc(): void {
               jobId, ok: true, text: partial, stopped: true, truncated: false,
               citations: candidateCitations, uptoChapterId: upto,
             },
-            () => writeChat(args.bookId, partialMessages),
-            { retrySave: () => writeChat(args.bookId, partialMessages) },
+            () => writeChat(args.bookId, partialMessages, { threadId }),
+            { retrySave: () => writeChat(args.bookId, partialMessages, { threadId }) },
           )
         }
         sendAiStage(jobId, 'preparing')
         try {
-          await writeChat(args.bookId, persistedMessages, { version: existingChat.version })
+          await writeChat(args.bookId, persistedMessages, { threadId })
         } catch {
           mainWindow?.webContents.send('ai.done', signal.aborted
             ? aiStoppedDoneEvent(jobId, '')
@@ -2590,6 +3016,10 @@ function registerIpc(): void {
               if (uiDetail) sendAiStage(jobId, 'preparing', uiDetail)
             },
           )
+          // 读者可以关掉「回答后核对原文」：关掉时连 verify 回调都不传，流水线自然不发那个请求，
+          // 但仍要把 verifyDisabled 递进去，否则界面上「你自己关的」会被写成「校验失败」。
+          // 缺字段按开启（老设置文件没这个键，不能当作已关闭）。
+          const verifyEvidence = settings.ai?.verifyEvidenceAnswers !== false
           const result = await executeEvidenceQaPipeline({
             question,
             taskInstruction,
@@ -2601,6 +3031,11 @@ function registerIpc(): void {
               [messages.map((message) => message.content)], [], 0,
               '仅发送查询改写；正在检索本地已读内容',
             )),
+            ...(verifyEvidence ? { verify: async (messages: ReturnType<typeof buildEvidenceVerifyMessages>) => {
+              const completion = await runAiTaskCompletion(config, messages, { task: 'evidenceVerify', signal })
+              await persistAiUsage(args.bookId, completion.usage)
+              return completion
+            } } : { verifyDisabled: true }),
             rewrite: async (messages) => {
               const completion = await runAiTaskCompletion(config, messages, { task: 'queryRewrite', signal })
               await persistAiUsage(args.bookId, completion.usage)
@@ -2690,13 +3125,17 @@ function registerIpc(): void {
           if (result.kind === 'answer' && (await readableCitations(args.bookId, result.citations)).length !== result.citations.length) {
             throw new Error('正文或已读范围已变化，请重新提问')
           }
+          // 可信度三件套只随 answer 一起存：noEvidence / unsupported 的回答没有结论可核验。
+          const evidenceMeta = result.kind === 'answer'
+            ? { claims: result.claims, verification: result.verification, droppedClaims: result.droppedClaims }
+            : {}
           const completedMessages: import('../shared/types').AiEvidenceChatMessage[] = [
             ...persistedMessages,
             {
               role: 'assistant',
               content: result.text,
               citations: result.citations,
-              ...(result.kind === 'answer' ? { claims: result.claims } : {}),
+              ...evidenceMeta,
               uptoChapterId: result.uptoChapterId,
             },
           ]
@@ -2704,23 +3143,23 @@ function registerIpc(): void {
             ...persistedMessages,
             {
               role: 'assistant', content: result.text, citations: result.citations,
-              ...(result.kind === 'answer' ? { claims: result.claims } : {}),
+              ...evidenceMeta,
               uptoChapterId: result.uptoChapterId, stopped: true,
             },
           ]
-          const retrySave = () => writeChat(args.bookId, completedMessages)
+          const retrySave = () => writeChat(args.bookId, completedMessages, { threadId })
           await saveAiDone(jobId, {
             jobId, ok: true, text: result.text, usage: result.usage,
             citations: result.citations, uptoChapterId: result.uptoChapterId,
-            ...(result.kind === 'answer' ? { claims: result.claims } : {}),
+            ...evidenceMeta,
             truncated: result.kind === 'answer' ? result.truncated : false,
-          }, () => writeChat(args.bookId, completedMessages, { signal }), {
+          }, () => writeChat(args.bookId, completedMessages, { signal, threadId }), {
             signal,
             stoppedEvent: {
               jobId, ok: true, text: result.text, stopped: true,
               citations: result.citations, uptoChapterId: result.uptoChapterId,
             },
-            saveStopped: () => writeChat(args.bookId, stoppedMessages),
+            saveStopped: () => writeChat(args.bookId, stoppedMessages, { threadId }),
             retrySave,
           })
         } catch (e: unknown) {

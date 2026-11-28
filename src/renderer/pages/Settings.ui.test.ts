@@ -399,6 +399,10 @@ describe('Settings section content visibility', () => {
     await select('AI')
     expect(visibleCard('AI 配置').textContent).toContain('测试连接')
     expect(visibleCard('AI 配置').textContent).toContain('AI 提示词')
+    // 新增的「回答后核对原文」开关放在 AI 配置卡片里：它会影响每次证据问答的花费，
+    // 所以必须能在这张卡片上一眼看到，不能不声不响地埋在提示词或封面那些分区里。
+    expect(visibleCard('AI 配置').textContent).toContain('回答后核对原文')
+    expect(visibleCard('AI 配置').textContent).toContain('关掉可省一次调用')
     await select('站点规则')
     expect(visibleCard('站点规则').textContent).toContain('书名选择器')
     expect(visibleCard('站点规则').textContent).toContain('还没有站点规则')

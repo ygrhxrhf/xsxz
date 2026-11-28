@@ -72,32 +72,24 @@ async function mountReader() {
   return app
 }
 
-/** 助手抽屉是两跳进去的：顶栏「AI 助手」工具按钮 → 工具面板里的「AI 助手」。 */
+/** 顶栏「AI 助手」按钮一键直达侧栏抽屉。 */
 async function openAssistant(): Promise<void> {
   const toolbarButton = document.querySelector<HTMLElement>('[title="AI 助手"]')
   expect(toolbarButton, '顶栏应有 AI 工具入口').toBeTruthy()
   toolbarButton?.click()
   await nextTick()
   await new Promise((resolve) => setTimeout(resolve, 0))
-
-  const entry = [...document.querySelectorAll<HTMLButtonElement>('button')]
-    .find((button) => (button.textContent ?? '').trim() === 'AI 助手')
-  expect(entry, '工具面板里应有「AI 助手」入口').toBeTruthy()
-  entry?.click()
-  await nextTick()
-  await new Promise((resolve) => setTimeout(resolve, 0))
   await nextTick()
 }
 
 describe('Reader 助手面板（拆前安全网）', () => {
-  it('打开助手能看到五类 tab 与四张入口卡', async () => {
+  it('打开助手能看到单层四类常驻 tab', async () => {
     installReaderApi()
     const app = await mountReader()
     await openAssistant()
 
     const text = document.body.textContent ?? ''
-    for (const tab of ['前情', '记忆', '问答', '笔记', '输出']) expect(text).toContain(tab)
-    for (const entry of ['接着读', '找人物与伏笔', '带依据地问', '记住本章']) expect(text).toContain(entry)
+    for (const tab of ['问答', '前情', '记忆', '笔记']) expect(text).toContain(tab)
     app.unmount()
   })
 
@@ -106,7 +98,7 @@ describe('Reader 助手面板（拆前安全网）', () => {
     const app = await mountReader()
     await openAssistant()
 
-    const qaTab = [...document.querySelectorAll<HTMLElement>('.n-tabs-tab')].find((tab) => (tab.textContent ?? '').includes('问答'))
+    const qaTab = [...document.querySelectorAll<HTMLElement>('.ai-top-switch button')].find((tab) => (tab.textContent ?? '').includes('问答'))
     expect(qaTab, '应有「问答」tab').toBeTruthy()
     qaTab?.click()
     await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0))

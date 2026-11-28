@@ -148,7 +148,7 @@ describe('single compatibility downgrade', () => {
     })
     expect(bodies[1]).not.toHaveProperty('reasoning_effort')
     expect(bodies[1]).not.toHaveProperty('response_format')
-    expect(bodies[1].max_tokens).toBe(3_000)
+    expect(bodies[1].max_tokens).toBe(8_000)
   })
 
   it('performs at most one compatibility downgrade', async () => {

@@ -126,6 +126,7 @@ describe('library check-update card helpers', () => {
       'divider-export',
       'export-txt',
       'export-epub',
+      'craft-push',
       'divider-trash',
       'trash',
     ])
@@ -141,6 +142,7 @@ describe('library check-update card helpers', () => {
       'divider-export',
       'export-txt',
       'export-epub',
+      'craft-push',
       'divider-trash',
       'trash',
     ])
@@ -157,6 +159,7 @@ describe('library check-update card helpers', () => {
       'divider-export',
       'export-txt',
       'export-epub',
+      'craft-push',
       'divider-trash',
       'trash',
     ])

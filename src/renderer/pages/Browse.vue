@@ -508,6 +508,12 @@ function openStartPage(): void {
   showStartPage.value = true
 }
 
+/** 侧栏的「添加」：起始页既是唯一的管理面，就顺手把编辑框打开，少一次点击。 */
+function openFavoriteManager(): void {
+  openStartPage()
+  startFavoriteDraft()
+}
+
 function openFavorite(item: BrowseFavorite): void {
   favoriteDraft.value = null
   showStartPage.value = false
@@ -2092,6 +2098,36 @@ onUnmounted(() => {
           </div>
         </section>
 
+        <section class="side-block side-fav" aria-label="常用网站">
+          <div class="side-head">
+            <span class="side-label">常用网站</span>
+            <span class="side-fav-head-actions">
+              <span v-if="browseFavorites.length" class="side-count">{{ String(browseFavorites.length).padStart(2, '0') }}</span>
+              <button type="button" class="side-fav-add" title="添加常用网站" @click="openFavoriteManager">＋</button>
+            </span>
+          </div>
+          <ul v-if="browseFavorites.length" class="side-fav-list">
+            <li v-for="item in browseFavorites" :key="item.url">
+              <div class="side-fav-row" :class="{ current: currentFavorite?.url === item.url }">
+                <button type="button" class="side-fav-main" :title="item.url" @click="openFavorite(item)">
+                  <span class="side-fav-badge" :style="{ '--fav-color': favoriteColor(item.url) }">{{ favoriteInitial(item) }}</span>
+                  <span class="side-fav-text">
+                    <span class="side-fav-title">{{ item.title }}</span>
+                    <span class="side-fav-host">{{ hostOf(item.url) }}</span>
+                  </span>
+                </button>
+                <span class="side-fav-tools">
+                  <button type="button" title="改名" @click="openStartPage(); startFavoriteDraft(item)">改名</button>
+                  <button type="button" title="移除" @click="removeFavorite(item)">移除</button>
+                </span>
+              </div>
+            </li>
+          </ul>
+          <button v-else type="button" class="side-fav-empty" @click="openFavoriteManager">
+            还没有常用网站<br /><small>点地址栏右侧的星标，或点这里添加</small>
+          </button>
+        </section>
+
         <section class="side-block side-recent">
           <div class="side-head">
             <span class="side-label">继续阅读</span>
@@ -2125,6 +2161,16 @@ onUnmounted(() => {
         <form v-show="!toolbarCollapsed && !readingPage" class="browse-toolbar" @submit="onSubmit">
           <div class="browser-nav-row">
             <div class="nav-group">
+              <button
+                class="browser-icon-button"
+                type="button"
+                title="起始页（常用网站）"
+                aria-label="回到起始页"
+                :disabled="startPageVisible"
+                @click="openStartPage"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20h-5.5v-6h-5v6H4z" /></svg>
+              </button>
               <button class="browser-icon-button" type="button" title="后退" aria-label="后退" :disabled="!state.canGoBack" @click="back">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
               </button>
@@ -3020,6 +3066,148 @@ onUnmounted(() => {
   color: var(--focus);
   font: 10px/1 var(--font-mono);
 }
+
+/* 侧栏常用网站：起始页是完整的管理面，这里只保证「收藏完随时能点回去」。 */
+.side-fav {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  max-height: 38%;
+  min-height: 0;
+}
+
+.side-fav-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side-fav-add {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 12px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.side-fav-add:hover {
+  border-color: var(--hover-line);
+  color: var(--text-primary);
+  background: var(--hover);
+}
+
+.side-fav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.side-fav-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 7px;
+  transition: background var(--motion-duration) var(--motion-easing);
+}
+
+.side-fav-row:hover { background: var(--hover); }
+.side-fav-row.current { background: color-mix(in srgb, var(--focus) 10%, transparent); }
+
+.side-fav-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-fav-badge {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fav-color, var(--focus)) 18%, transparent);
+  color: var(--fav-color, var(--focus));
+  font: 600 11px/1 var(--font-mono);
+}
+
+.side-fav-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.side-fav-title,
+.side-fav-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-fav-title { color: var(--text-primary); font-size: 12px; font-weight: 600; }
+.side-fav-host { color: var(--text-muted); font: 10px/1.3 var(--font-mono); }
+
+.side-fav-tools {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  padding-right: 3px;
+  opacity: 0;
+  transition: opacity var(--motion-duration) var(--motion-easing);
+}
+
+.side-fav-row:hover .side-fav-tools,
+.side-fav-row:focus-within .side-fav-tools { opacity: 1; }
+
+.side-fav-tools button {
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.side-fav-tools button:hover { background: var(--hover); color: var(--text-primary); }
+
+.side-fav-empty {
+  width: 100%;
+  padding: 10px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  cursor: pointer;
+}
+
+.side-fav-empty small { font-size: 11px; opacity: 0.8; }
+.side-fav-empty:hover { border-color: var(--hover-line); color: var(--text-secondary); }
 
 .side-recent {
   display: flex;

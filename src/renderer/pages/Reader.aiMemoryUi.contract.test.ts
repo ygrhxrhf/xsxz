@@ -12,16 +12,13 @@ async function readReaderSurface(): Promise<string> {
 }
 
 describe('Reader recap and memory UI contract', () => {
-  it('persists the three recap lengths and exposes their fixed labels', async () => {
+  it('persists the three recap lengths in assistant state while keeping the recap pane free of length radio clutter', async () => {
     const source = await readReaderSurface()
     expect(source).toContain("const recapLength = ref<'short' | 'standard' | 'detailed'>('standard')")
     expect(source).toContain("recapLength.value = s.ai?.recapLength ?? 'standard'")
     expect(source).toContain('window.api.settings.set({ ai: { recapLength: value } })')
     expect(source).toContain('recapLength.value = previous')
     expect(source).toContain('前情长度保存失败，已恢复原设置')
-    expect(source).toContain('简短 · 约 200 字')
-    expect(source).toContain('标准 · 约 500 字')
-    expect(source).toContain('详细 · 约 1000 字')
   })
 
   it('loads, updates, rebuilds, marks, and applies structured memory locally', async () => {
@@ -47,16 +44,18 @@ describe('Reader recap and memory UI contract', () => {
     }
     // 数量断言只看记忆 pane：别的 tab 加折叠列表不该让这条测试误报。
     const memoryPane = source.slice(
-      source.indexOf('<n-tab-pane name="memory"'),
-      source.indexOf('<n-tab-pane name="qa"'),
+      source.indexOf('data-ai-pane="memory"'),
+      source.indexOf('data-ai-pane="qa"'),
     )
     expect(memoryPane).toContain('source.paragraphIndex + 1')
     expect(memoryPane).toContain("item.aliases.join('、')")
     expect(memoryPane).toContain("item.participants.join('、')")
     expect(memoryPane).toContain('source.excerpt')
     expect(memoryPane.match(/<details v-for=/g)).toHaveLength(4)
-    expect(memoryPane.match(/:open="item\.accuracy === 'normal'"/g)).toHaveLength(4)
-    expect(memoryPane.match(/<summary>/g)).toHaveLength(4)
+    // 条目默认收起：一进记忆页先看到标题行，而不是四组全部摊开的正文。
+    expect(memoryPane.match(/:open="item\.accuracy/g)).toBeNull()
+    // 四类记忆各一个折叠标题，外加默认收起的时间线标题。
+    expect(memoryPane.match(/<summary>/g)).toHaveLength(5)
     expect(memoryPane.match(/class="memory-accuracy-tag"/g)).toHaveLength(4)
     expect(memoryPane).not.toMatch(/<summary>[^\n]*<n-tag/)
     expect(source).toContain('还没有人物与剧情记忆。')

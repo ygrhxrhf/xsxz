@@ -10,6 +10,7 @@ import {
   checkUpdateMessage,
   checkUpdateNeedsBrowse,
   collectLibraryTags,
+  computeHoverOverviewPosition,
   createLibraryRefreshTracker,
   filterLibraryBooks,
   findLibraryDuplicateGroups,
@@ -46,10 +47,52 @@ const books = ref<BookListItem[]>([])
 /** 当前在弹层里阅读的全书概览所属的书；null 表示弹层关闭。 */
 const overviewBookId = ref<string | null>(null)
 const overviewBook = computed(() => books.value.find((book) => book.id === overviewBookId.value) || null)
+/** 鼠标悬浮在书籍卡片上时展示的梗概浮层；移出卡片或滚动时清空。 */
+const hoverOverview = ref<{ title: string; text: string; top: number; left: number } | null>(null)
+const HOVER_OVERVIEW_DELAY_MS = 220
+let hoverOverviewTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearHoverOverviewTimer(): void {
+  if (hoverOverviewTimer) {
+    clearTimeout(hoverOverviewTimer)
+    hoverOverviewTimer = null
+  }
+}
+
+function showHoverOverview(title: string, rawText: string | undefined, event: MouseEvent): void {
+  clearHoverOverviewTimer()
+  const text = (rawText || '').trim()
+  if (!text) {
+    hoverOverview.value = null
+    return
+  }
+  const el = event.currentTarget as HTMLElement | null
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const pos = computeHoverOverviewPosition(rect, { width: window.innerWidth, height: window.innerHeight })
+  hoverOverviewTimer = setTimeout(() => {
+    hoverOverviewTimer = null
+    hoverOverview.value = { title, text, top: pos.top, left: pos.left }
+  }, HOVER_OVERVIEW_DELAY_MS)
+}
+
+function hideHoverOverview(): void {
+  clearHoverOverviewTimer()
+  hoverOverview.value = null
+}
+
+watch(() => props.active, (active) => {
+  if (!active) hideHoverOverview()
+})
+watch(overviewBookId, (id) => {
+  if (id) hideHoverOverview()
+})
 const loading = ref(true)
 const retryingIds = ref<string[]>([])
 const checkingIds = ref<string[]>([])
 const exportingIds = ref<string[]>([])
+/** 推送到 Crafty：每本书一次只跑一条。 */
+const craftPushingIds = ref<string[]>([])
 const activeDownloadIds = ref<string[]>([])
 const deleteConfirmId = ref<string | null>(null)
 /** AI 生成封面：设置里开启才给入口。 */
@@ -746,14 +789,14 @@ function hasTask(ids: string[], bookId: string): boolean {
 }
 
 function startTask(
-  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds | typeof unblockingIds,
+  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof craftPushingIds | typeof activeDownloadIds | typeof unblockingIds,
   bookId: string,
 ) {
   if (!ids.value.includes(bookId)) ids.value = [...ids.value, bookId]
 }
 
 function endTask(
-  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds | typeof unblockingIds,
+  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof craftPushingIds | typeof activeDownloadIds | typeof unblockingIds,
   bookId: string,
 ) {
   ids.value = ids.value.filter((id) => id !== bookId)
@@ -852,6 +895,27 @@ async function handleExport(bookId: string, format: 'txt' | 'epub') {
     else message.error(res.message || '导出失败')
   } finally {
     endTask(exportingIds, bookId)
+  }
+}
+
+/**
+ * 把一本书的读书产物推到 Crafty（概览、人物与伏笔、章节笔记、划线批注）。
+ * 第二次推同一本会更新上次那篇；正文不出本机，这里也不碰目录选择。
+ */
+async function handleCraftPush(bookId: string) {
+  if (hasTask(craftPushingIds.value, bookId)) return
+  startTask(craftPushingIds, bookId)
+  try {
+    const res = await window.api.craft.push(bookId)
+    if (res.ok) {
+      message.success(res.result.created ? '已推送到 Crafty（新建一篇）' : '已推送到 Crafty（更新上次那篇）')
+    } else {
+      message.error(res.message || '推送失败')
+    }
+  } catch (e) {
+    message.error(userFacingError(e, '推送失败，请稍后重试'))
+  } finally {
+    endTask(craftPushingIds, bookId)
   }
 }
 
@@ -1058,6 +1122,7 @@ function cardTaskLabel(book: BookListItem): string {
   if (hasTask(checkingIds.value, book.id)) return '正在检查更新…'
   if (hasTask(retryingIds.value, book.id)) return '正在重试失败章…'
   if (hasTask(exportingIds.value, book.id)) return '正在导出…'
+  if (hasTask(craftPushingIds.value, book.id)) return '正在推送到 Crafty…'
   if (hasTask(activeDownloadIds.value, book.id)) return '正在下载新章节…'
   return checkMsg.value[book.id] || libraryFailureLabel(book)
 }
@@ -1087,6 +1152,10 @@ function cardMenuOptions(book: BookListItem): DropdownOption[] {
       return { label: running ? '正在重试失败章…' : '重试失败章', key: entry, disabled: running }
     }
     if (entry === 'view-failed') return { label: '查看失败章', key: entry }
+    if (entry === 'craft-push') {
+      const running = hasTask(craftPushingIds.value, book.id)
+      return { label: running ? '正在推送到 Crafty…' : '推送到 Crafty', key: entry, disabled: running }
+    }
     if (entry === 'export-txt' || entry === 'export-epub') {
       const running = hasTask(exportingIds.value, book.id)
       const format = entry === 'export-txt' ? 'txt' : 'epub'
@@ -1107,6 +1176,7 @@ function handleCardMenu(book: BookListItem, key: string | number) {
   else if (action === 'view-failed') void openFailedList(book.id, book.title)
   else if (action === 'export-txt') void handleExport(book.id, 'txt')
   else if (action === 'export-epub') void handleExport(book.id, 'epub')
+  else if (action === 'craft-push') void handleCraftPush(book.id)
   else if (action === 'trash') deleteConfirmId.value = book.id
 }
 
@@ -1257,13 +1327,16 @@ onMounted(() => {
   unsubCheckAll = window.api.download.onCheckAllProgress((p) => {
     checkAllStatus.value = `正在检查 ${p.current}/${p.total}：《${p.title}》`
   })
+  window.addEventListener('scroll', hideHoverOverview, true)
 })
 
 onUnmounted(() => {
   if (queryDebounceTimer) { clearTimeout(queryDebounceTimer); queryDebounceTimer = null }
+  clearHoverOverviewTimer()
   unsubOverview?.()
   unsubShelf?.()
   window.removeEventListener('keydown', onLibraryKeydown)
+  window.removeEventListener('scroll', hideHoverOverview, true)
   unsubProgress?.()
   unsubBlocked?.()
   unsubCheckAll?.()
@@ -1482,7 +1555,14 @@ onUnmounted(() => {
         class="book-grid"
         :class="{ 'book-grid-large': virtualizeBooks, 'book-grid-compact': shelfDensity === 'compact' }"
       >
-      <n-card v-for="b in gridBooks" :key="b.id" hoverable class="book-card">
+      <n-card
+        v-for="b in gridBooks"
+        :key="b.id"
+        hoverable
+        class="book-card"
+        @mouseenter="(e: MouseEvent) => showHoverOverview(b.title, b.overview?.text, e)"
+        @mouseleave="hideHoverOverview"
+      >
         <button class="book-open-area" type="button" :aria-label="`打开《${b.title}》`" @click="emit('open-book', b.id)">
           <div class="book-cover" :style="coverStyle(b.id)" aria-hidden="true">
             <!-- 大书库里封面不少：屏外延迟加载，解码放到主线程外，滚动时少卡顿。 -->
@@ -1592,7 +1672,13 @@ onUnmounted(() => {
         </div>
         <p class="web-shelf-hint">网页书不占本机空间，读的是站点上的正文；进度与目录存在本机，随时接着读。</p>
         <div class="web-shelf-grid">
-          <div v-for="book in webBooks" :key="book.id" class="web-shelf-card">
+          <div
+            v-for="book in webBooks"
+            :key="book.id"
+            class="web-shelf-card"
+            @mouseenter="(e: MouseEvent) => showHoverOverview(book.title, book.description, e)"
+            @mouseleave="hideHoverOverview"
+          >
             <button class="web-shelf-open" type="button" :title="`继续读《${book.title}》`" @click="continueWebBook(book)">
               <div class="book-cover" :style="coverStyle(book.id)" aria-hidden="true">
                 <img v-if="book.coverUrl" class="book-cover-img" :src="book.coverUrl" loading="lazy" decoding="async" alt="" />
@@ -1856,6 +1942,17 @@ onUnmounted(() => {
         </n-space>
       </template>
     </n-modal>
+    <Transition name="book-hover-overview-fade">
+      <div
+        v-if="hoverOverview"
+        class="book-hover-overview"
+        role="tooltip"
+        :style="{ top: `${hoverOverview.top}px`, left: `${hoverOverview.left}px` }"
+      >
+        <div class="book-hover-overview-title">{{ hoverOverview.title }}</div>
+        <p class="book-hover-overview-text">{{ hoverOverview.text }}</p>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -2883,5 +2980,57 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+}
+
+.book-hover-overview {
+  position: fixed;
+  z-index: 2000;
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  max-height: min(280px, calc(100vh - 24px));
+  overflow: hidden;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
+  box-shadow: var(--card-hover-shadow, 0 12px 32px rgba(0, 0, 0, 0.16));
+  pointer-events: none;
+}
+
+.book-hover-overview-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-hover-overview-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 9;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.book-hover-overview-fade-enter-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.book-hover-overview-fade-leave-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.book-hover-overview-fade-enter-from,
+.book-hover-overview-fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
 }
 </style>

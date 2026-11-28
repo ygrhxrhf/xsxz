@@ -1,5 +1,5 @@
 import { computed, ref } from 'vue'
-import type { Annotation, AnnotationColor, AiMemoryCharacter } from '@shared/types'
+import type { Annotation, AnnotationColor } from '@shared/types'
 import { relocateRange } from '@shared/paragraphSearch'
 
 /**
@@ -18,8 +18,6 @@ export interface ReaderMarksDeps {
   normalizedBody: () => string
   /** 章节在目录里的次序，用于把标记按阅读顺序排列。 */
   chapterOrder: () => Map<string, number>
-  /** 已核实的人物，生词本视图用。 */
-  memoryCharacters: () => AiMemoryCharacter[]
   /** 成功/提示/失败三种反馈。 */
   notify: (kind: 'success' | 'info' | 'error', text: string) => void
   /** 新批注落盘后的通知：阅读器据此开启页内批注并跳到新卡片。 */
@@ -99,7 +97,6 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
     .filter((item) => item.kind === 'highlight' && item.excerpt.trim()))
   const wordbookTerms = computed(() => wordbookHighlights.value.slice(0, WORDBOOK_TERM_LIMIT))
   const wordbookTrimmed = computed(() => wordbookHighlights.value.length > wordbookTerms.value.length)
-  const wordbookPeople = computed(() => deps.memoryCharacters().filter((item) => item.accuracy === 'normal'))
 
   async function reload(): Promise<void> {
     const bookId = deps.bookId()
@@ -289,7 +286,6 @@ export function useReaderMarks(deps: ReaderMarksDeps) {
     wordbookHighlights,
     wordbookTerms,
     wordbookTrimmed,
-    wordbookPeople,
     reload,
     resolveCurrentChapter,
     addHighlight,

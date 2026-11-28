@@ -12,32 +12,9 @@ import type { Align, Block, BlockKind, Footnote, ParsedBook } from './types'
 import { isSourceQuote } from './typography'
 import { noteLayoutSignature, noteTextColorOf, type Annotation, type Locator, type NoteTextColor } from './annotations'
 
-/** 与参考站 noteMarkdown.ts 的 NoteRun/NoteBlock 同形的最小类型（笔记 Markdown 排版）。 */
-export interface NoteRun {
-  text: string
-  bold?: boolean
-  italic?: boolean
-  mono?: boolean
-  sup?: boolean
-  strike?: boolean
-  code?: boolean
-  href?: string
-  footnote?: Footnote
-}
+import type { NoteBlock, NoteRun } from './noteMarkdown'
 
-export interface NoteBlock {
-  kind: 'p' | 'heading' | 'code' | 'quote' | 'list' | 'rule' | 'table'
-  runs?: NoteRun[]
-  text?: string
-  heading?: number
-  indent: number
-  /** 引用深度；上游 Markdown 解析会给数字，纯文本笔记给 0。 */
-  quote: number
-  marker?: string
-  cells?: NoteRun[][]
-  align?: Align[]
-  tableHeader?: boolean
-}
+export type { NoteBlock, NoteRun }
 
 export interface LayoutConfig {
   /** A continuous single-page sequence, without spread padding. */
@@ -247,6 +224,50 @@ function ctx2d() {
 
 const widthCache = new Map<string, number>()
 export function clearMeasureCache() { widthCache.clear() }
+
+/**
+ * 字形相对基线的实际上下沿（单位 px，ascent 向上为正）。
+ *
+ * 高亮必须贴着字，不能按「字号 × 系数」估算：不同字体、不同字（汉字／数字／标点）
+ * 的实际墨迹高度差很多，用统一系数会让暖色块在字上偏一截。
+ * 取所有被测量字符的并集，再按字体缓存。
+ */
+const inkCache = new Map<string, { ascent: number; descent: number }>()
+export function glyphInk(font: string, sample: string): { ascent: number; descent: number } {
+  const text = sample.slice(0, 24) || '国'
+  const key = font + '|' + text
+  const cached = inkCache.get(key)
+  if (cached) return cached
+
+  const fallback = () => {
+    const fs = parseFloat(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? '16')
+    return { ascent: fs * 0.88, descent: fs * 0.12 }
+  }
+  const c = ctx2d()
+  // 没有 2D 上下文时（部分测试环境或极早期的渲染阶段）直接按字号比例兜底。
+  if (!c) return fallback()
+  c.font = font
+
+  let ascent = 0
+  let descent = 0
+  for (const ch of text) {
+    const m = c.measureText(ch)
+    const a = m.actualBoundingBoxAscent
+    const d = m.actualBoundingBoxDescent
+    if (Number.isFinite(a) && a > 0) ascent = Math.max(ascent, a)
+    if (Number.isFinite(d) && d > 0) descent = Math.max(descent, d)
+  }
+  // 有的字体不给实际边界（返回 0）：退回到字号比例，至少不会贴得更差。
+  if (!ascent || !descent) {
+    const fb = fallback()
+    ascent = ascent || fb.ascent
+    descent = descent || fb.descent
+  }
+  const value = { ascent, descent }
+  if (inkCache.size > 4000) inkCache.clear()
+  inkCache.set(key, value)
+  return value
+}
 export function measure(font: string, text: string) {
   const key = font + '|' + text
   let w = widthCache.get(key)
@@ -565,17 +586,10 @@ export async function paginate(
   }
 
   // The paint worker imports layout metrics but must not load DOM-based Markdown dependencies.
-  // spbf 的批注正文按纯文本排版：不解析 Markdown，只按空行分段落、段内保留换行。
-  const markdown = (source: string): NoteBlock[] => source
-    .split(/\n{2,}/)
-    .map((paragraph) => ({
-      kind: 'p' as const,
-      runs: [{ text: paragraph.replace(/\n/g, ' ') }],
-      text: paragraph.replace(/\n/g, ' '),
-      indent: 0,
-      quote: 0,
-    }))
-    .filter((block) => block.text.length > 0)
+  // 只有确实存在批注正文时才动态载入 Markdown 解析，保持 Worker 首屏不带 remark。
+  const markdown = notes.some((a) => a.note!.text.trim())
+    ? (await import('./noteMarkdown')).parseNoteMarkdown
+    : undefined
 
   let page: Page | null = null
   let cursor = 0

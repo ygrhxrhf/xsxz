@@ -166,6 +166,21 @@ describe('settings atomic persistence', () => {
     expect((await getSettings()).ai?.autoBookOverview).toBe(true)
   })
 
+  /**
+   * 核验开关默认开启：这是证据问答的安全网，只有用户显式关掉才会停。
+   * 同时也是「老配置兼容」的断言：老 settings.json 里没有这个键，读出来必须是 true，
+   * 否则升级后所有人都被静默降级成未核验。
+   */
+  it('回答后核对原文默认开启，只有显式 false 才关', async () => {
+    expect((await getSettings()).ai?.verifyEvidenceAnswers).toBe(true)
+    await updateSettings({ ai: { verifyEvidenceAnswers: false } })
+    resetSettingsCacheForTests()
+    expect((await getSettings()).ai?.verifyEvidenceAnswers).toBe(false)
+    await updateSettings({ ai: { verifyEvidenceAnswers: true } })
+    expect((await getSettings()).ai?.verifyEvidenceAnswers).toBe(true)
+  })
+
+
   it('自动追剧默认关闭，单次运行章数只接受正整数区间', async () => {
     expect((await getSettings()).ai?.autoReadingFollow).toBe(false)
     expect((await getSettings()).ai?.followMaxChaptersPerRun).toBe(DEFAULT_AI_PREFS.followMaxChaptersPerRun)
@@ -524,6 +539,8 @@ describe('AI settings compatibility', () => {
       budgetWarningTokens: DEFAULT_AI_PREFS.budgetWarningTokens,
       trustedCustomOrigins: ['https://example.com', 'http://example.com:8080'],
       autoBookOverview: true,
+      // 老配置文件里没有这个键（上面写入的 ai 对象就没它），必须被补成开启。
+      verifyEvidenceAnswers: true,
       autoMonthlyTokenLimit: DEFAULT_AI_PREFS.autoMonthlyTokenLimit,
       overviewModel: '',
       autoReadingFollow: false,
@@ -646,6 +663,21 @@ describe('AI settings compatibility', () => {
     expect(normalizeAiPrefs({ budgetWarningTokens: 100 }).budgetWarningTokens).toBe(1000)
     expect(normalizeAiPrefs({ budgetWarningTokens: 100000 }).budgetWarningTokens).toBe(50000)
     expect(normalizeAiPrefs({ budgetWarningTokens: 'bad' }).budgetWarningTokens).toBe(DEFAULT_AI_PREFS.budgetWarningTokens)
+  })
+
+  /**
+   * 非布尔一律回 true：被手改过的 settings.json、别的语言壳子传来的 'false' 字符串，
+   * 都不该把核验静默关掉。只有真正的布尔 false 才算用户做了选择。
+   */
+  it('核验开关只认布尔值，缺字段与脏值一律按开启处理', () => {
+    expect(normalizeAiPrefs(undefined).verifyEvidenceAnswers).toBe(true)
+    expect(normalizeAiPrefs({}).verifyEvidenceAnswers).toBe(true)
+    expect(normalizeAiPrefs({ verifyEvidenceAnswers: 'yes' }).verifyEvidenceAnswers).toBe(true)
+    expect(normalizeAiPrefs({ verifyEvidenceAnswers: 'false' }).verifyEvidenceAnswers).toBe(true)
+    expect(normalizeAiPrefs({ verifyEvidenceAnswers: 0 }).verifyEvidenceAnswers).toBe(true)
+    expect(normalizeAiPrefs({ verifyEvidenceAnswers: 1 }).verifyEvidenceAnswers).toBe(true)
+    expect(normalizeAiPrefs({ verifyEvidenceAnswers: null }).verifyEvidenceAnswers).toBe(true)
+    expect(normalizeAiPrefs({ verifyEvidenceAnswers: false }).verifyEvidenceAnswers).toBe(false)
   })
 })
 
