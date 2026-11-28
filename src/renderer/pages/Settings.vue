@@ -28,6 +28,7 @@ import { AI_PROMPT_LABELS, BUILTIN_AI_PROMPTS } from '@shared/aiPrompts'
 import ProxySubscriptionPanel from '../components/ProxySubscriptionPanel.vue'
 import RuleMarketPanel from '../components/RuleMarketPanel.vue'
 import SyncPanel from '../components/SyncPanel.vue'
+import CraftPanel from '../components/CraftPanel.vue'
 import {
   AI_CUSTOM_SERVICE_NOTICE,
   customOriginNeedsConfirmation,
@@ -1800,6 +1801,10 @@ onMounted(async () => {
       <!-- 账号与云同步：只同步设置与站点规则，正文与 API Key 不上云。 -->
       <n-divider style="margin:20px 0 12px" title-placement="left">账号与云同步</n-divider>
       <SyncPanel />
+
+      <!-- Crafty 联动：把读书笔记推成 Crafty 文档，正文不上传。 -->
+      <n-divider style="margin:20px 0 12px" title-placement="left">Crafty 联动</n-divider>
+      <CraftPanel />
     </n-card>
 
     <n-card v-show="activeSection === 'backup'" title="备份与恢复" class="settings-card">
