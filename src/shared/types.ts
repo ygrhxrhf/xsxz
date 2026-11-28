@@ -788,6 +788,35 @@ export interface SyncBundle {
 }
 
 /**
+ * Crafty 联动（把读书笔记推成文档）的连接状态。
+ *
+ * 只推读书产物：全书概览、人物与伏笔、章节笔记、划线批注。书库正文不上传。
+ * 令牌与云同步的账号令牌分开存，同样走 safeStorage，渲染层只拿布尔位。
+ */
+export interface CraftState {
+  /** 端点可推送：填了 http(s) 地址且令牌已保存。 */
+  configured: boolean
+  /** Crafty 站点根地址，如 https://craft.example.com；未配置为空串。 */
+  endpoint: string
+  tokenConfigured: boolean
+  /** 有密文但本机解不开：界面提示「重新填写」而不是「未配置」。 */
+  tokenUnreadable?: boolean
+}
+
+/** 一次推送的结果。 */
+export interface CraftPushResult {
+  /** Crafty 里的文档 id；下次推同一本书用它做幂等更新。 */
+  docId: string
+  title: string
+  /** true = 新建了一篇；false = 更新了上次推的那篇。 */
+  created: boolean
+  /** 推送的 Markdown 字节数（UTF-8）。 */
+  bytes: number
+  pushedAt: string
+  endpoint: string
+}
+
+/**
  * 站点规则市场里的一条共享规则。
  *
  * 市场的规则是「别人写好的抽取规则」：只含 CSS 选择器，不含任何凭据。

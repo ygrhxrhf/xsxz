@@ -4800,6 +4800,7 @@ onUnmounted(() => {
               <template v-else>服务未返回 token 用量。</template>
             </div>
             <div v-if="bookUsage" class="subtle">本书累计 {{ bookUsage.calls }} 次模型调用，服务已报告输入 {{ bookUsage.inputTokens }} / 输出 {{ bookUsage.outputTokens }} tokens。</div>
+            <div v-if="currentAssistantBudget" class="subtle"><strong>本次发送范围</strong>：{{ currentAssistantBudget.range }} · {{ currentAssistantBudget.sentCharacters }} 字 / {{ currentAssistantBudget.estimatedTokens }} tokens（估算）</div>
             <div v-if="currentAssistantBudget && currentAssistantBudget.sentCharacters > 20000" class="subtle">本次预计 {{ currentAssistantBudget.sentCharacters }} 字，接近 30000 字单次预算。</div>
             <div v-if="autoBudget" class="subtle">
               本书 {{ autoBudget.month }} 自动任务：已用约 {{ autoBudget.usedTokens }} / {{ autoBudget.limitTokens }} tokens，剩余约 {{ autoBudget.remainingTokens }} tokens。

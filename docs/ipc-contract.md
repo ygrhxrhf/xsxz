@@ -456,6 +456,24 @@
 - `sync.signOut` 只清本机令牌，不动云端已存的数据。
 - 登录与同步状态落盘在 `%APPDATA%/spbf/sync-account.json`（与 `settings.json` 同目录）。
 
+## Crafty 联动
+
+把一本书的**读书产物**推成 Crafty（`ygrhxrhf/craft`）里的一篇文档。**书库正文永不上传**：
+只推全书概览、人物与关系、伏笔、关键事件、章节笔记、划线批注。
+
+| 频道 | 方向 | 请求 | 响应 |
+|---|---|---|---|
+| `craft.status` | invoke | 无 | `{ ok: true; state: CraftState }` |
+| `craft.configure` | invoke | `{ endpoint?: string; token?: string }` | `{ ok: true; state: CraftState } \| { ok: false; message: string }` |
+| `craft.push` | invoke | `{ bookId: string }` | `{ ok: true; result: CraftPushResult } \| { ok: false; message: string }` |
+
+- `CraftState` 只有 `{ configured, endpoint, tokenConfigured, tokenUnreadable? }`：**令牌永不返回渲染层**。
+- 令牌与地址落 `%APPDATA%/spbf/craft-push.json`，令牌走 `safeStorage`（与 `apiKeyEnc` 同规格）；`token: ''` 等于清除。
+- `endpoint` 必须是 `http(s)` 地址；直接粘对端完整导入地址（`…/api/v1/import/markdown`）也认。
+- 推送走 `POST <endpoint>/api/v1/import/markdown`，头 `Authorization: Bearer <写入令牌>`；对端只读令牌回 403、`documentId` 不存在回 404。
+- 幂等：每本书的 `ai/craft-link.json` 记 `{ docId, endpoint, contentHash, pushedAt }`；第二次推同一本带 `documentId` 更新上次那篇，对端 404 时自动退回新建一次。
+- 单篇上限 450000 字符（对端上限 500000）；超限直接拒绝，不发请求。
+
 ## 付费墙自动解锁
 
 下载与预览共用，实现在 `src/main/paywallUnlock.ts`，只处理「正文已经发到浏览器、只是被页面挡住」的情况。
@@ -630,6 +648,7 @@ window.api = {
   proxy: { test, scan, subscribe, parseSubscription, selectNode, kernelState, installKernel, stopKernel, autoUpdateState, setAutoUpdate, refreshSubscription, speedTest },
   ruleMarket: { list, apply, subscribe, unsubscribe },
   sync: { status, signIn, signOut, run },
+  craft: { status, configure, push },
   backup: { create, restore, runAuto },
   ocr: { status },
   annotations: { list, add, update, remove },
