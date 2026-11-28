@@ -76,7 +76,9 @@ describe('shared visual shell contract', () => {
   it('keeps shell lifecycle and Naive UI radii aligned with the design system', async () => {
     const app = await readRendererSource('App.vue')
     expect(app).toContain("const tab = ref<Tab>('browse')")
-    expect(app).not.toContain('window.api.library.list()')
+    // 续读是用户点「阅读」页签时才发生的事：启动的 onMounted 里不许碰 currentBookId。
+    const mounted = app.slice(app.indexOf('onMounted(async () => {'), app.indexOf('onUnmounted('))
+    expect(mounted).not.toContain('currentBookId')
     expect(app).toContain("  currentBookId.value = bookId\n  tab.value = 'reader'\n")
     expect(app.match(/v-show="tab ===/g)).toHaveLength(4)
     expect(app).toContain('unsubProgress = window.api.download.onProgress(onDownloadProgress)')
