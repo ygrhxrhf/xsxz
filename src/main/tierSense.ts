@@ -16,7 +16,7 @@ interface TierSenseDecision {
   reason?: string
 }
 
-interface TierSenseClient {
+export interface TierSenseClient {
   difficulty(text: string, task: AiTaskKind, signal?: AbortSignal): Promise<TierSenseDifficulty | null>
   compress(text: string, task: AiTaskKind, signal?: AbortSignal): Promise<TierSenseCompression | null>
   memoryDecide(input: { bookTitle: string; batchCharacters: number; candidateCount: number },
@@ -189,7 +189,7 @@ function splitCompressibleBody(prompt: string): { head: string; body: string } |
   return null
 }
 
-function createTierSenseAdvisor(
+export function createTierSenseAdvisor(
   client: TierSenseClient | null,
   task: AiTaskKind,
   report: (logLine: string, uiDetail?: string) => void,
