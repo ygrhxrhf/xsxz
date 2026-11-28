@@ -7,6 +7,7 @@ const EXISTING_API_CHANNELS = new Set([
   'window.api.annotations.remove',
   'window.api.annotations.update',
   'window.api.ai.cancel',
+  'window.api.ai.test',
   'window.api.ai.chapterFinished',
   'window.api.ai.findScenes',
   'window.api.ai.generateResumeCard',

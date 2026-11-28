@@ -91,6 +91,8 @@ const loading = ref(true)
 const retryingIds = ref<string[]>([])
 const checkingIds = ref<string[]>([])
 const exportingIds = ref<string[]>([])
+/** 推送到 Crafty：每本书一次只跑一条。 */
+const craftPushingIds = ref<string[]>([])
 const activeDownloadIds = ref<string[]>([])
 const deleteConfirmId = ref<string | null>(null)
 /** AI 生成封面：设置里开启才给入口。 */
@@ -787,14 +789,14 @@ function hasTask(ids: string[], bookId: string): boolean {
 }
 
 function startTask(
-  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds | typeof unblockingIds,
+  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof craftPushingIds | typeof activeDownloadIds | typeof unblockingIds,
   bookId: string,
 ) {
   if (!ids.value.includes(bookId)) ids.value = [...ids.value, bookId]
 }
 
 function endTask(
-  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof activeDownloadIds | typeof unblockingIds,
+  ids: typeof retryingIds | typeof checkingIds | typeof exportingIds | typeof craftPushingIds | typeof activeDownloadIds | typeof unblockingIds,
   bookId: string,
 ) {
   ids.value = ids.value.filter((id) => id !== bookId)
@@ -893,6 +895,27 @@ async function handleExport(bookId: string, format: 'txt' | 'epub') {
     else message.error(res.message || '导出失败')
   } finally {
     endTask(exportingIds, bookId)
+  }
+}
+
+/**
+ * 把一本书的读书产物推到 Crafty（概览、人物与伏笔、章节笔记、划线批注）。
+ * 第二次推同一本会更新上次那篇；正文不出本机，这里也不碰目录选择。
+ */
+async function handleCraftPush(bookId: string) {
+  if (hasTask(craftPushingIds.value, bookId)) return
+  startTask(craftPushingIds, bookId)
+  try {
+    const res = await window.api.craft.push(bookId)
+    if (res.ok) {
+      message.success(res.result.created ? '已推送到 Crafty（新建一篇）' : '已推送到 Crafty（更新上次那篇）')
+    } else {
+      message.error(res.message || '推送失败')
+    }
+  } catch (e) {
+    message.error(userFacingError(e, '推送失败，请稍后重试'))
+  } finally {
+    endTask(craftPushingIds, bookId)
   }
 }
 
@@ -1099,6 +1122,7 @@ function cardTaskLabel(book: BookListItem): string {
   if (hasTask(checkingIds.value, book.id)) return '正在检查更新…'
   if (hasTask(retryingIds.value, book.id)) return '正在重试失败章…'
   if (hasTask(exportingIds.value, book.id)) return '正在导出…'
+  if (hasTask(craftPushingIds.value, book.id)) return '正在推送到 Crafty…'
   if (hasTask(activeDownloadIds.value, book.id)) return '正在下载新章节…'
   return checkMsg.value[book.id] || libraryFailureLabel(book)
 }
@@ -1128,6 +1152,10 @@ function cardMenuOptions(book: BookListItem): DropdownOption[] {
       return { label: running ? '正在重试失败章…' : '重试失败章', key: entry, disabled: running }
     }
     if (entry === 'view-failed') return { label: '查看失败章', key: entry }
+    if (entry === 'craft-push') {
+      const running = hasTask(craftPushingIds.value, book.id)
+      return { label: running ? '正在推送到 Crafty…' : '推送到 Crafty', key: entry, disabled: running }
+    }
     if (entry === 'export-txt' || entry === 'export-epub') {
       const running = hasTask(exportingIds.value, book.id)
       const format = entry === 'export-txt' ? 'txt' : 'epub'
@@ -1148,6 +1176,7 @@ function handleCardMenu(book: BookListItem, key: string | number) {
   else if (action === 'view-failed') void openFailedList(book.id, book.title)
   else if (action === 'export-txt') void handleExport(book.id, 'txt')
   else if (action === 'export-epub') void handleExport(book.id, 'epub')
+  else if (action === 'craft-push') void handleCraftPush(book.id)
   else if (action === 'trash') deleteConfirmId.value = book.id
 }
 

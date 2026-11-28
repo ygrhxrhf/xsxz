@@ -21,6 +21,25 @@
   7 条因 master 的 Reader.vue 新增 `ai.onExternalSources` 而测试桩没跟上。
 - 未验证：超长章（2000 段）只走了 jsdom；触屏捏合未在真机试。
 - 下一步第一条命令：在主目录 `git merge --ff-only feat/mindmap-fullscreen`（需用户点头，之后再 `git push`）。
+## Crafty 联动：把读书笔记推成文档（2026-11-28，本轮完成）
+
+- 做到哪：新增 `craft.status` / `craft.configure` / `craft.push` 三频道。一本书的全书概览、人物与关系、
+  伏笔、关键事件、章节笔记、划线批注拼成一篇 Markdown，走 `POST <endpoint>/api/v1/import/markdown`
+  推成 Crafty（`ygrhxrhf/craft`）里的一篇文档；**书库正文不上传**。
+- 幂等：每本书 `<bookDir>/ai/craft-link.json` 记 `{docId, endpoint, contentHash, pushedAt}`，
+  第二次推同一本带 `documentId` 更新上次那篇；对端回 404（那篇被删）时自动退回新建一次。
+  换了站点不复用旧 docId。
+- 令牌：`userData/craft-push.json`，令牌走 `safeStorage`（与 `apiKeyEnc` 同规格），渲染层只拿布尔位；
+  `token: ''` 等于清除。对端读令牌在本机先挡住（对端还会回 403）。
+- 入口：设置页「Crafty 联动」面板（地址 / 令牌 / 状态）；书库书卡「⋯ → 推送到 Crafty」。
+- 契约：`agentCapabilities.ts` 三条（status=读、configure=破+令牌确认、push=写）、
+  `docs/agent-integration-design.md` §4.12.2、`docs/ipc-contract.md`「Crafty 联动」与 preload 形状段。
+  频道数 163 → 166，脚本复核 `code=166 doc=181`、`sec4Rows=166 unique=166`。
+- 验证：`npm run typecheck` 0；craft 相关单测 24 条全绿（craftMarkdown 7 / craftPush 12 / craftIpc 5）；
+  契约测试 4 组全绿（agentCapabilities / ipcChannels / preload / libraryCard）；
+  `npm test` 2384 passed / 4 failed，4 条红 `git stash` 后在 HEAD 上重现，与本轮无关。
+- 下一步第一条命令：`npx vitest run src/main/craftMarkdown.test.ts src/main/craftPush.test.ts src/main/craftIpc.test.ts`
+- 未验证：真机对端联调（本机到 github/craft 的代理不通，没起 Crafty 实例）；`npm run build` 未跑。
 
 ## 工作区收口 + 启动自动追更（2026-11-21，本轮完成）
 

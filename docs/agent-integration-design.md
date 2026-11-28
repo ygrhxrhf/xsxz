@@ -45,8 +45,8 @@
 
 | 事实 | 证据 |
 |---|---|
-| 主进程注册 **163** 个 `ipcMain.handle` 频道 | 在 137 条清单基础上新增 `ai.extractPlaces`、`ai.getMindmap`/`ai.generateMindmap`、8 个 `map.*`、`map.addManualPlace`、`map.getRecognition`/`map.recognize`、4 个 `proxy.*`、8 个 `ruleMarket.*`/`sync.*`，以及多会话与三档问答的 `ai.listThreads`/`ai.createThread`/`ai.deleteThread`/`ai.replaceChat`/`ai.generalChat` 频道（能力清单同步 163 条）。数量与两端一致性由 `agentCapabilities.contract.test.ts` 与 `ipcChannels.contract.test.ts` 递归扫描 `src/main` 校验，不再依赖手写行号 |
-| 契约文档已覆盖全部 163 个 invoke 频道，另记录 15 条主→渲染推送事件（表内共 178 行） | `docs/ipc-contract.md`；可复现的比对脚本与输出见 §7.1 |
+| 主进程注册 **166** 个 `ipcMain.handle` 频道 | 在 137 条清单基础上新增 `ai.extractPlaces`、`ai.getMindmap`/`ai.generateMindmap`、8 个 `map.*`、`map.addManualPlace`、`map.getRecognition`/`map.recognize`、4 个 `proxy.*`、8 个 `ruleMarket.*`/`sync.*`、3 个 `craft.*`（Crafty 联动），以及多会话与三档问答的 `ai.listThreads`/`ai.createThread`/`ai.deleteThread`/`ai.replaceChat`/`ai.generalChat` 频道（能力清单同步 166 条）。数量与两端一致性由 `agentCapabilities.contract.test.ts` 与 `ipcChannels.contract.test.ts` 递归扫描 `src/main` 校验，不再依赖手写行号 |
+| 契约文档已覆盖全部 166 个 invoke 频道，另记录 15 条主→渲染推送事件（表内共 181 行） | `docs/ipc-contract.md`；可复现的比对脚本与输出见 §7.1 |
 | 应用**有单实例锁**（P5 已落地） | `app.requestSingleInstanceLock()` 在 `src/main/index.ts`，第二个实例直接退出，`second-instance` 聚焦已有窗口 |
 | 书库写锁只在**进程内**有效 | `src/main/library.ts:199` 的 `bookLocks` 是模块级 `Map`；`withBookLock` 在 `src/main/library.ts:213-230` |
 | 恢复期间的写互斥也只在进程内 | `src/main/libraryMaintenance.ts` 共 33 行（末尾有 LF）；`withLibraryWrite` 在 `:15-23`，`beginLibraryRestore` 在 `:25-29`，`runAsLibraryRestore` 在 `:31-33` |
@@ -164,7 +164,7 @@ sequenceDiagram
 
 ### 3.4 单一真源：能力清单
 
-实现已新增 `src/shared/agentCapabilities.ts` 元数据清单（163 条）；它不是业务服务层，不包含 handler 实现。关键导出为 `CAPABILITIES`、`EXPOSED_CAPABILITIES`、`CORE_CAPABILITIES`、`capabilitiesForToolset()` 与 `capabilityForTool()`。
+实现已新增 `src/shared/agentCapabilities.ts` 元数据清单（166 条）；它不是业务服务层，不包含 handler 实现。关键导出为 `CAPABILITIES`、`EXPOSED_CAPABILITIES`、`CORE_CAPABILITIES`、`capabilitiesForToolset()` 与 `capabilityForTool()`。
 
 ```ts
 export interface AgentCapability {
@@ -227,7 +227,7 @@ export interface AgentCapability {
 
 ---
 
-## 4. 能力清单（163 个频道）
+## 4. 能力清单（166 个频道）
 
 图例：
 
@@ -471,17 +471,25 @@ export interface AgentCapability {
 | `map.getRecognition` | `map_get_recognition` | 读 | — | disk | 只读上次保存的原图识别结论，不调用模型 |
 | `map.recognize` | `map_recognize` | 写 | dry | key | 视觉模型读原图 + 城市库匹配坐标；缓存命中不花钱 |
 
-**统计**：163 个 handler = 156 个 MCP tool + 7 个不暴露（3 个 `dialog.*`、`library.pickCoverFile`、`browse.setBounds`、`browse.setVisible`、`browse.zoom`）。
+### 4.12.2 Crafty 联动（3）
+
+| 频道 | MCP tool | 类 | 确认 | 依赖 | 说明 |
+|---|---|---|---|---|---|
+| `craft.status` | `craft_status` | 读 | — | key | 只读连接状态：给 `configured`/`endpoint`/`tokenConfigured`，令牌本身永不出主进程 |
+| `craft.configure` | `craft_configure` | 破 | tok | key | 保存地址与写入令牌（safeStorage 加密）；改地址＝改读书笔记的出境去向，故事实上属破坏性 |
+| `craft.push` | `craft_push` | 写 | — | key | 推全书概览/人物与伏笔/章节笔记/划线成一篇文档，不含书库正文；第二次推同一本更新上次那篇（记在 `ai/craft-link.json`） |
+
+**统计**：166 个 handler = 159 个 MCP tool + 7 个不暴露（3 个 `dialog.*`、`library.pickCoverFile`、`browse.setBounds`、`browse.setVisible`、`browse.zoom`）。
 
 **本节完整性复核**（对 §4 正文表格，不含 §5.3 与 §7 的交叉引用表）：
 
 ```
-sec4Rows=163 unique=163 missing=0 extra=0
-per-section: 4.1=19 4.2=7 4.3=3 4.4=24 4.5=4 4.6=8 4.7=10 4.8=3 4.9=4 4.9.1=8 4.10=7 4.11=12 4.12=43 4.12.1=11 => 163
-4.12 内部: 42 个 ai.* + ocr.status = 43；4.12.1: 11 个 map.* = 11
+sec4Rows=166 unique=166 missing=0 extra=0
+per-section: 4.1=19 4.2=7 4.3=3 4.4=24 4.5=4 4.6=8 4.7=10 4.8=3 4.9=4 4.9.1=8 4.10=7 4.11=12 4.12=43 4.12.1=11 4.12.2=3 => 166
+4.12 内部: 42 个 ai.* + ocr.status = 43；4.12.1: 11 个 map.* = 11；4.12.2: 3 个 craft.* = 3
 ```
 
-即 163 行、163 个唯一频道，与 `ipcMain.handle` 集合完全相等。§4.13 是 Electron 耦合说明表，不是频道清单，不参与计数。
+即 166 行、166 个唯一频道，与 `ipcMain.handle` 集合完全相等。§4.13 是 Electron 耦合说明表，不是频道清单，不参与计数。
 
 ### 4.13 Electron 耦合面与 agent 侧处理
 
@@ -681,7 +689,7 @@ Compare-Object $code $doc | Where-Object SideIndicator -eq '<=' | ForEach-Object
 实际输出：
 
 ```
-code=163 doc=178
+code=166 doc=181
 --- doc-only ---
 ai.budget
 ai.chunk
@@ -703,14 +711,14 @@ shelf.changed
 
 读法：
 
-- 代码侧 **163** 个 handler。
-- 契约文档表格里 **178** 个唯一频道名 = 163 个 invoke + **15** 个主→渲染推送事件（上面列出的 15 条）。
+- 代码侧 **166** 个 handler。
+- 契约文档表格里 **181** 个唯一频道名 = 166 个 invoke + **15** 个主→渲染推送事件（上面列出的 15 条）。
 - **`code-only` 为空**：没有任何 handler 未登记。
 - 文档多出的 15 条全部是推送事件，本就不该出现在 `ipcMain.handle` 集合里。
 
 因此 **H1 被证伪**：AI 频道没有缺失条目。34 个 `ai.*` 频道与 `ocr.status` 全部已在文档中登记；`docs/ipc-contract.md` 的 AI 章节与代码逐条对得上。这条结论要写进评审记录，避免后续按"补缺口"做重复工作。
 
-同一脚本再对本文档 §4 表格跑一遍，得到 `sec4Rows=163 unique=163 missing=0 extra=0`（见 §4 末尾），说明能力清单与代码同源。
+同一脚本再对本文档 §4 表格跑一遍，得到 `sec4Rows=166 unique=166 missing=0 extra=0`（见 §4 末尾），说明能力清单与代码同源。
 
 计数口径的独立核验（按文件聚合 handler 数，`Select-String` 报的是文件真实行号）：
 
@@ -730,14 +738,15 @@ $non = [regex]::Matches($c, '(?m)^\| `([a-zA-Z]+(?:\.[a-zA-Z]+)+)` \| (?!invoke)
 ```
 
 ```
-index.ts=130
+index.ts=127
 libraryIpc.ts=24
 proxyIpc.ts=4
 ruleMarketIpc.ts=8
-docInvoke=163 docNonInvoke=15 docTotal=178
+craftIpc.ts=3
+docInvoke=166 docNonInvoke=15 docTotal=181
 ```
 
-三组数字与 §2、§4 的表述一致：163 = 130（`index.ts` 里的 `ipcMain.handle` 行，含跨行写法）+ 24（书库域）+ 4（代理）+ 8（规则市场与同步）；文档 178 = 163 个 invoke + 15 个推送事件。
+三组数字与 §2、§4 的表述一致：166 = 127（`index.ts` 里的 `ipcMain.handle` 行，含跨行写法）+ 24（书库域）+ 4（代理）+ 8（规则市场与同步）+ 3（Crafty 联动）；文档 181 = 166 个 invoke + 15 个推送事件。
 
 > 一个容易踩的坑：按**行**跑的 `grep -n "ipcMain.handle('ai\."` 只能数出 **32** 条，因为 `ai.test` 的 handler 写成 `ipcMain.handle(` + 换行 + `'ai.test',`。跨行正则才拿到 **42** 个 `ai.*`。所以本文的“42 个 `ai.*`”是跨行计数结果，与 §4.12 的 43 行（+`ocr.status`）对得上。
 

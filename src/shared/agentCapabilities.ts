@@ -1199,6 +1199,41 @@ const SPECS: readonly CapabilitySpec[] = [
     coreToolset: false,
   },
 
+  // ── Crafty 联动（推读书笔记） ────────────────────────────────────────────
+  {
+    channel: 'craft.status',
+    title: '读取 Crafty 连接状态',
+    tier: 'read',
+    confirm: 'none',
+    deps: ['key'],
+    params: obj(),
+    result: '{ ok: true, state: CraftState }（只有布尔位，永不返回令牌）',
+    description: '读取 Crafty 联动的地址与令牌是否已配置。只返回 configured/endpoint/tokenConfigured，令牌本身不出主进程。',
+    coreToolset: false,
+  },
+  {
+    channel: 'craft.configure',
+    title: '设置 Crafty 地址与令牌',
+    tier: 'destructive',
+    confirm: 'token',
+    deps: ['key'],
+    params: obj({ endpoint: strOpt('Crafty 站点根地址，http(s) 开头'), token: strOpt('写入令牌；传空串清除') }),
+    result: '{ ok: true, state: CraftState } 或 { ok: false, message }',
+    description: '保存推送目标与写入令牌（safeStorage 加密）。改地址等于改变读书笔记的出境去向，故按破坏性分级要令牌确认。',
+    coreToolset: false,
+  },
+  {
+    channel: 'craft.push',
+    title: '推送读书笔记到 Crafty',
+    tier: 'write',
+    confirm: 'none',
+    deps: ['key', 'disk'],
+    params: obj({ bookId: str('书籍编号') }),
+    result: '{ ok: true, result: CraftPushResult } 或 { ok: false, message }',
+    description: '把一本书的全书概览、人物与伏笔、章节笔记、划线批注推成 Crafty 里的一篇文档；不含书库正文。第二次推同一本更新上次那篇（记在书的 ai/craft-link.json）。',
+    coreToolset: false,
+  },
+
   // ── 地图 ────────────────────────────────────────────────────────────────
   {
     channel: 'map.getKey',

@@ -12,6 +12,7 @@ export type LibraryMenuKey =
   | 'view-failed'
   | 'export-txt'
   | 'export-epub'
+  | 'craft-push'
   | 'trash'
 export type LibraryMenuEntry = LibraryMenuKey | 'divider-export' | 'divider-trash'
 
@@ -91,7 +92,7 @@ export function libraryMenuEntries(
   if (!book.coverPath) entries.push('gen-cover')
   if (isDownloadBook(book)) entries.push('quality', 'check-update')
   if (hasFailedChapters(book)) entries.push('retry-failed', 'view-failed')
-  entries.push('divider-export', 'export-txt', 'export-epub', 'divider-trash', 'trash')
+  entries.push('divider-export', 'export-txt', 'export-epub', 'craft-push', 'divider-trash', 'trash')
   return entries
 }
 

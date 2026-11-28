@@ -18,6 +18,7 @@ import {
   readChapter,
   deleteBook,
   listTrash,
+  bookDir,
   restoreFromTrash,
   purgeTrash,
   setProgress,
@@ -90,6 +91,9 @@ import { installJobEventTap } from './agentJobs'
 import { registerProxyIpc } from './proxyIpc'
 import { createProxyAutoUpdate, type ProxyAutoUpdateRuntime } from './proxyAutoUpdate'
 import { registerRuleMarketIpc, createAccountStore, createSafeStorageCredentialStore } from './ruleMarketIpc'
+import { registerCraftIpc, createCraftFetch } from './craftIpc'
+import { createCraftStore } from './craftPush'
+import { loadCraftMaterials } from './craftMaterials'
 import { readMarketSubscriptions, removeMarketSubscription, saveMarketSubscription } from './ruleMarketStore'
 import { addManualPlace } from './mapManualPlace'
 import { beginLibraryRestore, isLibraryRestoring, runAsLibraryRestore } from './libraryMaintenance'
@@ -1119,6 +1123,15 @@ function registerIpc(): void {
     readSettings: async () => getSettings(),
     credentials: createSafeStorageCredentialStore(),
     account: createAccountStore(),
+  })
+
+  // Crafty 联动（src/main/craftIpc.ts）：把一本书的读书笔记推成 Crafty 文档。
+  // 三个频道的形状与 docs/ipc-contract.md 的「Crafty 联动」一节逐字一致。
+  registerCraftIpc((channel, listener) => ipcMain.handle(channel, listener), {
+    store: createCraftStore(),
+    bookDirOf: bookDir,
+    loadMaterials: loadCraftMaterials,
+    fetchJson: createCraftFetch(),
   })
 
   /** 手工标注一个地名坐标：不消耗腾讯地图配额，坐标由本人给定。 */
